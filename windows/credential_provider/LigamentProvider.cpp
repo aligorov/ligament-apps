@@ -1,0 +1,234 @@
+﻿// LigamentProvider.cpp — Implementation of ICredentialProvider and ICredentialProviderFilter
+#include "LigamentProvider.h"
+
+namespace ligament {
+
+// Microsoft standard Password Credential Provider GUID: {60b78e88-ead8-445c-9cfd-0b87f74ea6cd}
+static const GUID CLSID_PasswordProvider =
+    { 0x60b78e88, 0xead8, 0x445c, { 0x9c, 0xfd, 0x0b, 0x87, 0xf7, 0x4e, 0xa6, 0xcd } };
+
+extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[];
+
+LigamentProvider::LigamentProvider() {
+    InterlockedIncrement(&g_cRefDll);
+    m_config = Config::LoadFromRegistry();
+}
+
+LigamentProvider::~LigamentProvider() {
+    InterlockedDecrement(&g_cRefDll);
+    if (m_pCredential) {
+        m_pCredential->Release();
+        m_pCredential = nullptr;
+    }
+    if (m_pEvents) {
+        m_pEvents->Release();
+        m_pEvents = nullptr;
+    }
+}
+
+bool LigamentProvider::CheckIfRemoteSession() {
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0) {
+        return true;
+    }
+    unsigned short* pProtocol = nullptr;
+    DWORD bytes = 0;
+    if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSClientProtocolType, (LPWSTR*)&pProtocol, &bytes)) {
+        bool isRdp = (pProtocol && *pProtocol != 0);
+        WTSFreeMemory(pProtocol);
+        if (isRdp) return true;
+    }
+    return false;
+}
+
+// IUnknown
+HRESULT LigamentProvider::QueryInterface(REFIID riid, void** ppv) {
+    static const QITAB qit[] = {
+        QITABENT(LigamentProvider, ICredentialProvider),
+        QITABENT(LigamentProvider, ICredentialProviderFilter),
+        { 0 },
+    };
+    return QISearch(this, qit, riid, ppv);
+}
+
+ULONG LigamentProvider::AddRef() {
+    return InterlockedIncrement(&m_cRef);
+}
+
+ULONG LigamentProvider::Release() {
+    LONG c = InterlockedDecrement(&m_cRef);
+    if (c == 0) delete this;
+    return c;
+}
+
+// ICredentialProvider
+HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwFlags) {
+    m_scenario = cpus;
+    m_flags = dwFlags;
+    m_isRemoteSession = CheckIfRemoteSession();
+    m_config = Config::LoadFromRegistry();
+
+    // Recompute for every scenario: an enforce flag left over from a
+    // previous scenario (e.g. LOGON -> CHANGE_PASSWORD) must not survive,
+    // otherwise non-logon dialogs would be left without any usable tile.
+    m_shouldEnforce2FA = false;
+
+    // Check if 2FA applies to this scenario
+    if (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION) {
+        if (m_isRemoteSession && m_config.rdp2faEnabled) {
+            m_shouldEnforce2FA = true;
+        } else if (!m_isRemoteSession && m_config.console2faEnabled) {
+            m_shouldEnforce2FA = true;
+        }
+    }
+
+    // Do not log infrastructure details (server URL) from the winlogon context
+    LogDebug(L"SetUsageScenario: cpus=%d, remote=%d, enforce2fa=%d",
+        cpus, m_isRemoteSession ? 1 : 0, m_shouldEnforce2FA ? 1 : 0);
+
+    if (m_shouldEnforce2FA && !m_pCredential) {
+        m_pCredential = new LigamentCredential();
+        m_pCredential->Initialize(m_config, m_isRemoteSession, cpus);
+    }
+    return S_OK;
+}
+
+HRESULT LigamentProvider::SetSerialization(const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs) {
+    // Контракт (V2-сэмпл): S_OK означает «потребил, перечислю дефолтный тайл
+    // под автологон». Мы удалённые креды не потребляем (2FA требует ручного
+    // ввода) — честно возвращаем E_NOTIMPL, иначе LogonUI ждёт от нас тайл,
+    // которого нет (диагноз агентов: сломанный remote-хэндофф).
+    if (pcpcs && pcpcs->rgbSerialization && pcpcs->cbSerialization) {
+        LogDebug(L"setser: получен удалённый блоб cb=%lu authPkg=%lu — не потреблён (E_NOTIMPL)",
+            (unsigned long)pcpcs->cbSerialization, (unsigned long)pcpcs->ulAuthenticationPackage);
+    }
+    return E_NOTIMPL;
+}
+
+HRESULT LigamentProvider::Advise(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
+    if (m_pEvents) m_pEvents->Release();
+    m_pEvents = pcpe;
+    m_adviseContext = upAdviseContext;
+    if (m_pEvents) m_pEvents->AddRef();
+    return S_OK;
+}
+
+HRESULT LigamentProvider::UnAdvise() {
+    if (m_pEvents) {
+        m_pEvents->Release();
+        m_pEvents = nullptr;
+    }
+    m_adviseContext = 0;
+    return S_OK;
+}
+
+HRESULT LigamentProvider::GetFieldDescriptorCount(DWORD* pdwCount) {
+    if (!pdwCount) return E_POINTER;
+    *pdwCount = FID_NUM_FIELDS;
+    return S_OK;
+}
+
+HRESULT LigamentProvider::GetFieldDescriptorAt(DWORD dwIndex, CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR** ppcpfd) {
+    if (!ppcpfd) return E_POINTER;
+    if (dwIndex >= FID_NUM_FIELDS) return E_INVALIDARG;
+
+    CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR* pcpfd = (CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR*)CoTaskMemAlloc(sizeof(CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR));
+    if (!pcpfd) return E_OUTOFMEMORY;
+
+    pcpfd->dwFieldID = s_Fields[dwIndex].dwFieldID;
+    pcpfd->cpft = s_Fields[dwIndex].cpft;
+    pcpfd->guidFieldType = s_Fields[dwIndex].guidFieldType;
+
+    if (s_Fields[dwIndex].pszLabel) {
+        SHStrDupW(s_Fields[dwIndex].pszLabel, &pcpfd->pszLabel);
+    } else {
+        pcpfd->pszLabel = nullptr;
+    }
+
+    *ppcpfd = pcpfd;
+    return S_OK;
+}
+
+HRESULT LigamentProvider::GetCredentialCount(DWORD* pdwCount, DWORD* pdwDefault, BOOL* pbAutoLogonWithDefault) {
+    if (!pdwCount || !pdwDefault || !pbAutoLogonWithDefault) return E_POINTER;
+
+    if (m_shouldEnforce2FA && m_pCredential) {
+        *pdwCount = 1;
+        *pdwDefault = 0;
+        *pbAutoLogonWithDefault = FALSE;
+        LogDebug(L"credcount: 1 тайл (enforce), default=0, autologon=0");
+    } else {
+        *pdwCount = 0;
+        *pdwDefault = CREDENTIAL_PROVIDER_NO_DEFAULT;
+        *pbAutoLogonWithDefault = FALSE;
+        LogDebug(L"credcount: 0 тайлов (не enforce: cpus/remote/флаги)");
+    }
+    return S_OK;
+}
+
+HRESULT LigamentProvider::GetCredentialAt(DWORD dwIndex, ICredentialProviderCredential** ppcpc) {
+    if (!ppcpc) return E_POINTER;
+    if (dwIndex != 0 || !m_pCredential) return E_INVALIDARG;
+
+    m_pCredential->AddRef();
+    *ppcpc = m_pCredential;
+    return S_OK;
+}
+
+// ICredentialProviderFilter: Filter out default password provider during remote RDP when 2FA is active
+HRESULT LigamentProvider::Filter(
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
+    DWORD dwFlags,
+    GUID* rgclsidProviders,
+    BOOL* rgbAllow,
+    DWORD cProviders)
+{
+    UNREFERENCED_PARAMETER(dwFlags);
+
+    bool isRemote = CheckIfRemoteSession();
+    Config cfg = Config::LoadFromRegistry();
+
+    // Suppress the stock password tile only in interactive logon scenarios
+    // where Ligament 2FA is actually enforced. Other usage scenarios
+    // (CPUS_CHANGE_PASSWORD, CPUS_CREDUI, CPUS_CRED_PICKER, ...) must keep
+    // the standard providers working, otherwise password change and
+    // credential dialogs become unusable.
+    bool enforce = false;
+    if (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION) {
+        enforce = (isRemote && cfg.rdp2faEnabled) || (!isRemote && cfg.console2faEnabled);
+    }
+
+    DWORD suppressed = 0;
+    if (enforce) {
+        for (DWORD i = 0; i < cProviders; ++i) {
+            if (IsEqualGUID(rgclsidProviders[i], CLSID_PasswordProvider)) {
+                // Suppress standard password-only tile in favor of Ligament 2FA
+                rgbAllow[i] = FALSE;
+                ++suppressed;
+            }
+        }
+    }
+    LogDebug(L"filter: cpus=%lu remote=%d rdp2fa=%d console2fa=%d enforce=%d providers=%lu suppressedStock=%lu",
+        (unsigned long)cpus, isRemote ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0,
+        cfg.console2faEnabled ? 1 : 0, enforce ? 1 : 0,
+        (unsigned long)cProviders, (unsigned long)suppressed);
+    return S_OK;
+}
+
+HRESULT LigamentProvider::UpdateRemoteCredential(
+    const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcsIn,
+    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcsOut)
+{
+    // NLA-креды от mstsc приходят сюда. Мы их не перехватываем (2FA требует
+    // ручного ввода) — но ФИКСИРУЕМ факт прихода: важный маркер RDP-потока.
+    if (pcpcsIn && pcpcsIn->rgbSerialization && pcpcsIn->cbSerialization) {
+        LogDebug(L"remote-cred: получен блоб cb=%lu authPkg=%lu — не перехватываем",
+            (unsigned long)pcpcsIn->cbSerialization,
+            (unsigned long)pcpcsIn->ulAuthenticationPackage);
+    } else {
+        LogDebug(L"remote-cred: вызов с пустым входом");
+    }
+    UNREFERENCED_PARAMETER(pcpcsOut);
+    return E_NOTIMPL;
+}
+
+} // namespace ligament

@@ -1,0 +1,133 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/io.dart';
+
+typedef PushPromptCallback = void Function(Map<String, dynamic> prompt);
+
+/// Сервис постоянного WebSocket соединения для мгновенных push-уведомлений.
+class WebSocketService {
+  WebSocketChannel? _channel;
+  Timer? _reconnectTimer;
+  bool _disposed = false;
+
+  PushPromptCallback? onPrompt;
+  PushPromptCallback? onSupportPrompt;
+  PushPromptCallback? onSupportSignal;
+  PushPromptCallback? onSupportEnded;
+  PushPromptCallback? onSupportIncoming;
+  VoidCallback? onConnected;
+  VoidCallback? onDisconnected;
+
+  bool get isConnected => _channel != null;
+
+  void connect({required String baseUrl, required String token}) {
+    _disposed = false;
+    _reconnectTimer?.cancel();
+
+    var wsUrl = baseUrl.trim();
+    if (wsUrl.startsWith('https://')) {
+      wsUrl = 'wss://${wsUrl.substring(8)}';
+    } else if (wsUrl.startsWith('http://')) {
+      wsUrl = 'ws://${wsUrl.substring(7)}';
+    }
+    if (wsUrl.endsWith('/')) {
+      wsUrl = wsUrl.substring(0, wsUrl.length - 1);
+    }
+    wsUrl = '$wsUrl/api/v1/app/ws';
+
+    try {
+      final uri = Uri.parse(wsUrl);
+      // Токен передается в заголовке Authorization (Bearer), а не в query-строке,
+      // чтобы не оседать в access-логах прокси и сервера приложений.
+      //
+      // pingInterval — НАСТОЯЩИЕ WebSocket control-ping'и на уровне
+      // протокола (web_socket_channel шлёт их сам, gorilla на сервере
+      // отвечает pong автоматически): соединение не рвётся тихо через
+      // прокси/NAT с таймаутом по неактивности — раньше «мёртвый» WS
+      // мог жить до первого prompt, и push терялся до реконнекта.
+      _channel = IOWebSocketChannel.connect(
+        uri,
+        headers: {'Authorization': 'Bearer $token'},
+        connectTimeout: const Duration(seconds: 10),
+        pingInterval: const Duration(seconds: 20),
+      );
+      // onConnected — только после реального установления соединения
+      // (ready завершается после handshake), а не по факту вызова connect.
+      _channel!.ready.then((_) {
+        if (!_disposed) onConnected?.call();
+      }).catchError((Object e) {
+        debugPrint('ws_service: соединение не установлено: $e');
+        if (!_disposed) onDisconnected?.call();
+      });
+
+      _channel!.stream.listen(
+        (message) {
+          _handleMessage(message);
+        },
+        onDone: () {
+          _channel = null;
+          onDisconnected?.call();
+          _scheduleReconnect(baseUrl: baseUrl, token: token);
+        },
+        onError: (err) {
+          debugPrint('ws_service: ошибка соединения: $err');
+          _channel = null;
+          onDisconnected?.call();
+          _scheduleReconnect(baseUrl: baseUrl, token: token);
+        },
+        cancelOnError: true,
+      );
+    } catch (e) {
+      debugPrint('ws_service: исключение при подключении: $e');
+      _scheduleReconnect(baseUrl: baseUrl, token: token);
+    }
+  }
+
+  void _handleMessage(dynamic message) {
+    try {
+      final text = message is String ? message : utf8.decode(message as List<int>);
+      final data = jsonDecode(text) as Map<String, dynamic>;
+
+      if (data['type'] == 'challenge_prompt') {
+        onPrompt?.call(data);
+      } else if (data['type'] == 'support_prompt') {
+        onSupportPrompt?.call(data);
+      } else if (data['type'] == 'support_signal' || data['type'] == 'chat_message') {
+        onSupportSignal?.call(data);
+      } else if (data['type'] == 'support_ended') {
+        onSupportEnded?.call(data);
+      } else if (data['type'] == 'support_incoming_request' || data['type'] == 'support_queue_update') {
+        onSupportIncoming?.call(data);
+      }
+    } catch (e) {
+      debugPrint('ws_service: ошибка парсинга сообщения: $e');
+    }
+  }
+
+  void sendJson(Map<String, dynamic> data) {
+    try {
+      _channel?.sink.add(jsonEncode(data));
+    } catch (e) {
+      debugPrint('ws_service: ошибка отправки: $e');
+    }
+  }
+
+  void _scheduleReconnect({required String baseUrl, required String token}) {
+    if (_disposed) return;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+      if (!_disposed) {
+        connect(baseUrl: baseUrl, token: token);
+      }
+    });
+  }
+
+  void disconnect() {
+    _disposed = true;
+    _reconnectTimer?.cancel();
+    _channel?.sink.close();
+    _channel = null;
+  }
+}
