@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../i18n/app_strings.dart';
 
 class ApprovalModal extends StatefulWidget {
   final Map<String, dynamic> prompt;
@@ -103,28 +104,29 @@ class _ApprovalModalState extends State<ApprovalModal> {
     Navigator.of(context, rootNavigator: true).maybePop();
   }
 
-  String _translateError(dynamic e) {
+  String _translateError(BuildContext context, dynamic e) {
+    final strings = context.stringsRead;
     final msg = e.toString();
     if (msg.contains('device_non_compliant')) {
-      return 'Вход заблокирован: устройство не соответствует требованиям безопасности (отключен BitLocker или обнаружен root)';
+      return strings.errNonCompliant;
     }
     if (msg.contains('number_match_mismatch')) {
-      return 'Выбрано неверное число подтверждения';
+      return strings.errWrongMatch;
     }
     if (msg.contains('challenge_expired')) {
-      return 'Время действия запроса истекло';
+      return strings.errExpired;
     }
     if (msg.contains('Windows Hello')) {
-      return 'Подтверждение Windows Hello отклонено';
+      return strings.errWinHello;
     }
-    return 'Ошибка: $e';
+    return '${strings.error}: $e';
   }
 
   Future<void> _handleDecision(bool approve) async {
     final expectedMatch = _prompt['number_match']?.toString();
     if (approve && expectedMatch != null && expectedMatch.isNotEmpty) {
       if (_selectedMatch == null || _selectedMatch != expectedMatch) {
-        setState(() => _error = 'Выберите верный номер, показанный на экране входа');
+        setState(() => _error = context.stringsRead.errSelectMatch);
         return;
       }
     }
@@ -147,7 +149,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = _translateError(e);
+          _error = _translateError(context, e);
           _isProcessing = false;
         });
       }
@@ -156,13 +158,14 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = context.strings;
     final expectedMatch = _prompt['number_match']?.toString();
-    final who = _prompt['who']?.toString() ?? 'Сотрудник';
+    final who = _prompt['who']?.toString() ?? strings.employee;
     final clientIp = _prompt['client_ip']?.toString() ?? _prompt['ip']?.toString() ?? '—';
     final hostIp = _prompt['host_ip']?.toString();
     final host = _prompt['host']?.toString();
-    final service = _prompt['service']?.toString() ?? 'Корпоративный доступ';
-    final device = _prompt['device']?.toString() ?? _formatDeviceUA(_prompt['ua']?.toString() ?? '');
+    final service = _prompt['service']?.toString() ?? strings.serviceCorpAccess;
+    final device = _prompt['device']?.toString() ?? _formatDeviceUA(_prompt['ua']?.toString() ?? '', isRu: strings.isRu);
 
     // Для Number Matching генерируем 3 уникальных варианта: верный + 2 правдоподобных ложных
     final options = <String>[];
@@ -209,10 +212,10 @@ class _ApprovalModalState extends State<ApprovalModal> {
                           child: const Icon(Icons.security, color: Color(0xFF38BDF8), size: 24),
                         ),
                         const SizedBox(width: 10),
-                        const Flexible(
+                        Flexible(
                           child: Text(
-                            'Запрос на вход',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                            strings.loginRequestTitle,
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -229,7 +232,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
                           border: Border.all(color: const Color(0xFF475569)),
                         ),
                         child: Text(
-                          '$_secondsLeft с',
+                          '$_secondsLeft ${strings.secondsShort}',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: _secondsLeft < 15 ? Colors.redAccent : const Color(0xFF38BDF8),
@@ -239,7 +242,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
                       const SizedBox(width: 8),
                       IconButton(
                         icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
-                        tooltip: 'Закрыть',
+                        tooltip: strings.close,
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
                         onPressed: () {
@@ -262,21 +265,21 @@ class _ApprovalModalState extends State<ApprovalModal> {
                 ),
                 child: Column(
                   children: [
-                    _metaRow(Icons.apps, 'Куда (сервис):', service),
+                    _metaRow(Icons.apps, strings.serviceLabel, service),
                     const SizedBox(height: 8),
-                    _metaRow(Icons.person, 'Пользователь:', who),
+                    _metaRow(Icons.person, strings.userLabel, who),
                     const SizedBox(height: 8),
-                    _metaRow(Icons.wifi, 'IP клиента:', _formatIPBadge(clientIp)),
+                    _metaRow(Icons.wifi, strings.ipLabel, _formatIPBadge(clientIp, isRu: strings.isRu)),
                     if (hostIp != null && hostIp.isNotEmpty && hostIp != clientIp) ...[
                       const SizedBox(height: 8),
-                      _metaRow(Icons.dns, 'Сервер (IP):', _formatIPBadge(hostIp)),
+                      _metaRow(Icons.dns, strings.serverIpLabel, _formatIPBadge(hostIp, isRu: strings.isRu)),
                     ],
                     if (host != null && host.isNotEmpty) ...[
                       const SizedBox(height: 8),
-                      _metaRow(Icons.computer, 'Имя сервера:', host),
+                      _metaRow(Icons.computer, strings.serverNameLabel, host),
                     ],
                     const SizedBox(height: 8),
-                    _metaRow(Icons.devices, 'Устройство:', device),
+                    _metaRow(Icons.devices, strings.deviceLabel, device),
                   ],
                 ),
               ),
@@ -284,14 +287,14 @@ class _ApprovalModalState extends State<ApprovalModal> {
               // Number Matching (Защита от push-fatigue)
               if (expectedMatch != null && expectedMatch.isNotEmpty) ...[
                 const SizedBox(height: 20),
-                const Text(
-                  'Защита от случайных нажатий (Number Match):',
-                  style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
+                Text(
+                  strings.numberMatchHeader,
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
                 ),
                 const SizedBox(height: 6),
-                const Text(
-                  'Выберите число, отображаемое на экране компьютера:',
-                  style: TextStyle(fontSize: 12, color: Colors.white70),
+                Text(
+                  strings.numberMatchSub,
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -344,7 +347,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
-                      child: const Text('Отклонить', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                      child: Text(strings.denyBtn, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -359,7 +362,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
                       ),
                       child: _isProcessing
                           ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Text('Принять', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                          : Text(strings.approveBtn, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                     ),
                   ),
                 ],
@@ -406,21 +409,21 @@ class _ApprovalModalState extends State<ApprovalModal> {
     return false;
   }
 
-  static String _formatIPBadge(String ip) {
+  static String _formatIPBadge(String ip, {required bool isRu}) {
     if (ip == '—' || ip.isEmpty) return '—';
     if (_isPrivateIP(ip)) {
-      return '$ip (внутренний IP)';
+      return isRu ? '$ip (внутренний IP)' : '$ip (private IP)';
     }
     return ip;
   }
 
-  static String _formatDeviceUA(String raw) {
-    if (raw.isEmpty || raw == '—') return 'Рабочая станция';
+  static String _formatDeviceUA(String raw, {required bool isRu}) {
+    if (raw.isEmpty || raw == '—') return isRu ? 'Рабочая станция' : 'Workstation';
     if (raw.contains('CredentialProvider')) return 'Windows (Credential Provider)';
     if (raw.contains('Windows NT 10.0')) return 'Windows 10 / 11';
     if (raw.contains('Macintosh') || raw.contains('Mac OS')) return 'macOS';
-    if (raw.contains('Android')) return 'Android Устройство';
-    if (raw.contains('iPhone') || raw.contains('iPad')) return 'iOS Устройство';
+    if (raw.contains('Android')) return isRu ? 'Android Устройство' : 'Android Device';
+    if (raw.contains('iPhone') || raw.contains('iPad')) return isRu ? 'iOS Устройство' : 'iOS Device';
     if (raw.contains('Linux')) return 'Linux';
     return raw;
   }

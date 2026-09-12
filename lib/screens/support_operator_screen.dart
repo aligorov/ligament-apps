@@ -13,6 +13,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
+import '../i18n/app_strings.dart';
 
 enum OperatorZoomMode {
   fit,
@@ -52,11 +53,46 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   late bool _isChatOnly;
   String? _currentNumberMatch;
-  String _connectionStatus = 'Инициализация...';
+  String _statusKey = 'init';
+  String? _statusArg;
   bool _isConnected = false;
   bool _isInputBlocked = false;
   bool _isControlEnabled = true;
   MouseClickMode _mouseClickMode = MouseClickMode.left;
+
+  void _setStatus(String key, [String? arg]) {
+    setState(() {
+      _statusKey = key;
+      _statusArg = arg;
+    });
+  }
+
+  String _getStatusText(AppStrings strings) {
+    switch (_statusKey) {
+      case 'init':
+        return strings.initStatus;
+      case 'chat':
+        return strings.chatModeStatus;
+      case 'waiting_consent':
+        return strings.waitingUserConsent(_statusArg ?? '2FA');
+      case 'ended_by_server':
+        return strings.sessionEndedByServer;
+      case 'conn_error':
+        return '${strings.connErrorPrefix} ${_statusArg ?? ''}';
+      case 'requesting_access':
+        return strings.requestingScreenAccess;
+      case 'req_error':
+        return '${strings.reqErrorPrefix} ${_statusArg ?? ''}';
+      case 'p2p_connected':
+        return strings.p2pConnected;
+      case 'disconnected':
+        return '${strings.isRu ? 'Отключено' : 'Disconnected'} (${_statusArg ?? ''})';
+      case 'stream_active':
+        return strings.streamActive;
+      default:
+        return _statusKey;
+    }
+  }
 
   List<Map<String, dynamic>> _screens = [];
   String? _selectedScreenId;
@@ -142,7 +178,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _isControlEnabled = accessMode != 'view_only';
     _loadChatHistory();
     if (_isChatOnly) {
-      _connectionStatus = 'Режим чата';
+      _statusKey = 'chat';
       _connectWebSocket();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _showOperatorChatModal();
@@ -153,9 +189,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _initRendererAndWebRTC() async {
-    setState(() {
-      _connectionStatus = 'Ожидание согласия пользователя (${_currentNumberMatch ?? '2FA'})...';
-    });
+    _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
     await _remoteRenderer.initialize();
     _connectWebSocket();
     await _setupPeerConnection();
@@ -186,7 +220,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         onDone: () {
           if (mounted) {
             setState(() {
-              _connectionStatus = 'Сеанс завершен сервером';
+              _statusKey = 'ended_by_server';
+              _statusArg = null;
               _isConnected = false;
               _currentNumberMatch = null;
             });
@@ -195,7 +230,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         onError: (err) {
           if (mounted) {
             setState(() {
-              _connectionStatus = 'Ошибка соединения: $err';
+              _statusKey = 'conn_error';
+              _statusArg = err.toString();
               _isConnected = false;
               _currentNumberMatch = null;
             });
@@ -204,17 +240,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       );
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _connectionStatus = 'Исключение подключения: $e';
-        });
+        _setStatus('conn_error', e.toString());
       }
     }
   }
 
   Future<void> _requestScreenAccess() async {
-    setState(() {
-      _connectionStatus = 'Запрос доступа к экрану у пользователя...';
-    });
+    _setStatus('requesting_access');
     final auth = context.read<AuthState>();
     try {
       final res = await auth.connectToSupportSession(widget.sessionId);
@@ -227,13 +259,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _connectionStatus = 'Ошибка запроса: $e';
-        });
+        _setStatus('req_error', e.toString());
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: const Color(0xFFEF4444),
-            content: Text('Ошибка запроса экрана: $e'),
+            content: Text('${context.stringsRead.reqScreenErrorPrefix} $e'),
           ),
         );
       }
@@ -271,13 +301,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
             _isConnected = true;
             _currentNumberMatch = null;
-            _connectionStatus = 'Подключено (P2P)';
+            _statusKey = 'p2p_connected';
+            _statusArg = null;
           } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
               state == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
               state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
             _isConnected = false;
             _currentNumberMatch = null;
-            _connectionStatus = 'Отключено ($state)';
+            _statusKey = 'disconnected';
+            _statusArg = state.name;
           }
         });
       }
@@ -290,7 +322,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _remoteRenderer.srcObject = event.streams[0];
           _isConnected = true;
           _currentNumberMatch = null;
-          _connectionStatus = 'Трансляция активна';
+          _statusKey = 'stream_active';
+          _statusArg = null;
         });
       }
     };
@@ -429,7 +462,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } else if (data['type'] == 'session_ended' || data['type'] == 'support_ended') {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Сеанс поддержки был завершен пользователем')),
+            SnackBar(content: Text(context.stringsRead.sessionEndedByUser)),
           );
           Navigator.of(context).pop();
         }
@@ -444,7 +477,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _sendChatMessage(String text) {
     if (text.trim().isEmpty) return;
     final auth = context.read<AuthState>();
-    final operatorName = auth.displayName.isNotEmpty ? auth.displayName : 'Инженер';
+    final operatorName = auth.displayName.isNotEmpty ? auth.displayName : context.stringsRead.defaultEngineerName;
     final msg = SupportChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
       sender: 'operator',
@@ -491,6 +524,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
+        final strings = ctx.strings;
         return ValueListenableBuilder<List<SupportChatMessage>>(
           valueListenable: _chatMessagesNotifier,
           builder: (context, messages, _) {
@@ -504,6 +538,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               }
             });
 
+            final clientDisplayName = widget.sessionData['employee_name'] ?? widget.sessionData['username'] ?? strings.defaultClientName;
             return Container(
               height: MediaQuery.of(context).size.height * 0.75,
               decoration: const BoxDecoration(
@@ -525,7 +560,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Чат с пользователем • ${widget.sessionData['employee_name'] ?? widget.sessionData['username'] ?? 'Клиент'}',
+                            strings.chatWithUser(clientDisplayName),
                             style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                           ),
                         ),
@@ -545,21 +580,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
-                        _buildOperatorChatChip('👋 Здравствуйте! Подключился к экрану.'),
-                        _buildOperatorChatChip('📁 Пожалуйста, сохраните открытые файлы.'),
-                        _buildOperatorChatChip('🔄 Сейчас потребуется перезагрузить систему.'),
-                        _buildOperatorChatChip('✅ Проблема устранена, проверяйте!'),
+                        _buildOperatorChatChip(strings.isRu ? '👋 Здравствуйте! Подключился к экрану.' : '👋 Hello! Connected to screen.'),
+                        _buildOperatorChatChip(strings.isRu ? '📁 Пожалуйста, сохраните открытые файлы.' : '📁 Please save your open files.'),
+                        _buildOperatorChatChip(strings.isRu ? '🔄 Сейчас потребуется перезагрузить систему.' : '🔄 System reboot will be needed now.'),
+                        _buildOperatorChatChip(strings.isRu ? '✅ Проблема устранена, проверяйте!' : '✅ Issue is resolved, please check!'),
                       ],
                     ),
                   ),
 
                   Expanded(
                     child: messages.isEmpty
-                        ? const Center(
+                        ? Center(
                             child: Text(
-                              'Сообщений пока нет.\nНапишите пользователю приветствие или инструкцию.',
+                              strings.chatEmptyPrompt,
                               textAlign: TextAlign.center,
-                              style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                              style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
                             ),
                           )
                         : ListView.builder(
@@ -629,7 +664,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             controller: textController,
                             style: const TextStyle(color: Colors.white, fontSize: 13),
                             decoration: InputDecoration(
-                              hintText: 'Написать сообщение пользователю...',
+                              hintText: strings.chatInputHint,
                               hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
                               filled: true,
                               fillColor: const Color(0xFF1E293B),
@@ -771,15 +806,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _showTextInputDialog() {
     final controller = TextEditingController();
+    final strings = context.stringsRead;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.keyboard_alt_outlined, color: Color(0xFF38BDF8), size: 20),
-            SizedBox(width: 8),
-            Text('Ввод текста на ПК клиента', style: TextStyle(color: Colors.white, fontSize: 16)),
+            const Icon(Icons.keyboard_alt_outlined, color: Color(0xFF38BDF8), size: 20),
+            const SizedBox(width: 8),
+            Text(strings.textInputTitle, style: const TextStyle(color: Colors.white, fontSize: 16)),
           ],
         ),
         content: SizedBox(
@@ -788,9 +824,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Введите текст или команду для отправки на компьютер клиента:',
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+              Text(
+                strings.textInputPrompt,
+                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -798,7 +834,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 autofocus: true,
                 style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
-                  hintText: 'Текст, пароль или команда...',
+                  hintText: strings.textInputPlaceholder,
                   hintStyle: const TextStyle(color: Color(0xFF64748B)),
                   filled: true,
                   fillColor: const Color(0xFF0F172A),
@@ -810,7 +846,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 },
               ),
               const SizedBox(height: 14),
-              const Text('Быстрые клавиши:', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
+              Text(strings.quickKeys, style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
               const SizedBox(height: 6),
               Wrap(
                 spacing: 6,
@@ -822,7 +858,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   _buildQuickKeyButton('Backspace ⌫', () => _sendSpecialKey('Backspace')),
                   _buildQuickKeyButton('Win+R ⊞', () => _sendHotkey('win_r')),
                   _buildQuickKeyButton('Ctrl+Alt+Del 🔒', () => _sendHotkey('ctrl_alt_del')),
-                  _buildQuickKeyButton('Диспетчер ⚡', () => _sendHotkey('task_mgr')),
+                  _buildQuickKeyButton(strings.isRu ? 'Диспетчер ⚡' : 'Task Mgr ⚡', () => _sendHotkey('task_mgr')),
                 ],
               ),
             ],
@@ -831,7 +867,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Отмена'),
+            child: Text(strings.cancel),
           ),
           ElevatedButton.icon(
             onPressed: () {
@@ -840,7 +876,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               _sendTextToRemote(text);
             },
             icon: const Icon(Icons.send, size: 14),
-            label: const Text('Отправить'),
+            label: Text(strings.send),
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
           ),
         ],
@@ -870,9 +906,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _sendSpecialKey(String key) {
     _sendDataMessage({'type': 'key_down', 'key': key});
     _sendDataMessage({'type': 'key_up', 'key': key});
+    final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Отправлена клавиша $key'),
+        content: Text(isRu ? 'Отправлена клавиша $key' : 'Key sent: $key'),
         duration: const Duration(milliseconds: 600),
       ),
     );
@@ -881,9 +918,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _sendTextToRemote(String text) {
     if (text.isEmpty) return;
     _sendDataMessage({'type': 'clipboard_set', 'text': text});
+    final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Текст отправлен в буфер ПК клиента: "$text"'),
+        content: Text(isRu ? 'Текст отправлен в буфер ПК клиента: "$text"' : 'Text sent to client clipboard: "$text"'),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -898,9 +936,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _sendHotkey(String action) {
     _sendDataMessage({'type': 'hotkey', 'action': action});
+    final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Отправлена комбинация: $action'),
+        content: Text(isRu ? 'Отправлена комбинация: $action' : 'Shortcut sent: $action'),
         duration: const Duration(milliseconds: 900),
       ),
     );
@@ -912,12 +951,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendLocalClipboardToRemote() async {
+    final strings = context.stringsRead;
     final clip = await Clipboard.getData(Clipboard.kTextPlain);
     final text = clip?.text ?? '';
     if (text.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Локальный буфер обмена пуст')),
+          SnackBar(content: Text(strings.localClipboardEmpty)),
         );
       }
       return;
@@ -925,7 +965,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _sendDataMessage({'type': 'clipboard_set', 'text': text});
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Буфер отправлен на ПК клиента (${text.length} симв.)')),
+        SnackBar(content: Text(strings.clipboardSentNotice(text.length))),
       );
     }
   }
@@ -935,13 +975,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _showRemoteClipboardDialog(String text) {
+    final strings = context.stringsRead;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Буфер обмена клиента', style: TextStyle(color: Colors.white)),
+        title: Text(strings.clientClipboardTitle, style: const TextStyle(color: Colors.white)),
         content: SelectableText(
-          text.isNotEmpty ? text : '(Буфер обмена пуст)',
+          text.isNotEmpty ? text : strings.clipboardEmpty,
           style: const TextStyle(color: Color(0xFF94A3B8)),
         ),
         actions: [
@@ -951,15 +992,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 Clipboard.setData(ClipboardData(text: text));
                 Navigator.of(ctx).pop();
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Скопировано в ваш локальный буфер')),
+                  SnackBar(content: Text(strings.copiedToLocalClipboard)),
                 );
               },
               icon: const Icon(Icons.copy, size: 16),
-              label: const Text('Скопировать себе'),
+              label: Text(strings.copyToMyself),
             ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Закрыть'),
+            child: Text(strings.close),
           ),
         ],
       ),
@@ -1016,24 +1057,25 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _endSession() async {
+    final strings = context.stringsRead;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Завершить сеанс?', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'Вы уверены, что хотите завершить сеанс удаленного управления?',
-          style: TextStyle(color: Color(0xFF94A3B8)),
+        title: Text(strings.confirmEndSessionTitle, style: const TextStyle(color: Colors.white)),
+        content: Text(
+          strings.confirmEndSessionDesc,
+          style: const TextStyle(color: Color(0xFF94A3B8)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Отмена'),
+            child: Text(strings.cancel),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
-            child: const Text('Завершить'),
+            child: Text(strings.endSession),
           ),
         ],
       ),
@@ -1063,10 +1105,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = context.strings;
     final clientName = widget.sessionData['display_name'] ??
         widget.sessionData['employee_name'] ??
         widget.sessionData['username'] ??
-        'Клиент';
+        strings.clientFallback;
     final pcName = widget.sessionData['device_name'] ?? widget.sessionData['pc_name'] ?? 'PC';
     final is1C = widget.sessionData['category'] == '1c';
 
@@ -1095,7 +1138,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     children: [
                       IconButton(
                         icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
-                        tooltip: 'Назад',
+                        tooltip: strings.backTooltip,
                         onPressed: () => Navigator.of(context).pop(),
                       ),
                       Container(
@@ -1105,7 +1148,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
-                          is1C ? '1С' : 'IT',
+                          is1C ? (strings.isRu ? '1С' : '1C') : 'IT',
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
                         ),
                       ),
@@ -1118,7 +1161,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
                           ),
                           Text(
-                            _connectionStatus,
+                            _getStatusText(strings),
                             style: TextStyle(
                               color: _isConnected ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
                               fontSize: 10,
@@ -1147,7 +1190,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                 children: [
                                   const Icon(Icons.desktop_windows, size: 14, color: Color(0xFF38BDF8)),
                                   const SizedBox(width: 4),
-                                  Text(s['name']?.toString() ?? 'Монитор', overflow: TextOverflow.ellipsis),
+                                  Text(s['name']?.toString() ?? strings.monitor, overflow: TextOverflow.ellipsis),
                                 ],
                               ),
                             );
@@ -1158,13 +1201,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         ),
                         IconButton(
                           icon: const Icon(Icons.refresh, size: 16, color: Color(0xFF94A3B8)),
-                          tooltip: 'Обновить список экранов (Win+P "Расширить" на клиенте)',
+                          tooltip: strings.refreshScreensTooltip,
                           onPressed: () {
                             _sendDataMessage({'type': 'screen_list'});
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                duration: Duration(seconds: 2),
-                                content: Text('Запрос обновления списка экранов отправлен...'),
+                              SnackBar(
+                                duration: const Duration(seconds: 2),
+                                content: Text(strings.refreshScreensSent),
                               ),
                             );
                           },
@@ -1182,7 +1225,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           color: const Color(0xFF38BDF8),
                           size: 18,
                         ),
-                        tooltip: _zoomMode == OperatorZoomMode.fit ? 'Масштаб: Вписать' : 'Масштаб: 1:1',
+                        tooltip: _zoomMode == OperatorZoomMode.fit ? strings.zoomFitTooltip : strings.zoom1to1Tooltip,
                         onPressed: () {
                           setState(() {
                             if (_zoomMode == OperatorZoomMode.fit) {
@@ -1196,7 +1239,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ),
                       IconButton(
                         icon: const Icon(Icons.zoom_in, color: Colors.white, size: 18),
-                        tooltip: 'Приблизить',
+                        tooltip: strings.zoomInTooltip,
                         onPressed: () {
                           setState(() {
                             _zoomMode = OperatorZoomMode.zoomIn;
@@ -1206,7 +1249,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ),
                       IconButton(
                         icon: const Icon(Icons.zoom_out, color: Colors.white, size: 18),
-                        tooltip: 'Отдалить',
+                        tooltip: strings.zoomOutTooltip,
                         onPressed: () {
                           setState(() {
                             _zoomScale = (_zoomScale - 0.25).clamp(0.5, 3.0);
@@ -1224,23 +1267,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       color: _isInputBlocked ? const Color(0xFFEF4444) : const Color(0xFF94A3B8),
                       size: 18,
                     ),
-                    tooltip: _isInputBlocked ? 'Разблокировать мышь клиента' : 'Заблокировать мышь/клавиатуру клиента',
+                    tooltip: _isInputBlocked ? strings.unblockClientInputTooltip : strings.blockClientInputTooltip,
                     onPressed: _toggleBlockInput,
                   ),
 
                   // Горячие клавиши
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.keyboard, color: Color(0xFF38BDF8), size: 20),
-                    tooltip: 'Горячие клавиши',
+                    tooltip: strings.hotkeysTooltip,
                     color: const Color(0xFF1E293B),
                     itemBuilder: (ctx) => [
-                      const PopupMenuItem(value: 'win_key', child: Text('⊞ Пуск (Win)', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'win_r', child: Text('⊞ Win + R (Выполнить)', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'win_e', child: Text('⊞ Win + E (Проводник)', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'win_x', child: Text('⊞ Win + X (Админ-меню)', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'win_d', child: Text('⊞ Win + D (Рабочий стол)', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'win_l', child: Text('⊞ Win + L (Блокировка)', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'task_mgr', child: Text('⚡ Диспетчер задач', style: TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'win_key', child: Text(strings.hotkeyWin, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'win_r', child: Text(strings.hotkeyWinR, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'win_e', child: Text(strings.hotkeyWinE, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'win_x', child: Text(strings.hotkeyWinX, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'win_d', child: Text(strings.hotkeyWinD, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'win_l', child: Text(strings.hotkeyWinL, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'task_mgr', child: Text(strings.hotkeyTaskMgr, style: const TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'ctrl_alt_del', child: Text('🔒 Ctrl+Alt+Del', style: TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'alt_tab', child: Text('🔄 Alt + Tab', style: TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'alt_f4', child: Text('❌ Alt + F4', style: TextStyle(color: Colors.white))),
@@ -1252,11 +1295,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   // Буфер обмена
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.content_paste, color: Color(0xFF38BDF8), size: 20),
-                    tooltip: 'Буфер обмена',
+                    tooltip: strings.clipboardTooltip,
                     color: const Color(0xFF1E293B),
                     itemBuilder: (ctx) => [
-                      const PopupMenuItem(value: 'send', child: Text('⬆ Отправить мой буфер клиенту', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'get', child: Text('⬇ Прочитать буфер с ПК клиента', style: TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'send', child: Text(strings.sendLocalBuffer, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'get', child: Text(strings.readRemoteBuffer, style: const TextStyle(color: Colors.white))),
                     ],
                     onSelected: (val) {
                       if (val == 'send') _sendLocalClipboardToRemote();
@@ -1271,7 +1314,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       label: Text('$_unreadChatCount'),
                       child: const Icon(Icons.chat_bubble_outline, color: Color(0xFF38BDF8), size: 20),
                     ),
-                    tooltip: 'Чат с пользователем',
+                    tooltip: strings.chatWithUserTooltip,
                     onPressed: _showOperatorChatModal,
                   ),
 
@@ -1305,7 +1348,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             border: Border.all(color: _diskWarning ? const Color(0xFFEF4444) : const Color(0xFF475569)),
                           ),
                           child: Text(
-                            '💾 $_diskFreeGb ГБ ($_diskPercent%)',
+                            '💾 $_diskFreeGb ${strings.gbUnit} ($_diskPercent%)',
                             style: TextStyle(
                               color: _diskWarning ? const Color(0xFFEF4444) : Colors.white,
                               fontSize: 10,
@@ -1323,12 +1366,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       color: _isControlEnabled ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
                       size: 20,
                     ),
-                    tooltip: _isControlEnabled ? 'Управление активно (кликните для паузы)' : 'Только просмотр (кликните для включения)',
+                    tooltip: _isControlEnabled ? strings.controlEnabledTooltip : strings.controlDisabledTooltip,
                     onPressed: () {
                       setState(() => _isControlEnabled = !_isControlEnabled);
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(_isControlEnabled ? '🎮 Управление включено' : '👁 Режим только просмотра'),
+                          content: Text(_isControlEnabled ? strings.controlEnabledNotice : strings.controlDisabledNotice),
                           duration: const Duration(milliseconds: 800),
                         ),
                       );
@@ -1338,7 +1381,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   // Ввод текста на удаленный ПК
                   IconButton(
                     icon: const Icon(Icons.keyboard_alt_outlined, color: Color(0xFF38BDF8), size: 20),
-                    tooltip: 'Ввести текст/команду на ПК клиента',
+                    tooltip: strings.enterTextTooltip,
                     onPressed: _showTextInputDialog,
                   ),
 
@@ -1349,14 +1392,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : const Color(0xFF94A3B8),
                       size: 18,
                     ),
-                    tooltip: _mouseClickMode == MouseClickMode.right ? 'Режим: Правый клик (ПКМ)' : 'Режим: Левый клик (ЛКМ)',
+                    tooltip: _mouseClickMode == MouseClickMode.right ? strings.rightClickModeTooltip : strings.leftClickModeTooltip,
                     onPressed: () {
                       setState(() {
                         _mouseClickMode = _mouseClickMode == MouseClickMode.left ? MouseClickMode.right : MouseClickMode.left;
                       });
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(_mouseClickMode == MouseClickMode.right ? '🖱 Следующий клик: Правая кнопка (ПКМ)' : '🖱 Режим: Левая кнопка (ЛКМ)'),
+                          content: Text(_mouseClickMode == MouseClickMode.right ? strings.rightClickNotice : strings.leftClickNotice),
                           duration: const Duration(milliseconds: 800),
                         ),
                       );
@@ -1368,7 +1411,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     ElevatedButton.icon(
                       onPressed: _requestScreenAccess,
                       icon: const Icon(Icons.desktop_windows, size: 14),
-                      label: const Text('Запросить экран (2FA)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                      label: Text(strings.requestScreen2fa, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF0284C7),
                         foregroundColor: Colors.white,
@@ -1382,7 +1425,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   ElevatedButton.icon(
                     onPressed: _endSession,
                     icon: const Icon(Icons.call_end, size: 14),
-                    label: const Text('Завершить', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                    label: Text(strings.endSession, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFEF4444),
                       foregroundColor: Colors.white,
@@ -1397,7 +1440,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           ),
 
           // Карточка с контрольным числом (если сеанс еще авторизуется клиентом)
-          if (!_isConnected && !_isChatOnly && _currentNumberMatch != null && _connectionStatus.startsWith('Ожидание согласия'))
+          if (!_isConnected && !_isChatOnly && _currentNumberMatch != null && _statusKey == 'waiting_consent')
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
@@ -1408,9 +1451,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               ),
               child: Column(
                 children: [
-                  const Text(
-                    'Контрольное число для клиента (2FA):',
-                    style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                  Text(
+                    strings.numberMatchForClient,
+                    style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
                   ),
                   const SizedBox(height: 8),
                   Container(
@@ -1430,9 +1473,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  const Text(
-                    'Пользователь должен выбрать или подтвердить это число на своем экране',
-                    style: TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                  Text(
+                    strings.numberMatchHintClient,
+                    style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
                   ),
                 ],
               ),
@@ -1500,16 +1543,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                               child: const Icon(Icons.chat_outlined, size: 48, color: Color(0xFF38BDF8)),
                             ),
                             const SizedBox(height: 16),
-                            const Text(
-                              'Текстовый чат с пользователем',
-                              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                            Text(
+                              strings.chatModeTitle,
+                              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                             ),
                             const SizedBox(height: 8),
-                            const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 32),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 32),
                               child: Text(
-                                'Вы находитесь в режиме прямого чата.\nТрансляция экрана начнется после запроса доступа и 2FA подтверждения.',
-                                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                                strings.chatModeDesc,
+                                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
                                 textAlign: TextAlign.center,
                               ),
                             ),
@@ -1517,7 +1560,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             ElevatedButton.icon(
                               onPressed: _requestScreenAccess,
                               icon: const Icon(Icons.desktop_windows, size: 18),
-                              label: const Text('🎮 Запросить доступ к экрану (2FA)', style: TextStyle(fontWeight: FontWeight.bold)),
+                              label: Text(strings.requestScreenAccessBtn, style: const TextStyle(fontWeight: FontWeight.bold)),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF0284C7),
                                 foregroundColor: Colors.white,
@@ -1529,7 +1572,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             OutlinedButton.icon(
                               onPressed: _showOperatorChatModal,
                               icon: const Icon(Icons.chat_bubble_outline, size: 16),
-                              label: Text(_chatMessages.isEmpty ? '💬 Открыть окно чата' : '💬 Чат (${_chatMessages.length})'),
+                              label: Text(_chatMessages.isEmpty ? strings.openChatWindowBtn : '💬 ${strings.chatTitle} (${_chatMessages.length})'),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: const Color(0xFF38BDF8),
                                 side: const BorderSide(color: Color(0xFF0284C7)),
@@ -1546,7 +1589,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                 const CircularProgressIndicator(color: Color(0xFF38BDF8)),
                                 const SizedBox(height: 16),
                                 Text(
-                                  _connectionStatus,
+                                  _getStatusText(strings),
                                   style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
                                 ),
                               ],
@@ -1590,7 +1633,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         });
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text(_mouseClickMode == MouseClickMode.right ? '🖱 Следующий клик: Правая кнопка (ПКМ)' : '🖱 Режим: Обычный клик (ЛКМ)'),
+                            content: Text(_mouseClickMode == MouseClickMode.right ? strings.rightClickNotice : strings.leftClickNotice),
                             duration: const Duration(milliseconds: 700),
                           ),
                         );
@@ -1601,7 +1644,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
                       ),
                       label: Text(
-                        _mouseClickMode == MouseClickMode.right ? 'Режим: ПКМ' : 'Режим: ЛКМ',
+                        _mouseClickMode == MouseClickMode.right ? strings.rightClickModeShort : strings.leftClickModeShort,
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
@@ -1612,17 +1655,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     TextButton.icon(
                       onPressed: () => _sendDataMessage({'type': 'wheel', 'deltaY': -180}),
                       icon: const Icon(Icons.arrow_upward, size: 14, color: Color(0xFF38BDF8)),
-                      label: const Text('Скролл ▲', style: TextStyle(fontSize: 12, color: Colors.white)),
+                      label: Text(strings.scrollUp, style: const TextStyle(fontSize: 12, color: Colors.white)),
                     ),
                     TextButton.icon(
                       onPressed: () => _sendDataMessage({'type': 'wheel', 'deltaY': 180}),
                       icon: const Icon(Icons.arrow_downward, size: 14, color: Color(0xFF38BDF8)),
-                      label: const Text('Скролл ▼', style: TextStyle(fontSize: 12, color: Colors.white)),
+                      label: Text(strings.scrollDown, style: const TextStyle(fontSize: 12, color: Colors.white)),
                     ),
                     TextButton.icon(
                       onPressed: _showTextInputDialog,
                       icon: const Icon(Icons.keyboard_alt_outlined, size: 16, color: Color(0xFF38BDF8)),
-                      label: const Text('Ввод текста', style: TextStyle(fontSize: 12, color: Colors.white)),
+                      label: Text(strings.enterTextBtn, style: const TextStyle(fontSize: 12, color: Colors.white)),
                     ),
                     TextButton.icon(
                       onPressed: _showOperatorChatModal,
@@ -1632,7 +1675,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         child: const Icon(Icons.chat_bubble_outline, size: 16, color: Color(0xFF38BDF8)),
                       ),
                       label: Text(
-                        _unreadChatCount > 0 ? 'Чат ($_unreadChatCount)' : 'Чат',
+                        _unreadChatCount > 0 ? '${strings.chatTitle} ($_unreadChatCount)' : strings.chatTitle,
                         style: const TextStyle(fontSize: 12, color: Colors.white),
                       ),
                     ),

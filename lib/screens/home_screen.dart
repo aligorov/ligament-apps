@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
+import '../i18n/app_strings.dart';
 import 'approval_modal.dart';
 import 'apps_screen.dart';
 import 'history_screen.dart';
@@ -100,10 +101,11 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } catch (e) {
       if (mounted) {
+        final errText = auth.isRu ? 'Ошибка подключения: $e' : 'Connection error: $e';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: const Color(0xFFEF4444),
-            content: Text('Ошибка подключения: $e'),
+            content: Text(errText),
           ),
         );
       }
@@ -129,6 +131,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
+    final s = context.strings;
+    final isRu = auth.isRu;
     _checkPrompts(auth);
 
     final pages = [
@@ -157,19 +161,19 @@ class _HomeScreenState extends State<HomeScreen> {
               label: Text('$badgeCount'),
               child: const Icon(Icons.shield_outlined),
             ),
-            label: 'Запросы',
+            label: isRu ? 'Запросы' : 'Requests',
           ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.apps_outlined),
-            label: 'SSO Сервисы',
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.apps_outlined),
+            label: isRu ? 'SSO Сервисы' : 'SSO Apps',
           ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.history_outlined),
-            label: 'Журнал',
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.history_outlined),
+            label: s.navHistory,
           ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.tune_outlined),
-            label: 'Настройки',
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.tune_outlined),
+            label: s.navSettings,
           ),
         ],
       ),
@@ -177,6 +181,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildRequestsTab(AuthState auth) {
+    final isRu = auth.isRu;
     final challenges = auth.pendingChallenges;
     final supportQueue = auth.supportQueue;
     final support = auth.support;
@@ -237,7 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                     child: Text(
-                      badge ?? '👤 Пользователь',
+                      badge ?? (isRu ? '👤 Пользователь' : '👤 User'),
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
@@ -323,9 +328,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       const Icon(Icons.headset_mic_outlined, color: Color(0xFF38BDF8), size: 20),
                       const SizedBox(width: 8),
-                      const Text(
-                        'Входящие SOS-обращения',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                      Text(
+                        isRu ? 'Входящие SOS-обращения' : 'Incoming SOS Requests',
+                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                       ),
                       if (supportQueue.isNotEmpty) ...[
                         const SizedBox(width: 8),
@@ -345,7 +350,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   IconButton(
                     icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF94A3B8)),
-                    tooltip: 'Обновить очередь',
+                    tooltip: isRu ? 'Обновить очередь' : 'Refresh queue',
                     onPressed: () => auth.loadSupportQueue(),
                   ),
                 ],
@@ -360,14 +365,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: const Color(0xFF334155)),
                   ),
-                  child: const Row(
+                  child: Row(
                     children: [
-                      Icon(Icons.check_circle_outline, color: Color(0xFF10B981), size: 24),
-                      SizedBox(width: 12),
+                      const Icon(Icons.check_circle_outline, color: Color(0xFF10B981), size: 24),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Text(
-                          'Очередь обращений пуста. Новые запросы сотрудников появятся здесь.',
-                          style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                          isRu
+                              ? 'Очередь обращений пуста. Новые запросы сотрудников появятся здесь.'
+                              : 'Support queue is empty. New employee requests will appear here.',
+                          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
                         ),
                       ),
                     ],
@@ -379,13 +386,13 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
 
             // РАЗДЕЛ 2FA ЗАПРОСОВ
-            const Row(
+            Row(
               children: [
-                Icon(Icons.lock_outline, color: Color(0xFF38BDF8), size: 20),
-                SizedBox(width: 8),
+                const Icon(Icons.lock_outline, color: Color(0xFF38BDF8), size: 20),
+                const SizedBox(width: 8),
                 Text(
-                  'Запросы подтверждения входа (2FA)',
-                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  isRu ? 'Запросы подтверждения входа (2FA)' : '2FA Login Requests',
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
@@ -411,14 +418,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: const Icon(Icons.verified_user_outlined, size: 48, color: Color(0xFF10B981)),
                     ),
                     const SizedBox(height: 14),
-                    const Text(
-                      'Нет активных 2FA запросов',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                    Text(
+                      isRu ? 'Нет активных 2FA запросов' : 'No active 2FA requests',
+                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      'При входе в корпоративную систему окно подтверждения появится автоматически',
-                      style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                    Text(
+                      isRu
+                          ? 'При входе в корпоративную систему окно подтверждения появится автоматически'
+                          : 'When logging in to corporate systems, the approval window will appear automatically',
+                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -433,12 +442,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildQueueItem(AuthState auth, Map<String, dynamic> sess) {
+    final isRu = auth.isRu;
     final is1C = sess['category'] == '1c';
-    final clientName = sess['display_name'] ?? sess['employee_name'] ?? sess['username'] ?? 'Сотрудник';
+    final clientName = sess['display_name'] ?? sess['employee_name'] ?? sess['username'] ?? (isRu ? 'Сотрудник' : 'Employee');
     final pcName = sess['device_name'] ?? sess['pc_name'] ?? '—';
     final osName = sess['platform'] ?? sess['os_name'] ?? '—';
     final ip = sess['last_ip'] ?? sess['ip'] ?? '—';
-    final summary = sess['problem_summary'] ?? 'Запрос помощи';
+    final summary = sess['problem_summary'] ?? (isRu ? 'Запрос помощи' : 'Assistance request');
     final fullControl = sess['access_mode'] == 'full_control';
 
     return Card(
@@ -479,7 +489,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        is1C ? 'Поддержка 1С' : 'IT-служба',
+                        is1C ? (isRu ? 'Поддержка 1С' : '1C Support') : (isRu ? 'IT-служба' : 'IT Helpdesk'),
                         style: TextStyle(
                           color: is1C ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
                           fontSize: 11,
@@ -499,7 +509,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    fullControl ? '🎮 Полный доступ' : '👀 Просмотр',
+                    fullControl ? (isRu ? '🎮 Полный доступ' : '🎮 Full Access') : (isRu ? '👀 Просмотр' : '👀 View Only'),
                     style: TextStyle(
                       color: fullControl ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
                       fontSize: 10,
@@ -509,7 +519,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const Spacer(),
                 Text(
-                  sess['status'] == 'connecting' ? '⚡ Подключение...' : '⏳ Ожидает',
+                  sess['status'] == 'connecting'
+                      ? (isRu ? '⚡ Подключение...' : '⚡ Connecting...')
+                      : (isRu ? '⏳ Ожидает' : '⏳ Waiting'),
                   style: TextStyle(
                     color: sess['status'] == 'connecting' ? const Color(0xFF38BDF8) : const Color(0xFFF59E0B),
                     fontSize: 11,
@@ -525,7 +537,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 2),
             Text(
-              'ПК: $pcName • ОС: $osName • IP: $ip',
+              isRu ? 'ПК: $pcName • ОС: $osName • IP: $ip' : 'PC: $pcName • OS: $osName • IP: $ip',
               style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
             ),
             const SizedBox(height: 8),
@@ -556,7 +568,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: OutlinedButton.icon(
                     onPressed: () => _showQueueChatModal(context, auth, sess),
                     icon: const Icon(Icons.chat_bubble_outline, size: 16),
-                    label: const Text('💬 Чат', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    label: Text(isRu ? '💬 Чат' : '💬 Chat', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: const Color(0xFF38BDF8),
                       side: const BorderSide(color: Color(0xFF0284C7)),
@@ -571,7 +583,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _connectingToSession ? null : () => _connectAsOperator(auth, sess),
                     icon: Icon(fullControl ? Icons.sports_esports : Icons.desktop_windows, size: 16),
                     label: Text(
-                      fullControl ? '🎮 Экран' : '👁 Экран',
+                      fullControl ? (isRu ? '🎮 Экран' : '🎮 Screen') : (isRu ? '👁 Экран' : '👁 Screen'),
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                     style: ElevatedButton.styleFrom(
@@ -591,11 +603,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildChallengeItem(AuthState auth, Map<String, dynamic> ch) {
+    final s = context.strings;
+    final isRu = auth.isRu;
     final meta = ch['metadata'] as Map<String, dynamic>? ?? {};
 
     final clientIp = meta['client_ip']?.toString();
     final hostIp = meta['host_ip']?.toString();
-    final serviceName = meta['service']?.toString() ?? ch['purpose']?.toString() ?? 'Запрос входа';
+    final serviceName = meta['service']?.toString() ?? ch['purpose']?.toString() ?? (isRu ? 'Запрос входа' : 'Login Request');
     final effectiveClientIp = (clientIp != null && clientIp.isNotEmpty) ? clientIp : (meta['ip'] ?? '—');
     final ipText = (hostIp != null && hostIp.isNotEmpty && hostIp != effectiveClientIp)
         ? '$effectiveClientIp → $hostIp'
@@ -616,7 +630,7 @@ class _HomeScreenState extends State<HomeScreen> {
           style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         subtitle: Text(
-          'IP: $ipText • ${ch['expires_in_seconds']} сек',
+          'IP: $ipText • ${ch['expires_in_seconds']} ${isRu ? 'сек' : 's'}',
           style: const TextStyle(color: Color(0xFF94A3B8)),
         ),
         trailing: ElevatedButton(
@@ -649,13 +663,14 @@ class _HomeScreenState extends State<HomeScreen> {
             });
           },
           style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
-          child: const Text('Открыть'),
+          child: Text(s.open),
         ),
       ),
     );
   }
 
   Widget _buildSupportSessionBanner(AuthState auth) {
+    final isRu = auth.isRu;
     final support = auth.support;
     final is1C = support.category == '1c';
     final isActive = support.state == SupportSessionState.active;
@@ -707,10 +722,10 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Text(
                   isActive
-                      ? '🔴 Идет удаленный сеанс (${is1C ? '1С' : 'IT'})'
+                      ? (isRu ? '🔴 Идет удаленный сеанс (${is1C ? '1С' : 'IT'})' : '🔴 Remote session active (${is1C ? '1C' : 'IT'})')
                       : (isAuthorizing
-                          ? '🟡 Запрос на подключение (${is1C ? '1С' : 'IT'})'
-                          : '⏳ Заявка на помощь (${is1C ? '1С-поддержка' : 'IT-служба'})'),
+                          ? (isRu ? '🟡 Запрос на подключение (${is1C ? '1С' : 'IT'})' : '🟡 Connection request (${is1C ? '1C' : 'IT'})')
+                          : (isRu ? '⏳ Заявка на помощь (${is1C ? '1С-поддержка' : 'IT-служба'})' : '⏳ Assistance request (${is1C ? '1C Support' : 'IT Helpdesk'})')),
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -720,12 +735,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 2),
                 Text(
                   isActive
-                      ? 'Экран транслируется инженеру поддержки'
+                      ? (isRu ? 'Экран транслируется инженеру поддержки' : 'Screen is shared with support engineer')
                       : (isAuthorizing
-                          ? 'Инженер ожидает ввода контрольного числа'
+                          ? (isRu ? 'Инженер ожидает ввода контрольного числа' : 'Engineer is waiting for verification code')
                           : (support.problemSummary?.isNotEmpty == true
                               ? '"${support.problemSummary}"'
-                              : 'Ожидание подключения инженера...')),
+                              : (isRu ? 'Ожидание подключения инженера...' : 'Waiting for engineer connection...'))),
                   style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -747,7 +762,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 });
               },
               icon: const Icon(Icons.check_circle, size: 14),
-              label: const Text('Ввести код', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+              label: Text(isRu ? 'Ввести код' : 'Enter Code', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF10B981),
                 foregroundColor: Colors.white,
@@ -765,8 +780,8 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: const Icon(Icons.chat_bubble_outline, size: 13),
               label: Text(
                 support.unreadChatCount > 0
-                    ? 'Чат (${support.unreadChatCount})'
-                    : 'Чат',
+                    ? (isRu ? 'Чат (${support.unreadChatCount})' : 'Chat (${support.unreadChatCount})')
+                    : (isRu ? 'Чат' : 'Chat'),
                 style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
@@ -785,7 +800,7 @@ class _HomeScreenState extends State<HomeScreen> {
               IconButton(
                 onPressed: () => _showReceivedFilesModal(context, auth),
                 icon: const Icon(Icons.folder_open, size: 18, color: Color(0xFF94A3B8)),
-                tooltip: 'Файлы от инженера',
+                tooltip: isRu ? 'Файлы от инженера' : 'Files from engineer',
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
               ),
@@ -805,7 +820,7 @@ class _HomeScreenState extends State<HomeScreen> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             child: Text(
-              isActive ? 'Завершить' : 'Отменить',
+              isActive ? (isRu ? 'Завершить' : 'End') : (isRu ? 'Отменить' : 'Cancel'),
               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
             ),
           ),
@@ -873,7 +888,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Чат с инженером (${auth.support.category == '1c' ? '1С' : 'IT'})',
+                            auth.isRu
+                                ? 'Чат с инженером (${auth.support.category == '1c' ? '1С' : 'IT'})'
+                                : 'Chat with Engineer (${auth.support.category == '1c' ? '1C' : 'IT'})',
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 15,
@@ -897,21 +914,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
-                        _buildQuickReplyChip(auth, '👋 Здравствуйте!'),
-                        _buildQuickReplyChip(auth, '👍 Хорошо, ожидаю'),
-                        _buildQuickReplyChip(auth, '🔄 Перезагружаю ПК'),
-                        _buildQuickReplyChip(auth, '✅ Всё заработало!'),
+                        _buildQuickReplyChip(auth, auth.isRu ? '👋 Здравствуйте!' : '👋 Hello!'),
+                        _buildQuickReplyChip(auth, auth.isRu ? '👍 Хорошо, ожидаю' : '👍 OK, waiting'),
+                        _buildQuickReplyChip(auth, auth.isRu ? '🔄 Перезагружаю ПК' : '🔄 Rebooting PC'),
+                        _buildQuickReplyChip(auth, auth.isRu ? '✅ Всё заработало!' : '✅ It works now!'),
                       ],
                     ),
                   ),
 
                   Expanded(
                     child: messages.isEmpty
-                        ? const Center(
+                        ? Center(
                             child: Text(
-                              'Сообщений пока нет.\nВы можете написать инженеру здесь.',
+                              auth.isRu
+                                  ? 'Сообщений пока нет.\nВы можете написать инженеру здесь.'
+                                  : 'No messages yet.\nYou can write to the engineer here.',
                               textAlign: TextAlign.center,
-                              style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                              style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
                             ),
                           )
                         : ListView.builder(
@@ -996,7 +1015,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             controller: textController,
                             style: const TextStyle(color: Colors.white, fontSize: 13),
                             decoration: InputDecoration(
-                              hintText: 'Написать инженеру...',
+                              hintText: auth.isRu ? 'Написать инженеру...' : 'Type to engineer...',
                               hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
                               filled: true,
                               fillColor: const Color(0xFF1E293B),
@@ -1076,6 +1095,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showReceivedFilesModal(BuildContext context, AuthState auth) {
     final support = auth.support;
+    final isRu = auth.isRu;
 
     String downloadsPath = '';
     if (Platform.isWindows) {
@@ -1101,10 +1121,10 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               const Icon(Icons.folder_shared, color: Color(0xFF38BDF8), size: 22),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Файлы удаленной поддержки',
-                  style: TextStyle(color: Colors.white, fontSize: 16),
+                  isRu ? 'Файлы удаленной поддержки' : 'Remote Support Files',
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
                 ),
               ),
               IconButton(
@@ -1122,17 +1142,19 @@ class _HomeScreenState extends State<HomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (support.receivedFiles.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
                     child: Text(
-                      'Инженер пока не передавал файлов.\nВсе полученные файлы автоматически сохраняются в вашу папку Загрузки/LigamentSupport.',
-                      style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4),
+                      isRu
+                          ? 'Инженер пока не передавал файлов.\nВсе полученные файлы автоматически сохраняются в вашу папку Загрузки/LigamentSupport.'
+                          : 'The engineer has not sent any files yet.\nAll received files are automatically saved to your Downloads/LigamentSupport folder.',
+                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4),
                     ),
                   )
                 else ...[
-                  const Text(
-                    'Полученные файлы в этой сессии:',
-                    style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 12, fontWeight: FontWeight.bold),
+                  Text(
+                    isRu ? 'Полученные файлы в этой сессии:' : 'Files received in this session:',
+                    style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   Container(
@@ -1152,12 +1174,12 @@ class _HomeScreenState extends State<HomeScreen> {
                             style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                           ),
                           subtitle: Text(
-                            '${(f.size / 1024).toStringAsFixed(1)} КБ • ${DateFormat('HH:mm').format(f.receivedAt)}',
+                            '${(f.size / 1024).toStringAsFixed(1)} ${isRu ? 'КБ' : 'KB'} • ${DateFormat('HH:mm').format(f.receivedAt)}',
                             style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
                           ),
                           trailing: IconButton(
                             icon: const Icon(Icons.folder_open, color: Color(0xFF94A3B8), size: 18),
-                            tooltip: 'Показать в папке',
+                            tooltip: isRu ? 'Показать в папке' : 'Show in folder',
                             onPressed: () => _openFolder(downloadsPath),
                           ),
                         );
@@ -1195,7 +1217,7 @@ class _HomeScreenState extends State<HomeScreen> {
             TextButton.icon(
               onPressed: () => _openFolder(downloadsPath),
               icon: const Icon(Icons.folder_open, size: 16),
-              label: const Text('Открыть папку'),
+              label: Text(isRu ? 'Открыть папку' : 'Open folder'),
               style: TextButton.styleFrom(foregroundColor: const Color(0xFF38BDF8)),
             ),
             ElevatedButton(
@@ -1204,7 +1226,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 backgroundColor: const Color(0xFF2563EB),
                 foregroundColor: Colors.white,
               ),
-              child: const Text('Закрыть'),
+              child: Text(isRu ? 'Закрыть' : 'Close'),
             ),
           ],
         );

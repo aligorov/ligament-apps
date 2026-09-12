@@ -2,30 +2,32 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../i18n/app_strings.dart';
 
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
 
   void _handleEmergencyRevoke(BuildContext context) {
+    final s = context.stringsRead;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.redAccent),
-            SizedBox(width: 8),
-            Text('Это были не вы?', style: TextStyle(color: Colors.white, fontSize: 18)),
+            const Icon(Icons.warning_amber_rounded, color: Colors.redAccent),
+            const SizedBox(width: 8),
+            Text(s.notYouTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
           ],
         ),
-        content: const Text(
-          'Если вы заметили подозрительную активность входа, немедленно выйдите из приложения. Все активные сессии на данном устройстве будут заблокированы.',
-          style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 14),
+        content: Text(
+          s.notYouSub,
+          style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 14),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Отмена', style: TextStyle(color: Color(0xFF94A3B8))),
+            child: Text(s.cancel, style: const TextStyle(color: Color(0xFF94A3B8))),
           ),
           ElevatedButton(
             onPressed: () async {
@@ -34,7 +36,7 @@ class HistoryScreen extends StatelessWidget {
               await auth.logout();
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            child: const Text('Экстренный выход', style: TextStyle(color: Colors.white)),
+            child: Text(s.emergencyExit, style: const TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -42,16 +44,18 @@ class HistoryScreen extends StatelessWidget {
   }
 
   void _showDetailsDialog(BuildContext context, Map<String, dynamic> item) {
-    final eventTitle = item['event_title']?.toString() ?? _formatEventName(item['event']?.toString() ?? '');
-    final resultTitle = item['result_title']?.toString() ?? (item['result'] == 'ok' ? 'Успешно' : 'Ошибка');
+    final s = context.stringsRead;
+    final isRu = s.isRu;
+    final eventTitle = item['event_title']?.toString() ?? _formatEventName(item['event']?.toString() ?? '', isRu);
     final isSuccess = item['result'] == 'ok';
-    final service = item['service']?.toString() ?? 'Корпоративный доступ';
+    final resultTitle = item['result_title']?.toString() ?? (isSuccess ? s.statusSuccess : s.statusFailed);
+    final service = item['service']?.toString() ?? (isRu ? 'Корпоративный доступ' : 'Corporate Access');
     final clientIp = item['client_ip']?.toString() ?? item['ip']?.toString() ?? '—';
     final hostIp = item['host_ip']?.toString() ?? '';
     final location = item['location']?.toString() ?? clientIp;
-    final device = item['device']?.toString() ?? 'Устройство пользователя';
+    final device = item['device']?.toString() ?? (isRu ? 'Устройство пользователя' : 'User Device');
     final browser = item['browser']?.toString() ?? '';
-    final method = item['method']?.toString() ?? 'Пароль / 2FA';
+    final method = item['method']?.toString() ?? (isRu ? 'Пароль / 2FA' : 'Password / 2FA');
     final tsStr = item['timestamp']?.toString();
     DateTime? ts;
     if (tsStr != null) {
@@ -88,30 +92,30 @@ class HistoryScreen extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _detailRow(Icons.check, 'Статус:', resultTitle, isSuccess ? const Color(0xFF10B981) : Colors.redAccent),
+              _detailRow(Icons.check, isRu ? 'Статус:' : 'Status:', resultTitle, isSuccess ? const Color(0xFF10B981) : Colors.redAccent),
               const Divider(color: Color(0xFF334155), height: 16),
-              _detailRow(Icons.apps, 'Куда (сервис):', service, const Color(0xFF38BDF8)),
+              _detailRow(Icons.apps, isRu ? 'Куда (сервис):' : 'Service:', service, const Color(0xFF38BDF8)),
               const Divider(color: Color(0xFF334155), height: 16),
-              _detailRow(Icons.wifi, 'IP клиента:', _formatIPWithPrivate(clientIp), Colors.white),
+              _detailRow(Icons.wifi, isRu ? 'IP клиента:' : 'Client IP:', _formatIPWithPrivate(clientIp, isRu), Colors.white),
               if (hostIp.isNotEmpty && hostIp != clientIp) ...[
                 const Divider(color: Color(0xFF334155), height: 16),
-                _detailRow(Icons.dns, 'IP сервера:', _formatIPWithPrivate(hostIp), Colors.white),
+                _detailRow(Icons.dns, isRu ? 'IP сервера:' : 'Server IP:', _formatIPWithPrivate(hostIp, isRu), Colors.white),
               ],
               if (location.isNotEmpty && location != clientIp) ...[
                 const Divider(color: Color(0xFF334155), height: 16),
-                _detailRow(Icons.map, 'Сеть / Маршрут:', location, const Color(0xFF94A3B8)),
+                _detailRow(Icons.map, isRu ? 'Сеть / Маршрут:' : 'Location / Route:', location, const Color(0xFF94A3B8)),
               ],
               const Divider(color: Color(0xFF334155), height: 16),
-              _detailRow(Icons.devices, 'Устройство:', device, Colors.white),
+              _detailRow(Icons.devices, isRu ? 'Устройство:' : 'Device:', device, Colors.white),
               if (browser.isNotEmpty) ...[
                 const Divider(color: Color(0xFF334155), height: 16),
-                _detailRow(Icons.language, 'Клиент / Браузер:', browser, Colors.white),
+                _detailRow(Icons.language, isRu ? 'Клиент / Браузер:' : 'Client / Browser:', browser, Colors.white),
               ],
               const Divider(color: Color(0xFF334155), height: 16),
-              _detailRow(Icons.security, 'Способ 2FA:', method, const Color(0xFFF59E0B)),
+              _detailRow(Icons.security, isRu ? 'Способ 2FA:' : '2FA Method:', method, const Color(0xFFF59E0B)),
               if (ts != null) ...[
                 const Divider(color: Color(0xFF334155), height: 16),
-                _detailRow(Icons.access_time, 'Время входа:', df.format(ts), const Color(0xFF94A3B8)),
+                _detailRow(Icons.access_time, isRu ? 'Время входа:' : 'Login Time:', df.format(ts), const Color(0xFF94A3B8)),
               ],
             ],
           ),
@@ -122,12 +126,12 @@ class HistoryScreen extends StatelessWidget {
               Navigator.of(ctx).pop();
               _handleEmergencyRevoke(context);
             },
-            child: const Text('Это не я!', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+            child: Text(isRu ? 'Это не я!' : 'Not me!', style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(),
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
-            child: const Text('Закрыть', style: TextStyle(color: Colors.white)),
+            child: Text(s.close, style: const TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -167,10 +171,10 @@ class HistoryScreen extends StatelessWidget {
     return false;
   }
 
-  static String _formatIPWithPrivate(String ip) {
+  static String _formatIPWithPrivate(String ip, bool isRu) {
     if (ip.isEmpty || ip == '—') return '—';
     if (_isPrivateIP(ip)) {
-      return '$ip (внутренний IP)';
+      return isRu ? '$ip (внутренний IP)' : '$ip (private IP)';
     }
     return ip;
   }
@@ -209,6 +213,8 @@ class HistoryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
+    final s = context.strings;
+    final isRu = auth.isRu;
     final history = auth.history;
     final df = DateFormat('dd.MM.yyyy HH:mm:ss');
 
@@ -216,12 +222,12 @@ class HistoryScreen extends StatelessWidget {
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Журнал входов', style: TextStyle(color: Colors.white, fontSize: 18)),
+        title: Text(s.historyTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, color: Color(0xFF38BDF8)),
             onPressed: () => auth.loadHistory(),
-            tooltip: 'Обновить',
+            tooltip: s.refresh,
           ),
         ],
       ),
@@ -239,12 +245,18 @@ class HistoryScreen extends StatelessWidget {
               children: [
                 const Icon(Icons.shield_outlined, color: Colors.redAccent, size: 28),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Заметили чужой вход?', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13)),
-                      Text('Нажмите кнопку для экстренного отзыва сессии', style: TextStyle(color: Color(0xFFFCA5A5), fontSize: 11)),
+                      Text(
+                        isRu ? 'Заметили чужой вход?' : 'Notice suspicious login?',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13),
+                      ),
+                      Text(
+                        isRu ? 'Нажмите кнопку для экстренного отзыва сессии' : 'Tap button for emergency session revocation',
+                        style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 11),
+                      ),
                     ],
                   ),
                 ),
@@ -255,15 +267,15 @@ class HistoryScreen extends StatelessWidget {
                     side: const BorderSide(color: Colors.redAccent),
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   ),
-                  child: const Text('Это не я', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  child: Text(isRu ? 'Это не я' : 'Not me', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
           ),
           Expanded(
             child: history.isEmpty
-                ? const Center(
-                    child: Text('История событий пуста', style: TextStyle(color: Color(0xFF64748B))),
+                ? Center(
+                    child: Text(isRu ? 'История событий пуста' : 'Event history is empty', style: const TextStyle(color: Color(0xFF64748B))),
                   )
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -273,10 +285,10 @@ class HistoryScreen extends StatelessWidget {
                       final item = history[index];
                       final isSuccess = item['result'] == 'ok';
                       final event = item['event']?.toString() ?? 'auth';
-                      final eventTitle = item['event_title']?.toString() ?? _formatEventName(event);
-                      final resultTitle = item['result_title']?.toString() ?? (isSuccess ? 'Успешно' : 'Ошибка');
-                      final service = item['service']?.toString() ?? 'Корпоративный доступ';
-                      final method = item['method']?.toString() ?? 'Пароль / 2FA';
+                      final eventTitle = item['event_title']?.toString() ?? _formatEventName(event, isRu);
+                      final resultTitle = item['result_title']?.toString() ?? (isSuccess ? s.statusSuccess : s.statusFailed);
+                      final service = item['service']?.toString() ?? (isRu ? 'Корпоративный доступ' : 'Corporate Access');
+                      final method = item['method']?.toString() ?? (isRu ? 'Пароль / 2FA' : 'Password / 2FA');
                       final clientIp = item['client_ip']?.toString() ?? item['ip']?.toString() ?? '—';
                       final hostIp = item['host_ip']?.toString() ?? '';
                       final device = item['device']?.toString() ?? '';
@@ -287,7 +299,7 @@ class HistoryScreen extends StatelessWidget {
                       }
 
                       Color statusColor = const Color(0xFF10B981);
-                      if (!isSuccess || resultTitle.contains('Отклонено') || resultTitle.contains('Ошибка')) {
+                      if (!isSuccess || resultTitle.contains('Отклонено') || resultTitle.contains('Ошибка') || resultTitle.contains('Failed') || resultTitle.contains('Rejected')) {
                         statusColor = Colors.redAccent;
                       }
 
@@ -372,8 +384,12 @@ class HistoryScreen extends StatelessWidget {
                                   Expanded(
                                     child: Text(
                                       hostIp.isNotEmpty && hostIp != clientIp
-                                          ? 'Клиент: ${_formatIPWithPrivate(clientIp)} • Сервер: ${_formatIPWithPrivate(hostIp)}'
-                                          : 'Клиент: ${_formatIPWithPrivate(clientIp)}',
+                                          ? (isRu
+                                              ? 'Клиент: ${_formatIPWithPrivate(clientIp, isRu)} • Сервер: ${_formatIPWithPrivate(hostIp, isRu)}'
+                                              : 'Client: ${_formatIPWithPrivate(clientIp, isRu)} • Server: ${_formatIPWithPrivate(hostIp, isRu)}')
+                                          : (isRu
+                                              ? 'Клиент: ${_formatIPWithPrivate(clientIp, isRu)}'
+                                              : 'Client: ${_formatIPWithPrivate(clientIp, isRu)}'),
                                       style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -409,32 +425,32 @@ class HistoryScreen extends StatelessWidget {
     );
   }
 
-  String _formatEventName(String raw) {
+  String _formatEventName(String raw, bool isRu) {
     switch (raw) {
       case 'app_login':
-        return 'Вход в приложение';
+        return isRu ? 'Вход в приложение' : 'App Login';
       case 'app_push_decision':
-        return 'Подтверждение 2FA входа';
+        return isRu ? 'Подтверждение 2FA входа' : '2FA Push Approval';
       case 'tg_push':
-        return 'Вход через Telegram';
+        return isRu ? 'Вход через Telegram' : 'Login via Telegram';
       case 'login_ok':
-        return 'Успешный вход в систему';
+        return isRu ? 'Успешный вход в систему' : 'Successful Login';
       case 'login_fail':
-        return 'Неудачная попытка входа';
+        return isRu ? 'Неудачная попытка входа' : 'Failed Login Attempt';
       case 'code_sent':
-        return 'Отправлен одноразовый код';
+        return isRu ? 'Отправлен одноразовый код' : 'One-Time Code Sent';
       case 'code_fail':
-        return 'Неверный 2FA код';
+        return isRu ? 'Неверный 2FA код' : 'Invalid 2FA Code';
       case 'radius_auth':
-        return 'Авторизация в сети Wi-Fi/VPN';
+        return isRu ? 'Авторизация в сети Wi-Fi/VPN' : 'Wi-Fi / VPN Authorization';
       case 'oidc_token':
-        return 'Вход через SSO (OpenID)';
+        return isRu ? 'Вход через SSO (OpenID)' : 'Login via SSO (OpenID)';
       case 'oidc_consent':
-        return 'Предоставление доступа SSO';
+        return isRu ? 'Предоставление доступа SSO' : 'SSO Consent Granted';
       case 'api_start':
-        return 'Запрос 2FA входа';
+        return isRu ? 'Запрос 2FA входа' : '2FA Login Request';
       case 'api_verify_ok':
-        return 'Успешная 2FA авторизация';
+        return isRu ? 'Успешная 2FA авторизация' : 'Successful 2FA Authorization';
       default:
         return raw;
     }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../i18n/app_strings.dart';
 import 'login_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
@@ -30,34 +31,34 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
   /// Проверка адреса сервера: допускается HTTPS (любой хост) и HTTP только
   /// для localhost / 127.* (локальная отладка). Возвращает текст ошибки или null.
-  String? _validateServerUrl(String url) {
+  String? _validateServerUrl(String url, AppStrings s) {
     if (url.isEmpty || url == 'https://' || url == 'http://') {
-      return 'Введите корректный HTTPS адрес сервера';
+      return s.errEnterValidHttps;
     }
     final uri = Uri.tryParse(url);
     if (uri == null) {
-      return 'Некорректный адрес сервера';
+      return s.errInvalidServerUrl;
     }
     final scheme = uri.scheme.toLowerCase();
     final host = uri.host.toLowerCase();
     if (scheme == 'http') {
       final isLocalDev = host == 'localhost' || host.startsWith('127.');
       if (!isLocalDev) {
-        return 'Небезопасное соединение: пароль и токены будут передаваться открытым текстом. '
-            'Укажите HTTPS-адрес сервера (http:// разрешен только для localhost / 127.*)';
+        return s.errInsecureHttp;
       }
       return null;
     }
     if (scheme != 'https') {
-      return 'Адрес сервера должен начинаться с https:// (http:// — только localhost для отладки)';
+      return s.errSchemeHttps;
     }
     return null;
   }
 
   Future<void> _handleConnect() async {
     final auth = context.read<AuthState>();
+    final s = context.stringsRead;
     final url = _urlController.text.trim();
-    final validationError = _validateServerUrl(url);
+    final validationError = _validateServerUrl(url, s);
     if (validationError != null) {
       setState(() => _error = validationError);
       return;
@@ -79,7 +80,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Не удалось подключиться к серверу: $e';
+          _error = '${s.errFailedToConnect}: $e';
           _isLoading = false;
         });
       }
@@ -89,10 +90,27 @@ class _ConnectScreenState extends State<ConnectScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
+    final s = context.strings;
     final isGpoLocked = auth.gpo.enforcedServerUrl != null;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: ActionChip(
+              avatar: Text(auth.isRu ? '🇷🇺' : '🇬🇧', style: const TextStyle(fontSize: 14)),
+              label: Text(auth.isRu ? 'RU' : 'EN', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
+              backgroundColor: const Color(0xFF1E293B),
+              side: const BorderSide(color: Color(0xFF334155)),
+              onPressed: () => auth.setLocale(auth.isRu ? 'en' : 'ru'),
+            ),
+          ),
+        ],
+      ),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -110,16 +128,16 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   children: [
                     const Icon(Icons.shield_outlined, size: 56, color: Color(0xFF38BDF8)),
                     const SizedBox(height: 16),
-                    const Text(
-                      'Ligament 2FA',
+                    Text(
+                      s.connectTitle,
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      'Корпоративный аутентификатор доступа',
+                    Text(
+                      s.connectSubtitle,
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 14, color: Color(0xFF94A3B8)),
+                      style: const TextStyle(fontSize: 14, color: Color(0xFF94A3B8)),
                     ),
                     const SizedBox(height: 32),
                     TextField(
@@ -127,13 +145,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
                       enabled: !isGpoLocked && !_isLoading,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        labelText: 'Адрес сервера Ligament',
+                        labelText: s.serverUrlLabel,
                         labelStyle: const TextStyle(color: Color(0xFF94A3B8)),
                         prefixIcon: const Icon(Icons.link, color: Color(0xFF38BDF8)),
                         suffixIcon: isGpoLocked
-                            ? const Tooltip(
-                                message: 'Адрес задан групповой политикой Windows (GPO)',
-                                child: Icon(Icons.lock, color: Colors.amber),
+                            ? Tooltip(
+                                message: s.serverUrlGpoTooltip,
+                                child: const Icon(Icons.lock, color: Colors.amber),
                               )
                             : null,
                         filled: true,
@@ -142,11 +160,11 @@ class _ConnectScreenState extends State<ConnectScreen> {
                       ),
                     ),
                     if (isGpoLocked)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 8),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
                         child: Text(
-                          '🔒 Настройка заблокирована системным администратором (GPO)',
-                          style: TextStyle(fontSize: 12, color: Colors.amber),
+                          s.serverUrlGpoLocked,
+                          style: const TextStyle(fontSize: 12, color: Colors.amber),
                         ),
                       ),
                     if (_error != null) ...[
@@ -179,7 +197,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                               width: 20,
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                             )
-                          : const Text('Подключиться', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                          : Text(s.connectButton, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ],
                 ),

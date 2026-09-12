@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../i18n/app_strings.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -10,6 +11,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
+    final s = context.strings;
     final user = auth.currentUser ?? {};
     final posture = auth.currentPosture ?? {};
     final isGpoLocked = auth.gpo.enforcedServerUrl != null;
@@ -22,7 +24,7 @@ class SettingsScreen extends StatelessWidget {
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Безопасность и профиль', style: TextStyle(color: Colors.white, fontSize: 18)),
+        title: Text(s.settingsTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -51,14 +53,14 @@ class SettingsScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        user['display_name'] ?? user['username'] ?? 'Пользователь',
+                        user['display_name'] ?? user['username'] ?? s.userFallback,
                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
                       ),
                       const SizedBox(height: 2),
                       Row(
                         children: [
                           Text(
-                            'Роль: ${user['role'] ?? 'user'}',
+                            s.userRole(user['role']?.toString() ?? 'user'),
                             style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
                           ),
                           if (auth.engineerBadge != null) ...[
@@ -79,11 +81,115 @@ class SettingsScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Сервер: ${auth.serverUrl ?? '—'}',
+                        s.serverUrl(auth.serverUrl ?? '—'),
                         style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                       ),
                     ],
                   ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Карточка переключения языка интерфейса
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFF334155)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.language_outlined, color: Color(0xFF38BDF8), size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      s.languageSection,
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => auth.setLocale('ru'),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                          decoration: BoxDecoration(
+                            color: auth.isRu ? const Color(0xFF38BDF8).withValues(alpha: 0.18) : Colors.transparent,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: auth.isRu ? const Color(0xFF38BDF8) : const Color(0xFF334155),
+                              width: auth.isRu ? 1.5 : 1.0,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('🇷🇺', style: TextStyle(fontSize: 18)),
+                              const SizedBox(width: 8),
+                              Text(
+                                s.languageRussian,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: auth.isRu ? FontWeight.bold : FontWeight.normal,
+                                  color: auth.isRu ? Colors.white : const Color(0xFF94A3B8),
+                                ),
+                              ),
+                              if (auth.isRu) ...[
+                                const SizedBox(width: 6),
+                                const Icon(Icons.check, size: 16, color: Color(0xFF38BDF8)),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => auth.setLocale('en'),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                          decoration: BoxDecoration(
+                            color: !auth.isRu ? const Color(0xFF38BDF8).withValues(alpha: 0.18) : Colors.transparent,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: !auth.isRu ? const Color(0xFF38BDF8) : const Color(0xFF334155),
+                              width: !auth.isRu ? 1.5 : 1.0,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('🇬🇧', style: TextStyle(fontSize: 18)),
+                              const SizedBox(width: 8),
+                              Text(
+                                s.languageEnglish,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: !auth.isRu ? FontWeight.bold : FontWeight.normal,
+                                  color: !auth.isRu ? Colors.white : const Color(0xFF94A3B8),
+                                ),
+                              ),
+                              if (!auth.isRu) ...[
+                                const SizedBox(width: 6),
+                                const Icon(Icons.check, size: 16, color: Color(0xFF38BDF8)),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -106,32 +212,30 @@ class SettingsScreen extends StatelessWidget {
                     const Icon(Icons.policy_outlined, color: Color(0xFF38BDF8), size: 20),
                     const SizedBox(width: 8),
                     Text(
-                      isMac
-                          ? 'Политики безопасности macOS (MDM)'
-                          : (isWin ? 'Групповые политики Windows (GPO)' : 'Корпоративные политики безопасности'),
+                      isMac ? s.gpoMac : (isWin ? s.gpoWin : s.gpoCorp),
                       style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
                 _statusTile(
-                  'Централизованное управление',
-                  isGpoLocked ? (isMac ? 'Активно (MDM Profile)' : 'Активно (ADMX/GPO)') : 'Не назначено',
+                  s.centralManagement,
+                  isGpoLocked ? (isMac ? s.activeMdm : s.activeGpo) : s.notAssigned,
                   isGpoLocked ? Colors.greenAccent : Colors.grey,
                 ),
                 _statusTile(
-                  isMac ? 'Требование Touch ID / пароля' : 'Требование Windows Hello',
-                  auth.gpo.requireWindowsHello ? 'Включено' : 'Выключено',
+                  isMac ? s.reqTouchId : s.reqWinHello,
+                  auth.gpo.requireWindowsHello ? s.enabled : s.disabled,
                   auth.gpo.requireWindowsHello ? Colors.greenAccent : Colors.grey,
                 ),
                 _statusTile(
-                  isMac ? 'Требование шифрования FileVault' : 'Требование BitLocker',
-                  auth.gpo.requireBitLocker ? 'Включено' : 'Выключено',
+                  isMac ? s.reqFileVault : s.reqBitLocker,
+                  auth.gpo.requireBitLocker ? s.enabled : s.disabled,
                   auth.gpo.requireBitLocker ? Colors.greenAccent : Colors.grey,
                 ),
                 _statusTile(
-                  'Выход из приложения',
-                  allowExit ? 'Разрешен' : 'Запрещен политикой безопасности',
+                  s.appExit,
+                  allowExit ? s.allowed : s.blockedByPolicy,
                   allowExit ? Colors.grey : Colors.amber,
                 ),
               ],
@@ -153,11 +257,11 @@ class SettingsScreen extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Row(
+                    Row(
                       children: [
-                        Icon(Icons.health_and_safety_outlined, color: Color(0xFF10B981), size: 20),
-                        SizedBox(width: 8),
-                        Text('Телеметрия безопасности', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14)),
+                        const Icon(Icons.health_and_safety_outlined, color: Color(0xFF10B981), size: 20),
+                        const SizedBox(width: 8),
+                        Text(s.securityTelemetry, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14)),
                       ],
                     ),
                     IconButton(
@@ -168,8 +272,8 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 _statusTile(
-                  'Статус соответствия',
-                  auth.isCompliant ? 'Соответствует корпоративным политикам' : 'Нарушение комплаенса',
+                  s.complianceStatus,
+                  auth.isCompliant ? s.compliant : s.nonCompliant,
                   auth.isCompliant ? Colors.greenAccent : Colors.redAccent,
                 ),
 
@@ -177,26 +281,26 @@ class SettingsScreen extends StatelessWidget {
                 if (isMac) ...[
                   if (posture['filevault'] != null)
                     _statusTile(
-                      'Шифрование FileVault',
-                      posture['filevault'] == 'encrypted' ? 'Защищен (FileVault On)' : 'Отключен',
+                      s.fileVaultEnc,
+                      posture['filevault'] == 'encrypted' ? s.fileVaultOn : s.disabled,
                       posture['filevault'] == 'encrypted' ? Colors.greenAccent : Colors.redAccent,
                     ),
                   if (posture['gatekeeper'] != null)
                     _statusTile(
-                      'Защита Gatekeeper',
-                      posture['gatekeeper'] == 'active' ? 'Активен' : 'Отключен',
+                      s.gatekeeper,
+                      posture['gatekeeper'] == 'active' ? s.active : s.disabled,
                       posture['gatekeeper'] == 'active' ? Colors.greenAccent : Colors.redAccent,
                     ),
                   if (posture['firewall'] != null)
                     _statusTile(
-                      'Сетевой экран macOS',
-                      posture['firewall'] == 'active' ? 'Включен' : 'Отключен',
+                      s.macosFirewall,
+                      posture['firewall'] == 'active' ? s.enabled : s.disabled,
                       posture['firewall'] == 'active' ? Colors.greenAccent : Colors.redAccent,
                     ),
                   if (posture['touch_id'] != null)
                     _statusTile(
-                      'Биометрия Touch ID',
-                      posture['touch_id'] == true ? 'Настроен и доступен' : 'Не настроен',
+                      s.touchId,
+                      posture['touch_id'] == true ? s.touchIdAvailable : s.touchIdNotConfigured,
                       posture['touch_id'] == true ? Colors.greenAccent : Colors.grey,
                     ),
                 ],
@@ -205,20 +309,20 @@ class SettingsScreen extends StatelessWidget {
                 if (isWin) ...[
                   if (posture['bitlocker'] != null)
                     _statusTile(
-                      'Шифрование BitLocker',
-                      posture['bitlocker'] == 'encrypted' ? 'Защищен (100%)' : 'Отключен',
+                      s.bitLockerEnc,
+                      posture['bitlocker'] == 'encrypted' ? s.bitLockerProtected : s.disabled,
                       posture['bitlocker'] == 'encrypted' ? Colors.greenAccent : Colors.redAccent,
                     ),
                   if (posture['defender'] != null)
                     _statusTile(
-                      'Антивирус Windows Defender',
-                      posture['defender'] == 'active' ? 'Активен' : 'Отключен',
+                      s.defender,
+                      posture['defender'] == 'active' ? s.active : s.disabled,
                       posture['defender'] == 'active' ? Colors.greenAccent : Colors.redAccent,
                     ),
                   if (posture['firewall'] != null)
                     _statusTile(
-                      'Брандмауэр Windows',
-                      posture['firewall'] == 'active' ? 'Включен' : 'Отключен',
+                      s.winFirewall,
+                      posture['firewall'] == 'active' ? s.enabled : s.disabled,
                       posture['firewall'] == 'active' ? Colors.greenAccent : Colors.redAccent,
                     ),
                 ],
@@ -227,8 +331,8 @@ class SettingsScreen extends StatelessWidget {
                 if (isLin) ...[
                   if (posture['firewall'] != null)
                     _statusTile(
-                      'Брандмауэр Linux',
-                      posture['firewall'] == 'active' ? 'Включен' : 'Отключен',
+                      s.linuxFirewall,
+                      posture['firewall'] == 'active' ? s.enabled : s.disabled,
                       posture['firewall'] == 'active' ? Colors.greenAccent : Colors.redAccent,
                     ),
                 ],
@@ -236,21 +340,21 @@ class SettingsScreen extends StatelessWidget {
                 // Мобильные платформы
                 if (posture['rooted'] != null)
                   _statusTile(
-                    'Root / Jailbreak',
-                    posture['rooted'] == true ? 'ОБНАРУЖЕН!' : 'Целостность чиста',
+                    s.rootJailbreak,
+                    posture['rooted'] == true ? s.rootDetected : s.rootClean,
                     posture['rooted'] == true ? Colors.redAccent : Colors.greenAccent,
                   ),
 
                 // Метрики ресурсов диска и CPU
                 if (posture['disk_details'] != null && posture['disk_details'].toString().isNotEmpty)
                   _statusTile(
-                    'Накопитель (Диск)',
+                    s.storageDisk,
                     posture['disk_details'].toString(),
                     posture['disk_warning'] == true ? Colors.redAccent : Colors.greenAccent,
                   ),
                 if (posture['cpu_percent'] != null)
                   _statusTile(
-                    'Загрузка процессора (CPU)',
+                    s.cpuLoad,
                     '${posture['cpu_percent']}%',
                     posture['cpu_warning'] == true ? Colors.redAccent : Colors.greenAccent,
                   ),
@@ -263,7 +367,7 @@ class SettingsScreen extends StatelessWidget {
           ElevatedButton.icon(
             onPressed: allowExit ? () => auth.logout() : null,
             icon: const Icon(Icons.logout),
-            label: Text(allowExit ? 'Выйти из учетной записи' : 'Выход заблокирован системным администратором'),
+            label: Text(allowExit ? s.logoutAccount : s.logoutBlocked),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.redAccent.withValues(alpha: 0.8),
               foregroundColor: Colors.white,
@@ -283,7 +387,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Платформа: ${isMac ? "macOS" : (isWin ? "Windows" : (isLin ? "Linux" : "Mobile"))} • Корпоративная защита',
+                  s.platformCorporate(isMac ? "macOS" : (isWin ? "Windows" : (isLin ? "Linux" : "Mobile"))),
                   style: const TextStyle(color: Color(0xFF475569), fontSize: 11),
                 ),
               ],

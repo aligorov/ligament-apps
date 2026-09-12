@@ -61,6 +61,8 @@ class LigamentApp extends StatefulWidget {
 }
 
 class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowListener {
+  String? _lastTrayLocale;
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +86,7 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
     try {
       final auth = context.read<AuthState>();
       final allowExit = auth.gpo.allowExit;
+      final isRu = auth.isRu;
 
       await trayManager.setIcon(
         Platform.isWindows ? 'assets/icons/app_icon.ico' : 'assets/icons/app_icon.png',
@@ -91,11 +94,11 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
 
       final menu = Menu(
         items: [
-          MenuItem(key: 'show', label: 'Открыть Ligament 2FA'),
+          MenuItem(key: 'show', label: isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA'),
           MenuItem.separator(),
           MenuItem(
             key: 'exit',
-            label: 'Выход',
+            label: isRu ? 'Выход' : 'Exit',
             disabled: !allowExit, // GPO политика PreventExit
           ),
         ],
@@ -103,6 +106,13 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
       await trayManager.setContextMenu(menu);
       await trayManager.setToolTip('Ligament 2FA Authenticator');
     } catch (_) {}
+  }
+
+  void _updateTrayIfNeeded(AuthState auth) {
+    if (_lastTrayLocale != auth.localeCode) {
+      _lastTrayLocale = auth.localeCode;
+      _initTray();
+    }
   }
 
   @override
@@ -132,10 +142,18 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      _updateTrayIfNeeded(auth);
+    }
 
     return MaterialApp(
       navigatorKey: LigamentApp.navigatorKey,
       title: 'Ligament 2FA',
+      locale: auth.locale,
+      supportedLocales: const [
+        Locale('ru'),
+        Locale('en'),
+      ],
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,

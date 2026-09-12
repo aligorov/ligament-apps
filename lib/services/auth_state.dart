@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +16,21 @@ import 'ws_service.dart';
 
 class AuthState extends ChangeNotifier {
   static const String _tokenKey = 'auth_token';
+  static const String _localeKey = 'app_locale';
+
+  String _localeCode = 'ru';
+  String get localeCode => _localeCode;
+  Locale get locale => Locale(_localeCode);
+  bool get isRu => _localeCode.startsWith('ru');
+
+  Future<void> setLocale(String code) async {
+    final normalized = code.toLowerCase().startsWith('en') ? 'en' : 'ru';
+    if (_localeCode == normalized) return;
+    _localeCode = normalized;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_localeKey, normalized);
+    notifyListeners();
+  }
 
   final GPOService gpo = GPOService();
   final AlertService alert = AlertService();
@@ -81,11 +97,13 @@ class AuthState extends ChangeNotifier {
   bool get isEngineer => isAdmin || supportRoles.isNotEmpty;
 
   String? get engineerBadge {
-    if (isAdmin) return '👑 Администратор';
-    if (isITEngineer && is1CEngineer) return '🛠 IT / 1С-инженер';
-    if (is1CEngineer) return '📊 1С-инженер';
-    if (isITEngineer) return '🖥 IT-инженер';
-    if (supportRoles.isNotEmpty) return '🛠 Инженер (${supportRoles.join(", ")})';
+    if (isAdmin) return isRu ? '👑 Администратор' : '👑 Administrator';
+    if (isITEngineer && is1CEngineer) return isRu ? '🛠 IT / 1С-инженер' : '🛠 IT / 1C Engineer';
+    if (is1CEngineer) return isRu ? '📊 1С-инженер' : '📊 1C Engineer';
+    if (isITEngineer) return isRu ? '🖥 IT-инженер' : '🖥 IT Engineer';
+    if (supportRoles.isNotEmpty) {
+      return isRu ? '🛠 Инженер (${supportRoles.join(", ")})' : '🛠 Engineer (${supportRoles.join(", ")})';
+    }
     return null;
   }
 
@@ -103,6 +121,14 @@ class AuthState extends ChangeNotifier {
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
+
+    final savedLocale = prefs.getString(_localeKey);
+    if (savedLocale != null && savedLocale.isNotEmpty) {
+      _localeCode = savedLocale.toLowerCase().startsWith('en') ? 'en' : 'ru';
+    } else {
+      final sysLang = PlatformDispatcher.instance.locale.languageCode.toLowerCase();
+      _localeCode = sysLang.startsWith('en') ? 'en' : 'ru';
+    }
 
     // Если GPO принудительно задает ServerURL, используем его
     serverUrl = gpo.enforcedServerUrl ?? prefs.getString('server_url');
@@ -169,9 +195,11 @@ class AuthState extends ChangeNotifier {
       final clientIp = prompt['client_ip'] ?? prompt['ip'] ?? '—';
       final hostIp = prompt['host_ip'];
       final ipText = hostIp != null ? '$clientIp → $hostIp' : '$clientIp';
+      final sName = prompt['service'] ?? 'Ligament 2FA';
+      final who = prompt['who'] ?? (isRu ? 'Сотрудник' : 'Employee');
       alert.triggerAlert(
-        title: 'Запрос на вход: ${prompt['service'] ?? 'Ligament 2FA'}',
-        body: '${prompt['who'] ?? 'Сотрудник'} (IP: $ipText)',
+        title: isRu ? 'Запрос на вход: $sName' : 'Login Request: $sName',
+        body: '$who (IP: $ipText)',
         challengeId: cid,
       );
     }
@@ -195,10 +223,14 @@ class AuthState extends ChangeNotifier {
         problemSummary: prompt['problem_summary']?.toString(),
         accessMode: prompt['access_mode']?.toString(),
       );
-      final cat = prompt['category'] == '1c' ? '1С-поддержка' : 'IT-служба';
+      final cat = prompt['category'] == '1c'
+          ? (isRu ? '1С-поддержка' : '1C Support')
+          : (isRu ? 'IT-служба' : 'IT Helpdesk');
       alert.triggerAlert(
-        title: 'Удаленная помощь: $cat',
-        body: 'Инженер готов подключиться к экрану. Подтвердите контрольное число.',
+        title: isRu ? 'Удаленная помощь: $cat' : 'Remote Assistance: $cat',
+        body: isRu
+            ? 'Инженер готов подключиться к экрану. Подтвердите контрольное число.'
+            : 'Engineer is ready to connect. Confirm the number match.',
         challengeId: prompt['session_id']?.toString(),
       );
       notifyListeners();
@@ -232,12 +264,13 @@ class AuthState extends ChangeNotifier {
       if (isEngineer) {
         loadSupportQueue();
         final session = (msg['session'] is Map) ? Map<String, dynamic>.from(msg['session'] as Map) : msg;
-        final clientName = session['display_name'] ?? session['employee_name'] ?? session['username'] ?? msg['display_name'] ?? 'Пользователь';
+        final clientName = session['display_name'] ?? session['employee_name'] ?? session['username'] ?? msg['display_name'] ?? (isRu ? 'Пользователь' : 'User');
         final category = session['category'] ?? msg['category'];
+        final catTitle = category == '1c' ? '1C' : 'IT';
         final problemSummary = session['problem_summary'] ?? msg['problem_summary'] ?? '';
         final sessionId = session['id'] ?? session['session_id'] ?? msg['session_id'];
         alert.triggerAlert(
-          title: 'Новое SOS-обращение: ${category == '1c' ? '1С' : 'IT'}',
+          title: isRu ? 'Новое SOS-обращение: $catTitle' : 'New SOS Ticket: $catTitle',
           body: '$clientName: $problemSummary',
           challengeId: sessionId?.toString(),
         );
@@ -287,7 +320,7 @@ class AuthState extends ChangeNotifier {
 
   Future<void> login(String username, String password, [String? code]) async {
     if (serverUrl == null || serverUrl!.isEmpty) {
-      throw Exception('Не указан адрес сервера');
+      throw Exception(isRu ? 'Не указан адрес сервера' : 'Server address is required');
     }
 
     final deviceInfo = DeviceInfoPlugin();
@@ -518,11 +551,15 @@ class AuthState extends ChangeNotifier {
       // 1. Если включена GPO политика Windows Hello или системная биометрия
       if (gpo.requireWindowsHello) {
         final didAuth = await localAuth.authenticate(
-          localizedReason: 'Подтвердите вход в корпоративную систему с помощью Windows Hello',
+          localizedReason: isRu
+              ? 'Подтвердите вход в корпоративную систему с помощью Windows Hello'
+              : 'Confirm login with Windows Hello / biometrics',
           options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
         );
         if (!didAuth) {
-          throw Exception('Подтверждение Windows Hello отклонено');
+          throw Exception(isRu
+              ? 'Подтверждение Windows Hello отклонено'
+              : 'Windows Hello authentication rejected');
         }
       }
 
@@ -579,11 +616,15 @@ class AuthState extends ChangeNotifier {
     // 1. Биометрия / Windows Hello при политике GPO
     if (gpo.requireWindowsHello) {
       final didAuth = await localAuth.authenticate(
-        localizedReason: 'Подтвердите разрешение удаленного доступа к экрану',
+        localizedReason: isRu
+            ? 'Подтвердите разрешение удаленного доступа к экрану'
+            : 'Authorize remote screen sharing access',
         options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
       );
       if (!didAuth) {
-        throw Exception('Биометрическая авторизация отклонена');
+        throw Exception(isRu
+            ? 'Биометрическая авторизация отклонена'
+            : 'Biometric authorization rejected');
       }
     }
 
@@ -677,10 +718,14 @@ class AuthState extends ChangeNotifier {
               accessMode: accessMode,
               api: api,
             );
-            final cat = category == '1c' ? '1С-поддержка' : 'IT-служба';
+            final cat = category == '1c'
+                ? (isRu ? '1С-поддержка' : '1C Support')
+                : (isRu ? 'IT-служба' : 'IT Helpdesk');
             alert.triggerAlert(
-              title: 'Удаленная помощь: $cat',
-              body: 'Инженер готов подключиться к экрану. Подтвердите контрольное число.',
+              title: isRu ? 'Удаленная помощь: $cat' : 'Remote Assistance: $cat',
+              body: isRu
+                  ? 'Инженер готов подключиться к экрану. Подтвердите контрольное число.'
+                  : 'Engineer is ready to connect. Confirm the number match.',
               challengeId: sessionId,
             );
             notifyListeners();

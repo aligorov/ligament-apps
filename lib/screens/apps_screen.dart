@@ -2,18 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/auth_state.dart';
+import '../i18n/app_strings.dart';
 
 class AppsScreen extends StatelessWidget {
   const AppsScreen({super.key});
 
   Future<void> _launchApp(BuildContext context, String url) async {
+    final s = context.stringsRead;
     final uri = Uri.tryParse(url);
     if (uri != null && await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } else {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось открыть ссылку: $url')),
+          SnackBar(content: Text('${s.appsCantOpen}: $url')),
         );
       }
     }
@@ -22,18 +24,19 @@ class AppsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
+    final s = context.strings;
     final apps = auth.allowedApps;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Корпоративные приложения (SSO)', style: TextStyle(color: Colors.white, fontSize: 18)),
+        title: Text(s.appsTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, color: Color(0xFF38BDF8)),
             onPressed: () => auth.loadAllowedApps(),
-            tooltip: 'Обновить каталог',
+            tooltip: s.appsRefresh,
           ),
         ],
       ),
@@ -44,9 +47,9 @@ class AppsScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.apps_outage_outlined, size: 64, color: Colors.blueGrey.shade700),
                   const SizedBox(height: 16),
-                  const Text('Доступных SSO приложений нет', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 16)),
+                  Text(s.appsEmptyTitle, style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 16)),
                   const SizedBox(height: 6),
-                  const Text('Администратор еще не назначил права доступа к сервисам', style: TextStyle(color: Color(0xFF64748B), fontSize: 13)),
+                  Text(s.appsEmptySub, style: const TextStyle(color: Color(0xFF64748B), fontSize: 13)),
                 ],
               ),
             )
@@ -63,7 +66,7 @@ class AppsScreen extends StatelessWidget {
                 itemCount: apps.length,
                 itemBuilder: (context, index) {
                   final app = apps[index];
-                  final name = app['name']?.toString() ?? 'Сервис';
+                  final name = app['name']?.toString() ?? (auth.isRu ? 'Сервис' : 'Service');
                   final launchUrl = app['launch_url']?.toString() ?? '';
 
                   return Card(
@@ -102,10 +105,10 @@ class AppsScreen extends StatelessWidget {
                                 color: const Color(0xFF0F172A),
                                 borderRadius: BorderRadius.circular(8),
                               ),
-                              child: const Text(
-                                'Открыть SSO →',
+                              child: Text(
+                                auth.isRu ? 'Открыть SSO →' : 'Open SSO →',
                                 textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: 11, color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
+                                style: const TextStyle(fontSize: 11, color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
                               ),
                             ),
                           ],

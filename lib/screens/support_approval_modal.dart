@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../i18n/app_strings.dart';
 
 /// Модальное окно Zero-Trust подтверждения удаленного доступа с Number Matching.
 ///
@@ -46,12 +47,13 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   bool get _codeEntered => _codeController.text.trim().length == _expectedMatch.length;
 
   Future<void> _approve() async {
+    final strings = context.stringsRead;
     if (!_codeEntered) {
-      setState(() => _error = 'Введите контрольное число, названное инженером');
+      setState(() => _error = strings.errEnterMatch);
       return;
     }
     if (_codeController.text.trim() != _expectedMatch) {
-      setState(() => _error = 'Неверное число! Сверьтесь со специалистом поддержки');
+      setState(() => _error = strings.errWrongMatchPhone);
       return;
     }
 
@@ -75,7 +77,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
       if (mounted) {
         setState(() {
           _processing = false;
-          _error = 'Ошибка подтверждения: $e';
+          _error = '${context.stringsRead.errApprovalPrefix}: $e';
         });
       }
     }
@@ -95,11 +97,12 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = context.strings;
     final category = widget.prompt['category']?.toString() ?? 'it';
-    final summary = widget.prompt['problem_summary']?.toString() ?? 'Удаленная помощь';
+    final summary = widget.prompt['problem_summary']?.toString() ?? (strings.isRu ? 'Удаленная помощь' : 'Remote support');
     final operatorName = widget.prompt['admin_name']?.toString() ??
         widget.prompt['operator']?.toString() ??
-        'Инженер техподдержки';
+        strings.defaultEngineer;
     final accessMode = widget.prompt['access_mode']?.toString() ?? 'full_control';
     final fullControl = accessMode != 'view_only';
 
@@ -131,13 +134,13 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
             const SizedBox(height: 16),
 
             Text(
-              fullControl ? 'Запрос на управление вашим ПК' : 'Запрос на просмотр вашего экрана',
+              fullControl ? strings.supportApprovalTitleFull : strings.supportApprovalTitleView,
               style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 6),
             Text(
-              category == '1c' ? 'Консультант 1С готов помочь вам' : 'Дежурный инженер IT на связи',
+              category == '1c' ? strings.oneCReady : strings.itOnDuty,
               style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -175,7 +178,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
-                          category == '1c' ? '1С-поддержка' : 'IT-служба',
+                          category == '1c' ? strings.oneCSupportBadge : strings.itSupportBadge,
                           style: TextStyle(
                             color: category == '1c' ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
                             fontSize: 11,
@@ -187,7 +190,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                   ),
                   const Divider(color: Color(0xFF334155), height: 16),
                   Text(
-                    'Суть проблемы: "$summary"',
+                    '${strings.problemSummaryPrefix} "$summary"',
                     style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12),
                   ),
                   const SizedBox(height: 8),
@@ -210,9 +213,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            fullControl
-                                ? 'Полный доступ: управление мышью и клавиатурой'
-                                : 'Только просмотр экрана (без управления)',
+                            fullControl ? strings.fullControlDesc : strings.viewOnlyDesc,
                             style: TextStyle(
                               color: fullControl ? const Color(0xFFF87171) : const Color(0xFF34D399),
                               fontSize: 11,
@@ -230,15 +231,14 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
 
             // Number Matching: ввод кода с клавиатуры
             if (_expectedMatch.isNotEmpty) ...[
-              const Text(
-                'Контрольное число Number Matching',
-                style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+              Text(
+                strings.numberMatchTitle,
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 4),
-              const Text(
-                'Специалист поддержки продиктовал вам число по телефону.\n'
-                'Введите его вручную — выбор «наугад» невозможен.',
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+              Text(
+                strings.numberMatchVoiceDesc,
+                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 12),
@@ -286,10 +286,9 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: const Color(0xFF7F1D1D)),
                 ),
-                child: const Text(
-                  'Запрос без контрольного числа. Подтверждение невозможно —\n'
-                  'обратитесь в поддержку по официальному каналу.',
-                  style: TextStyle(color: Color(0xFFFCA5A5), fontSize: 12),
+                child: Text(
+                  strings.noCodeNotice,
+                  style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12),
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -318,7 +317,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
-                    child: const Text('Отклонить'),
+                    child: Text(strings.denyBtn),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -340,9 +339,9 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                             height: 20,
                             child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                           )
-                        : const Text(
-                            'Разрешить доступ',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                        : Text(
+                            strings.allowAccessBtn,
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                           ),
                   ),
                 ),

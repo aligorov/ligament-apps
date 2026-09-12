@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../i18n/app_strings.dart';
 
 /// Диалоговое окно отправки экстренной заявки на удаленную помощь (SOS).
 class SupportDialog extends StatefulWidget {
@@ -22,6 +23,12 @@ class _SupportDialogState extends State<SupportDialog> {
     {'id': 'it', 'name': 'IT-служба', 'icon': '🖥'},
     {'id': '1c', 'name': 'Поддержка 1С', 'icon': '📊'},
   ];
+
+  String _getCategoryName(String id, String rawName, AppStrings strings) {
+    if (id == 'it' || rawName == 'IT-служба') return strings.itSupportBadge;
+    if (id == '1c' || rawName == 'Поддержка 1С' || rawName == '1С-поддержка') return strings.oneCSupportBadge;
+    return rawName;
+  }
 
   @override
   void initState() {
@@ -66,21 +73,23 @@ class _SupportDialogState extends State<SupportDialog> {
 
       if (mounted) {
         Navigator.of(context).pop(true);
-        final catName = _categories.firstWhere(
+        final strings = context.stringsRead;
+        final rawCatName = _categories.firstWhere(
           (c) => c['id'] == _category,
           orElse: () => {'name': _category},
-        )['name'];
+        )['name']?.toString() ?? _category;
+        final catName = _getCategoryName(_category, rawCatName, strings);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: const Color(0xFF0284C7),
-            content: Text('Запрос передан в службу: $catName. Ожидайте подключения инженера.'),
+            content: Text(strings.requestSentNotice(catName)),
           ),
         );
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Не удалось отправить запрос: $e';
+          _errorMessage = '${context.stringsRead.errSendRequest}: $e';
           _submitting = false;
         });
       }
@@ -89,6 +98,7 @@ class _SupportDialogState extends State<SupportDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = context.strings;
     return Dialog(
       backgroundColor: const Color(0xFF1E293B),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -113,21 +123,21 @@ class _SupportDialogState extends State<SupportDialog> {
                       child: const Icon(Icons.support_agent, color: Color(0xFFEF4444), size: 28),
                     ),
                     const SizedBox(width: 14),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Экстренная помощь (SOS)',
-                            style: TextStyle(
+                            strings.supportReqTitle,
+                            style: const TextStyle(
                               color: Colors.white,
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                           Text(
-                            'Удаленный доступ к вашему рабочему месту',
-                            style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                            strings.supportReqSubtitle,
+                            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
                           ),
                         ],
                       ),
@@ -152,9 +162,9 @@ class _SupportDialogState extends State<SupportDialog> {
                   ),
 
                 // Выбор категории поддержки (динамический)
-                const Text(
-                  'Выберите службу поддержки:',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                Text(
+                  strings.selectDept,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
                 Wrap(
@@ -162,7 +172,8 @@ class _SupportDialogState extends State<SupportDialog> {
                   runSpacing: 8,
                   children: _categories.map((cat) {
                     final id = cat['id']?.toString() ?? '';
-                    final name = cat['name']?.toString() ?? id;
+                    final rawName = cat['name']?.toString() ?? id;
+                    final name = _getCategoryName(id, rawName, strings);
                     final icon = cat['icon']?.toString() ?? '🛠';
                     final isSelected = _category == id;
                     final is1C = id == '1c';
@@ -208,9 +219,9 @@ class _SupportDialogState extends State<SupportDialog> {
                 const SizedBox(height: 18),
 
                 // Обязательное описание сути проблемы
-                const Text(
-                  'Кратко опишите проблему:*',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                Text(
+                  strings.problemSummaryLabel,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 6),
                 TextFormField(
@@ -219,8 +230,8 @@ class _SupportDialogState extends State<SupportDialog> {
                   style: const TextStyle(color: Colors.white, fontSize: 14),
                   decoration: InputDecoration(
                     hintText: _category == '1c'
-                        ? 'Например: Зависает проведение документа в 1С:Бухгалтерия...'
-                        : 'Например: Не открывается сетевая папка, ошибка сетевого принтера...',
+                        ? strings.problemSummaryHint1C
+                        : strings.problemSummaryHintIt,
                     hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
                     filled: true,
                     fillColor: const Color(0xFF0F172A),
@@ -239,10 +250,10 @@ class _SupportDialogState extends State<SupportDialog> {
                   ),
                   validator: (val) {
                     if (val == null || val.trim().isEmpty) {
-                      return 'Пожалуйста, опишите суть возникшей проблемы';
+                      return strings.problemSummaryValidation;
                     }
                     if (val.trim().length < 5) {
-                      return 'Описание должно быть не менее 5 символов';
+                      return strings.problemSummaryMinLen;
                     }
                     return null;
                   },
@@ -250,9 +261,9 @@ class _SupportDialogState extends State<SupportDialog> {
                 const SizedBox(height: 18),
 
                 // Режим доступа
-                const Text(
-                  'Режим удаленного доступа:',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                Text(
+                  strings.remoteAccessMode,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 6),
                 DropdownButtonFormField<String>(
@@ -267,14 +278,14 @@ class _SupportDialogState extends State<SupportDialog> {
                       borderSide: const BorderSide(color: Color(0xFF334155)),
                     ),
                   ),
-                  items: const [
+                  items: [
                     DropdownMenuItem(
                       value: 'full_control',
-                      child: Text('🎮 Полный доступ (управление мышью и клавиатурой)'),
+                      child: Text(strings.modeFullControl),
                     ),
                     DropdownMenuItem(
                       value: 'view_only',
-                      child: Text('👀 Только просмотр экрана (без управления)'),
+                      child: Text(strings.modeViewOnly),
                     ),
                   ],
                   onChanged: (val) {
@@ -289,7 +300,7 @@ class _SupportDialogState extends State<SupportDialog> {
                     Expanded(
                       child: TextButton(
                         onPressed: _submitting ? null : () => Navigator.of(context).pop(),
-                        child: const Text('Отмена', style: TextStyle(color: Color(0xFF94A3B8))),
+                        child: Text(strings.cancel, style: const TextStyle(color: Color(0xFF94A3B8))),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -309,9 +320,9 @@ class _SupportDialogState extends State<SupportDialog> {
                                 height: 20,
                                 child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                               )
-                            : const Text(
-                                'Отправить SOS запрос',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                            : Text(
+                                strings.sendRequestBtn,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                               ),
                       ),
                     ),
