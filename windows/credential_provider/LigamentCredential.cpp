@@ -522,6 +522,19 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
 
         HGDIOBJ hOldBmp = hMemDC ? SelectObject(hMemDC, hBmp) : nullptr;
 
+        // Safe inner area for circular avatar clipping in Windows 10/11:
+        // A circle of diameter targetSize has radius R = targetSize / 2.
+        // A square of side S inscribed in radius (R - 16) requires S <= (R - 16) * sqrt(2).
+        // For targetSize = 256: R = 128 -> (128 - 16) * 1.414 = 158 pixels.
+        int maxInnerSize = (int)((targetSize / 2 - 16) * 1.414f);
+        if (maxInnerSize > targetSize - 40) maxInnerSize = targetSize - 40;
+
+        int moduleScale = maxInnerSize / qrSize;
+        if (moduleScale < 1) moduleScale = 1;
+        int actualQrSize = qrSize * moduleScale;
+        int startX = (targetSize - actualQrSize) / 2;
+        int startY = (targetSize - actualQrSize) / 2;
+
         // 1. Fill entire canvas with pure white
         if (hMemDC) {
             RECT fullRect = {0, 0, targetSize, targetSize};
@@ -529,20 +542,7 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
             FillRect(hMemDC, &fullRect, hWhiteBrush);
             DeleteObject(hWhiteBrush);
 
-            // 2. Safe inner area for circular avatar clipping in Windows 10/11:
-            // A circle of diameter targetSize has radius R = targetSize / 2.
-            // A square of side S inscribed in radius (R - 16) requires S <= (R - 16) * sqrt(2).
-            // For targetSize = 256: R = 128 -> (128 - 16) * 1.414 = 158 pixels.
-            int maxInnerSize = (int)((targetSize / 2 - 16) * 1.414f);
-            if (maxInnerSize > targetSize - 40) maxInnerSize = targetSize - 40;
-
-            int moduleScale = maxInnerSize / qrSize;
-            if (moduleScale < 1) moduleScale = 1;
-            int actualQrSize = qrSize * moduleScale;
-            int startX = (targetSize - actualQrSize) / 2;
-            int startY = (targetSize - actualQrSize) / 2;
-
-            // 3. Draw subtle circular border ring around the card
+            // 2. Draw subtle circular border ring around the card
             HPEN hRingPen = CreatePen(PS_SOLID, 2, RGB(203, 213, 225));
             HBRUSH hNullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
             HGDIOBJ hOldPen = SelectObject(hMemDC, hRingPen);
