@@ -41,8 +41,9 @@ if (-not $isAdmin) {
     exit
 }
 
-# Включаем TLS 1.2 / TLS 1.3
+# Включаем TLS 1.2 / TLS 1.3 и отключаем медленный GUI-прогресс PowerShell 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = 'SilentlyContinue'
 
 $RepoOwner = "aligorov"
 $RepoName  = "ligament-apps"
