@@ -4,7 +4,7 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Depends: libc6 (>= 2.28), libgtk-3-0 (>= 3.22), libglib2.0-0 (>= 2.58), libsecret-1-0 (>= 0.18)
-Recommends: libayatana-appindicator3-1 | libappindicator3-1
+Recommends: libayatana-appindicator3-1 | libappindicator3-1, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0
 Maintainer: Ligament Security <support@ligam.org>
 Homepage: https://ligam.org
 Description: Ligament Authenticator — Enterprise 2FA & MFA Client
