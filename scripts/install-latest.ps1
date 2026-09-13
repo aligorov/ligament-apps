@@ -34,7 +34,7 @@ if (-not $isAdmin) {
         if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
         if ($Silent) { $argsList += " -Silent" }
     } else {
-        $cmd = "irm https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1 | iex"
+        $cmd = "irm 'https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1?v=$(Get-Random)' | iex"
         $argsList = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
     }
     Start-Process powershell -Verb RunAs -ArgumentList $argsList
