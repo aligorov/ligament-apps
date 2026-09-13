@@ -45,14 +45,15 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "ligament_authenticator");
+    gtk_header_bar_set_title(header_bar, "Ligament Authenticator");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "ligament_authenticator");
+    gtk_window_set_title(window, "Ligament Authenticator");
   }
 
-  gtk_window_set_default_size(window, 1280, 720);
+  gtk_window_set_icon_name(window, "ligament-authenticator");
+  gtk_window_set_default_size(window, 1000, 700);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(

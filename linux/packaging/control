@@ -1,0 +1,15 @@
+Package: ligament-authenticator
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.28), libgtk-3-0 (>= 3.22), libglib2.0-0 (>= 2.58), libsecret-1-0 (>= 0.18)
+Recommends: libayatana-appindicator3-1 | libappindicator3-1
+Maintainer: Ligament Security <support@ligam.org>
+Homepage: https://ligam.org
+Description: Ligament Authenticator — Enterprise 2FA & MFA Client
+ Enterprise cross-platform Two-Factor Authentication client supporting
+ push verification, number matching, SOS remote assistance, TOTP, and
+ zero-trust security posture telemetry.
+ Fully compatible with Astra Linux Special Edition / Common Edition,
+ RED OS (РЕД ОС), Alt Linux (Альт Линукс), Debian, and Ubuntu.

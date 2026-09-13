@@ -1,0 +1,17 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Ligament Authenticator
+Name[ru]=Ligament Аутентификатор
+Comment=Enterprise Two-Factor Authentication Client
+Comment[ru]=Корпоративный клиент двухфакторной аутентификации (2FA)
+GenericName=2FA Authenticator
+GenericName[ru]=Двухфакторный аутентификатор
+Exec=/opt/ligament-authenticator/ligament_authenticator %u
+Icon=ligament-authenticator
+Terminal=false
+Categories=Network;Security;Utility;
+Keywords=2FA;MFA;Security;OTP;TOTP;Auth;Astra;RED;РЕД;Астра;Безопасность;
+StartupNotify=true
+StartupWMClass=ligament_authenticator
+MimeType=x-scheme-handler/ligament;

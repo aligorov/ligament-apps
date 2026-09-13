@@ -1,4 +1,4 @@
-name: Build Client Apps (Windows, Android, macOS, iOS)
+name: Build Client Apps (Windows, Android, macOS, iOS, Linux)
 
 on:
   workflow_dispatch:
@@ -128,9 +128,60 @@ jobs:
           name: Ligament-2FA-iOS-IPA
           path: dist/Ligament-2FA.ipa
 
+  build-linux:
+    name: Build Linux Packages (.deb, .rpm, .tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgtk-3-dev \
+            liblzma-dev \
+            libsecret-1-dev \
+            rpm \
+            dpkg-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Build Linux Application and Packages
+        run: |
+          flutter pub get
+          chmod +x scripts/build_linux.sh linux/packaging/install.sh
+          ./scripts/build_linux.sh
+
+      - name: Upload Linux DEB Artifact (Astra Linux, Debian, Ubuntu)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Ligament-2FA-Linux-DEB
+          path: dist/Ligament-2FA-Linux-amd64.deb
+
+      - name: Upload Linux RPM Artifact (РЕД ОС, Alt Linux, Fedora, RHEL)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Ligament-2FA-Linux-RPM
+          path: dist/Ligament-2FA-Linux-x86_64.rpm
+
+      - name: Upload Linux Tarball Artifact (Universal Portable)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Ligament-2FA-Linux-Tarball
+          path: dist/Ligament-2FA-Linux-x86_64.tar.gz
+
   create-release:
     name: Create GitHub Release & Upload Binaries
-    needs: [build-windows, build-android, build-macos, build-ios]
+    needs: [build-windows, build-android, build-macos, build-ios, build-linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
@@ -147,7 +198,7 @@ jobs:
       - name: Organize release assets and compute checksums
         run: |
           mkdir -p release_assets
-          find artifacts -type f \( -name "*.msi" -o -name "*.apk" -o -name "*.dmg" -o -name "*.ipa" -o -name "*.zip" \) -exec cp {} release_assets/ \;
+          find artifacts -type f \( -name "*.msi" -o -name "*.apk" -o -name "*.dmg" -o -name "*.ipa" -o -name "*.zip" -o -name "*.deb" -o -name "*.rpm" -o -name "*.tar.gz" \) -exec cp {} release_assets/ \;
           cd release_assets
           sha256sum * > SHA256SUMS.txt
           ls -la

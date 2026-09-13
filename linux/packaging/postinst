@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+# Обновление системной базы данных desktop-ярлыков
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+
+# Обновление системного кэша иконок FreeDesktop
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+
+# Установка прав на исполняемый файл
+if [ -f /opt/ligament-authenticator/ligament_authenticator ]; then
+    chmod 755 /opt/ligament-authenticator/ligament_authenticator || true
+fi
+
+exit 0
