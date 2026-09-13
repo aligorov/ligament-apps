@@ -105,6 +105,7 @@ if %errorlevel% neq 0 (
 regsvr32.exe /s "%SystemRoot%\System32\LigamentCredentialProvider.dll"
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v fEnableWebAuthn /t REG_DWORD /d 1 /f
 reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v FIDO2Enabled /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v DefaultFactor /t REG_DWORD /d 0 /f
 
 :: 5. Restart LogonUI to load the new DLL immediately
 taskkill /f /im logonui.exe >nul 2>&1
