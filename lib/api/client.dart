@@ -32,6 +32,12 @@ class ApiClient {
         .timeout(_requestTimeout);
   }
 
+  Future<http.Response> _put(String url, {Map<String, String>? headers, String? body}) {
+    return http
+        .put(Uri.parse(url), headers: headers, body: body)
+        .timeout(_requestTimeout);
+  }
+
   String _cleanUrl(String path) {
     var base = baseUrl.trim();
     if (base.endsWith('/')) {
@@ -191,6 +197,44 @@ class ApiClient {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
     throw ApiException(res.statusCode, 'profile_fetch_failed');
+  }
+
+  /// Обновление настроек уведомлений пользователя
+  Future<Map<String, dynamic>> updateNotificationSettings({
+    required bool loginSuccess,
+    required bool loginDenied,
+    required bool notifyTG,
+    required bool notifyEmail,
+  }) async {
+    final payload = {
+      'login_success': loginSuccess,
+      'login_denied': loginDenied,
+      'notify_tg': notifyTG,
+      'notify_email': notifyEmail,
+    };
+    final res = await _put(
+      _cleanUrl('/api/v1/app/me/notifications'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'notifications_update_failed');
+  }
+
+  /// Проверка реальной доставки тестового уведомления
+  Future<List<Map<String, dynamic>>> testNotificationDelivery() async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/me/notifications/test'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final list = (data['results'] as List<dynamic>?) ?? [];
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'notifications_test_failed');
   }
 
   /// Список доступных корпоративных приложений (SSO Launchpad)

@@ -764,6 +764,43 @@ class AuthState extends ChangeNotifier {
     } catch (_) {}
   }
 
+  Map<String, dynamic> get notificationSettings {
+    final raw = currentUser?['notification_settings'];
+    if (raw is Map<String, dynamic>) {
+      return raw;
+    }
+    return {
+      'login_success': true,
+      'login_denied': true,
+      'notify_tg': true,
+      'notify_email': true,
+    };
+  }
+
+  Future<void> updateNotificationSettings({
+    required bool loginSuccess,
+    required bool loginDenied,
+    required bool notifyTG,
+    required bool notifyEmail,
+  }) async {
+    if (api == null) return;
+    final res = await api!.updateNotificationSettings(
+      loginSuccess: loginSuccess,
+      loginDenied: loginDenied,
+      notifyTG: notifyTG,
+      notifyEmail: notifyEmail,
+    );
+    if (currentUser != null && res['notification_settings'] != null) {
+      currentUser!['notification_settings'] = res['notification_settings'];
+      notifyListeners();
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> testNotificationDelivery() async {
+    if (api == null) return [];
+    return await api!.testNotificationDelivery();
+  }
+
   @override
   void dispose() {
     _pollingTimer?.cancel();

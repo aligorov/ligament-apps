@@ -180,14 +180,15 @@ HRESULT LigamentCredential::UnAdvise() {
 }
 
 HRESULT LigamentCredential::SetSelected(BOOL* pbAutoLogon) {
-    *pbAutoLogon = FALSE;
+    *pbAutoLogon = m_authenticated ? TRUE : FALSE;
     return S_OK;
 }
 
 HRESULT LigamentCredential::SetDeselected() {
     // Leaving the tile voids any 2FA result and pending push polling.
-    // If a passkey/push poll is active, keep it alive during tile re-evaluation.
-    if (!m_hPollThread) {
+    // If a passkey/push poll is active or authentication already succeeded,
+    // keep it alive during tile re-evaluation.
+    if (!m_hPollThread && !m_authenticated) {
         ResetAuthState();
     }
     return S_OK;
@@ -719,11 +720,25 @@ void LigamentCredential::RunPushPolling() {
         if (client.PollStatus(challengeId, status, err)) {
             if (status == L"approved" || status == L"denied" || status == L"expired") {
                 EnterCriticalSection(&m_csPoll);
-                if (!m_pollState.stop) {
+                bool stop = m_pollState.stop;
+                if (!stop) {
                     m_pollState.status = status;
                     m_pollState.done = true;
+                    if (status == L"approved") {
+                        m_authenticated = true;
+                        m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
+                    } else if (status == L"denied") {
+                        m_statusText = L"❌ Вход отклонён пользователем";
+                    } else if (status == L"expired") {
+                        m_statusText = L"⚠️ Срок действия подтверждения истёк";
+                    }
                 }
                 LeaveCriticalSection(&m_csPoll);
+
+                if (!stop && m_pProviderEvents && m_providerAdviseContext) {
+                    CPLog(L"push: %s — вызов CredentialsChanged (auto-logon / UI update)", status.c_str());
+                    m_pProviderEvents->CredentialsChanged(m_providerAdviseContext);
+                }
                 return;
             }
             // "pending" and unknown statuses: keep polling
@@ -736,11 +751,18 @@ void LigamentCredential::RunPushPolling() {
     }
 
     EnterCriticalSection(&m_csPoll);
-    if (!m_pollState.stop) {
+    bool stop = m_pollState.stop;
+    if (!stop) {
         m_pollState.status = L"timeout";
         m_pollState.done = true;
+        m_statusText = L"⚠️ Время ожидания подтверждения истекло";
     }
     LeaveCriticalSection(&m_csPoll);
+
+    if (!stop && m_pProviderEvents && m_providerAdviseContext) {
+        CPLog(L"push: timeout — вызов CredentialsChanged");
+        m_pProviderEvents->CredentialsChanged(m_providerAdviseContext);
+    }
 }
 
 void LigamentCredential::StopPollThread() {
@@ -813,7 +835,10 @@ HRESULT LigamentCredential::GetSerialization(
 
     // 2. If already validated via FIDO2 / Push:
     if (m_authenticated) {
-        CPLog(L"serialize: ветка already_authenticated");
+        CPLog(L"serialize: ветка already_authenticated (auto-logon)");
+        JoinPollThread();
+        ClearQrBitmap();
+        m_numberMatch.clear();
         return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
     }
 

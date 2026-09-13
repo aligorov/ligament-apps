@@ -59,3 +59,4 @@ app.*.map.json
 **/flutter_export_environment.sh
 **/flutter_native_integration.env
 **/flutter_lldb*
+graphify-out/

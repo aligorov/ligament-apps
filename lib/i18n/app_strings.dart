@@ -367,6 +367,25 @@ class AppStrings {
   String get logoutBlocked => isRu ? 'Выход заблокирован системным администратором' : 'Logout blocked by system administrator';
   String platformCorporate(String p) => isRu ? 'Платформа: $p • Корпоративная защита' : 'Platform: $p • Enterprise Protection';
 
+  // --- 2FA & Notifications ---
+  String get security2FASection => isRu ? 'Факторы защиты 2FA' : '2FA Security Factors';
+  String get totpAppStatus => isRu ? 'TOTP-приложение' : 'TOTP Authenticator';
+  String get backupCodesStatus => isRu ? 'Резервные коды' : 'Backup Codes';
+  String get passkeysStatus => isRu ? 'Ключи Passkey' : 'Passkey Credentials';
+  String get telegramStatus => isRu ? 'Telegram-оповещения' : 'Telegram Alerts';
+  String get configuredOk => isRu ? 'Подключено' : 'Configured';
+  String get notConfigured => isRu ? 'Не настроено' : 'Not configured';
+  String get webCabinetButton => isRu ? 'Веб-кабинет управления 2FA ↗' : 'Web 2FA Management Portal ↗';
+
+  String get notificationsSection => isRu ? 'Настройки уведомлений' : 'Notification Settings';
+  String get notifyLoginSuccess => isRu ? 'Успешный вход (QR, Passkey, Push)' : 'Successful Login (QR, Passkey, Push)';
+  String get notifyLoginDenied => isRu ? 'Подозрительный вход («Это не я»)' : 'Suspicious / Denied Login Alerts';
+  String get notifyViaTelegram => isRu ? 'Оповещения в Telegram' : 'Alerts via Telegram';
+  String get notifyViaEmail => isRu ? 'Оповещения на Email' : 'Alerts via Email';
+  String get testDeliveryButton => isRu ? '🧪 Проверить реальную доставку' : '🧪 Test Real Delivery';
+  String get testDeliveryTitle => isRu ? 'Проверка доставки' : 'Delivery Test';
+  String get testDeliveryRunning => isRu ? 'Отправка тестовых уведомлений...' : 'Sending test alerts...';
+
   // --- Tray ---
   String get trayOpen => isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA';
   String get trayExit => isRu ? 'Выход' : 'Exit';

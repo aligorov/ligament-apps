@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import 'package:ligament_authenticator/main.dart';
 import 'package:ligament_authenticator/services/auth_state.dart';
 import 'package:ligament_authenticator/screens/login_screen.dart';
-import 'package:ligament_authenticator/screens/home_screen.dart';
 import 'package:ligament_authenticator/screens/settings_screen.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
