@@ -81,6 +81,10 @@ static std::wstring DescribeServerError(const std::string& err, int retryAfterSe
 LigamentCredential::~LigamentCredential() {
     StopPollThread();
     ClearQrBitmap();
+    if (m_hDefaultLogoBmp) {
+        DeleteObject(m_hDefaultLogoBmp);
+        m_hDefaultLogoBmp = nullptr;
+    }
     DeleteCriticalSection(&m_csPoll);
     if (!m_password.empty()) {
         SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
@@ -99,10 +103,11 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_cpus = cpus;
     m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000);
     m_webAuthn = std::make_unique<WebAuthnClient>();
+    m_hDefaultLogoBmp = CreateLogoBitmap(256);
 
     if (cfg.defaultFactor == 1 && cfg.fido2Enabled) {
         m_currentMode = MODE_FIDO2;
-        m_statusText = L"Passkey: введите имя пользователя и пароль для QR-кода";
+        m_statusText = L"Passkey: введите имя пользователя и пароль для получения QR-кода";
     } else if (cfg.defaultFactor == 2) {
         m_currentMode = MODE_OTP;
         m_statusText = L"Введите 6 цифр TOTP или коснитесь YubiKey";
@@ -191,11 +196,14 @@ HRESULT LigamentCredential::GetFieldState(
         break;
 
     case FID_FIDO2_BTN:
-        *pcpfs = (m_currentMode == MODE_PUSH && m_config.fido2Enabled) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        *pcpfs = (m_currentMode != MODE_FIDO2 && m_config.fido2Enabled) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         break;
 
     case FID_OTP_CODE:
         *pcpfs = (m_currentMode == MODE_OTP) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        if (m_currentMode == MODE_OTP) {
+            *pcpfis = CPFIS_FOCUSED;
+        }
         break;
 
     default:
@@ -209,10 +217,16 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     std::wstring val;
     switch (dwFieldID) {
     case FID_LARGE_TEXT:
-        if (!m_numberMatch.empty()) {
-            val = L"Ligament 2FA — Код: " + m_numberMatch;
+        if (m_currentMode == MODE_FIDO2) {
+            val = L"Вход по Passkey (QR-код)";
+        } else if (m_currentMode == MODE_OTP) {
+            val = L"Вход по коду TOTP / YubiKey";
         } else {
-            val = L"Ligament Enterprise 2FA";
+            if (!m_numberMatch.empty()) {
+                val = L"Контрольное число: " + m_numberMatch;
+            } else {
+                val = L"Ligament Enterprise 2FA";
+            }
         }
         break;
     case FID_USERNAME:
@@ -230,16 +244,16 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         }
         break;
     case FID_FIDO2_BTN:
-        val = L"Войти с помощью Passkey (QR-код на телефоне / Ключ)";
+        val = L"📱 Войти по Passkey (QR-код на телефоне / Face ID)";
         break;
     case FID_OTP_CODE:
         val = m_otpCode;
         break;
     case FID_SWITCH_FACTOR_BTN:
         if (m_currentMode == MODE_PUSH) {
-            val = L"Войти по коду TOTP / YubiKey OTP";
+            val = L"🔑 Войти по коду TOTP / YubiKey OTP / Резервному коду";
         } else {
-            val = L"Вернуться к Push-подтверждению (число в приложении)";
+            val = L"⬅ Вернуться к Push-числу (приложение Ligament)";
         }
         break;
     default:
@@ -249,9 +263,15 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
 }
 
 HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
-    if (dwFieldID == FID_LOGO && m_hQrBmp) {
-        *phbmp = m_hQrBmp;
-        return S_OK;
+    if (dwFieldID == FID_LOGO) {
+        if (m_hQrBmp) {
+            *phbmp = m_hQrBmp;
+            return S_OK;
+        }
+        if (m_hDefaultLogoBmp) {
+            *phbmp = m_hDefaultLogoBmp;
+            return S_OK;
+        }
     }
     *phbmp = nullptr;
     return E_NOTIMPL;
@@ -372,6 +392,9 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
             m_pEvents->SetFieldString(this, dwFieldID, psz);
             CoTaskMemFree(psz);
         }
+    } else if (dwFieldID == FID_LOGO) {
+        HBITMAP bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        m_pEvents->SetFieldBitmap(this, FID_LOGO, bmp);
     }
 }
 
@@ -379,20 +402,23 @@ void LigamentCredential::UpdateFieldStates() {
     if (m_currentMode == MODE_FIDO2) {
         if (m_username.empty() || m_password.empty()) {
             m_statusText = L"Passkey: введите имя пользователя и пароль для получения QR-кода";
+        } else if (m_hQrBmp) {
+            m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
         } else {
-            m_statusText = L"Passkey: нажмите стрелку входа для генерации QR-кода";
+            m_statusText = L"Passkey: нажмите стрелку входа [->] для генерации QR-кода";
         }
     } else if (m_currentMode == MODE_PUSH) {
         if (!m_numberMatch.empty()) {
-            m_statusText = L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:";
+            m_statusText = L"Подтвердите вход в приложении Ligament:\nвыберите контрольное число на экране:";
         } else {
-            m_statusText = L"Вход через приложение Ligament (число) / Telegram";
+            m_statusText = L"Введите логин и пароль для входа через приложение Ligament / Telegram";
         }
     } else if (m_currentMode == MODE_OTP) {
-        m_statusText = L"Введите 6 цифр TOTP или коснитесь YubiKey";
+        m_statusText = L"Введите 6 цифр из приложения TOTP или коснитесь YubiKey";
     }
 
     if (m_pEvents) {
+        NotifyFieldChanged(FID_LOGO);
         NotifyFieldChanged(FID_LARGE_TEXT);
         NotifyFieldChanged(FID_NUMBER_MATCH);
         NotifyFieldChanged(FID_FIDO2_BTN);
@@ -406,10 +432,102 @@ void LigamentCredential::ClearQrBitmap() {
     if (m_hQrBmp) {
         DeleteObject(m_hQrBmp);
         m_hQrBmp = nullptr;
-        if (m_pEvents) {
-            m_pEvents->SetFieldBitmap(this, FID_LOGO, nullptr);
+    }
+    if (m_pEvents && m_hDefaultLogoBmp) {
+        m_pEvents->SetFieldBitmap(this, FID_LOGO, m_hDefaultLogoBmp);
+    }
+}
+
+HBITMAP LigamentCredential::CreateLogoBitmap(int targetSize) {
+    BITMAPINFO bmi = {0};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = targetSize;
+    bmi.bmiHeader.biHeight = -targetSize; // Top-down DIB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pBits = nullptr;
+    HDC hdc = GetDC(nullptr);
+    HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    ReleaseDC(nullptr, hdc);
+
+    if (!hBmp || !pBits) return nullptr;
+
+    uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
+
+    // Modern palette with 100% opaque alpha (0xFF...)
+    const uint32_t cBg       = 0xFF0F172A; // Slate 900
+    const uint32_t cBadge    = 0xFF1E293B; // Slate 800
+    const uint32_t cShield   = 0xFF0284C7; // Cyan 600
+    const uint32_t cAccent   = 0xFF38BDF8; // Sky 400
+    const uint32_t cWhite    = 0xFFFFFFFF; // Pure white
+
+    int center = targetSize / 2;
+    int maxR = targetSize / 2 - 4;
+
+    for (int y = 0; y < targetSize; ++y) {
+        for (int x = 0; x < targetSize; ++x) {
+            int dx = x - center;
+            int dy = y - center;
+            int r2 = dx * dx + dy * dy;
+            if (r2 <= maxR * maxR) {
+                pixels[y * targetSize + x] = cBadge;
+            } else {
+                pixels[y * targetSize + x] = cBg;
+            }
         }
     }
+
+    // Outer circle border
+    int borderR = maxR - 1;
+    for (int y = 0; y < targetSize; ++y) {
+        for (int x = 0; x < targetSize; ++x) {
+            int dx = x - center;
+            int dy = y - center;
+            int r2 = dx * dx + dy * dy;
+            if (r2 >= (borderR - 2) * (borderR - 2) && r2 <= borderR * borderR) {
+                pixels[y * targetSize + x] = cAccent;
+            }
+        }
+    }
+
+    // Security Shield
+    int shieldTop = center - 48;
+    int shieldBottom = center + 50;
+    int shieldHalfW = 42;
+
+    for (int y = shieldTop; y <= shieldBottom; ++y) {
+        int currentHalfW = shieldHalfW;
+        if (y > center + 5) {
+            float t = (float)(shieldBottom - y) / 45.0f;
+            currentHalfW = (int)(shieldHalfW * t);
+            if (currentHalfW < 0) currentHalfW = 0;
+        }
+        for (int x = center - currentHalfW; x <= center + currentHalfW; ++x) {
+            if (x >= 0 && x < targetSize && y >= 0 && y < targetSize) {
+                bool isEdge = (x == center - currentHalfW || x == center + currentHalfW || y == shieldTop || y == shieldBottom);
+                pixels[y * targetSize + x] = isEdge ? cAccent : cShield;
+            }
+        }
+    }
+
+    // Lock / Keyhole icon inside the shield
+    for (int dy = -15; dy <= 16; ++dy) {
+        for (int dx = -10; dx <= 10; ++dx) {
+            int px = center + dx;
+            int py = center - 4 + dy;
+            if (px >= 0 && px < targetSize && py >= 0 && py < targetSize) {
+                if (dy <= 0 && (dx * dx + dy * dy <= 56)) {
+                    pixels[py * targetSize + px] = cWhite;
+                } else if (dy > 0 && dy <= 15 && (abs(dx) <= 3)) {
+                    pixels[py * targetSize + px] = cWhite;
+                }
+            }
+        }
+    }
+
+    return hBmp;
 }
 
 HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSize) {
@@ -417,13 +535,6 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
         using qrcodegen::QrCode;
         QrCode qr = QrCode::encodeText(text.c_str(), QrCode::Ecc::MEDIUM);
         int qrSize = qr.getSize();
-        int border = 4;
-        int totalModules = qrSize + border * 2;
-        int moduleScale = targetSize / totalModules;
-        if (moduleScale < 1) moduleScale = 1;
-        int actualSize = totalModules * moduleScale;
-        int offset = (targetSize - actualSize) / 2;
-        if (offset < 0) offset = 0;
 
         BITMAPINFO bmi = {0};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -441,23 +552,58 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
         if (!hBmp || !pBits) return nullptr;
 
         uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
+
+        const uint32_t OPAQUE_WHITE = 0xFFFFFFFF; // 100% opaque white
+        const uint32_t OPAQUE_BLACK = 0xFF000000; // 100% opaque black
+        const uint32_t BORDER_COLOR = 0xFFCBD5E1; // 100% opaque subtle border
+
+        // 1. Fill entire canvas with pure opaque white
         for (int i = 0; i < targetSize * targetSize; ++i) {
-            pixels[i] = 0x00FFFFFF; // White background
+            pixels[i] = OPAQUE_WHITE;
         }
 
+        // 2. Safe inner area for circular avatar clipping in Windows 10/11:
+        // A circle of diameter targetSize has radius R = targetSize / 2.
+        // A square of side S inscribed in radius (R - 14) requires S <= (R - 14) * sqrt(2).
+        // For targetSize = 256: R = 128 -> (128 - 14) * 1.414 = 161 pixels.
+        int maxInnerSize = (int)((targetSize / 2 - 14) * 1.414f);
+        if (maxInnerSize > targetSize - 32) maxInnerSize = targetSize - 32;
+
+        int moduleScale = maxInnerSize / qrSize;
+        if (moduleScale < 1) moduleScale = 1;
+        int actualQrSize = qrSize * moduleScale;
+        int startX = (targetSize - actualQrSize) / 2;
+        int startY = (targetSize - actualQrSize) / 2;
+
+        // 3. Draw subtle circular border ring around the card
+        int center = targetSize / 2;
+        int ringR = targetSize / 2 - 2;
+        for (int y = 0; y < targetSize; ++y) {
+            for (int x = 0; x < targetSize; ++x) {
+                int dx = x - center;
+                int dy = y - center;
+                int d2 = dx * dx + dy * dy;
+                if (d2 >= (ringR - 2) * (ringR - 2) && d2 <= ringR * ringR) {
+                    pixels[y * targetSize + x] = BORDER_COLOR;
+                }
+            }
+        }
+
+        // 4. Draw QR Code modules (100% opaque black)
         for (int y = 0; y < qrSize; ++y) {
             for (int x = 0; x < qrSize; ++x) {
                 if (qr.getModule(x, y)) {
-                    int startX = offset + (x + border) * moduleScale;
-                    int startY = offset + (y + border) * moduleScale;
-                    for (int sy = 0; sy < moduleScale && (startY + sy) < targetSize; ++sy) {
-                        for (int sx = 0; sx < moduleScale && (startX + sx) < targetSize; ++sx) {
-                            pixels[(startY + sy) * targetSize + (startX + sx)] = 0x00000000; // Black
+                    int px0 = startX + x * moduleScale;
+                    int py0 = startY + y * moduleScale;
+                    for (int sy = 0; sy < moduleScale; ++sy) {
+                        for (int sx = 0; sx < moduleScale; ++sx) {
+                            pixels[(py0 + sy) * targetSize + (px0 + sx)] = OPAQUE_BLACK;
                         }
                     }
                 }
             }
         }
+
         return hBmp;
     } catch (...) {
         return nullptr;
@@ -466,7 +612,7 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
 
 void LigamentCredential::TriggerFIDO2Auth() {
     if (m_username.empty() || m_password.empty()) {
-        m_statusText = L"Сначала введите имя пользователя и пароль";
+        m_statusText = L"Passkey: сначала введите имя пользователя и пароль";
         NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
@@ -477,7 +623,7 @@ void LigamentCredential::TriggerFIDO2Auth() {
         return;
     }
 
-    m_statusText = L"Запрос сессии Passkey...";
+    m_statusText = L"Генерация сессии Passkey...";
     NotifyFieldChanged(FID_STATUS_TEXT);
 
     WebAuthnBeginResult beginRes = m_apiClient->WebAuthnBegin(m_username, m_password);
@@ -497,7 +643,7 @@ void LigamentCredential::TriggerFIDO2Auth() {
     }
 
     m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
-    NotifyFieldChanged(FID_STATUS_TEXT);
+    UpdateFieldStates();
 
     // Запуск фонового опроса сервера (ожидание подтверждения на телефоне)
     StopPollThread();
