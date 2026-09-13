@@ -82,14 +82,17 @@ try {
 if ($Component -eq "Interactive" -and -not $Silent) {
     Write-Host ""
     Write-Host "Выберите тип установки:" -ForegroundColor Cyan
-    Write-Host "  [1] Полная установка: Десктоп-приложение + Windows Credential Provider (MSI)" -ForegroundColor White
-    Write-Host "  [2] Только RDP Credential Provider для серверов (ZIP DLL, без GUI)" -ForegroundColor White
-    Write-Host "  [3] Выход" -ForegroundColor Gray
+    Write-Host "  [1] Всё вместе: Десктоп-приложение (MSI) + RDP Credential Provider (DLL)" -ForegroundColor White
+    Write-Host "  [2] Только RDP Credential Provider для серверов (ZIP DLL в System32, без GUI)" -ForegroundColor White
+    Write-Host "  [3] Только десктоп-приложение (MSI)" -ForegroundColor White
+    Write-Host "  [4] Выход" -ForegroundColor Gray
     Write-Host ""
-    $choice = (Read-Host "Введите номер (1-3) [по умолчанию 1]").Trim()
+    $choice = (Read-Host "Введите номер (1-4) [по умолчанию 1]").Trim()
     if ($choice -eq "2") {
         $Component = "CP"
     } elseif ($choice -eq "3") {
+        $Component = "App"
+    } elseif ($choice -eq "4") {
         Write-Host "Отменено пользователем." -ForegroundColor Yellow
         exit 0
     } else {
@@ -124,23 +127,23 @@ New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
 try {
     # -------------------------------------------------------------------------
-    # РЕЖИМ 1: УСТАНОВКА ЧЕРЕЗ MSI (Десктоп приложение + Credential Provider)
+    # КОМПОНЕНТ 1: УСТАНОВКА ЧЕРЕЗ MSI (Десктоп приложение)
     # -------------------------------------------------------------------------
     if ($Component -in @("All", "App")) {
         $MsiFileName = "Ligament-2FA-Windows-x64.msi"
         $MsiUrl = "$downloadBaseUrl/$MsiFileName"
         $LocalMsi = Join-Path $TempDir $MsiFileName
 
-        Write-Host "`n[2/4] Загрузка инсталлятора $MsiFileName..." -ForegroundColor Yellow
+        Write-Host "`nЗагрузка инсталлятора $MsiFileName..." -ForegroundColor Yellow
         Write-Host "URL: $MsiUrl" -ForegroundColor Gray
         Invoke-WebRequest -Uri $MsiUrl -OutFile $LocalMsi -UseBasicParsing
         Write-Host " [OK] Загружено: $LocalMsi ($([math]::Round((Get-Item $LocalMsi).Length / 1MB, 2)) МБ)" -ForegroundColor Green
 
-        Write-Host "`n[3/4] Остановка активных процессов..." -ForegroundColor Yellow
+        Write-Host "`nОстановка активных процессов..." -ForegroundColor Yellow
         Stop-Process -Name "ligament_authenticator" -Force -ErrorAction SilentlyContinue
         taskkill /f /im logonui.exe 2>$null | Out-Null
 
-        Write-Host "`n[4/4] Установка пакета MSI..." -ForegroundColor Yellow
+        Write-Host "`nУстановка пакета MSI..." -ForegroundColor Yellow
         $msiArgs = "/i `"$LocalMsi`" /qn /norestart"
         if ($ServerURL) {
             $msiArgs += " SERVERURL=`"$ServerURL`""
@@ -164,14 +167,14 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # РЕЖИМ 2: ТОЛЬКО RDP CREDENTIAL PROVIDER (Для терминальных серверов)
+    # КОМПОНЕНТ 2: РАЗВЕРТЫВАНИЕ RDP CREDENTIAL PROVIDER (System32 + COM DLL)
     # -------------------------------------------------------------------------
-    if ($Component -eq "CP") {
+    if ($Component -in @("All", "CP")) {
         $ZipFileName = "Ligament-2FA-RDP-CredentialProvider-x64.zip"
         $ZipUrl = "$downloadBaseUrl/$ZipFileName"
         $LocalZip = Join-Path $TempDir $ZipFileName
 
-        Write-Host "`n[2/4] Загрузка Credential Provider $ZipFileName..." -ForegroundColor Yellow
+        Write-Host "`nЗагрузка RDP Credential Provider $ZipFileName..." -ForegroundColor Yellow
         Write-Host "URL: $ZipUrl" -ForegroundColor Gray
         Invoke-WebRequest -Uri $ZipUrl -OutFile $LocalZip -UseBasicParsing
         Write-Host " [OK] Загружено: $LocalZip ($([math]::Round((Get-Item $LocalZip).Length / 1MB, 2)) МБ)" -ForegroundColor Green
