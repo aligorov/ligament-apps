@@ -35,6 +35,7 @@ set(HEADERS
     HttpApiClient.h
     WebAuthnClient.h
     qrcodegen.hpp
+    app_logo_data.h
 )
 
 add_library(LigamentCredentialProvider SHARED ${SOURCES} ${HEADERS})

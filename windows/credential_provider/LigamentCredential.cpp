@@ -1,6 +1,7 @@
 // LigamentCredential.cpp — Implementation of Credential tile logic
 #include "LigamentCredential.h"
 #include "qrcodegen.hpp"
+#include "app_logo_data.h"
 #include <wincred.h> // CredProtectW/CredIsProtectedW (wincred.h)
 
 namespace ligament {
@@ -251,9 +252,11 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         break;
     case FID_SWITCH_FACTOR_BTN:
         if (m_currentMode == MODE_PUSH) {
-            val = L"🔑 Войти по коду TOTP / YubiKey OTP / Резервному коду";
+            val = L"🔑 Войти по коду TOTP / YubiKey OTP";
+        } else if (m_currentMode == MODE_FIDO2) {
+            val = L"📲 Войти через Push в приложение Ligament";
         } else {
-            val = L"⬅ Вернуться к Push-числу (приложение Ligament)";
+            val = L"📲 Войти через Push в приложение Ligament";
         }
         break;
     default:
@@ -351,13 +354,15 @@ HRESULT LigamentCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSe
 
 HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
     if (dwFieldID == FID_FIDO2_BTN) {
-        ClearQrBitmap();
         StopPollThread();
         m_currentMode = MODE_FIDO2;
         m_numberMatch.clear();
-        UpdateFieldStates();
         if (!m_username.empty() && !m_password.empty()) {
             TriggerFIDO2Auth();
+        } else {
+            ClearQrBitmap();
+            m_statusText = L"Passkey: введите логин и пароль для генерации QR-кода";
+            UpdateFieldStates();
         }
     } else if (dwFieldID == FID_SWITCH_FACTOR_BTN) {
         SwitchToNextMode();
@@ -366,15 +371,24 @@ HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
 }
 
 void LigamentCredential::SwitchToNextMode() {
-    ClearQrBitmap();
     StopPollThread();
+    ClearQrBitmap();
     if (m_currentMode == MODE_PUSH) {
+        if (m_config.fido2Enabled) {
+            m_currentMode = MODE_FIDO2;
+        } else {
+            m_currentMode = MODE_OTP;
+        }
+    } else if (m_currentMode == MODE_FIDO2) {
         m_currentMode = MODE_OTP;
     } else {
         m_currentMode = MODE_PUSH;
     }
     m_numberMatch.clear();
     UpdateFieldStates();
+    if (m_currentMode == MODE_FIDO2 && !m_username.empty() && !m_password.empty()) {
+        TriggerFIDO2Auth();
+    }
 }
 
 void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
@@ -395,6 +409,8 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
     } else if (dwFieldID == FID_LOGO) {
         HBITMAP bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
         m_pEvents->SetFieldBitmap(this, FID_LOGO, bmp);
+        m_pEvents->SetFieldState(this, FID_LOGO, cpfs);
+        GdiFlush();
     }
 }
 
@@ -435,6 +451,8 @@ void LigamentCredential::ClearQrBitmap() {
     }
     if (m_pEvents && m_hDefaultLogoBmp) {
         m_pEvents->SetFieldBitmap(this, FID_LOGO, m_hDefaultLogoBmp);
+        m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
+        GdiFlush();
     }
 }
 
@@ -442,90 +460,37 @@ HBITMAP LigamentCredential::CreateLogoBitmap(int targetSize) {
     BITMAPINFO bmi = {0};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = targetSize;
-    bmi.bmiHeader.biHeight = -targetSize; // Top-down DIB
+    bmi.bmiHeader.biHeight = targetSize; // Positive bottom-up DIB (compatible with GetDIBits and COM)
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = nullptr;
     HDC hdc = GetDC(nullptr);
-    HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-    ReleaseDC(nullptr, hdc);
+    HDC hMemDC = CreateCompatibleDC(hdc);
+    HBITMAP hBmp = CreateDIBSection(hMemDC ? hMemDC : hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
 
-    if (!hBmp || !pBits) return nullptr;
+    if (!hBmp || !pBits) {
+        if (hMemDC) DeleteDC(hMemDC);
+        ReleaseDC(nullptr, hdc);
+        return nullptr;
+    }
 
     uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
 
-    // Modern palette with 100% opaque alpha (0xFF...)
-    const uint32_t cBg       = 0xFF0F172A; // Slate 900
-    const uint32_t cBadge    = 0xFF1E293B; // Slate 800
-    const uint32_t cShield   = 0xFF0284C7; // Cyan 600
-    const uint32_t cAccent   = 0xFF38BDF8; // Sky 400
-    const uint32_t cWhite    = 0xFFFFFFFF; // Pure white
-
-    int center = targetSize / 2;
-    int maxR = targetSize / 2 - 4;
-
+    // Official Application Logo from app_logo_data.h (256x256)
+    // In bottom-up DIB, row 0 in memory corresponds to the bottom row of the image.
     for (int y = 0; y < targetSize; ++y) {
+        int srcY = (y < 256) ? y : 255;
         for (int x = 0; x < targetSize; ++x) {
-            int dx = x - center;
-            int dy = y - center;
-            int r2 = dx * dx + dy * dy;
-            if (r2 <= maxR * maxR) {
-                pixels[y * targetSize + x] = cBadge;
-            } else {
-                pixels[y * targetSize + x] = cBg;
-            }
+            int srcX = (x < 256) ? x : 255;
+            pixels[(targetSize - 1 - y) * targetSize + x] = c_AppLogoPixels[srcY * 256 + srcX];
         }
     }
 
-    // Outer circle border
-    int borderR = maxR - 1;
-    for (int y = 0; y < targetSize; ++y) {
-        for (int x = 0; x < targetSize; ++x) {
-            int dx = x - center;
-            int dy = y - center;
-            int r2 = dx * dx + dy * dy;
-            if (r2 >= (borderR - 2) * (borderR - 2) && r2 <= borderR * borderR) {
-                pixels[y * targetSize + x] = cAccent;
-            }
-        }
-    }
-
-    // Security Shield
-    int shieldTop = center - 48;
-    int shieldBottom = center + 50;
-    int shieldHalfW = 42;
-
-    for (int y = shieldTop; y <= shieldBottom; ++y) {
-        int currentHalfW = shieldHalfW;
-        if (y > center + 5) {
-            float t = (float)(shieldBottom - y) / 45.0f;
-            currentHalfW = (int)(shieldHalfW * t);
-            if (currentHalfW < 0) currentHalfW = 0;
-        }
-        for (int x = center - currentHalfW; x <= center + currentHalfW; ++x) {
-            if (x >= 0 && x < targetSize && y >= 0 && y < targetSize) {
-                bool isEdge = (x == center - currentHalfW || x == center + currentHalfW || y == shieldTop || y == shieldBottom);
-                pixels[y * targetSize + x] = isEdge ? cAccent : cShield;
-            }
-        }
-    }
-
-    // Lock / Keyhole icon inside the shield
-    for (int dy = -15; dy <= 16; ++dy) {
-        for (int dx = -10; dx <= 10; ++dx) {
-            int px = center + dx;
-            int py = center - 4 + dy;
-            if (px >= 0 && px < targetSize && py >= 0 && py < targetSize) {
-                if (dy <= 0 && (dx * dx + dy * dy <= 56)) {
-                    pixels[py * targetSize + px] = cWhite;
-                } else if (dy > 0 && dy <= 15 && (abs(dx) <= 3)) {
-                    pixels[py * targetSize + px] = cWhite;
-                }
-            }
-        }
-    }
+    if (hMemDC) DeleteDC(hMemDC);
+    ReleaseDC(nullptr, hdc);
+    GdiFlush();
 
     return hBmp;
 }
@@ -539,73 +504,90 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
         BITMAPINFO bmi = {0};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = targetSize;
-        bmi.bmiHeader.biHeight = -targetSize; // Top-down DIB
+        bmi.bmiHeader.biHeight = targetSize; // Positive bottom-up DIB (compatible with GetDIBits and COM)
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
 
         void* pBits = nullptr;
         HDC hdc = GetDC(nullptr);
-        HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-        ReleaseDC(nullptr, hdc);
+        HDC hMemDC = CreateCompatibleDC(hdc);
+        HBITMAP hBmp = CreateDIBSection(hMemDC ? hMemDC : hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
 
-        if (!hBmp || !pBits) return nullptr;
-
-        uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
-
-        const uint32_t OPAQUE_WHITE = 0xFFFFFFFF; // 100% opaque white
-        const uint32_t OPAQUE_BLACK = 0xFF000000; // 100% opaque black
-        const uint32_t BORDER_COLOR = 0xFFCBD5E1; // 100% opaque subtle border
-
-        // 1. Fill entire canvas with pure opaque white
-        for (int i = 0; i < targetSize * targetSize; ++i) {
-            pixels[i] = OPAQUE_WHITE;
+        if (!hBmp || !pBits) {
+            if (hMemDC) DeleteDC(hMemDC);
+            ReleaseDC(nullptr, hdc);
+            return nullptr;
         }
 
-        // 2. Safe inner area for circular avatar clipping in Windows 10/11:
-        // A circle of diameter targetSize has radius R = targetSize / 2.
-        // A square of side S inscribed in radius (R - 14) requires S <= (R - 14) * sqrt(2).
-        // For targetSize = 256: R = 128 -> (128 - 14) * 1.414 = 161 pixels.
-        int maxInnerSize = (int)((targetSize / 2 - 14) * 1.414f);
-        if (maxInnerSize > targetSize - 32) maxInnerSize = targetSize - 32;
+        HGDIOBJ hOldBmp = hMemDC ? SelectObject(hMemDC, hBmp) : nullptr;
 
-        int moduleScale = maxInnerSize / qrSize;
-        if (moduleScale < 1) moduleScale = 1;
-        int actualQrSize = qrSize * moduleScale;
-        int startX = (targetSize - actualQrSize) / 2;
-        int startY = (targetSize - actualQrSize) / 2;
+        // 1. Fill entire canvas with pure white
+        if (hMemDC) {
+            RECT fullRect = {0, 0, targetSize, targetSize};
+            HBRUSH hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+            FillRect(hMemDC, &fullRect, hWhiteBrush);
+            DeleteObject(hWhiteBrush);
 
-        // 3. Draw subtle circular border ring around the card
-        int center = targetSize / 2;
-        int ringR = targetSize / 2 - 2;
-        for (int y = 0; y < targetSize; ++y) {
-            for (int x = 0; x < targetSize; ++x) {
-                int dx = x - center;
-                int dy = y - center;
-                int d2 = dx * dx + dy * dy;
-                if (d2 >= (ringR - 2) * (ringR - 2) && d2 <= ringR * ringR) {
-                    pixels[y * targetSize + x] = BORDER_COLOR;
-                }
-            }
-        }
+            // 2. Safe inner area for circular avatar clipping in Windows 10/11:
+            // A circle of diameter targetSize has radius R = targetSize / 2.
+            // A square of side S inscribed in radius (R - 16) requires S <= (R - 16) * sqrt(2).
+            // For targetSize = 256: R = 128 -> (128 - 16) * 1.414 = 158 pixels.
+            int maxInnerSize = (int)((targetSize / 2 - 16) * 1.414f);
+            if (maxInnerSize > targetSize - 40) maxInnerSize = targetSize - 40;
 
-        // 4. Draw QR Code modules (100% opaque black)
-        for (int y = 0; y < qrSize; ++y) {
-            for (int x = 0; x < qrSize; ++x) {
-                if (qr.getModule(x, y)) {
-                    int px0 = startX + x * moduleScale;
-                    int py0 = startY + y * moduleScale;
-                    for (int sy = 0; sy < moduleScale; ++sy) {
-                        for (int sx = 0; sx < moduleScale; ++sx) {
-                            pixels[(py0 + sy) * targetSize + (px0 + sx)] = OPAQUE_BLACK;
-                        }
+            int moduleScale = maxInnerSize / qrSize;
+            if (moduleScale < 1) moduleScale = 1;
+            int actualQrSize = qrSize * moduleScale;
+            int startX = (targetSize - actualQrSize) / 2;
+            int startY = (targetSize - actualQrSize) / 2;
+
+            // 3. Draw subtle circular border ring around the card
+            HPEN hRingPen = CreatePen(PS_SOLID, 2, RGB(203, 213, 225));
+            HBRUSH hNullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
+            HGDIOBJ hOldPen = SelectObject(hMemDC, hRingPen);
+            HGDIOBJ hOldBrush = SelectObject(hMemDC, hNullBrush);
+            Ellipse(hMemDC, 2, 2, targetSize - 2, targetSize - 2);
+            SelectObject(hMemDC, hOldPen);
+            SelectObject(hMemDC, hOldBrush);
+            DeleteObject(hRingPen);
+
+            // 4. Draw QR Code modules using GDI FillRect
+            HBRUSH hBlackBrush = CreateSolidBrush(RGB(0, 0, 0));
+            for (int y = 0; y < qrSize; ++y) {
+                for (int x = 0; x < qrSize; ++x) {
+                    if (qr.getModule(x, y)) {
+                        RECT modRect = {
+                            startX + x * moduleScale,
+                            startY + y * moduleScale,
+                            startX + (x + 1) * moduleScale,
+                            startY + (y + 1) * moduleScale
+                        };
+                        FillRect(hMemDC, &modRect, hBlackBrush);
                     }
                 }
             }
+            DeleteObject(hBlackBrush);
+
+            if (hOldBmp) SelectObject(hMemDC, hOldBmp);
+            DeleteDC(hMemDC);
+        }
+        ReleaseDC(nullptr, hdc);
+
+        // 5. CRITICAL FOR WINDOWS 10/11 DIRECTCOMPOSITION:
+        // In 32-bit DIB, GDI FillRect sets RGB but may leave alpha byte as 0x00.
+        // DirectComposition renders 0x00 alpha as 100% transparent glass!
+        // Force every single pixel to have 100% opaque alpha (0xFF).
+        uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
+        for (int i = 0; i < targetSize * targetSize; ++i) {
+            pixels[i] |= 0xFF000000;
         }
 
+        GdiFlush();
+        CPLog(L"qr: CreateQrBitmap generated 256x256 QR bmp=%p qrSize=%d moduleScale=%d", hBmp, qrSize, moduleScale);
         return hBmp;
     } catch (...) {
+        CPLog(L"qr: CreateQrBitmap exception caught");
         return nullptr;
     }
 }
@@ -628,18 +610,25 @@ void LigamentCredential::TriggerFIDO2Auth() {
 
     WebAuthnBeginResult beginRes = m_apiClient->WebAuthnBegin(m_username, m_password);
     if (!beginRes.success) {
+        ClearQrBitmap();
         m_statusText = L"Ошибка Passkey: " + DescribeServerError(beginRes.error, m_apiClient->LastRetryAfterSec());
         NotifyFieldChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_LOGO);
         return;
     }
 
     // Ссылка для сканирования камерой смартфона
     std::string qrUrl = WideToUtf8(m_config.serverUrl) + "/auth/passkey?handle=" + beginRes.handle;
 
-    ClearQrBitmap();
+    if (m_hQrBmp) {
+        DeleteObject(m_hQrBmp);
+        m_hQrBmp = nullptr;
+    }
     m_hQrBmp = CreateQrBitmap(qrUrl, 256);
     if (m_pEvents && m_hQrBmp) {
         m_pEvents->SetFieldBitmap(this, FID_LOGO, m_hQrBmp);
+        m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
+        GdiFlush();
     }
 
     m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
