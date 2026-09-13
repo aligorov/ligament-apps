@@ -27,11 +27,16 @@ param (
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "[!] Требуются права Администратора. Запуск от имени Администратора..." -ForegroundColor Yellow
-    $argsList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    if ($Component -ne "Interactive") { $argsList += " -Component $Component" }
-    if ($ServerURL) { $argsList += " -ServerURL `"$ServerURL`"" }
-    if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
-    if ($Silent) { $argsList += " -Silent" }
+    if ($PSCommandPath) {
+        $argsList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        if ($Component -ne "Interactive") { $argsList += " -Component $Component" }
+        if ($ServerURL) { $argsList += " -ServerURL `"$ServerURL`"" }
+        if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
+        if ($Silent) { $argsList += " -Silent" }
+    } else {
+        $cmd = "irm https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1 | iex"
+        $argsList = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
+    }
     Start-Process powershell -Verb RunAs -ArgumentList $argsList
     exit
 }
@@ -80,7 +85,7 @@ if ($Component -eq "Interactive" -and -not $Silent) {
     Write-Host "  [2] Только RDP Credential Provider для серверов (ZIP DLL, без GUI)" -ForegroundColor White
     Write-Host "  [3] Выход" -ForegroundColor Gray
     Write-Host ""
-    $choice = ReadHost "Введите номер (1-3) [по умолчанию 1]"
+    $choice = (Read-Host "Введите номер (1-3) [по умолчанию 1]").Trim()
     if ($choice -eq "2") {
         $Component = "CP"
     } elseif ($choice -eq "3") {
@@ -106,9 +111,9 @@ if (-not $ServerURL) {
         Write-Host "Текущий адрес сервера 2FA: $ServerURL" -ForegroundColor Gray
     } elseif (-not $Silent) {
         Write-Host ""
-        $inputUrl = ReadHost "Введите адрес сервера 2FA (например: https://2fa.corp.ru) [Enter чтобы настроить позже]"
+        $inputUrl = (Read-Host "Введите адрес сервера 2FA (например: https://2fa.corp.ru) [Enter чтобы настроить позже]").Trim()
         if ($inputUrl) {
-            $ServerURL = $inputUrl.Trim().TrimEnd('/')
+            $ServerURL = $inputUrl.TrimEnd('/')
         }
     }
 }
@@ -250,6 +255,8 @@ try {
 }
 
 if (-not $Silent) {
-    Write-Host "Нажмите любую клавишу для завершения..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    Write-Host "`nНажмите Enter для завершения..."
+    try {
+        $null = Read-Host
+    } catch {}
 }
