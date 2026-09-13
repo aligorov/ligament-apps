@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
@@ -11,6 +12,39 @@ import 'screens/home_screen.dart';
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    debugPrint('Flutter Unhandled Error: ${details.exception}');
+  };
+
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Material(
+      color: const Color(0xFF0F172A),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 48),
+              const SizedBox(height: 16),
+              const Text(
+                'Ligament 2FA',
+                style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                details.exceptionAsString(),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
 
   // Запуск в свернутом виде (например, автозагрузка Windows/MSI с флагом --minimized):
   // окно не показывается, приложение сидит в системном трее.
@@ -41,7 +75,11 @@ void main(List<String> args) async {
   }
 
   final authState = AuthState();
-  await authState.init();
+  try {
+    await authState.init();
+  } catch (e, st) {
+    debugPrint('auth_state: ошибка инициализации: $e\n$st');
+  }
 
   runApp(
     ChangeNotifierProvider.value(
@@ -153,6 +191,11 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
       supportedLocales: const [
         Locale('ru'),
         Locale('en'),
+      ],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
       ],
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
