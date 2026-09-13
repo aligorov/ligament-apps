@@ -77,7 +77,7 @@ private:
     bool m_isRemoteSession = false;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;
 
-    AUTH_FACTOR_MODE m_currentMode = MODE_FIDO2;
+    AUTH_FACTOR_MODE m_currentMode = MODE_PUSH;
     std::wstring m_username;
     std::wstring m_domain;
     std::wstring m_password;

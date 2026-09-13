@@ -44,6 +44,7 @@ struct Config {
     bool rdp2faEnabled = true;
     bool console2faEnabled = false;
     bool fido2Enabled = true;
+    int defaultFactor = 0; // 0 = Push (приложение Ligament / Telegram), 1 = Passkey (QR-код), 2 = OTP (TOTP)
     int pushTimeoutSec = 45;
     bool failClose = true;
     bool allowSelfSigned = false;
@@ -101,11 +102,11 @@ struct Config {
         auto readInt = [&](const wchar_t* name, int& outVal) -> bool {
             DWORD dwVal = 0, dwType = 0, dwSize = sizeof(dwVal);
             if (hKeyPolicy && RegQueryValueExW(hKeyPolicy, name, nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && (dwType == REG_DWORD)) {
-                if (dwVal > 0) outVal = (int)dwVal;
+                outVal = (int)dwVal;
                 return true;
             }
             if (hKeyLocal && RegQueryValueExW(hKeyLocal, name, nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && (dwType == REG_DWORD)) {
-                if (dwVal > 0) outVal = (int)dwVal;
+                outVal = (int)dwVal;
                 return true;
             }
             return false;
@@ -115,6 +116,7 @@ struct Config {
         readDword(L"RDP2FAEnabled", cfg.rdp2faEnabled);
         readDword(L"Console2FAEnabled", cfg.console2faEnabled);
         readDword(L"FIDO2Enabled", cfg.fido2Enabled);
+        readInt(L"DefaultFactor", cfg.defaultFactor);
         readInt(L"PushTimeoutSeconds", cfg.pushTimeoutSec);
         readDword(L"FailClose", cfg.failClose);
         readDword(L"AllowSelfSigned", cfg.allowSelfSigned);

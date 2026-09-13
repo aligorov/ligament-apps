@@ -100,16 +100,19 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000);
     m_webAuthn = std::make_unique<WebAuthnClient>();
 
-    if (cfg.fido2Enabled) {
+    if (cfg.defaultFactor == 1 && cfg.fido2Enabled) {
         m_currentMode = MODE_FIDO2;
-        m_statusText = L"Passkey: введите пароль и нажмите стрелку входа для QR-кода";
+        m_statusText = L"Passkey: введите имя пользователя и пароль для QR-кода";
+    } else if (cfg.defaultFactor == 2) {
+        m_currentMode = MODE_OTP;
+        m_statusText = L"Введите 6 цифр TOTP или коснитесь YubiKey";
     } else {
         m_currentMode = MODE_PUSH;
-        m_statusText = L"Вход через Telegram Push / приложение Ligament";
+        m_statusText = L"Вход через приложение Ligament (число) / Telegram";
     }
-    CPLog(L"init: тайл создан remote=%d cpus=%u fido2Cfg=%d mode=%s failClose=%d rdp2fa=%d",
-        isRemote ? 1 : 0, (unsigned)cpus, cfg.fido2Enabled ? 1 : 0,
-        (m_currentMode == MODE_FIDO2) ? L"FIDO2" : L"PUSH",
+    CPLog(L"init: тайл создан remote=%d cpus=%u fido2Cfg=%d defaultFactor=%d mode=%s failClose=%d rdp2fa=%d",
+        isRemote ? 1 : 0, (unsigned)cpus, cfg.fido2Enabled ? 1 : 0, cfg.defaultFactor,
+        (m_currentMode == MODE_FIDO2) ? L"FIDO2" : ((m_currentMode == MODE_OTP) ? L"OTP" : L"PUSH"),
         cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0);
 }
 
@@ -188,7 +191,7 @@ HRESULT LigamentCredential::GetFieldState(
         break;
 
     case FID_FIDO2_BTN:
-        *pcpfs = (m_currentMode == MODE_FIDO2) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        *pcpfs = (m_currentMode == MODE_PUSH && m_config.fido2Enabled) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         break;
 
     case FID_OTP_CODE:
@@ -233,16 +236,10 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         val = m_otpCode;
         break;
     case FID_SWITCH_FACTOR_BTN:
-        if (m_currentMode == MODE_FIDO2) {
-            val = L"Переключить на Push-подтверждение";
-        } else if (m_currentMode == MODE_PUSH) {
-            val = m_config.fido2Enabled
-                ? L"Переключить на Passkey (QR-код на телефоне / Ключ)"
-                : L"Переключить на ввод TOTP / YubiKey OTP";
+        if (m_currentMode == MODE_PUSH) {
+            val = L"Войти по коду TOTP / YubiKey OTP";
         } else {
-            val = m_config.fido2Enabled
-                ? L"Переключить на Passkey (QR-код на телефоне / Ключ)"
-                : L"Переключить на Telegram Push";
+            val = L"Вернуться к Push-подтверждению (число в приложении)";
         }
         break;
     default:
@@ -334,7 +331,14 @@ HRESULT LigamentCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSe
 
 HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
     if (dwFieldID == FID_FIDO2_BTN) {
-        TriggerFIDO2Auth();
+        ClearQrBitmap();
+        StopPollThread();
+        m_currentMode = MODE_FIDO2;
+        m_numberMatch.clear();
+        UpdateFieldStates();
+        if (!m_username.empty() && !m_password.empty()) {
+            TriggerFIDO2Auth();
+        }
     } else if (dwFieldID == FID_SWITCH_FACTOR_BTN) {
         SwitchToNextMode();
     }
@@ -344,10 +348,7 @@ HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
 void LigamentCredential::SwitchToNextMode() {
     ClearQrBitmap();
     StopPollThread();
-    bool canPasskey = m_config.fido2Enabled;
     if (m_currentMode == MODE_PUSH) {
-        m_currentMode = canPasskey ? MODE_FIDO2 : MODE_OTP;
-    } else if (m_currentMode == MODE_FIDO2) {
         m_currentMode = MODE_OTP;
     } else {
         m_currentMode = MODE_PUSH;
@@ -376,9 +377,17 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
 
 void LigamentCredential::UpdateFieldStates() {
     if (m_currentMode == MODE_FIDO2) {
-        m_statusText = L"Passkey: нажмите кнопку ниже или стрелку для входа";
+        if (m_username.empty() || m_password.empty()) {
+            m_statusText = L"Passkey: введите имя пользователя и пароль для получения QR-кода";
+        } else {
+            m_statusText = L"Passkey: нажмите стрелку входа для генерации QR-кода";
+        }
     } else if (m_currentMode == MODE_PUSH) {
-        m_statusText = L"Вход через Telegram / Ligament Authenticator";
+        if (!m_numberMatch.empty()) {
+            m_statusText = L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:";
+        } else {
+            m_statusText = L"Вход через приложение Ligament (число) / Telegram";
+        }
     } else if (m_currentMode == MODE_OTP) {
         m_statusText = L"Введите 6 цифр TOTP или коснитесь YubiKey";
     }
