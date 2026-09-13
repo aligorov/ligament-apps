@@ -386,6 +386,15 @@ class AppStrings {
   String get testDeliveryTitle => isRu ? 'Проверка доставки' : 'Delivery Test';
   String get testDeliveryRunning => isRu ? 'Отправка тестовых уведомлений...' : 'Sending test alerts...';
 
+  // --- Branch Relays ---
+  String get branchRelaysSection => isRu ? 'Филиалы Relay' : 'Branch Relays';
+  String get branchRelaysSubtitle => isRu
+      ? 'Автономная 2FA-аутентификация в филиалах при обрыве связи с ядром'
+      : 'Autonomous 2FA in branch offices when offline from core';
+  String get noBranchRelays => isRu ? 'Филиалы Relay не обнаружены' : 'No branch relays configured';
+  String get relayActiveGateway => isRu ? 'Активен (LAN шлюз)' : 'Active (LAN Gateway)';
+  String get relayStandbyGateway => isRu ? 'Резервный LAN-узел' : 'Standby LAN Node';
+
   // --- Tray ---
   String get trayOpen => isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA';
   String get trayExit => isRu ? 'Выход' : 'Exit';

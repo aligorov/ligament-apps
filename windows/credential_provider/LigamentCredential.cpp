@@ -110,7 +110,7 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_config = cfg;
     m_isRemoteSession = isRemote;
     m_cpus = cpus;
-    m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000);
+    m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000, cfg.fallbackRelayUrl);
     m_webAuthn = std::make_unique<WebAuthnClient>();
     m_hDefaultLogoBmp = CreateLogoBitmap(256);
 
@@ -124,10 +124,11 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
         m_currentMode = MODE_PUSH;
         m_statusText = L"Вход через приложение Ligament (число) / Telegram";
     }
-    CPLog(L"init: тайл создан remote=%d cpus=%u fido2Cfg=%d defaultFactor=%d mode=%s failClose=%d rdp2fa=%d",
+    CPLog(L"init: тайл создан remote=%d cpus=%u fido2Cfg=%d defaultFactor=%d mode=%s failClose=%d rdp2fa=%d relay=%s",
         isRemote ? 1 : 0, (unsigned)cpus, cfg.fido2Enabled ? 1 : 0, cfg.defaultFactor,
         (m_currentMode == MODE_FIDO2) ? L"FIDO2" : ((m_currentMode == MODE_OTP) ? L"OTP" : L"PUSH"),
-        cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0);
+        cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0,
+        cfg.fallbackRelayUrl.empty() ? L"none" : cfg.fallbackRelayUrl.c_str());
 }
 
 void LigamentCredential::SetProviderEvents(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
@@ -699,7 +700,7 @@ void LigamentCredential::RunPushPolling() {
     // Короткий receive-таймаут: один запрос блокирует поток не дольше ~8 c,
     // поэтому остановка (stop-флаг проверяется между запросами) и join в
     // LogonUI занимают секунды — это же ограничивает ожидание в деструкторе.
-    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000);
+    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000, cfg.fallbackRelayUrl);
 
     int maxPolls = cfg.pushTimeoutSec;
     for (int i = 0; i < maxPolls; ++i) {

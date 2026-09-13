@@ -371,6 +371,119 @@ class SettingsScreen extends StatelessWidget {
           ),
           const SizedBox(height: 16),
 
+          // Карточка филиальных узлов Relay
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFF334155)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.hub_outlined, color: Color(0xFF38BDF8), size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          s.branchRelaysSection,
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF38BDF8)),
+                      onPressed: () => auth.refreshRelays(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  s.branchRelaysSubtitle,
+                  style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                ),
+                const SizedBox(height: 12),
+                if (auth.relays.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      s.noBranchRelays,
+                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                    ),
+                  )
+                else
+                  ...auth.relays.map((relay) {
+                    final ip = relay['last_ip']?.toString() ?? '—';
+                    final name = relay['name']?.toString() ?? 'Relay';
+                    final isCurrent = auth.activeRelayEndpoint == ip;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F172A),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isCurrent ? const Color(0xFF38BDF8) : const Color(0xFF334155),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.router,
+                            size: 20,
+                            color: isCurrent ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'LAN IP: $ip:8082',
+                                  style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: isCurrent
+                                  ? const Color(0xFF0284C7).withValues(alpha: 0.2)
+                                  : const Color(0xFF334155),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              isCurrent ? s.relayActiveGateway : s.relayStandbyGateway,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: isCurrent ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
           // Карточка централизованных политик (GPO для Windows / MDM для macOS)
           Container(
             padding: const EdgeInsets.all(16),

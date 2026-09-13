@@ -60,13 +60,32 @@ class ApiClient {
     return h;
   }
 
+  List<Map<String, dynamic>> relays = [];
+
   /// Получение базовой конфигурации сервера
   Future<Map<String, dynamic>> getConfig() async {
     final res = await _get(_cleanUrl('/api/v1/app/config'));
     if (res.statusCode == 200) {
-      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      if (data['relays'] is List) {
+        relays = (data['relays'] as List).whereType<Map<String, dynamic>>().toList();
+      }
+      return data;
     }
     throw ApiException(res.statusCode, 'config_error');
+  }
+
+  /// Проверка доступности локального Relay-узла по HTTP
+  static Future<Map<String, dynamic>?> probeRelay(String ip, {int port = 8082}) async {
+    try {
+      final res = await http
+          .get(Uri.parse('http://$ip:$port/api/v1/status'))
+          .timeout(const Duration(milliseconds: 1500));
+      if (res.statusCode == 200) {
+        return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// Авторизация устройства в приложении

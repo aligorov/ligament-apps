@@ -41,6 +41,7 @@ extern LONG g_cRefDll;
 // Configuration loaded from registry (GPO: HKLM\SOFTWARE\Policies\Ligament\2FA)
 struct Config {
     std::wstring serverUrl = L"https://twofa.corp.local";
+    std::wstring fallbackRelayUrl; // Relay fallback URL (e.g. "http://192.168.10.50:8082")
     bool rdp2faEnabled = true;
     bool console2faEnabled = false;
     bool fido2Enabled = true;
@@ -113,6 +114,7 @@ struct Config {
         };
 
         readString(L"ServerURL", cfg.serverUrl);
+        readString(L"FallbackRelayURL", cfg.fallbackRelayUrl);
         readDword(L"RDP2FAEnabled", cfg.rdp2faEnabled);
         readDword(L"Console2FAEnabled", cfg.console2faEnabled);
         readDword(L"FIDO2Enabled", cfg.fido2Enabled);

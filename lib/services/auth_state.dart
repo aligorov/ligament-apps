@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
@@ -62,6 +63,11 @@ class AuthState extends ChangeNotifier {
   Map<String, dynamic>? currentPosture;
   bool isCompliant = true;
   bool isOnline = false;
+  List<Map<String, dynamic>> relays = [];
+  String? activeRelayEndpoint;
+  String? activeRelayName;
+  bool get isUsingRelay => activeRelayEndpoint != null;
+  String get connectionStatusText => isOnline ? (isUsingRelay ? 'Online ($activeRelayName)' : 'Online') : 'Offline';
 
   Map<String, dynamic>? activePrompt;
   Map<String, dynamic>? activeSupportPrompt;
@@ -132,6 +138,16 @@ class AuthState extends ChangeNotifier {
 
     // Если GPO принудительно задает ServerURL, используем его
     serverUrl = gpo.enforcedServerUrl ?? prefs.getString('server_url');
+
+    final cachedRelaysRaw = prefs.getString('cached_relays');
+    if (cachedRelaysRaw != null && cachedRelaysRaw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(cachedRelaysRaw);
+        if (decoded is List) {
+          relays = decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        }
+      } catch (_) {}
+    }
 
     // Миграция: ранее токен хранился в SharedPreferences в открытом виде.
     // При первом запуске новой версии переносим его в безопасное хранилище
@@ -287,7 +303,32 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     };
 
-    ws.connect(baseUrl: serverUrl!, token: token!);
+    ws.onEndpointChanged = (endpoint, isRelay) {
+      if (isRelay) {
+        activeRelayEndpoint = endpoint;
+        final found = relays.firstWhere(
+          (r) => r['last_ip']?.toString() == endpoint,
+          orElse: () => <String, dynamic>{'name': 'Branch Relay'},
+        );
+        activeRelayName = found['name']?.toString() ?? 'Branch Relay';
+      } else {
+        activeRelayEndpoint = null;
+        activeRelayName = null;
+      }
+      notifyListeners();
+    };
+
+    final fallbackRelayUrls = relays
+        .map((r) => r['last_ip']?.toString())
+        .where((ip) => ip != null && ip.isNotEmpty)
+        .map((ip) => 'http://$ip:8082')
+        .toList();
+
+    ws.connect(
+      baseUrl: serverUrl!,
+      token: token!,
+      fallbackUrls: fallbackRelayUrls,
+    );
 
     // 2. Телеметрия и контроль комплаенса
     telemetry.startReporting(api!);
@@ -403,6 +444,8 @@ class AuthState extends ChangeNotifier {
     api = null;
     activePrompt = null;
     activeSupportPrompt = null;
+    activeRelayEndpoint = null;
+    activeRelayName = null;
     pendingChallenges.clear();
     allowedApps.clear();
     history.clear();
@@ -428,11 +471,28 @@ class AuthState extends ChangeNotifier {
       loadHistory(),
       checkPosture(),
       checkSupportSession(),
+      refreshRelays(),
     ];
     if (isEngineer) {
       tasks.add(loadSupportQueue());
     }
     await Future.wait(tasks);
+  }
+
+  /// Загрузка и кэширование списка филиальных Relay-узлов
+  Future<void> refreshRelays() async {
+    if (api == null) return;
+    try {
+      final cfg = await api!.getConfig();
+      if (cfg['relays'] is List) {
+        relays = (cfg['relays'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cached_relays', jsonEncode(relays));
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('auth_state: ошибка обновления списка relay: $e');
+    }
   }
 
   /// Загрузка очереди входящих обращений на поддержку (для инженеров)

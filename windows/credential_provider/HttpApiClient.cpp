@@ -4,9 +4,16 @@
 namespace ligament {
 
 
-HttpApiClient::HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned, int receiveTimeoutMs)
-    : m_serverUrl(serverUrl), m_allowSelfSigned(allowSelfSigned) {
+HttpApiClient::HttpApiClient(
+    const std::wstring& serverUrl,
+    bool allowSelfSigned,
+    int receiveTimeoutMs,
+    const std::wstring& fallbackRelayUrl)
+    : m_serverUrl(serverUrl), m_allowSelfSigned(allowSelfSigned), m_fallbackRelayUrl(fallbackRelayUrl) {
     ParseUrl(serverUrl);
+    if (!fallbackRelayUrl.empty()) {
+        ParseRelayUrl(fallbackRelayUrl);
+    }
     m_hSession = WinHttpOpen(
         L"Ligament-2FA-CredentialProvider/1.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -43,6 +50,26 @@ bool HttpApiClient::ParseUrl(const std::wstring& url) {
         m_host = hostName;
         m_port = urlComp.nPort;
         m_isHttps = (urlComp.nScheme == INTERNET_SCHEME_HTTPS);
+        return true;
+    }
+    return false;
+}
+
+bool HttpApiClient::ParseRelayUrl(const std::wstring& url) {
+    URL_COMPONENTS urlComp = {0};
+    urlComp.dwStructSize = sizeof(urlComp);
+    wchar_t hostName[512] = {0};
+    wchar_t urlPath[1024] = {0};
+
+    urlComp.lpszHostName = hostName;
+    urlComp.dwHostNameLength = _countof(hostName);
+    urlComp.lpszUrlPath = urlPath;
+    urlComp.dwUrlPathLength = _countof(urlPath);
+
+    if (WinHttpCrackUrl(url.c_str(), (DWORD)url.length(), 0, &urlComp)) {
+        m_relayHost = hostName;
+        m_relayPort = (urlComp.nPort != 0) ? urlComp.nPort : 8082;
+        m_relayIsHttps = (urlComp.nScheme == INTERNET_SCHEME_HTTPS);
         return true;
     }
     return false;
@@ -137,6 +164,102 @@ bool HttpApiClient::SendRequest(
         } while (dwSize > 0);
     } else {
         LogDebug(L"WinHttpSendRequest/ReceiveResponse failed: %lu", GetLastError());
+    }
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    return bResult;
+}
+
+bool HttpApiClient::SendRelayRequest(
+    const std::wstring& verb,
+    const std::wstring& path,
+    const std::string& body,
+    int& outStatusCode,
+    std::string& outResponse)
+{
+    outStatusCode = 0;
+    outResponse.clear();
+
+    if (!m_hSession || m_relayHost.empty()) return false;
+
+    HINTERNET hConnect = WinHttpConnect(m_hSession, m_relayHost.c_str(), m_relayPort, 0);
+    if (!hConnect) {
+        LogDebug(L"WinHttpConnect (Relay) failed: %lu", GetLastError());
+        return false;
+    }
+
+    DWORD dwFlags = m_relayIsHttps ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET hRequest = WinHttpOpenRequest(
+        hConnect,
+        verb.c_str(),
+        path.c_str(),
+        nullptr,
+        WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
+        dwFlags
+    );
+
+    if (!hRequest) {
+        WinHttpCloseHandle(hConnect);
+        return false;
+    }
+
+    if (m_relayIsHttps && m_allowSelfSigned) {
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
+    }
+
+    // Set Content-Type: application/json
+    LPCWSTR headers = L"Content-Type: application/json\r\n";
+    DWORD headersLen = (DWORD)wcslen(headers);
+
+    LPVOID pBody = (body.empty()) ? nullptr : (LPVOID)body.c_str();
+    DWORD bodyLen = (DWORD)body.length();
+
+    BOOL bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
+    if (!bResult && m_relayIsHttps && m_allowSelfSigned && GetLastError() == ERROR_WINHTTP_SECURE_FAILURE) {
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
+        bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
+    }
+    if (bResult) {
+        bResult = WinHttpReceiveResponse(hRequest, nullptr);
+    }
+
+    if (bResult) {
+        DWORD dwStatusCode = 0;
+        DWORD dwSize = sizeof(dwStatusCode);
+        WinHttpQueryHeaders(
+            hRequest,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            &dwStatusCode,
+            &dwSize,
+            WINHTTP_NO_HEADER_INDEX
+        );
+        outStatusCode = (int)dwStatusCode;
+
+        // Read response body
+        DWORD dwDownloaded = 0;
+        do {
+            dwSize = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) break;
+            if (dwSize == 0) break;
+
+            std::vector<char> buffer(dwSize + 1, 0);
+            if (WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) {
+                outResponse.append(buffer.data(), dwDownloaded);
+            }
+        } while (dwSize > 0);
+    } else {
+        LogDebug(L"WinHttpSendRequest/ReceiveResponse (Relay) failed: %lu", GetLastError());
     }
 
     WinHttpCloseHandle(hRequest);
@@ -352,13 +475,41 @@ bool HttpApiClient::VerifyCombined(
     m_lastRetryAfterSec = 0;
     int statusCode = 0;
     std::string response;
-    if (!SendRequest(L"POST", L"/api/v1/auth/combined", body, statusCode, response)) {
-        outError = "network_error";
-        return false;
+    bool coreSuccess = SendRequest(L"POST", L"/api/v1/auth/combined", body, statusCode, response);
+    if (coreSuccess && statusCode == 200 && ExtractJsonBool(response, "ok")) {
+        return true;
     }
 
-    if (statusCode == 200 && ExtractJsonBool(response, "ok")) {
-        return true;
+    // Если связь с Core потеряна (сетевая ошибка WinHTTP) или Core вернул 5xx,
+    // пробуем авторизоваться через локальный филиальный Relay (offline survivability).
+    if ((!coreSuccess || statusCode >= 500) && !m_relayHost.empty()) {
+        LogDebug(L"Core unavailable (status=%d, ok=%d), attempting fallback to branch relay %S:%u",
+            statusCode, coreSuccess ? 1 : 0, m_relayHost.c_str(), m_relayPort);
+
+        int relayStatus = 0;
+        std::string relayResponse;
+        std::string relayBody = "{\"username\":\"" + u8User +
+                                "\",\"password\":\"" + u8Pass +
+                                "\",\"totp_code\":\"" + u8Code + "\"}";
+
+        if (SendRelayRequest(L"POST", L"/api/v1/auth/verify", relayBody, relayStatus, relayResponse)) {
+            if (relayStatus == 200 && ExtractJsonBool(relayResponse, "ok")) {
+                LogDebug(L"Branch relay verified credentials successfully for %S", u8User.c_str());
+                return true;
+            } else {
+                LogDebug(L"Branch relay verification failed: status=%d, resp=%S", relayStatus, relayResponse.c_str());
+                outError = ExtractJsonString(relayResponse, "error");
+                if (outError.empty()) outError = "status_" + std::to_string(relayStatus);
+                return false;
+            }
+        } else {
+            LogDebug(L"Branch relay network request failed");
+        }
+    }
+
+    if (!coreSuccess) {
+        outError = "network_error";
+        return false;
     }
 
     // 401 приходит как {"ok":false} без поля error — fallback status_401;

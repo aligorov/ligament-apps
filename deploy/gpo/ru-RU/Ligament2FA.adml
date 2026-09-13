@@ -17,6 +17,9 @@
       <string id="ServerURL_Policy">Корпоративный адрес сервера Ligament 2FA</string>
       <string id="ServerURL_Policy_Help">Задает URL-адрес сервера двухфакторной аутентификации Ligament (например, https://2fa.corp.example.com). Если параметр включен, пользователь не может изменить адрес сервера в интерфейсе приложения.</string>
 
+      <string id="FallbackRelayURL_Policy">Резервный адрес филиального узла Relay</string>
+      <string id="FallbackRelayURL_Policy_Help">Задает URL-адрес локального узла Ligament Relay для филиала (например, http://192.168.10.5:8082). Используется для автономного входа (offline survivability) при обрыве связи с центральным сервером Core.</string>
+
       <string id="AutoStart_Policy">Автозапуск при входе в Windows</string>
       <string id="AutoStart_Policy_Help">Если параметр включен, приложение Ligament Authenticator автоматически запускается в фоновом режиме в системном трее при входе пользователя в систему.</string>
 
@@ -70,6 +73,11 @@
       <presentation id="ServerURL_Presentation">
         <textBox refId="ServerURL_Value">
           <label>URL сервера (HTTPS):</label>
+        </textBox>
+      </presentation>
+      <presentation id="FallbackRelayURL_Presentation">
+        <textBox refId="FallbackRelayURL_Value">
+          <label>URL филиального Relay:</label>
         </textBox>
       </presentation>
       <presentation id="TelemetryInterval_Presentation">

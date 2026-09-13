@@ -22,7 +22,12 @@ public:
     // запросом; фоновый push-polling использует короткий таймаут, чтобы
     // остановка потока (и, значит, join в LogonUI) занимала секунды, а
     // не до 45 c дефолтного receive-таймаута.
-    HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned = false, int receiveTimeoutMs = 45000);
+    HttpApiClient(
+        const std::wstring& serverUrl,
+        bool allowSelfSigned = false,
+        int receiveTimeoutMs = 45000,
+        const std::wstring& fallbackRelayUrl = L""
+    );
     ~HttpApiClient();
 
     // 1. Push authentication (server /api/v1/auth/start requires
@@ -32,7 +37,7 @@ public:
     bool StartPush(const std::wstring& username, const std::wstring& password, std::wstring& outChallengeId, std::wstring& outNumberMatch, std::string& outError);
     bool PollStatus(const std::wstring& challengeId, std::wstring& outStatus, std::string& outError);
 
-    // 2. Combined password + OTP authentication
+    // 2. Combined password + OTP authentication (с автоматическим failover на branch relay при обрыве связи)
     bool VerifyCombined(const std::wstring& username, const std::wstring& password, const std::wstring& code, std::string& outError);
 
     // 3. WebAuthn / FIDO2 authentication
@@ -46,15 +51,27 @@ public:
 
 private:
     std::wstring m_serverUrl;
+    std::wstring m_fallbackRelayUrl;
     std::wstring m_host;
+    std::wstring m_relayHost;
     INTERNET_PORT m_port = INTERNET_DEFAULT_HTTPS_PORT;
+    INTERNET_PORT m_relayPort = 8082;
     bool m_isHttps = true;
+    bool m_relayIsHttps = false;
     bool m_allowSelfSigned = false;
     HINTERNET m_hSession = nullptr;
     int m_lastRetryAfterSec = 0;
 
     bool ParseUrl(const std::wstring& url);
+    bool ParseRelayUrl(const std::wstring& url);
     bool SendRequest(
+        const std::wstring& verb,
+        const std::wstring& path,
+        const std::string& body,
+        int& outStatusCode,
+        std::string& outResponse
+    );
+    bool SendRelayRequest(
         const std::wstring& verb,
         const std::wstring& path,
         const std::string& body,

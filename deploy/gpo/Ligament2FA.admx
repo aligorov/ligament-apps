@@ -29,6 +29,17 @@
       </elements>
     </policy>
 
+    <!-- Fallback Branch Relay URL -->
+    <policy name="FallbackRelayURL_Policy" class="Both" displayName="$(string.FallbackRelayURL_Policy)"
+      explainText="$(string.FallbackRelayURL_Policy_Help)" presentation="$(presentation.FallbackRelayURL_Presentation)"
+      key="Software\Policies\Ligament\2FA">
+      <parentCategory ref="GeneralSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <text id="FallbackRelayURL_Value" valueName="FallbackRelayURL" required="false" maxLength="2048" />
+      </elements>
+    </policy>
+
     <!-- AutoStart at Logon -->
     <policy name="AutoStart_Policy" class="Both" displayName="$(string.AutoStart_Policy)"
       explainText="$(string.AutoStart_Policy_Help)" key="Software\Policies\Ligament\2FA"

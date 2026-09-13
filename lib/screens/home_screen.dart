@@ -263,7 +263,7 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                 color: auth.isOnline
-                    ? const Color(0xFF10B981).withValues(alpha: 0.15)
+                    ? (auth.isUsingRelay ? const Color(0xFF0284C7).withValues(alpha: 0.2) : const Color(0xFF10B981).withValues(alpha: 0.15))
                     : const Color(0xFFEF4444).withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(12),
               ),
@@ -274,16 +274,20 @@ class _HomeScreenState extends State<HomeScreen> {
                     height: 8,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: auth.isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                      color: auth.isOnline
+                          ? (auth.isUsingRelay ? const Color(0xFF38BDF8) : const Color(0xFF10B981))
+                          : const Color(0xFFEF4444),
                     ),
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    auth.isOnline ? 'Online' : 'Offline',
+                    auth.isOnline ? (auth.isUsingRelay ? 'Relay: ${auth.activeRelayName ?? "LAN"}' : 'Online') : 'Offline',
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
-                      color: auth.isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                      color: auth.isOnline
+                          ? (auth.isUsingRelay ? const Color(0xFF38BDF8) : const Color(0xFF10B981))
+                          : const Color(0xFFEF4444),
                     ),
                   ),
                 ],

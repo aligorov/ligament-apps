@@ -5,8 +5,10 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 
 typedef PushPromptCallback = void Function(Map<String, dynamic> prompt);
+typedef EndpointChangeCallback = void Function(String? endpoint, bool isRelay);
 
-/// Сервис постоянного WebSocket соединения для мгновенных push-уведомлений.
+/// Сервис постоянного WebSocket соединения для мгновенных push-уведомлений
+/// с поддержкой автоматического failover на локальные Relay-узлы филиалов.
 class WebSocketService {
   WebSocketChannel? _channel;
   Timer? _reconnectTimer;
@@ -19,14 +21,41 @@ class WebSocketService {
   PushPromptCallback? onSupportIncoming;
   VoidCallback? onConnected;
   VoidCallback? onDisconnected;
+  EndpointChangeCallback? onEndpointChanged;
 
   bool get isConnected => _channel != null;
+  String? currentEndpoint;
+  bool isUsingRelay = false;
 
-  void connect({required String baseUrl, required String token}) {
+  String? _primaryBaseUrl;
+  String? _token;
+  List<String> _fallbackUrls = [];
+  int _attemptIndex = 0;
+
+  void connect({
+    required String baseUrl,
+    required String token,
+    List<String> fallbackUrls = const [],
+  }) {
     _disposed = false;
+    _primaryBaseUrl = baseUrl;
+    _token = token;
+    _fallbackUrls = List.from(fallbackUrls);
     _reconnectTimer?.cancel();
+    _attemptIndex = 0;
+    _connectCandidate();
+  }
 
-    var wsUrl = baseUrl.trim();
+  void _connectCandidate() {
+    if (_disposed || _primaryBaseUrl == null || _token == null) return;
+
+    final candidates = [_primaryBaseUrl!, ..._fallbackUrls];
+    if (candidates.isEmpty) return;
+
+    final targetUrl = candidates[_attemptIndex % candidates.length];
+    final isRelay = (_attemptIndex % candidates.length) != 0;
+
+    var wsUrl = targetUrl.trim();
     if (wsUrl.startsWith('https://')) {
       wsUrl = 'wss://${wsUrl.substring(8)}';
     } else if (wsUrl.startsWith('http://')) {
@@ -35,31 +64,33 @@ class WebSocketService {
     if (wsUrl.endsWith('/')) {
       wsUrl = wsUrl.substring(0, wsUrl.length - 1);
     }
-    wsUrl = '$wsUrl/api/v1/app/ws';
+    wsUrl = isRelay ? '$wsUrl/api/v1/ws' : '$wsUrl/api/v1/app/ws';
 
     try {
       final uri = Uri.parse(wsUrl);
-      // Токен передается в заголовке Authorization (Bearer), а не в query-строке,
-      // чтобы не оседать в access-логах прокси и сервера приложений.
-      //
-      // pingInterval — НАСТОЯЩИЕ WebSocket control-ping'и на уровне
-      // протокола (web_socket_channel шлёт их сам, gorilla на сервере
-      // отвечает pong автоматически): соединение не рвётся тихо через
-      // прокси/NAT с таймаутом по неактивности — раньше «мёртвый» WS
-      // мог жить до первого prompt, и push терялся до реконнекта.
+      final headers = isRelay ? <String, String>{} : {'Authorization': 'Bearer $_token'};
+
       _channel = IOWebSocketChannel.connect(
         uri,
-        headers: {'Authorization': 'Bearer $token'},
-        connectTimeout: const Duration(seconds: 10),
+        headers: headers,
+        connectTimeout: const Duration(seconds: 4),
         pingInterval: const Duration(seconds: 20),
       );
-      // onConnected — только после реального установления соединения
-      // (ready завершается после handshake), а не по факту вызова connect.
+
       _channel!.ready.then((_) {
-        if (!_disposed) onConnected?.call();
+        if (!_disposed) {
+          currentEndpoint = targetUrl;
+          this.isUsingRelay = isRelay;
+          onEndpointChanged?.call(isRelay ? _extractHost(targetUrl) : null, isRelay);
+          onConnected?.call();
+        }
       }).catchError((Object e) {
-        debugPrint('ws_service: соединение не установлено: $e');
-        if (!_disposed) onDisconnected?.call();
+        debugPrint('ws_service: соединение с $wsUrl не удалось: $e');
+        if (!_disposed) {
+          _channel = null;
+          onDisconnected?.call();
+          _scheduleNextCandidate();
+        }
       });
 
       _channel!.stream.listen(
@@ -69,20 +100,40 @@ class WebSocketService {
         onDone: () {
           _channel = null;
           onDisconnected?.call();
-          _scheduleReconnect(baseUrl: baseUrl, token: token);
+          _scheduleNextCandidate();
         },
         onError: (err) {
-          debugPrint('ws_service: ошибка соединения: $err');
+          debugPrint('ws_service: ошибка соединения $wsUrl: $err');
           _channel = null;
           onDisconnected?.call();
-          _scheduleReconnect(baseUrl: baseUrl, token: token);
+          _scheduleNextCandidate();
         },
         cancelOnError: true,
       );
     } catch (e) {
-      debugPrint('ws_service: исключение при подключении: $e');
-      _scheduleReconnect(baseUrl: baseUrl, token: token);
+      debugPrint('ws_service: исключение при подключении к $wsUrl: $e');
+      _scheduleNextCandidate();
     }
+  }
+
+  static String _extractHost(String url) {
+    try {
+      final u = Uri.parse(url);
+      return u.host;
+    } catch (_) {
+      return url;
+    }
+  }
+
+  void _scheduleNextCandidate() {
+    if (_disposed) return;
+    _reconnectTimer?.cancel();
+    _attemptIndex++;
+    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+      if (!_disposed) {
+        _connectCandidate();
+      }
+    });
   }
 
   void _handleMessage(dynamic message) {
@@ -90,7 +141,7 @@ class WebSocketService {
       final text = message is String ? message : utf8.decode(message as List<int>);
       final data = jsonDecode(text) as Map<String, dynamic>;
 
-      if (data['type'] == 'challenge_prompt') {
+      if (data['type'] == 'challenge_prompt' || data['type'] == 'push_prompt') {
         onPrompt?.call(data);
       } else if (data['type'] == 'support_prompt') {
         onSupportPrompt?.call(data);
@@ -114,20 +165,12 @@ class WebSocketService {
     }
   }
 
-  void _scheduleReconnect({required String baseUrl, required String token}) {
-    if (_disposed) return;
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 3), () {
-      if (!_disposed) {
-        connect(baseUrl: baseUrl, token: token);
-      }
-    });
-  }
-
   void disconnect() {
     _disposed = true;
     _reconnectTimer?.cancel();
     _channel?.sink.close();
     _channel = null;
+    currentEndpoint = null;
+    isUsingRelay = false;
   }
 }
