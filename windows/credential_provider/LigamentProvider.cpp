@@ -1,4 +1,4 @@
-﻿// LigamentProvider.cpp — Implementation of ICredentialProvider and ICredentialProviderFilter
+// LigamentProvider.cpp — Implementation of ICredentialProvider and ICredentialProviderFilter
 #include "LigamentProvider.h"
 
 namespace ligament {
@@ -88,6 +88,9 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     if (m_shouldEnforce2FA && !m_pCredential) {
         m_pCredential = new LigamentCredential();
         m_pCredential->Initialize(m_config, m_isRemoteSession, cpus);
+        if (m_pEvents) {
+            m_pCredential->SetProviderEvents(m_pEvents, m_adviseContext);
+        }
     }
     return S_OK;
 }
@@ -109,10 +112,16 @@ HRESULT LigamentProvider::Advise(ICredentialProviderEvents* pcpe, UINT_PTR upAdv
     m_pEvents = pcpe;
     m_adviseContext = upAdviseContext;
     if (m_pEvents) m_pEvents->AddRef();
+    if (m_pCredential) {
+        m_pCredential->SetProviderEvents(m_pEvents, m_adviseContext);
+    }
     return S_OK;
 }
 
 HRESULT LigamentProvider::UnAdvise() {
+    if (m_pCredential) {
+        m_pCredential->SetProviderEvents(nullptr, 0);
+    }
     if (m_pEvents) {
         m_pEvents->Release();
         m_pEvents = nullptr;

@@ -69,10 +69,14 @@ public:
     );
 
     void Initialize(const Config& cfg, bool isRemote, CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus);
+    void SetProviderEvents(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext);
+    bool IsAuthenticated() const { return m_authenticated; }
 
 private:
     LONG m_cRef = 1;
     ICredentialProviderCredentialEvents* m_pEvents = nullptr;
+    ICredentialProviderEvents* m_pProviderEvents = nullptr;
+    UINT_PTR m_providerAdviseContext = 0;
     Config m_config;
     bool m_isRemoteSession = false;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;
@@ -92,6 +96,7 @@ private:
     HBITMAP m_hQrBmp = nullptr;
     HBITMAP m_hDefaultLogoBmp = nullptr;
     void ClearQrBitmap();
+    void NotifyQrChanged();
     static HBITMAP CreateQrBitmap(const std::string& text, int targetSize = 256);
     static HBITMAP CreateLogoBitmap(int targetSize = 256);
 

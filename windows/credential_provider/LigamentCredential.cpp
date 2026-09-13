@@ -86,6 +86,14 @@ LigamentCredential::~LigamentCredential() {
         DeleteObject(m_hDefaultLogoBmp);
         m_hDefaultLogoBmp = nullptr;
     }
+    if (m_pEvents) {
+        m_pEvents->Release();
+        m_pEvents = nullptr;
+    }
+    if (m_pProviderEvents) {
+        m_pProviderEvents->Release();
+        m_pProviderEvents = nullptr;
+    }
     DeleteCriticalSection(&m_csPoll);
     if (!m_password.empty()) {
         SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
@@ -122,6 +130,17 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
         cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0);
 }
 
+void LigamentCredential::SetProviderEvents(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
+    if (m_pProviderEvents) {
+        m_pProviderEvents->Release();
+    }
+    m_pProviderEvents = pcpe;
+    if (m_pProviderEvents) {
+        m_pProviderEvents->AddRef();
+    }
+    m_providerAdviseContext = upAdviseContext;
+}
+
 // IUnknown
 HRESULT LigamentCredential::QueryInterface(REFIID riid, void** ppv) {
     // Note: only ICredentialProviderCredential is implemented; the tile does
@@ -129,7 +148,7 @@ HRESULT LigamentCredential::QueryInterface(REFIID riid, void** ppv) {
     // not be advertised in the QITAB.
     static const QITAB qit[] = {
         QITABENT(LigamentCredential, ICredentialProviderCredential),
-        { 0 },
+        {0},
     };
     return QISearch(this, qit, riid, ppv);
 }
@@ -167,7 +186,10 @@ HRESULT LigamentCredential::SetSelected(BOOL* pbAutoLogon) {
 
 HRESULT LigamentCredential::SetDeselected() {
     // Leaving the tile voids any 2FA result and pending push polling.
-    ResetAuthState();
+    // If a passkey/push poll is active, keep it alive during tile re-evaluation.
+    if (!m_hPollThread) {
+        ResetAuthState();
+    }
     return S_OK;
 }
 
@@ -266,17 +288,18 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
 }
 
 HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
-    if (dwFieldID == FID_LOGO) {
-        if (m_hQrBmp) {
-            *phbmp = m_hQrBmp;
-            return S_OK;
-        }
-        if (m_hDefaultLogoBmp) {
-            *phbmp = m_hDefaultLogoBmp;
-            return S_OK;
+    if (dwFieldID == FID_LOGO && phbmp) {
+        HBITMAP src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        if (src) {
+            *phbmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+            if (*phbmp) {
+                CPLog(L"GetBitmapValue: returning copy of %s bitmap=%p",
+                    m_hQrBmp ? L"QR" : L"DefaultLogo", *phbmp);
+                return S_OK;
+            }
         }
     }
-    *phbmp = nullptr;
+    if (phbmp) *phbmp = nullptr;
     return E_NOTIMPL;
 }
 
@@ -408,7 +431,12 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
         }
     } else if (dwFieldID == FID_LOGO) {
         HBITMAP bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
-        m_pEvents->SetFieldBitmap(this, FID_LOGO, bmp);
+        if (bmp) {
+            HBITMAP copyBmp = (HBITMAP)CopyImage(bmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+            if (copyBmp) {
+                m_pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
+            }
+        }
         m_pEvents->SetFieldState(this, FID_LOGO, cpfs);
         GdiFlush();
     }
@@ -444,15 +472,31 @@ void LigamentCredential::UpdateFieldStates() {
     }
 }
 
+void LigamentCredential::NotifyQrChanged() {
+    HBITMAP src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+    if (m_pEvents && src) {
+        HBITMAP copyBmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+        if (copyBmp) {
+            HRESULT hr = m_pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
+            CPLog(L"NotifyQrChanged: SetFieldBitmap hr=0x%08X", (unsigned)hr);
+        }
+        m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
+        GdiFlush();
+    }
+    if (m_pProviderEvents && m_providerAdviseContext) {
+        CPLog(L"NotifyQrChanged: triggering CredentialsChanged to reload tile avatar");
+        m_pProviderEvents->CredentialsChanged(m_providerAdviseContext);
+    }
+}
+
 void LigamentCredential::ClearQrBitmap() {
+    bool hadQr = (m_hQrBmp != nullptr);
     if (m_hQrBmp) {
         DeleteObject(m_hQrBmp);
         m_hQrBmp = nullptr;
     }
-    if (m_pEvents && m_hDefaultLogoBmp) {
-        m_pEvents->SetFieldBitmap(this, FID_LOGO, m_hDefaultLogoBmp);
-        m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
-        GdiFlush();
+    if (hadQr) {
+        NotifyQrChanged();
     }
 }
 
@@ -500,91 +544,82 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
         using qrcodegen::QrCode;
         QrCode qr = QrCode::encodeText(text.c_str(), QrCode::Ecc::MEDIUM);
         int qrSize = qr.getSize();
+        if (qrSize <= 0) return nullptr;
 
         BITMAPINFO bmi = {0};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = targetSize;
-        bmi.bmiHeader.biHeight = targetSize; // Positive bottom-up DIB (compatible with GetDIBits and COM)
+        bmi.bmiHeader.biHeight = targetSize; // Positive bottom-up DIB
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
 
         void* pBits = nullptr;
         HDC hdc = GetDC(nullptr);
-        HDC hMemDC = CreateCompatibleDC(hdc);
-        HBITMAP hBmp = CreateDIBSection(hMemDC ? hMemDC : hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+        HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+        ReleaseDC(nullptr, hdc);
 
         if (!hBmp || !pBits) {
-            if (hMemDC) DeleteDC(hMemDC);
-            ReleaseDC(nullptr, hdc);
             return nullptr;
         }
 
-        HGDIOBJ hOldBmp = hMemDC ? SelectObject(hMemDC, hBmp) : nullptr;
+        uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
 
-        // Safe inner area for circular avatar clipping in Windows 10/11:
-        // A circle of diameter targetSize has radius R = targetSize / 2.
-        // A square of side S inscribed in radius (R - 16) requires S <= (R - 16) * sqrt(2).
-        // For targetSize = 256: R = 128 -> (128 - 16) * 1.414 = 158 pixels.
-        int maxInnerSize = (int)((targetSize / 2 - 16) * 1.414f);
-        if (maxInnerSize > targetSize - 40) maxInnerSize = targetSize - 40;
+        // 1. Fill entire canvas with solid opaque pure white (0xFFFFFFFF)
+        for (int i = 0; i < targetSize * targetSize; ++i) {
+            pixels[i] = 0xFFFFFFFF;
+        }
 
-        int moduleScale = maxInnerSize / qrSize;
+        // 2. Safe circular area in Windows 10/11 logon screen:
+        // A circle of diameter targetSize has radius R = targetSize / 2 (128 for 256).
+        // Square inscribed in circle of radius R requires Side <= R * sqrt(2) = 181px.
+        // We use maxInner = 160px so all 4 corners and quiet zones fit comfortably inside the circle!
+        int maxInner = 160;
+        int moduleScale = maxInner / qrSize;
         if (moduleScale < 1) moduleScale = 1;
         int actualQrSize = qrSize * moduleScale;
         int startX = (targetSize - actualQrSize) / 2;
         int startY = (targetSize - actualQrSize) / 2;
 
-        // 1. Fill entire canvas with pure white
-        if (hMemDC) {
-            RECT fullRect = {0, 0, targetSize, targetSize};
-            HBRUSH hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
-            FillRect(hMemDC, &fullRect, hWhiteBrush);
-            DeleteObject(hWhiteBrush);
-
-            // 2. Draw subtle circular border ring around the card
-            HPEN hRingPen = CreatePen(PS_SOLID, 2, RGB(203, 213, 225));
-            HBRUSH hNullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
-            HGDIOBJ hOldPen = SelectObject(hMemDC, hRingPen);
-            HGDIOBJ hOldBrush = SelectObject(hMemDC, hNullBrush);
-            Ellipse(hMemDC, 2, 2, targetSize - 2, targetSize - 2);
-            SelectObject(hMemDC, hOldPen);
-            SelectObject(hMemDC, hOldBrush);
-            DeleteObject(hRingPen);
-
-            // 4. Draw QR Code modules using GDI FillRect
-            HBRUSH hBlackBrush = CreateSolidBrush(RGB(0, 0, 0));
-            for (int y = 0; y < qrSize; ++y) {
-                for (int x = 0; x < qrSize; ++x) {
-                    if (qr.getModule(x, y)) {
-                        RECT modRect = {
-                            startX + x * moduleScale,
-                            startY + y * moduleScale,
-                            startX + (x + 1) * moduleScale,
-                            startY + (y + 1) * moduleScale
-                        };
-                        FillRect(hMemDC, &modRect, hBlackBrush);
+        // 3. Draw QR Code modules directly into memory
+        // In bottom-up DIB, visual row y (0 at top) is at memory row (targetSize - 1 - y)
+        for (int qy = 0; qy < qrSize; ++qy) {
+            for (int qx = 0; qx < qrSize; ++qx) {
+                if (qr.getModule(qx, qy)) {
+                    int topY = startY + qy * moduleScale;
+                    int leftX = startX + qx * moduleScale;
+                    for (int dy = 0; dy < moduleScale; ++dy) {
+                        int visualY = topY + dy;
+                        int memY = targetSize - 1 - visualY;
+                        for (int dx = 0; dx < moduleScale; ++dx) {
+                            int visualX = leftX + dx;
+                            pixels[memY * targetSize + visualX] = 0xFF000000; // Solid opaque black
+                        }
                     }
                 }
             }
-            DeleteObject(hBlackBrush);
-
-            if (hOldBmp) SelectObject(hMemDC, hOldBmp);
-            DeleteDC(hMemDC);
         }
-        ReleaseDC(nullptr, hdc);
 
-        // 5. CRITICAL FOR WINDOWS 10/11 DIRECTCOMPOSITION:
-        // In 32-bit DIB, GDI FillRect sets RGB but may leave alpha byte as 0x00.
-        // DirectComposition renders 0x00 alpha as 100% transparent glass!
-        // Force every single pixel to have 100% opaque alpha (0xFF).
-        uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
-        for (int i = 0; i < targetSize * targetSize; ++i) {
-            pixels[i] |= 0xFF000000;
+        // 4. Draw subtle circular border ring around the card at radius R = 126
+        int cx = targetSize / 2;
+        int cy = targetSize / 2;
+        int rOuterSq = 126 * 126;
+        int rInnerSq = 124 * 124;
+        for (int visualY = 0; visualY < targetSize; ++visualY) {
+            int memY = targetSize - 1 - visualY;
+            int dy = visualY - cy;
+            for (int visualX = 0; visualX < targetSize; ++visualX) {
+                int dx = visualX - cx;
+                int distSq = dx * dx + dy * dy;
+                if (distSq <= rOuterSq && distSq >= rInnerSq) {
+                    pixels[memY * targetSize + visualX] = 0xFFCBD5E1; // subtle slate-300 ring
+                }
+            }
         }
 
         GdiFlush();
-        CPLog(L"qr: CreateQrBitmap generated 256x256 QR bmp=%p qrSize=%d moduleScale=%d", hBmp, qrSize, moduleScale);
+        CPLog(L"qr: CreateQrBitmap generated 256x256 QR bmp=%p qrSize=%d moduleScale=%d actualSize=%d",
+            hBmp, qrSize, moduleScale, actualQrSize);
         return hBmp;
     } catch (...) {
         CPLog(L"qr: CreateQrBitmap exception caught");
@@ -625,14 +660,10 @@ void LigamentCredential::TriggerFIDO2Auth() {
         m_hQrBmp = nullptr;
     }
     m_hQrBmp = CreateQrBitmap(qrUrl, 256);
-    if (m_pEvents && m_hQrBmp) {
-        m_pEvents->SetFieldBitmap(this, FID_LOGO, m_hQrBmp);
-        m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
-        GdiFlush();
-    }
 
     m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
     UpdateFieldStates();
+    NotifyQrChanged();
 
     // Запуск фонового опроса сервера (ожидание подтверждения на телефоне)
     StopPollThread();
