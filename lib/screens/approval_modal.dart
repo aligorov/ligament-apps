@@ -24,15 +24,31 @@ class _ApprovalModalState extends State<ApprovalModal> {
   late int _secondsLeft;
   Timer? _timer;
   String? _selectedMatch;
+  final List<String> _numberMatchOptions = [];
   bool _isProcessing = false;
   bool _closing = false;
   String? _error;
+
+  void _generateOptions(String? expectedMatch) {
+    _numberMatchOptions.clear();
+    if (expectedMatch != null && expectedMatch.isNotEmpty) {
+      final set = <String>{expectedMatch};
+      final rnd = Random(); // Недетерминированный генератор случайных чисел
+      while (set.length < 3) {
+        final cand = (rnd.nextInt(90) + 10).toString();
+        set.add(cand);
+      }
+      _numberMatchOptions.addAll(set);
+      _numberMatchOptions.sort();
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _prompt = widget.prompt;
     _secondsLeft = _prompt['expires_in_seconds'] as int? ?? 60;
+    _generateOptions(_prompt['number_match']?.toString());
     _restartTimer();
   }
 
@@ -72,6 +88,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
         _error = null;
         _isProcessing = false;
         _secondsLeft = live['expires_in_seconds'] as int? ?? 60;
+        _generateOptions(live['number_match']?.toString());
       });
       _restartTimer();
     } else if (liveId != null && liveId == curId) {
@@ -166,19 +183,6 @@ class _ApprovalModalState extends State<ApprovalModal> {
     final host = _prompt['host']?.toString();
     final service = _prompt['service']?.toString() ?? strings.serviceCorpAccess;
     final device = _prompt['device']?.toString() ?? _formatDeviceUA(_prompt['ua']?.toString() ?? '', isRu: strings.isRu);
-
-    // Для Number Matching генерируем 3 уникальных варианта: верный + 2 правдоподобных ложных
-    final options = <String>[];
-    if (expectedMatch != null && expectedMatch.isNotEmpty) {
-      final set = <String>{expectedMatch};
-      final rnd = Random(expectedMatch.hashCode);
-      while (set.length < 3) {
-        final cand = (rnd.nextInt(90) + 10).toString();
-        set.add(cand);
-      }
-      options.addAll(set);
-      options.sort();
-    }
 
     return Dialog(
       backgroundColor: const Color(0xFF1E293B),
@@ -299,7 +303,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
                 const SizedBox(height: 12),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: options.map((opt) {
+                  children: _numberMatchOptions.map((opt) {
                     final isSelected = _selectedMatch == opt;
                     return InkWell(
                       onTap: () => setState(() => _selectedMatch = opt),

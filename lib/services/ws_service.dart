@@ -68,7 +68,9 @@ class WebSocketService {
 
     try {
       final uri = Uri.parse(wsUrl);
-      final headers = isRelay ? <String, String>{} : {'Authorization': 'Bearer $_token'};
+      final headers = <String, String>{
+        if (_token != null && _token!.isNotEmpty) 'Authorization': 'Bearer $_token',
+      };
 
       _channel = IOWebSocketChannel.connect(
         uri,
@@ -80,7 +82,7 @@ class WebSocketService {
       _channel!.ready.then((_) {
         if (!_disposed) {
           currentEndpoint = targetUrl;
-          this.isUsingRelay = isRelay;
+          isUsingRelay = isRelay;
           onEndpointChanged?.call(isRelay ? _extractHost(targetUrl) : null, isRelay);
           onConnected?.call();
         }

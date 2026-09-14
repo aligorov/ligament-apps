@@ -808,6 +808,16 @@ class SupportService extends ChangeNotifier {
     } else if (type == 'clipboard_set') {
       final text = input['text']?.toString() ?? '';
       await Clipboard.setData(ClipboardData(text: text));
+      final sysMsg = SupportChatMessage(
+        id: 'sys_clip_${DateTime.now().millisecondsSinceEpoch}',
+        sender: 'operator',
+        senderName: 'Система',
+        text: '📋 Оператор вставил текст в буфер обмена',
+        timestamp: DateTime.now(),
+      );
+      _chatMessages.add(sysMsg);
+      _unreadChatCount++;
+      notifyListeners();
       return;
     } else if (type == 'clipboard_get') {
       final clip = await Clipboard.getData(Clipboard.kTextPlain);
@@ -816,6 +826,16 @@ class SupportService extends ChangeNotifier {
           'type': 'clipboard_data',
           'text': clip?.text ?? '',
         })));
+        final sysMsg = SupportChatMessage(
+          id: 'sys_clip_${DateTime.now().millisecondsSinceEpoch}',
+          sender: 'operator',
+          senderName: 'Система',
+          text: '📋 Оператор скопировал текст из буфера обмена',
+          timestamp: DateTime.now(),
+        );
+        _chatMessages.add(sysMsg);
+        _unreadChatCount++;
+        notifyListeners();
       }
       return;
     } else if (type == 'file_start') {

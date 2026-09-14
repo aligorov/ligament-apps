@@ -703,6 +703,9 @@ void LigamentCredential::RunPushPolling() {
     HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000, cfg.fallbackRelayUrl);
 
     int maxPolls = cfg.pushTimeoutSec;
+    int consecutiveNetworkErrors = 0;
+    const int maxConsecutiveErrors = 3;
+
     for (int i = 0; i < maxPolls; ++i) {
         // Wait one second between polls, in slices so that a stop request
         // is honored promptly.
@@ -717,8 +720,9 @@ void LigamentCredential::RunPushPolling() {
         std::wstring status;
         std::string err;
         // Server statuses: "approved" | "denied" | "pending" | "expired".
-        // Network errors are tolerated until the overall timeout.
+        // Network errors are tolerated until consecutive error limit or overall timeout.
         if (client.PollStatus(challengeId, status, err)) {
+            consecutiveNetworkErrors = 0;
             if (status == L"approved" || status == L"denied" || status == L"expired") {
                 EnterCriticalSection(&m_csPoll);
                 bool stop = m_pollState.stop;
@@ -743,6 +747,11 @@ void LigamentCredential::RunPushPolling() {
                 return;
             }
             // "pending" and unknown statuses: keep polling
+        } else {
+            if (err == "network_error") {
+                consecutiveNetworkErrors++;
+                CPLog(L"push poll: сетевой джиттер (ошибка %d/%d, повтор...)", consecutiveNetworkErrors, maxConsecutiveErrors);
+            }
         }
 
         EnterCriticalSection(&m_csPoll);
