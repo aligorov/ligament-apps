@@ -570,20 +570,12 @@ class SupportService extends ChangeNotifier {
         } else {
           await _peerConnection!.addCandidate(candidate);
         }
-      } else if (payload['type'] == 'input_control' && payload['data'] is Map<String, dynamic>) {
-        _handleRemoteInput(payload['data'] as Map<String, dynamic>);
-      } else if (payload.containsKey('type') &&
-          (payload['type'].toString().startsWith('mouse_') ||
-              payload['type'].toString().startsWith('key_') ||
-              payload['type'].toString().startsWith('file_') ||
-              payload['type'] == 'wheel' ||
-              payload['type'] == 'hotkey' ||
-              payload['type'] == 'switch_screen' ||
-              payload['type'] == 'clipboard_get' ||
-              payload['type'] == 'clipboard_set' ||
-              payload['type'] == 'chat_message')) {
-        _handleRemoteInput(payload);
       }
+      // Команды управления вводом (mouse_*/key_*/hotkey/block_input/
+      // clipboard_*/file_*/switch_screen) исполняются ТОЛЬКО из WebRTC
+      // DataChannel (DTLS) — см. _setupDataChannel. Серверный сигнальный
+      // канал не является доверенным транспортом для инъекций ввода:
+      // его компрометация не должна давать управление рабочей станцией.
     } catch (e) {
       debugPrint('support_service: ошибка обработки входящего сигнала: $e');
     }

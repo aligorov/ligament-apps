@@ -51,14 +51,15 @@ regsvr32.exe /u build\Release\LigamentCredentialProvider.dll
 
 | Параметр | Тип | По умолчанию | Описание |
 |---|---|---|---|
-| `ServerURL` | `REG_SZ` | `https://twofa.corp.local` | Базовый URL сервера Ligament |
-| `RDP2FAEnabled` | `REG_DWORD` | `1` | Включить 2FA для RDP-подключений |
-| `Console2FAEnabled` | `REG_DWORD` | `0` | Включить 2FA для локального входа (Console) |
+| `ServerURL` | `REG_SZ` | *(пусто)* | Базовый URL сервера Ligament. **Пусто/отсутствует = 2FA полностью выключена**: RDP- и консольные входы идут через штатные тайлы Windows, провайдер пассивен |
+| `RDP2FAEnabled` | `REG_DWORD` | `1` | Включить 2FA для RDP-подключений (действует только при заданном `ServerURL`) |
+| `Console2FAEnabled` | `REG_DWORD` | `0` | Включить 2FA для локального входа (Console; действует только при заданном `ServerURL`) |
 | `FIDO2Enabled` | `REG_DWORD` | `1` | Разрешить вход по аппаратным ключам FIDO2/YubiKey |
 | `PushTimeoutSeconds` | `REG_DWORD` | `45` | Таймаут ожидания Push в секундах |
 | `FailClose` | `REG_DWORD` | `1` | 1 = Блокировать вход при недоступности сервера 2FA; 0 = Пропускать ВСЕХ пользователей при недоступности сервера (не только администраторов) |
-| `BypassAccounts` | `REG_SZ` | `""` | Список логинов через запятую (например: `Administrator,admin`); записи матчатся по полному имени и по локальной части UPN (`administrator@corp.local` → `administrator`) |
+| `BypassAccounts` | `REG_SZ` | `""` | Аварийные учётные записи без 2FA. Короткое имя (`admin`) действует только для входа без домена; доменные учётки — только полным именем `ДОМЕН\user` или `user@domain` |
 | `AllowSelfSigned` | `REG_DWORD` | `0` | 1 = Доверять самоподписанному сертификату сервера: игнорируется только неизвестый издатель (CA); имя сертификата (CN/SAN) и срок действия проверяются всегда |
+| `SamProbeEnabled` | `REG_DWORD` | `0` | 1 = Диагностическая SAM-проба (LogonUser) после неудачного входа. Каждая неудачная проба +1 к badPwdCount — включать только на время разбора инцидентов |
 
 ## Быстрая настройка реестра
 

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Явный запрет незашифрованного трафика на всех платформенных уровнях.
+  Приложение 2FA-аутентификатора не должно общаться с relay/сервером по HTTP:
+  перехват Bearer-токена в открытой сети равен обходу второго фактора.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- Только системные CA: пользовательские CA (установленные
+                 злоумышленником на устройстве) для MITM не принимаются -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

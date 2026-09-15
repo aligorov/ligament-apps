@@ -89,8 +89,12 @@ private:
     std::wstring m_statusText;
     std::wstring m_numberMatch;
 
-    bool m_authenticated = false;
-    std::unique_ptr<HttpApiClient> m_apiClient;
+    // Флаг подтверждённого второго фактора. Единственное поле, которое воркер
+    // опроса пишет в обход потока LogonUI (до CredentialsChanged, иначе
+    // SetSelected не увидит его для авто-логона): выровненный volatile bool,
+    // запись — под m_csPoll, чтение без блокировки (на Windows/x86/x64
+    // атомарно для MSVC volatile). Строковые поля воркером не трогать.
+    volatile bool m_authenticated = false;
     std::unique_ptr<WebAuthnClient> m_webAuthn;
 
     HBITMAP m_hQrBmp = nullptr;
@@ -100,23 +104,47 @@ private:
     static HBITMAP CreateQrBitmap(const std::string& text, int targetSize = 256);
     static HBITMAP CreateLogoBitmap(int targetSize = 256);
 
-    // Background push polling. GetSerialization starts the worker thread and
-    // returns CPGSR_NO_CREDENTIAL_NOT_FINISHED; the worker never touches COM
-    // interfaces (m_pEvents) or other LogonUI state — it only updates
-    // m_pollState under m_csPoll through a thread-local HttpApiClient.
+    // --- Асинхронный HTTP-воркер ------------------------------------------
+    // ВСЕ обращения к серверу (StartPush / WebAuthnBegin / VerifyOtp и опрос
+    // статуса челленджа) выполняются ТОЛЬКО на воркер-потоке со своим
+    // HttpApiClient: блокирующий WinHTTP на потоке LogonUI замораживал
+    // экран входа до ~30-60 с ровно при сетевых проблемах. LogonUI стартует
+    // задачу (StartWorkerJob) и забирает результат/обновляет UI только под
+    // m_csPoll. Воркер не трогает COM и строки UI-состояния напрямую, кроме
+    // volatile bool m_authenticated (см. выше) — единственное исключение.
     HANDLE m_hPollThread = nullptr;
     CRITICAL_SECTION m_csPoll;
-    struct PollState {
-        std::wstring status;   // empty, "approved", "denied", "expired", "timeout"
-        bool done = false;
-        bool stop = false;
-    } m_pollState;
-    std::wstring m_pollChallengeId;
 
-    static DWORD WINAPI PushPollThreadProc(LPVOID lpParam);
-    void RunPushPolling();
+    enum WorkerJob { JobNone = 0, JobStartPush, JobWebAuthnBegin, JobVerifyOtp };
+
+    struct WorkerState {
+        bool stop = false;
+        // Фаза 1 — стартовый вызов (StartPush / WebAuthnBegin / VerifyOtp)
+        bool beginDone = false;
+        bool beginOk = false;
+        std::string beginError;     // код сервера/транспорта ("network_error", "rate_limited", ...)
+        int retryAfterSec = 0;
+        std::wstring numberMatch;   // JobStartPush: контрольное число для тайла
+        std::wstring qrUrl;         // JobWebAuthnBegin: ссылка для QR-кода
+        // Фаза 2 — опрос статуса челленджа (после успешной фазы 1)
+        bool done = false;
+        std::wstring status;        // "approved" / "denied" / "expired" / "timeout"
+    } m_worker;
+
+    WorkerJob m_job = JobNone;
+    std::wstring m_jobUser;
+    std::wstring m_jobPass;         // копия для воркера; затирается сразу после получения
+    std::wstring m_jobOtp;
+    bool m_beginApplied = false;    // LogonUI уже применил результат фазы 1 к UI
+
+    static DWORD WINAPI WorkerThreadProc(LPVOID lpParam);
+    void RunAsyncJob();
+    bool StartWorkerJob(WorkerJob job, const wchar_t* statusText);
     void StopPollThread();
     void JoinPollThread();
+    // CredentialsChanged из воркера: с собственной AddRef-ссылкой на
+    // m_pProviderEvents под m_csPoll (защита от UnAdvise-гонки).
+    void NotifyProviderChangedFromWorker();
     void ResetAuthState();
 
     void TriggerFIDO2Auth();

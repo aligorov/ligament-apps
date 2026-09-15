@@ -58,8 +58,12 @@ class WebSocketService {
     var wsUrl = targetUrl.trim();
     if (wsUrl.startsWith('https://')) {
       wsUrl = 'wss://${wsUrl.substring(8)}';
-    } else if (wsUrl.startsWith('http://')) {
-      wsUrl = 'ws://${wsUrl.substring(7)}';
+    } else {
+      // Открытый ws:// запрещён: заголовок Authorization с Bearer-токеном
+      // не должен покидать устройство в открытом виде (в т.ч. на relay).
+      debugPrint('ws_service: кандидат "$targetUrl" пропущен: требуется https/wss');
+      _scheduleNextCandidate();
+      return;
     }
     if (wsUrl.endsWith('/')) {
       wsUrl = wsUrl.substring(0, wsUrl.length - 1);
@@ -68,6 +72,11 @@ class WebSocketService {
 
     try {
       final uri = Uri.parse(wsUrl);
+      if (uri.scheme != 'wss') {
+        debugPrint('ws_service: итоговый URL "$wsUrl" не wss — отказ');
+        _scheduleNextCandidate();
+        return;
+      }
       final headers = <String, String>{
         if (_token != null && _token!.isNotEmpty) 'Authorization': 'Bearer $_token',
       };

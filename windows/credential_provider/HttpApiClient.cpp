@@ -67,6 +67,15 @@ bool HttpApiClient::ParseRelayUrl(const std::wstring& url) {
     urlComp.dwUrlPathLength = _countof(urlPath);
 
     if (WinHttpCrackUrl(url.c_str(), (DWORD)url.length(), 0, &urlComp)) {
+        // Relay принимает ТОЛЬКО https: fallback отправляет доменные
+        // логин/пароль с экрана входа, открытый канал недопустим.
+        if (urlComp.nScheme != INTERNET_SCHEME_HTTPS) {
+            LogDebug(L"Relay URL отклонён: требуется https (получена схема %u)", (unsigned)urlComp.nScheme);
+            m_relayHost.clear();
+            m_relayPort = 0;
+            m_relayIsHttps = false;
+            return false;
+        }
         m_relayHost = hostName;
         m_relayPort = (urlComp.nPort != 0) ? urlComp.nPort : 8082;
         m_relayIsHttps = (urlComp.nScheme == INTERNET_SCHEME_HTTPS);
@@ -109,11 +118,12 @@ bool HttpApiClient::SendRequest(
         return false;
     }
 
+    // AllowSelfSigned ослабляет ТОЛЬКО проверку цепочки до корня
+    // (SECURITY_FLAG_IGNORE_UNKNOWN_CA). Имя хоста (CN/SAN), срок действия
+    // и назначение сертификата проверяются всегда: иначе флаг превращается
+    // в «принять любой сертификат» и MITM перехватывает доменные креды.
     if (m_isHttps && m_allowSelfSigned) {
-        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
     }
 
@@ -125,14 +135,6 @@ bool HttpApiClient::SendRequest(
     DWORD bodyLen = (DWORD)body.length();
 
     BOOL bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
-    if (!bResult && m_isHttps && m_allowSelfSigned && GetLastError() == ERROR_WINHTTP_SECURE_FAILURE) {
-        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
-        bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
-    }
     if (bResult) {
         bResult = WinHttpReceiveResponse(hRequest, nullptr);
     }
@@ -205,11 +207,10 @@ bool HttpApiClient::SendRelayRequest(
         return false;
     }
 
+    // См. комментарий в SendRequest: только UNKNOWN_CA, остальные проверки
+    // сертификата relay работают всегда.
     if (m_relayIsHttps && m_allowSelfSigned) {
-        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
     }
 
@@ -221,14 +222,6 @@ bool HttpApiClient::SendRelayRequest(
     DWORD bodyLen = (DWORD)body.length();
 
     BOOL bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
-    if (!bResult && m_relayIsHttps && m_allowSelfSigned && GetLastError() == ERROR_WINHTTP_SECURE_FAILURE) {
-        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
-        bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
-    }
     if (bResult) {
         bResult = WinHttpReceiveResponse(hRequest, nullptr);
     }

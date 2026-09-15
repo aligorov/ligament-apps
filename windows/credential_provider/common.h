@@ -18,6 +18,7 @@
 #include <shlobj.h>   // SHGetFolderPathW (CPLog → %ProgramData%\Ligament)
 #include <stdarg.h>   // va_list (CPLog)
 #include <stdio.h>    // swprintf_s/_vsnwprintf_s (CPLog)
+#include <sddl.h>     // ConvertStringSecurityDescriptorToSecurityDescriptorW (DACL cp.log)
 
 #include <string>
 #include <vector>
@@ -33,6 +34,7 @@
 #pragma comment(lib, "wtsapi32.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "advapi32.lib")
 
 namespace ligament {
 
@@ -40,8 +42,14 @@ extern LONG g_cRefDll;
 
 // Configuration loaded from registry (GPO: HKLM\SOFTWARE\Policies\Ligament\2FA)
 struct Config {
-    std::wstring serverUrl = L"https://twofa.corp.local";
-    std::wstring fallbackRelayUrl; // Relay fallback URL (e.g. "http://192.168.10.50:8082")
+    // Пустая = сервер не настроен: провайдер НЕ применяет 2FA ни к RDP, ни
+    // к консоли (см. LigamentProvider::SetUsageScenario / Filter) и не
+    // подавляет штатный парольный тайл. Фантомного дефолта вида
+    // https://twofa.corp.local больше нет — он блокировал входы на
+    // несконфигурированных машинах при FailClose=1.
+    std::wstring serverUrl;
+    bool serverUrlConfigured = false; // ServerURL реально задан в реестре (GPO/MSI)
+    std::wstring fallbackRelayUrl; // Relay fallback URL — ТОЛЬКО https (напр. "https://relay-branch.corp:8443"): по relay уходят доменные креды
     bool rdp2faEnabled = true;
     bool console2faEnabled = false;
     bool fido2Enabled = true;
@@ -49,6 +57,10 @@ struct Config {
     int pushTimeoutSec = 45;
     bool failClose = true;
     bool allowSelfSigned = false;
+    // Диагностическая SAM-проба (LogonUser) после неудачного входа.
+    // ВЫКЛЮЧЕНА по умолчанию: каждая неудачная проба += 1 к badPwdCount,
+    // до 3 проб на вход ускоряют AD-lockout учётки в 4 раза.
+    bool samProbeEnabled = false;
     std::vector<std::wstring> bypassAccounts;
 
     static Config LoadFromRegistry() {
@@ -113,7 +125,13 @@ struct Config {
             return false;
         };
 
-        readString(L"ServerURL", cfg.serverUrl);
+        // ServerURL должен быть задан явно (GPO / MSI / install-latest.ps1).
+        // Пустое или отсутствующее значение = «2FA не настроена»: провайдер
+        // полностью пассивен, входы идут через штатные тайлы Windows.
+        cfg.serverUrlConfigured = readString(L"ServerURL", cfg.serverUrl);
+        if (!cfg.serverUrlConfigured) {
+            cfg.serverUrl.clear();
+        }
         readString(L"FallbackRelayURL", cfg.fallbackRelayUrl);
         readDword(L"RDP2FAEnabled", cfg.rdp2faEnabled);
         readDword(L"Console2FAEnabled", cfg.console2faEnabled);
@@ -122,6 +140,7 @@ struct Config {
         readInt(L"PushTimeoutSeconds", cfg.pushTimeoutSec);
         readDword(L"FailClose", cfg.failClose);
         readDword(L"AllowSelfSigned", cfg.allowSelfSigned);
+        readDword(L"SamProbeEnabled", cfg.samProbeEnabled);
 
         std::wstring bypassRaw;
         if (readString(L"BypassAccounts", bypassRaw)) {
@@ -151,35 +170,32 @@ struct Config {
 
         // Clean user: extract pure username (without domain/UPN/slashes)
         std::wstring rawUser = username;
+        bool hadDomain = false;
         size_t slash = rawUser.find_last_of(L"\\/");
         if (slash != std::wstring::npos && slash + 1 < rawUser.length()) {
             rawUser = rawUser.substr(slash + 1);
+            hadDomain = true;
         }
         size_t at = rawUser.find(L'@');
         if (at != std::wstring::npos) {
             rawUser = rawUser.substr(0, at);
+            hadDomain = true;
         }
 
-        std::wstring fullNetbios = domain.empty() ? username : domain + L"\\" + rawUser;
-        std::wstring fullUpn = domain.empty() ? username : rawUser + L"@" + domain;
-
+        // Короткое имя из списка матчится ТОЛЬКО когда пользователь ввёл
+        // имя без домена. Раньше «administrator» из BypassAccounts отключал
+        // 2FA для ЛЮБОГО «какой-то-домен\administrator»; теперь доменное
+        // имя требует домен и в записи списка (DOMAIN\user / user@domain).
         for (const auto& acc : bypassAccounts) {
             if (_wcsicmp(acc.c_str(), username.c_str()) == 0) return true;
-            if (_wcsicmp(acc.c_str(), rawUser.c_str()) == 0) return true;
-            if (_wcsicmp(acc.c_str(), fullNetbios.c_str()) == 0) return true;
-            if (_wcsicmp(acc.c_str(), fullUpn.c_str()) == 0) return true;
+            if (!hadDomain && _wcsicmp(acc.c_str(), rawUser.c_str()) == 0) return true;
 
-            // Also check if acc itself has domain/slash/@ and compare pure parts
-            std::wstring pureAcc = acc;
-            size_t accSlash = pureAcc.find_last_of(L"\\/");
-            if (accSlash != std::wstring::npos && accSlash + 1 < pureAcc.length()) {
-                pureAcc = pureAcc.substr(accSlash + 1);
+            if (!domain.empty()) {
+                std::wstring fullNetbios = domain + L"\\" + rawUser;
+                std::wstring fullUpn = rawUser + L"@" + domain;
+                if (_wcsicmp(acc.c_str(), fullNetbios.c_str()) == 0) return true;
+                if (_wcsicmp(acc.c_str(), fullUpn.c_str()) == 0) return true;
             }
-            size_t accAt = pureAcc.find(L'@');
-            if (accAt != std::wstring::npos) {
-                pureAcc = pureAcc.substr(0, accAt);
-            }
-            if (_wcsicmp(pureAcc.c_str(), rawUser.c_str()) == 0) return true;
         }
         return false;
     }
@@ -187,19 +203,85 @@ struct Config {
 
 // Файловое приложение к cp.log (тот же формат, что CPLog в LigamentCredential).
 // Winlogon/LogonUI-контекст: отладчика нет, файл — единственное «окно».
+//
+// Безопасность файла (cp.log пишет SYSTEM, читает никто):
+//  - каталог и файл создаются с ЯВНЫМ DACL «SYSTEM+Administrators full»
+//    (D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)), унаследованные ACE блокируются —
+//    дефолтный ProgramData-ACL оставил бы файл доступным стандартному
+//    пользователю (лог содержит имена пользователей и IP);
+//  - если каталог ProgramData\Ligament уже существовал (pre-create атака),
+//    владение и DACL принудительно переписываются от SYSTEM; не вышло —
+//    файловое логирование отключается (в чужой каталог не пишем);
+//  - файл открывается с FILE_FLAG_OPEN_REPARSE_POINT: подмененный cp.log
+//    (symlink/hardlink) не приводит к записи от SYSTEM в цель ссылки.
 inline void LogCPFileLine(const wchar_t* line) {
     static wchar_t s_path[MAX_PATH] = {0};
+    static bool s_disabled = false;
+    static SECURITY_ATTRIBUTES s_sa = {sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
+    static bool s_saInit = false;
+
+    if (s_disabled) return;
+
+    if (!s_saInit) {
+        s_saInit = true;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+                SDDL_REVISION_1, &s_sa.lpSecurityDescriptor, nullptr)) {
+            s_sa.lpSecurityDescriptor = nullptr;
+        }
+    }
+
+    // Переписать владельца и DACL объекта от SYSTEM. Нужно ровно один раз
+    // на каталог и файл; повторные вызовы дешёвые (no-op при совпадении).
+    auto enforceSystemAcl = [](const wchar_t* objectPath) -> bool {
+        if (!s_sa.lpSecurityDescriptor) return false;
+        PACL dacl = nullptr;
+        BOOL present = FALSE, defaulted = FALSE;
+        if (!GetSecurityDescriptorDacl(s_sa.lpSecurityDescriptor, &present, &dacl, &defaulted) || !present) {
+            return false;
+        }
+        SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+        PSID sidSystem = nullptr;
+        if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_LOCAL_SYSTEM_RID,
+                0, 0, 0, 0, 0, 0, 0, &sidSystem)) {
+            return false;
+        }
+        DWORD rc = SetNamedSecurityInfoW(const_cast<LPWSTR>(objectPath), SE_FILE_OBJECT,
+            PROTECTED_DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+            sidSystem, nullptr, dacl, nullptr);
+        FreeSid(sidSystem);
+        return rc == ERROR_SUCCESS;
+    };
+
     if (s_path[0] == 0) {
         wchar_t progData[MAX_PATH] = {0};
-        if (FAILED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, progData))) return;
+        if (FAILED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, progData))) {
+            s_disabled = true;
+            return;
+        }
         wcscat_s(progData, L"\\Ligament");
-        CreateDirectoryW(progData, nullptr);
+        CreateDirectoryW(progData, s_sa.lpSecurityDescriptor ? &s_sa : nullptr);
+        if (!enforceSystemAcl(progData)) {
+            s_disabled = true; // каталог не наш — не пишем
+            return;
+        }
         wcscat_s(progData, L"\\cp.log");
         wcscpy_s(s_path, progData);
     }
+
+    // Подменённый cp.log (symlink на чужой файл) не трогаем вовсе: ни пишем,
+    // ни переписываем ACL цели ссылки.
+    DWORD attrs = GetFileAttributesW(s_path);
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        s_disabled = true;
+        return;
+    }
+
     HANDLE h = CreateFileW(s_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        s_sa.lpSecurityDescriptor ? &s_sa : nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
+    enforceSystemAcl(s_path); // существующий файл мог остаться со старым ACL
     SetFilePointer(h, 0, nullptr, FILE_END);
     DWORD written = 0;
     WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &written, nullptr);

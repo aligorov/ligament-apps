@@ -219,7 +219,7 @@ class GPOService {
 
   String? _readMacString(String key) {
     try {
-      // 1. Попытка прочитать из Managed Preferences (Apple MDM profile)
+      // 1. Managed Preferences — профиль Apple MDM (высший приоритет)
       const managedPath = '/Library/Managed Preferences/com.ligament.twofa.plist';
       if (File(managedPath).existsSync()) {
         final res = Process.runSync('defaults', ['read', managedPath, key]);
@@ -227,10 +227,16 @@ class GPOService {
           return res.stdout.toString().trim();
         }
       }
-      // 2. Стандартный домен com.ligament.twofa
-      final res = Process.runSync('defaults', ['read', 'com.ligament.twofa', key]);
-      if (res.exitCode == 0 && res.stdout.toString().trim().isNotEmpty) {
-        return res.stdout.toString().trim();
+      // 2. Системный домен /Library/Preferences — запись требует прав админа.
+      // Пользовательский домен (~/Library/Preferences) намеренно НЕ читается:
+      // иначе сотрудник сам себе отключал бы RequireTouchID/AllowExit и
+      // подменял ServerURL (в т.ч. на http://).
+      const systemPath = '/Library/Preferences/com.ligament.twofa.plist';
+      if (File(systemPath).existsSync()) {
+        final res = Process.runSync('defaults', ['read', systemPath, key]);
+        if (res.exitCode == 0 && res.stdout.toString().trim().isNotEmpty) {
+          return res.stdout.toString().trim();
+        }
       }
     } catch (_) {}
     return null;

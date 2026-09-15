@@ -35,7 +35,11 @@ void main(List<String> args) async {
               ),
               const SizedBox(height: 8),
               Text(
-                details.exceptionAsString(),
+                // В release стек и текст исключения пользователю не показываем:
+                // это утечка внутренностей приложения (пути, API, окружение).
+                kReleaseMode
+                    ? 'Что-то пошло не так. Перезапустите приложение.'
+                    : details.exceptionAsString(),
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
               ),

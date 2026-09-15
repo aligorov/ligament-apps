@@ -72,8 +72,11 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     // otherwise non-logon dialogs would be left without any usable tile.
     m_shouldEnforce2FA = false;
 
-    // Check if 2FA applies to this scenario
-    if (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION) {
+    // Check if 2FA applies to this scenario. Ненастроенный сервер
+    // (ServerURL отсутствует/пуст) = 2FA не применяется ВООБЩЕ: ни RDP, ни
+    // консоль. Важно согласованной логикой с Filter() — иначе наш тайл не
+    // создан, а штатный парольный подавлен, и вход невозможен.
+    if (m_config.serverUrlConfigured && (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION)) {
         if (m_isRemoteSession && m_config.rdp2faEnabled) {
             m_shouldEnforce2FA = true;
         } else if (!m_isRemoteSession && m_config.console2faEnabled) {
@@ -82,8 +85,8 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     }
 
     // Do not log infrastructure details (server URL) from the winlogon context
-    LogDebug(L"SetUsageScenario: cpus=%d, remote=%d, enforce2fa=%d",
-        cpus, m_isRemoteSession ? 1 : 0, m_shouldEnforce2FA ? 1 : 0);
+    LogDebug(L"SetUsageScenario: cpus=%d, remote=%d, srvCfg=%d, enforce2fa=%d",
+        cpus, m_isRemoteSession ? 1 : 0, m_config.serverUrlConfigured ? 1 : 0, m_shouldEnforce2FA ? 1 : 0);
 
     if (m_shouldEnforce2FA && !m_pCredential) {
         m_pCredential = new LigamentCredential();
@@ -203,7 +206,10 @@ HRESULT LigamentProvider::Filter(
     // credential dialogs become unusable.
     bool enforce = false;
     if (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION) {
-        enforce = (isRemote && cfg.rdp2faEnabled) || (!isRemote && cfg.console2faEnabled);
+        // Тот же гейт, что и в SetUsageScenario: нет ServerURL — штатный
+        // парольный тайл НЕ подавляем (2FA полностью выключена).
+        enforce = cfg.serverUrlConfigured &&
+            ((isRemote && cfg.rdp2faEnabled) || (!isRemote && cfg.console2faEnabled));
     }
 
     DWORD suppressed = 0;
@@ -216,8 +222,8 @@ HRESULT LigamentProvider::Filter(
             }
         }
     }
-    LogDebug(L"filter: cpus=%lu remote=%d rdp2fa=%d console2fa=%d enforce=%d providers=%lu suppressedStock=%lu",
-        (unsigned long)cpus, isRemote ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0,
+    LogDebug(L"filter: cpus=%lu remote=%d srvCfg=%d rdp2fa=%d console2fa=%d enforce=%d providers=%lu suppressedStock=%lu",
+        (unsigned long)cpus, isRemote ? 1 : 0, cfg.serverUrlConfigured ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0,
         cfg.console2faEnabled ? 1 : 0, enforce ? 1 : 0,
         (unsigned long)cProviders, (unsigned long)suppressed);
     return S_OK;

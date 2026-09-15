@@ -318,11 +318,25 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     };
 
-    final fallbackRelayUrls = relays
-        .map((r) => r['last_ip']?.toString())
-        .where((ip) => ip != null && ip.isNotEmpty)
-        .map((ip) => 'http://$ip:8082')
-        .toList();
+    // Relay-узлы принимаются только по HTTPS: по открытому каналу уходит
+    // Bearer-токен сессии, перехват которого равен обходу 2FA. IP-записи
+    // без явной схемы upgrading'у не подлежат — ждём от сервера https URL.
+    final fallbackRelayUrls = <String>[];
+    for (final r in relays) {
+      final explicit = r['url']?.toString() ?? r['last_url']?.toString() ?? '';
+      var candidate = explicit;
+      if (candidate.isEmpty) {
+        // Легаси-запись (только last_ip): relay без TLS отключён до тех пор,
+        // пока сервер не начнёт отдавать полноценный https-адрес.
+        continue;
+      }
+      final uri = Uri.tryParse(candidate);
+      if (uri == null || !uri.hasScheme || uri.scheme != 'https' || uri.host.isEmpty) {
+        debugPrint('auth_state: relay "$candidate" отклонён: требуется https');
+        continue;
+      }
+      fallbackRelayUrls.add(candidate);
+    }
 
     ws.connect(
       baseUrl: serverUrl!,

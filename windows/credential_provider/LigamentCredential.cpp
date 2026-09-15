@@ -110,7 +110,8 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_config = cfg;
     m_isRemoteSession = isRemote;
     m_cpus = cpus;
-    m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000, cfg.fallbackRelayUrl);
+    // HTTP-клиент не держим: все запросы к серверу идут с воркер-потока
+    // через его собственный HttpApiClient (LogonUI не блокируется, F4).
     m_webAuthn = std::make_unique<WebAuthnClient>();
     m_hDefaultLogoBmp = CreateLogoBitmap(256);
 
@@ -132,6 +133,10 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
 }
 
 void LigamentCredential::SetProviderEvents(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
+    // Под m_csPoll: воркер опроса берёт ссылку на интерфейс для
+    // CredentialsChanged — без блокировки UnAdvise мог бы освободить
+    // объект между проверкой указателя воркером и вызовом (use-after-free).
+    EnterCriticalSection(&m_csPoll);
     if (m_pProviderEvents) {
         m_pProviderEvents->Release();
     }
@@ -140,6 +145,7 @@ void LigamentCredential::SetProviderEvents(ICredentialProviderEvents* pcpe, UINT
         m_pProviderEvents->AddRef();
     }
     m_providerAdviseContext = upAdviseContext;
+    LeaveCriticalSection(&m_csPoll);
 }
 
 // IUnknown
@@ -642,59 +648,45 @@ void LigamentCredential::TriggerFIDO2Auth() {
         return;
     }
 
-    m_statusText = L"Генерация сессии Passkey...";
-    NotifyFieldChanged(FID_STATUS_TEXT);
-
-    WebAuthnBeginResult beginRes = m_apiClient->WebAuthnBegin(m_username, m_password);
-    if (!beginRes.success) {
-        ClearQrBitmap();
-        m_statusText = L"Ошибка Passkey: " + DescribeServerError(beginRes.error, m_apiClient->LastRetryAfterSec());
+    // WebAuthnBegin уходит на воркер: раньше блокирующий вызов на потоке
+    // LogonUI морозил экран входа на таймаутах WinHTTP. QR-код построит
+    // GetSerialization, когда воркер вернёт ссылку (фаза 1).
+    if (!StartWorkerJob(JobWebAuthnBegin, L"Генерация сессии Passkey...")) {
+        m_statusText = L"Не удалось запустить Passkey, попробуйте еще раз";
         NotifyFieldChanged(FID_STATUS_TEXT);
-        NotifyFieldChanged(FID_LOGO);
-        return;
     }
-
-    // Ссылка для сканирования камерой смартфона
-    std::string qrUrl = WideToUtf8(m_config.serverUrl) + "/auth/passkey?handle=" + beginRes.handle;
-
-    if (m_hQrBmp) {
-        DeleteObject(m_hQrBmp);
-        m_hQrBmp = nullptr;
-    }
-    m_hQrBmp = CreateQrBitmap(qrUrl, 256);
-
-    m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
-    UpdateFieldStates();
-    NotifyQrChanged();
-
-    // Запуск фонового опроса сервера (ожидание подтверждения на телефоне)
-    StopPollThread();
-    EnterCriticalSection(&m_csPoll);
-    m_pollState = PollState();
-    m_pollChallengeId = Utf8ToWide(beginRes.challengeId);
-    LeaveCriticalSection(&m_csPoll);
-
-    CPLog(L"passkey: QR-код отображен, запущен опрос challengeId=%hs", beginRes.challengeId.c_str());
-    m_hPollThread = CreateThread(nullptr, 0, PushPollThreadProc, this, 0, nullptr);
 }
 
-// Background thread for push polling: thin wrapper over RunPushPolling.
-DWORD WINAPI LigamentCredential::PushPollThreadProc(LPVOID lpParam) {
+// Background worker: thin wrapper over RunAsyncJob.
+DWORD WINAPI LigamentCredential::WorkerThreadProc(LPVOID lpParam) {
     auto* self = reinterpret_cast<LigamentCredential*>(lpParam);
-    self->RunPushPolling();
+    self->RunAsyncJob();
     return 0;
 }
 
-void LigamentCredential::RunPushPolling() {
-    // Copy everything the worker needs up front. The worker must never touch
-    // COM interfaces (m_pEvents) or LogonUI state: it communicates only
-    // through m_pollState under m_csPoll and uses its own HttpApiClient.
-    std::wstring challengeId;
-    {
-        EnterCriticalSection(&m_csPoll);
-        challengeId = m_pollChallengeId;
-        LeaveCriticalSection(&m_csPoll);
+/// Затереть wstring-копию секрета (пароль/OTP) в памяти.
+static void SecureWipe(std::wstring& s) {
+    if (!s.empty()) {
+        SecureZeroMemory(&s[0], s.size() * sizeof(wchar_t));
+        s.clear();
     }
+}
+
+void LigamentCredential::RunAsyncJob() {
+    // 1. Забрать вход задачи и сразу затереть копии секретов в членах.
+    WorkerJob job;
+    std::wstring user, pass, otp;
+    EnterCriticalSection(&m_csPoll);
+    job = m_job;
+    m_job = JobNone;
+    user = m_jobUser;
+    m_jobUser.clear();
+    pass = m_jobPass;
+    otp = m_jobOtp;
+    SecureWipe(m_jobPass);
+    SecureWipe(m_jobOtp);
+    LeaveCriticalSection(&m_csPoll);
+
     Config cfg = m_config; // stable after Initialize; read-only here
 
     // Короткий receive-таймаут: один запрос блокирует поток не дольше ~8 c,
@@ -702,6 +694,96 @@ void LigamentCredential::RunPushPolling() {
     // LogonUI занимают секунды — это же ограничивает ожидание в деструкторе.
     HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000, cfg.fallbackRelayUrl);
 
+    auto stopRequested = [this]() -> bool {
+        EnterCriticalSection(&m_csPoll);
+        bool stop = m_worker.stop;
+        LeaveCriticalSection(&m_csPoll);
+        return stop;
+    };
+
+    std::wstring challengeId;
+    bool needPolling = false;
+
+    // ---- Фаза 1: стартовый вызов сервера (без блокировки LogonUI) --------
+    if (job == JobStartPush) {
+        std::wstring numberMatch;
+        std::string err;
+        bool ok = client.StartPush(user, pass, challengeId, numberMatch, err);
+        int retryAfter = client.LastRetryAfterSec();
+        SecureWipe(pass);
+
+        EnterCriticalSection(&m_csPoll);
+        bool stop = m_worker.stop;
+        if (!stop) {
+            m_worker.beginDone = true;
+            m_worker.beginOk = ok;
+            m_worker.beginError = err;
+            m_worker.retryAfterSec = retryAfter;
+            if (ok) {
+                m_worker.numberMatch = numberMatch;
+                needPolling = true;
+            }
+        }
+        LeaveCriticalSection(&m_csPoll);
+        CPLog(L"push: StartPush (воркер) ok=%d err=%hs number_match=%s",
+            ok ? 1 : 0, err.c_str(), (ok && !numberMatch.empty()) ? L"есть" : L"нет");
+
+        if (stop) return;
+        NotifyProviderChangedFromWorker();
+    } else if (job == JobWebAuthnBegin) {
+        WebAuthnBeginResult r = client.WebAuthnBegin(user, pass);
+        SecureWipe(pass);
+
+        bool ok = r.success;
+        EnterCriticalSection(&m_csPoll);
+        bool stop = m_worker.stop;
+        if (!stop) {
+            m_worker.beginDone = true;
+            m_worker.beginOk = ok;
+            m_worker.beginError = r.error;
+            m_worker.retryAfterSec = client.LastRetryAfterSec();
+            if (ok) {
+                m_worker.qrUrl = Utf8ToWide(
+                    WideToUtf8(cfg.serverUrl) + "/auth/passkey?handle=" + r.handle);
+                challengeId = Utf8ToWide(r.challengeId);
+                needPolling = true;
+            }
+        }
+        LeaveCriticalSection(&m_csPoll);
+        CPLog(L"passkey: WebAuthnBegin (воркер) ok=%d err=%hs", ok ? 1 : 0, r.error.c_str());
+
+        if (stop) return;
+        NotifyProviderChangedFromWorker();
+    } else if (job == JobVerifyOtp) {
+        std::string err;
+        bool ok = client.VerifyCombined(user, pass, otp, err);
+        int retryAfter = client.LastRetryAfterSec();
+        SecureWipe(pass);
+        SecureWipe(otp);
+
+        // Однофазная задача: результат готов сразу, опроса нет.
+        EnterCriticalSection(&m_csPoll);
+        bool stop = m_worker.stop;
+        if (!stop) {
+            m_worker.beginDone = true;
+            m_worker.beginOk = ok;
+            m_worker.beginError = err;
+            m_worker.retryAfterSec = retryAfter;
+            m_worker.done = true;
+        }
+        LeaveCriticalSection(&m_csPoll);
+        CPLog(L"otp: VerifyCombined (воркер) ok=%d err=%hs", ok ? 1 : 0, err.c_str());
+
+        if (stop) return;
+        NotifyProviderChangedFromWorker();
+        return;
+    } else {
+        return; // JobNone — задач не осталось
+    }
+
+    if (!needPolling) return; // фаза 1 провалилась: терминальное состояние уже записано
+
+    // ---- Фаза 2: опрос статуса челленджа ----------------------------------
     int maxPolls = cfg.pushTimeoutSec;
     int consecutiveNetworkErrors = 0;
     const int maxConsecutiveErrors = 3;
@@ -710,10 +792,7 @@ void LigamentCredential::RunPushPolling() {
         // Wait one second between polls, in slices so that a stop request
         // is honored promptly.
         for (int slice = 0; slice < 4; ++slice) {
-            EnterCriticalSection(&m_csPoll);
-            bool stop = m_pollState.stop;
-            LeaveCriticalSection(&m_csPoll);
-            if (stop) return;
+            if (stopRequested()) return;
             Sleep(250);
         }
 
@@ -725,24 +804,26 @@ void LigamentCredential::RunPushPolling() {
             consecutiveNetworkErrors = 0;
             if (status == L"approved" || status == L"denied" || status == L"expired") {
                 EnterCriticalSection(&m_csPoll);
-                bool stop = m_pollState.stop;
+                bool stop = m_worker.stop;
                 if (!stop) {
-                    m_pollState.status = status;
-                    m_pollState.done = true;
+                    m_worker.status = status;
+                    m_worker.done = true;
+                    // Второй фактор подтверждён: флаг ставим ЗДЕСЬ (до
+                    // CredentialsChanged), иначе SetSelected не увидит его
+                    // для авто-логона. Тексты статуса воркер НЕ пишет:
+                    // std::wstring не переживёт одновременное чтение в
+                    // GetStringValue потоком LogonUI (повреждение кучи в
+                    // SYSTEM-процессе). Текст применит GetSerialization
+                    // по m_worker.status.
                     if (status == L"approved") {
                         m_authenticated = true;
-                        m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
-                    } else if (status == L"denied") {
-                        m_statusText = L"❌ Вход отклонён пользователем";
-                    } else if (status == L"expired") {
-                        m_statusText = L"⚠️ Срок действия подтверждения истёк";
                     }
                 }
                 LeaveCriticalSection(&m_csPoll);
 
-                if (!stop && m_pProviderEvents && m_providerAdviseContext) {
+                if (!stop) {
                     CPLog(L"push: %s — вызов CredentialsChanged (auto-logon / UI update)", status.c_str());
-                    m_pProviderEvents->CredentialsChanged(m_providerAdviseContext);
+                    NotifyProviderChangedFromWorker();
                 }
                 return;
             }
@@ -754,30 +835,59 @@ void LigamentCredential::RunPushPolling() {
             }
         }
 
-        EnterCriticalSection(&m_csPoll);
-        bool stop = m_pollState.stop;
-        LeaveCriticalSection(&m_csPoll);
-        if (stop) return;
+        if (stopRequested()) return;
     }
 
     EnterCriticalSection(&m_csPoll);
-    bool stop = m_pollState.stop;
+    bool stop = m_worker.stop;
     if (!stop) {
-        m_pollState.status = L"timeout";
-        m_pollState.done = true;
-        m_statusText = L"⚠️ Время ожидания подтверждения истекло";
+        m_worker.status = L"timeout";
+        m_worker.done = true;
     }
     LeaveCriticalSection(&m_csPoll);
 
-    if (!stop && m_pProviderEvents && m_providerAdviseContext) {
+    if (!stop) {
         CPLog(L"push: timeout — вызов CredentialsChanged");
-        m_pProviderEvents->CredentialsChanged(m_providerAdviseContext);
+        NotifyProviderChangedFromWorker();
     }
+}
+
+// Запуск асинхронной задачи на воркере. Вызывается ТОЛЬКО из потока LogonUI;
+// join старого воркера bounded (~8 c receive-таймаут опроса). false — поток
+// создать не удалось (задача не запущена, состояние сброшено).
+bool LigamentCredential::StartWorkerJob(WorkerJob job, const wchar_t* statusText) {
+    StopPollThread(); // join предыдущего воркера (если был)
+
+    EnterCriticalSection(&m_csPoll);
+    m_worker = WorkerState();
+    m_job = job;
+    m_jobUser = m_username;
+    m_jobPass = m_password;
+    if (job == JobVerifyOtp) m_jobOtp = m_otpCode;
+    LeaveCriticalSection(&m_csPoll);
+    m_beginApplied = false;
+
+    m_statusText = statusText;
+    NotifyFieldChanged(FID_STATUS_TEXT);
+
+    m_hPollThread = CreateThread(nullptr, 0, WorkerThreadProc, this, 0, nullptr);
+    if (!m_hPollThread) {
+        // Поток не стартовал: затираем копии секретов и сбрасываем задачу.
+        EnterCriticalSection(&m_csPoll);
+        m_job = JobNone;
+        m_jobUser.clear();
+        SecureWipe(m_jobPass);
+        SecureWipe(m_jobOtp);
+        m_worker = WorkerState();
+        LeaveCriticalSection(&m_csPoll);
+        return false;
+    }
+    return true;
 }
 
 void LigamentCredential::StopPollThread() {
     EnterCriticalSection(&m_csPoll);
-    m_pollState.stop = true;
+    m_worker.stop = true;
     LeaveCriticalSection(&m_csPoll);
     JoinPollThread();
 }
@@ -787,18 +897,43 @@ void LigamentCredential::JoinPollThread() {
         // Ждём ЗАВЕРШЕНИЯ потока без ограниченного таймаута: bounded-wait
         // против долгого WinHTTP-вызова приводил к освобождению объекта при
         // живом воркере (use-after-free в winlogon). Ожидание конечно по
-        // построению: receive-таймаут poll-клиента 8 c, stop-флаг воркер
+        // построению: receive-таймаут job-клиента 8 c, stop-флаг воркер
         // проверяет между запросами и в срезах ожидания.
         WaitForSingleObject(m_hPollThread, INFINITE);
         CloseHandle(m_hPollThread);
         m_hPollThread = nullptr;
     }
     // Старый воркер гарантированно завершён — состояние безопасно сбрасывать
-    // и новый запуск не скрестится со старым результатом.
+    // и новый запуск не скрестится со старым результатом. Неснятые воркером
+    // секреты задачи затираем (воркер мог не успеть их забрать).
     EnterCriticalSection(&m_csPoll);
-    m_pollState.status.clear();
-    m_pollState.done = false;
+    m_job = JobNone;
+    m_jobUser.clear();
+    SecureWipe(m_jobPass);
+    SecureWipe(m_jobOtp);
+    m_worker = WorkerState();
     LeaveCriticalSection(&m_csPoll);
+}
+
+// CredentialsChanged из воркера. Интерфейс живёт в STA LogonUI и может быть
+// освобождён параллельным UnAdvise/SetProviderEvents: берём собственную
+// AddRef-ссылку под m_csPoll, вызываем метод уже без блокировки (AddRef под
+// CS безопасен — in-proc), после чего отпускаем.
+void LigamentCredential::NotifyProviderChangedFromWorker() {
+    ICredentialProviderEvents* pEvents = nullptr;
+    UINT_PTR ctx = 0;
+    EnterCriticalSection(&m_csPoll);
+    if (m_pProviderEvents && m_providerAdviseContext) {
+        pEvents = m_pProviderEvents;
+        pEvents->AddRef();
+        ctx = m_providerAdviseContext;
+    }
+    LeaveCriticalSection(&m_csPoll);
+
+    if (pEvents) {
+        pEvents->CredentialsChanged(ctx);
+        pEvents->Release();
+    }
 }
 
 void LigamentCredential::ResetAuthState() {
@@ -806,6 +941,7 @@ void LigamentCredential::ResetAuthState() {
     // tile deselection or a switch to another user name.
     m_authenticated = false;
     m_numberMatch.clear();
+    m_beginApplied = false;
     ClearQrBitmap();
     if (!m_otpCode.empty()) {
         SecureZeroMemory(&m_otpCode[0], m_otpCode.size() * sizeof(wchar_t));
@@ -852,93 +988,124 @@ HRESULT LigamentCredential::GetSerialization(
         return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
     }
 
-    // 3. Mode: OTP code (TOTP or YubiKey OTP)
+    // 3. Mode: OTP code (TOTP or YubiKey OTP). Проверка кода — на воркере:
+    // VerifyCombined с relay-fallback может тянуться десятки секунд,
+    // поток LogonUI не блокируем (F4).
     if (m_currentMode == MODE_OTP) {
         if (m_otpCode.empty()) {
             SHStrDupW(L"Введите 6 цифр TOTP или коснитесь YubiKey", ppszOptionalStatusText);
             return S_OK;
         }
 
-        std::string err;
-        if (m_apiClient->VerifyCombined(m_username, m_password, m_otpCode, err)) {
-            m_authenticated = true;
-            return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
-        } else {
-            if (!m_config.failClose && err == "network_error") {
-                LogDebug(L"Fail-Open allowed in OTP mode due to network error and policy");
-                return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
+        if (!m_hPollThread) {
+            if (!StartWorkerJob(JobVerifyOtp, L"Проверка кода...")) {
+                SHStrDupW(L"Не удалось запустить проверку кода, попробуйте еще раз", ppszOptionalStatusText);
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
             }
-            CPLog(L"otp: отклонён err=%hs", err.c_str());
-            std::wstring msg = L"Вход отклонен: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
-            SHStrDupW(msg.c_str(), ppszOptionalStatusText);
-            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
             return S_OK;
         }
+
+        bool done = false, beginOk = false;
+        std::string err;
+        int retryAfter = 0;
+        EnterCriticalSection(&m_csPoll);
+        done = m_worker.done;
+        beginOk = m_worker.beginDone && m_worker.beginOk;
+        err = m_worker.beginError;
+        retryAfter = m_worker.retryAfterSec;
+        LeaveCriticalSection(&m_csPoll);
+
+        if (!done) {
+            *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+            return S_OK;
+        }
+
+        JoinPollThread();
+        if (beginOk) {
+            m_authenticated = true;
+            return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
+        }
+
+        // Fail-open строго для транспортных отказов ("network_error"
+        // ставится только когда WinHTTP не дошёл до HTTP-ответа).
+        if (!m_config.failClose && err == "network_error") {
+            LogDebug(L"Fail-Open allowed in OTP mode due to network error and policy");
+            return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
+        }
+        CPLog(L"otp: отклонён err=%hs", err.c_str());
+        std::wstring msg = L"Вход отклонен: " + DescribeServerError(err, retryAfter);
+        SHStrDupW(msg.c_str(), ppszOptionalStatusText);
+        *pcpsiOptionalStatusIcon = CPSI_ERROR;
+        return S_OK;
     }
 
-    // 4. Mode: Push (Telegram / Ligament App). Polling runs on a worker
-    //    thread; GetSerialization never blocks the LogonUI thread — it starts
-    //    the push once, then only checks the shared result and asks LogonUI
-    //    to call again (CPGSR_NO_CREDENTIAL_NOT_FINISHED).
+    // 4. Mode: Push (Telegram / Ligament App). StartPush И опрос статуса —
+    //    на воркере; GetSerialization никогда не блокирует поток LogonUI:
+    //    запускает задачу один раз, дальше только читает общий результат и
+    //    просит LogonUI вызвать себя снова (CPGSR_NO_CREDENTIAL_NOT_FINISHED).
     if (m_currentMode == MODE_PUSH) {
-        bool done = false;
-        std::wstring status;
         if (!m_hPollThread) {
-            // No worker running: send a fresh push challenge.
-            std::wstring challengeId;
-            std::wstring numberMatch;
-            std::string err;
-            CPLog(L"push: отправка StartPush...");
-            if (m_apiClient->StartPush(m_username, m_password, challengeId, numberMatch, err)) {
-                // number-matching: приложение требует ввести контрольное
-                // число — показываем его ЗДЕСЬ, на экране входа (RDP).
-                if (!numberMatch.empty()) {
-                    m_numberMatch = numberMatch;
-                    m_statusText = L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:";
-                } else {
-                    m_numberMatch.clear();
-                    m_statusText = L"Push отправлен! Подтвердите вход в приложении/Telegram...";
-                }
-                NotifyFieldChanged(FID_STATUS_TEXT);
-                NotifyFieldChanged(FID_NUMBER_MATCH);
-                NotifyFieldChanged(FID_LARGE_TEXT);
-
-                EnterCriticalSection(&m_csPoll);
-                m_pollState = PollState();
-                m_pollChallengeId = challengeId;
-                LeaveCriticalSection(&m_csPoll);
-
-                CPLog(L"push: старт ок, воркер опроса запущен (number_match=%s)",
-                    numberMatch.empty() ? L"нет" : L"есть");
-                m_hPollThread = CreateThread(nullptr, 0, PushPollThreadProc, this, 0, nullptr);
-                if (!m_hPollThread) {
-                    // Cannot wait non-blockingly without the worker thread.
-                    SHStrDupW(L"Не удалось запустить ожидание Push, попробуйте еще раз", ppszOptionalStatusText);
-                    *pcpsiOptionalStatusIcon = CPSI_ERROR;
-                }
-                *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
-                return S_OK;
+            // No worker running: отправляем свежий push-челлендж (асинхронно).
+            CPLog(L"push: запуск StartPush на воркере...");
+            if (!StartWorkerJob(JobStartPush, L"Отправка Push...")) {
+                SHStrDupW(L"Не удалось запустить ожидание Push, попробуйте еще раз", ppszOptionalStatusText);
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
             }
+            *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+            return S_OK;
+        }
 
-            // StartPush failed — check fail-close policy. Условие не менялось:
-            // fail-open строго для транспортных отказов ("network_error"
-            // ставится только когда WinHTTP не дошёл до HTTP-ответа).
+        bool done = false, beginDone = false, beginOk = false;
+        std::wstring status;
+        std::string err;
+        int retryAfter = 0;
+        EnterCriticalSection(&m_csPoll);
+        beginDone = m_worker.beginDone;
+        beginOk = m_worker.beginOk;
+        err = m_worker.beginError;
+        retryAfter = m_worker.retryAfterSec;
+        done = m_worker.done;
+        status = m_worker.status;
+        LeaveCriticalSection(&m_csPoll);
+
+        // Фаза 1 (StartPush) провалилась. Fail-open — только транспортный
+        // отказ; остальное — ошибка на тайле, пользователь может повторить.
+        if (beginDone && !beginOk) {
+            JoinPollThread();
+            m_numberMatch.clear();
             if (!m_config.failClose && err == "network_error") {
                 LogDebug(L"Fail-Open allowed due to network error and policy");
                 return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
             }
             CPLog(L"push: StartPush err=%hs failClose=%d", err.c_str(), m_config.failClose ? 1 : 0);
-            std::wstring msg = L"Не удалось отправить Push: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
+            std::wstring msg = L"Не удалось отправить Push: " + DescribeServerError(err, retryAfter);
+            m_statusText = msg;
+            if (m_pEvents) {
+                NotifyFieldChanged(FID_NUMBER_MATCH);
+                NotifyFieldChanged(FID_LARGE_TEXT);
+                m_pEvents->SetFieldString(this, FID_STATUS_TEXT, msg.c_str());
+            }
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
             return S_OK;
         }
 
-        // Worker is running (or has just finished): check the shared result.
-        EnterCriticalSection(&m_csPoll);
-        done = m_pollState.done;
-        status = m_pollState.status;
-        LeaveCriticalSection(&m_csPoll);
+        // Фаза 1 успешна: показываем контрольное число (number matching)
+        // на тайле ровно один раз, дальше ждём решение в приложении.
+        if (beginDone && beginOk && !m_beginApplied) {
+            m_beginApplied = true;
+            EnterCriticalSection(&m_csPoll);
+            std::wstring numberMatch = m_worker.numberMatch;
+            LeaveCriticalSection(&m_csPoll);
+            m_numberMatch = numberMatch;
+            m_statusText = !numberMatch.empty()
+                ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
+                : L"Push отправлен! Подтвердите вход в приложении/Telegram...";
+            NotifyFieldChanged(FID_STATUS_TEXT);
+            NotifyFieldChanged(FID_NUMBER_MATCH);
+            NotifyFieldChanged(FID_LARGE_TEXT);
+        }
 
         if (!done) {
             *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
@@ -950,6 +1117,12 @@ HRESULT LigamentCredential::GetSerialization(
             JoinPollThread();
             m_numberMatch.clear();
             m_authenticated = true;
+            // Текст статуса — только на потоке LogonUI (воркер его не пишет,
+            // см. RunAsyncJob).
+            m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
+            if (m_pEvents) {
+                m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
+            }
             return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         }
 
@@ -980,10 +1153,10 @@ HRESULT LigamentCredential::GetSerialization(
         return S_OK;
     }
 
-    // 5. Mode: FIDO2 / Passkey (QR-код на телефоне)
+    // 5. Mode: FIDO2 / Passkey (QR-код на телефоне). WebAuthnBegin и опрос
+    //    статуса — на воркере; QR-код рисуем здесь, когда воркер вернёт
+    //    ссылку (фаза 1), опрос в это время уже идёт (фаза 2).
     if (m_currentMode == MODE_FIDO2) {
-        bool done = false;
-        std::wstring status;
         if (!m_hPollThread) {
             TriggerFIDO2Auth();
             if (m_authenticated) {
@@ -993,10 +1166,44 @@ HRESULT LigamentCredential::GetSerialization(
             return S_OK;
         }
 
+        bool done = false, beginDone = false, beginOk = false;
+        std::wstring status;
+        std::string err;
+        int retryAfter = 0;
         EnterCriticalSection(&m_csPoll);
-        done = m_pollState.done;
-        status = m_pollState.status;
+        beginDone = m_worker.beginDone;
+        beginOk = m_worker.beginOk;
+        err = m_worker.beginError;
+        retryAfter = m_worker.retryAfterSec;
+        done = m_worker.done;
+        status = m_worker.status;
         LeaveCriticalSection(&m_csPoll);
+
+        if (beginDone && !beginOk) {
+            JoinPollThread();
+            ClearQrBitmap();
+            m_statusText = L"Ошибка Passkey: " + DescribeServerError(err, retryAfter);
+            NotifyFieldChanged(FID_STATUS_TEXT);
+            NotifyFieldChanged(FID_LOGO);
+            SHStrDupW(m_statusText.c_str(), ppszOptionalStatusText);
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            return S_OK;
+        }
+
+        // Ссылка от сервера получена: строим QR ровно один раз, опрос
+        // подтверждения на телефоне уже идёт в фазе 2.
+        if (beginDone && beginOk && !m_beginApplied) {
+            m_beginApplied = true;
+            EnterCriticalSection(&m_csPoll);
+            std::wstring qrUrl = m_worker.qrUrl;
+            LeaveCriticalSection(&m_csPoll);
+            ClearQrBitmap();
+            m_hQrBmp = CreateQrBitmap(WideToUtf8(qrUrl), 256);
+            m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
+            UpdateFieldStates();
+            NotifyQrChanged();
+            CPLog(L"passkey: QR-код построен по ссылке воркера, опрос продолжается");
+        }
 
         if (!done) {
             *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
@@ -1008,6 +1215,11 @@ HRESULT LigamentCredential::GetSerialization(
             JoinPollThread();
             ClearQrBitmap();
             m_authenticated = true;
+            // Текст статуса — только на потоке LogonUI (см. RunAsyncJob).
+            m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
+            if (m_pEvents) {
+                m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
+            }
             return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         }
 
@@ -1080,9 +1292,11 @@ HRESULT LigamentCredential::ReportResult(
 
     // САМОПРОВЕРКА кредов против локального SAM (LogonUser): разделяет
     // «Windows отверг ИМЕННО имя/пароль» и «проблема в пути провайдера».
-    // Выполняется только при неудачном входе; неудачная проба увеличивает
-    // счётчик плохих паролей ещё на 1 — не спамить попытками (лок-аут).
-    if (ntsStatus != 0 && !m_password.empty() && !m_username.empty()) {
+    // Только для диагностики и ТОЛЬКО по явному флагу SamProbeEnabled=1:
+    // до трёх проб, каждая неудачная — +1 к badPwdCount (одна опечатка
+    // пользователя = до 4 инкрементов → преждевременный AD-lockout, DoS
+    // на чужую учётку вводом неверного пароля на 2FA-тайле).
+    if (m_config.samProbeEnabled && ntsStatus != 0 && !m_password.empty() && !m_username.empty()) {
         std::wstring nb, dd;
         GetMachineNames(nb, dd);
         CPLog(L"env: computer=%s dnsDomain=%s", nb.c_str(), dd.c_str());
@@ -1129,37 +1343,25 @@ HRESULT LigamentCredential::ReportResult(
 #endif
 
 // CPLog — файловая диагностика провайдера (winlogon-контекст, прав на
-// отладчик нет): %ProgramData%\Ligament\cp.log. Пишутся ТОЛЬКО несекретные
-// детали (имя/домен/длины/пакет/коды NTSTATUS), никогда пароль.
+// отладчик нет): %ProgramData%\Ligament\cp.log через общий hardened-писатель
+// LogCPFileLine (явный DACL SYSTEM/Admins, защита от pre-create/symlink).
+// Пишутся ТОЛЬКО несекретные детали (имя/домен/длины/пакет/коды NTSTATUS),
+// никогда пароль.
 static void CPLog(const wchar_t* fmt, ...) {
-    static wchar_t path[MAX_PATH] = {0};
-    if (path[0] == 0) {
-        wchar_t progData[MAX_PATH] = {0};
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, progData))) {
-            wcscat_s(progData, L"\\Ligament");
-            CreateDirectoryW(progData, nullptr);
-            wcscat_s(progData, L"\\cp.log");
-            wcscat_s(path, progData);
-        } else {
-            wcscpy_s(path, L"C:\\Windows\\Temp\\LigamentCP.log");
-        }
-    }
-    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
-        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    SYSTEMTIME st; GetLocalTime(&st);
     wchar_t line[1024];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
     int n = swprintf_s(line, L"[%02u.%02u %02u:%02u:%02u.%03u tid=%lu] ",
         st.wDay, st.wMonth, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
         GetCurrentThreadId());
-    va_list args; va_start(args, fmt);
-    int m = _vsnwprintf_s(line + n, (int)(wcslen(line) > 0 ? sizeof(line)/sizeof(wchar_t) - n : 0), _TRUNCATE, fmt, args);
-    va_end(args);
-    (void)m;
+    if (n > 0) {
+        va_list args;
+        va_start(args, fmt);
+        _vsnwprintf_s(line + n, _countof(line) - n, _TRUNCATE, fmt, args);
+        va_end(args);
+    }
     wcscat_s(line, L"\r\n");
-    DWORD written = 0;
-    WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &written, nullptr);
-    CloseHandle(h);
+    LogCPFileLine(line);
 }
 
 // Имена машины: NetBIOS (домен для ЛОКАЛЬНЫХ учёток у MsV1_0) и DNS-домен
@@ -1281,6 +1483,14 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     DWORD domainBytes = (DWORD)(effDomain.length() * sizeof(wchar_t));
     DWORD userBytes = (DWORD)(user.length() * sizeof(wchar_t));
     DWORD passBytes = (DWORD)(protPassword.length() * sizeof(wchar_t));
+
+    // Поля KERB_INTERACTIVE_LOGON — USHORT-длины: свыше 64КБ молчаливая
+    // усечь дала бы несогласованный блоб; отвергаем явно.
+    if (domainBytes > 0xFFFF || userBytes > 0xFFFF || passBytes > 0xFFFF) {
+        CPLog(L"pack: отказ — поле длиннее USHORT (dom=%lu usr=%lu pass=%lu)",
+            (unsigned long)domainBytes, (unsigned long)userBytes, (unsigned long)passBytes);
+        return E_INVALIDARG;
+    }
 
     DWORD totalSize = sizeof(KERB_INTERACTIVE_UNLOCK_LOGON) + domainBytes + userBytes + passBytes;
     BYTE* buffer = (BYTE*)CoTaskMemAlloc(totalSize);

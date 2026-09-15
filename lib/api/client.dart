@@ -75,11 +75,12 @@ class ApiClient {
     throw ApiException(res.statusCode, 'config_error');
   }
 
-  /// Проверка доступности локального Relay-узла по HTTP
+  /// Проверка доступности локального Relay-узла (только HTTPS: по открытому
+  /// HTTP статус-ответ может подменить активный MITM)
   static Future<Map<String, dynamic>?> probeRelay(String ip, {int port = 8082}) async {
     try {
       final res = await http
-          .get(Uri.parse('http://$ip:$port/api/v1/status'))
+          .get(Uri.parse('https://$ip:$port/api/v1/status'))
           .timeout(const Duration(milliseconds: 1500));
       if (res.statusCode == 200) {
         return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;

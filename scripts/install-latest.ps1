@@ -20,7 +20,11 @@ param (
 
     [string]$Version = "latest",
 
-    [switch]$Silent
+    [switch]$Silent,
+
+    # Разрешить установку компонентов БЕЗ цифровой подписи (CI/тест).
+    # Битая/отозванная подпись блокируется всегда.
+    [switch]$AllowUnsigned
 )
 
 # 1. Проверка прав Администратора и авто-элевация
@@ -33,6 +37,7 @@ if (-not $isAdmin) {
         if ($ServerURL) { $argsList += " -ServerURL `"$ServerURL`"" }
         if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
         if ($Silent) { $argsList += " -Silent" }
+        if ($AllowUnsigned) { $argsList += " -AllowUnsigned" }
     } else {
         $cmd = "irm 'https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1?v=$(Get-Random)' | iex"
         $argsList = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
@@ -44,6 +49,40 @@ if (-not $isAdmin) {
 # Включаем TLS 1.2 / TLS 1.3 и отключаем медленный GUI-прогресс PowerShell 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
+
+# Проверка Authenticode-подписи скачанного артефакта перед установкой.
+# Компонент попадает в цепочку входа Windows (credential provider), поэтому
+# неподписанный/битый бинарник — это прямой путь к supply-chain компрометации
+# домена. Валидная подпись → ОК; нет подписи → подтверждение или -AllowUnsigned;
+# битая/отозванная → жёсткий отказ.
+function Assert-ArtifactTrusted {
+    param([string]$Path, [string]$Label)
+
+    if (-not (Test-Path $Path)) { throw "Файл не найден: $Path" }
+
+    $sig = Get-AuthenticodeSignature -FilePath $Path
+    switch ($sig.Status) {
+        'Valid' {
+            Write-Host " [OK] Подпись $Label действительна ($($sig.SignerCertificate.Subject))" -ForegroundColor Green
+            return
+        }
+        'NotSigned' {
+            if ($AllowUnsigned) {
+                Write-Host " [!] $Label НЕ ПОДПИСАН — продолжаю по ключу -AllowUnsigned" -ForegroundColor Yellow
+                return
+            }
+            if (-not $Silent) {
+                Write-Host " [!] $Label не имеет цифровой подписи." -ForegroundColor Yellow
+                $answer = (Read-Host "Ставить неподписанный компонент? Введите YES для подтверждения").Trim()
+                if ($answer -eq 'YES') { return }
+            }
+            throw "Отказ: $Label без Authenticode-подписи. Подпишите артефакты или используйте -AllowUnsigned (не для продакшена)."
+        }
+        default {
+            throw "Отказ: подпись $Label НЕ ПРОШЛА проверку (статус: $($sig.Status)) — вероятна подмена файла."
+        }
+    }
+}
 
 $RepoOwner = "aligorov"
 $RepoName  = "ligament-apps"
@@ -139,6 +178,9 @@ try {
         Invoke-WebRequest -Uri $MsiUrl -OutFile $LocalMsi -UseBasicParsing
         Write-Host " [OK] Загружено: $LocalMsi ($([math]::Round((Get-Item $LocalMsi).Length / 1MB, 2)) МБ)" -ForegroundColor Green
 
+        Write-Host "`nПроверка цифровой подписи MSI..." -ForegroundColor Yellow
+        Assert-ArtifactTrusted -Path $LocalMsi -Label $MsiFileName
+
         Write-Host "`nОстановка активных процессов..." -ForegroundColor Yellow
         Stop-Process -Name "ligament_authenticator" -Force -ErrorAction SilentlyContinue
         taskkill /f /im logonui.exe 2>$null | Out-Null
@@ -192,6 +234,11 @@ try {
         if (-not (Test-Path $DllSource)) {
             Write-Error "В архиве не найдена библиотека LigamentCredentialProvider.dll!"
         }
+
+        # DLL грузится в logonui.exe (SYSTEM) — неподписанный бинарник здесь
+        # недопустим: проверяем подпись ДО копирования в System32.
+        Write-Host "`nПроверка цифровой подписи Credential Provider DLL..." -ForegroundColor Yellow
+        Assert-ArtifactTrusted -Path $DllSource -Label "LigamentCredentialProvider.dll"
 
         Write-Host "`n[4/4] Развертывание Credential Provider в System32..." -ForegroundColor Yellow
         taskkill /f /im logonui.exe 2>$null | Out-Null
