@@ -54,6 +54,15 @@ class InputInjector {
   int Function()? _winLockWorkStation;
   int Function(int)? _winGetSystemMetrics;
 
+  // Windows LL-хуки блокировки физического ввода: колбэки и message loop
+  // живут в нативном input_block.cpp (runner, экспорт из exe) — из чистого
+  // Dart LL-хуки недостижимы (NativeCallable.listener не возвращает
+  // значение, а хук требует message pump потока-постановщика).
+  // BlockInput требует админа и молча отказывает; LL-хуки работают без
+  // повышения и пропускают инъекции агента (см. input_block.cpp).
+  int Function()? _nativeInstallBlock;
+  int Function()? _nativeRemoveBlock;
+
   void _initMacCG() {
     if (kIsWeb || !Platform.isMacOS) return;
     try {
@@ -108,6 +117,17 @@ class InputInjector {
       _winGetSystemMetrics = _user32Lib!.lookupFunction<
           ffi.Int32 Function(ffi.Int32),
           int Function(int)>('GetSystemMetrics');
+      // Нативный хелпер блокировки: экспорт из собственного exe
+      // (windows/runner/input_block.cpp, dllexport).
+      try {
+        final exe = ffi.DynamicLibrary.executable();
+        _nativeInstallBlock = exe.lookupFunction<ffi.Int32 Function(), int Function()>(
+            'ligament_install_input_block');
+        _nativeRemoveBlock = exe.lookupFunction<ffi.Int32 Function(), int Function()>(
+            'ligament_remove_input_block');
+      } catch (e) {
+        debugPrint('input_injector: нативный блокировщик ввода недоступен: $e');
+      }
     } catch (e) {
       debugPrint('input_injector: ошибка загрузки user32.dll: $e');
     }
@@ -297,14 +317,24 @@ class InputInjector {
     }
   }
 
-  /// Блокировка или разблокировка ввода у локального пользователя (мышь/клавиатура)
+  /// Блокировка или разблокировка ввода у локального пользователя (мышь/клавиатура).
+  ///
+  /// Windows: низкоуровневые хуки WH_KEYBOARD_LL/WH_MOUSE_LL — работают БЕЗ
+  /// прав администратора (BlockInput молча отказывает в юзер-процессе) и
+  /// пропускают инъекции самого агента (LLKHF/LLMHF_INJECTED), чтобы инженер
+  /// сохранял управление. ClipCursor+BlockInput остаются как усиление (для
+  /// процессов с правами).
   void setInputBlocked(bool blocked) {
     if (kIsWeb) return;
     try {
       if (Platform.isWindows) {
         if (blocked) {
-          // 1. Аппаратно запираем физический курсор мыши в точку 0,0
-          // ClipCursor работает без повышенных прав UAC/Admin!
+          final rc = _nativeInstallBlock?.call() ?? -1;
+          debugPrint('input_injector: install_input_block rc=$rc '
+              '(0=LL-хуки активны, -1=хуки не встали, -2=исключение)');
+
+          // Дополнительно: курсор в точку 0,0 (без прав) и BlockInput
+          // (сработает только при повышенных правах процесса).
           final rect = calloc<_RECT>();
           rect.ref.left = 0;
           rect.ref.top = 0;
@@ -312,11 +342,9 @@ class InputInjector {
           rect.ref.bottom = 1;
           _winClipCursor?.call(rect);
           calloc.free(rect);
-
-          // 2. Блокируем ввод через BlockInput (если процесс имеет права админа)
           _winBlockInput?.call(1);
         } else {
-          // Освобождаем курсор мыши
+          _nativeRemoveBlock?.call();
           _winClipCursor?.call(ffi.Pointer.fromAddress(0));
           _winBlockInput?.call(0);
         }
