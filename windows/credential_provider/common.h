@@ -9,6 +9,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
+#include <objbase.h> // CoInitializeEx/CoUninitialize (воркер: SetField*/CredentialsChanged)
 #include <credentialprovider.h>
 #include <ntsecapi.h>
 #include <winhttp.h>

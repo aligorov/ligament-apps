@@ -463,18 +463,33 @@ void LigamentCredential::SwitchToNextMode() {
 }
 
 void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
-    if (!m_pEvents) return;
+    // AddRef-копия под m_csPoll: NotifyFieldChanged теперь зовётся и из
+    // воркера фазы 1, а UnAdvise может освобождать m_pEvents параллельно.
+    // GetStringValue/GetFieldState сами берут m_csPoll — копию интерфейса
+    // делаем до их вызовов и не держим блокировку при SetField*.
+    ICredentialProviderCredentialEvents* pEvents = nullptr;
+    EnterCriticalSection(&m_csPoll);
+    if (m_pEvents) {
+        pEvents = m_pEvents;
+        pEvents->AddRef();
+    }
+    LeaveCriticalSection(&m_csPoll);
+    if (!pEvents) return;
     CREDENTIAL_PROVIDER_FIELD_STATE cpfs = CPFS_HIDDEN;
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis = CPFIS_NONE;
     GetFieldState(dwFieldID, &cpfs, &cpfis);
-    m_pEvents->SetFieldState(this, dwFieldID, cpfs);
-    m_pEvents->SetFieldInteractiveState(this, dwFieldID, cpfis);
+    pEvents->SetFieldState(this, dwFieldID, cpfs);
+    pEvents->SetFieldInteractiveState(this, dwFieldID, cpfis);
     if (dwFieldID == FID_STATUS_TEXT) {
-        m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
+        std::wstring statusText;
+        EnterCriticalSection(&m_csPoll);
+        statusText = m_statusText;
+        LeaveCriticalSection(&m_csPoll);
+        pEvents->SetFieldString(this, FID_STATUS_TEXT, statusText.c_str());
     } else if (dwFieldID == FID_NUMBER_MATCH || dwFieldID == FID_LARGE_TEXT || dwFieldID == FID_SWITCH_FACTOR_BTN || dwFieldID == FID_FIDO2_BTN) {
         PWSTR psz = nullptr;
         if (SUCCEEDED(GetStringValue(dwFieldID, &psz)) && psz) {
-            m_pEvents->SetFieldString(this, dwFieldID, psz);
+            pEvents->SetFieldString(this, dwFieldID, psz);
             CoTaskMemFree(psz);
         }
     } else if (dwFieldID == FID_LOGO) {
@@ -482,12 +497,13 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
         if (bmp) {
             HBITMAP copyBmp = (HBITMAP)CopyImage(bmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
             if (copyBmp) {
-                m_pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
+                pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
             }
         }
-        m_pEvents->SetFieldState(this, FID_LOGO, cpfs);
+        pEvents->SetFieldState(this, FID_LOGO, cpfs);
         GdiFlush();
     }
+    pEvents->Release();
 }
 
 void LigamentCredential::UpdateFieldStates() {
@@ -704,7 +720,13 @@ void LigamentCredential::TriggerFIDO2Auth() {
 // Background worker: thin wrapper over RunAsyncJob.
 DWORD WINAPI LigamentCredential::WorkerThreadProc(LPVOID lpParam) {
     auto* self = reinterpret_cast<LigamentCredential*>(lpParam);
+    // COM на воркере: SetField* уровня креденшла и provider-level
+    // CredentialsChanged зовутся из этого потока — без инициализации COM
+    // межапартаментные вызовы нелегальны (для прямых in-proc указателей
+    // работают, но не гарантированы).
+    HRESULT hrCom = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     self->RunAsyncJob();
+    if (SUCCEEDED(hrCom)) CoUninitialize();
     return 0;
 }
 
@@ -785,6 +807,15 @@ void LigamentCredential::RunAsyncJob() {
             ok ? 1 : 0, err.c_str(), (ok && !numberMatch.empty()) ? L"есть" : L"нет");
 
         if (stop) return;
+        if (ok) {
+            // Обновляем поля тайла прямо из воркера: SetField* уровня
+            // креденшала — асинхронный callback-механизм LogonUI (по
+            // документации ICredentialProviderCredentialEvents), единственный
+            // способ показать число/статус без повторного GetSerialization.
+            NotifyFieldChanged(FID_STATUS_TEXT);
+            NotifyFieldChanged(FID_NUMBER_MATCH);
+            NotifyFieldChanged(FID_LARGE_TEXT);
+        }
         NotifyProviderChangedFromWorker();
     } else if (job == JobWebAuthnBegin) {
         WebAuthnBeginResult r = client.WebAuthnBegin(user, pass);
@@ -977,7 +1008,6 @@ void LigamentCredential::JoinPollThread() {
 // CS безопасен — in-proc), после чего отпускаем.
 void LigamentCredential::NotifyProviderChangedFromWorker() {
     ICredentialProviderEvents* pProviderEvents = nullptr;
-    ICredentialProviderCredentialEvents* pCredEvents = nullptr;
     UINT_PTR ctx = 0;
     EnterCriticalSection(&m_csPoll);
     if (m_pProviderEvents && m_providerAdviseContext) {
@@ -985,23 +1015,15 @@ void LigamentCredential::NotifyProviderChangedFromWorker() {
         pProviderEvents->AddRef();
         ctx = m_providerAdviseContext;
     }
-    if (m_pEvents) {
-        pCredEvents = m_pEvents;
-        pCredEvents->AddRef();
-    }
     LeaveCriticalSection(&m_csPoll);
 
-    // OnCredentialsChanged (уровень КРЕДЕНШЛА) — единственный сигнал, по
-    // которому LogonUI повторно вызывает GetSerialization незавершённого
-    // тайла. Без него после фазы 1 (StartPush) тайл замирает на «Отправка
-    // Push...»: контрольное число не показывается, результат опроса не
-    // применяется. Так работало в v0.4.71 («CP LogonUI фикс»), вызов был
-    // потерян в реworks 09-15. Provider-level CredentialsChanged оставлен —
-    // он обновляет сетку тайлов целиком (автологон/UI).
-    if (pCredEvents) {
-        pCredEvents->OnCredentialsChanged(this);
-        pCredEvents->Release();
-    }
+    // Provider-level CredentialsChanged — документированный сигнал воркера
+    // LogonUI: перечисление/перерисовка тайлов и повторный вызов
+    // GetSerialization незавершённого тайла (путь approved → сериализация).
+    // Полевые обновления числа/статуса идут отдельно через
+    // NotifyFieldChanged (SetField* уровня креденшала — асинхронный
+    // callback-механизм по документации; событие «OnCredentialsChanged»
+    // уровня креденшала в SDK НЕ существует).
     if (pProviderEvents) {
         pProviderEvents->CredentialsChanged(ctx);
         pProviderEvents->Release();
