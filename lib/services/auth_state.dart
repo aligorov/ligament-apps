@@ -794,11 +794,13 @@ class AuthState extends ChangeNotifier {
         if (status == 'connecting' || status == 'authorizing') {
           final numberMatch = sess['number_match']?.toString() ?? '';
           // Не переспрашиваем подтверждение, когда WebRTC уже устанавливается
-          // (connecting) — пользователь уже одобрил сессию.
+          // (connecting) или сессия завершилась ошибкой на клиенте (ended) —
+          // пользователь уже одобрил/увидел ошибку.
           if (numberMatch.isNotEmpty &&
               activeSupportPrompt == null &&
               support.state != SupportSessionState.active &&
-              support.state != SupportSessionState.connecting) {
+              support.state != SupportSessionState.connecting &&
+              support.state != SupportSessionState.ended) {
             activeSupportPrompt = {
               'session_id': sessionId,
               'category': category,

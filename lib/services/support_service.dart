@@ -276,8 +276,11 @@ class SupportService extends ChangeNotifier {
 
   /// Сброс ошибки последней сессии (кнопка «Закрыть» в баннере ошибки).
   void clearError() {
-    if (_lastError != null) {
+    if (_lastError != null || _state == SupportSessionState.ended) {
       _lastError = null;
+      if (_state == SupportSessionState.ended) {
+        _state = SupportSessionState.idle;
+      }
       notifyListeners();
     }
   }
