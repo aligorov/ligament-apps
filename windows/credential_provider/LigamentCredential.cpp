@@ -172,17 +172,24 @@ ULONG LigamentCredential::Release() {
 
 // ICredentialProviderCredential
 HRESULT LigamentCredential::Advise(ICredentialProviderCredentialEvents* pcpce) {
+    // Под m_csPoll: воркер берёт m_pEvents для OnCredentialsChanged — без
+    // блокировки UnAdvise мог бы освободить интерфейс между проверкой
+    // указателя воркером и вызовом (use-after-free).
+    EnterCriticalSection(&m_csPoll);
     if (m_pEvents) m_pEvents->Release();
     m_pEvents = pcpce;
     if (m_pEvents) m_pEvents->AddRef();
+    LeaveCriticalSection(&m_csPoll);
     return S_OK;
 }
 
 HRESULT LigamentCredential::UnAdvise() {
+    EnterCriticalSection(&m_csPoll);
     if (m_pEvents) {
         m_pEvents->Release();
         m_pEvents = nullptr;
     }
+    LeaveCriticalSection(&m_csPoll);
     return S_OK;
 }
 
@@ -223,7 +230,14 @@ HRESULT LigamentCredential::GetFieldState(
         break;
 
     case FID_NUMBER_MATCH:
-        *pcpfs = (!m_numberMatch.empty()) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        // m_numberMatch пишет воркер фазы 1 под m_csPoll — читаем копию под
+        // той же блокировкой (см. GetStringValue).
+        {
+            EnterCriticalSection(&m_csPoll);
+            bool hasNumber = !m_numberMatch.empty();
+            LeaveCriticalSection(&m_csPoll);
+            *pcpfs = hasNumber ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        }
         break;
 
     case FID_FIDO2_BTN:
@@ -261,6 +275,15 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     std::wstring val;
     const std::wstring pc = ComputerNameSuffix();
     const std::wstring pcSuffix = pc.empty() ? std::wstring() : L"  \u00B7  " + pc;
+    // Воркер фазы 1 пишет m_numberMatch/m_statusText под m_csPoll — их
+    // чтение здесь копируем под той же блокировкой (std::wstring не
+    // атомарен; гонка = разрыв строки/краш). Остальные члены трогает
+    // только поток LogonUI.
+    std::wstring numberMatch, statusText;
+    EnterCriticalSection(&m_csPoll);
+    numberMatch = m_numberMatch;
+    statusText = m_statusText;
+    LeaveCriticalSection(&m_csPoll);
     switch (dwFieldID) {
     case FID_LARGE_TEXT:
         // Заголовок плитки всегда называет машину; строка контрольного
@@ -270,8 +293,8 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         } else if (m_currentMode == MODE_OTP) {
             val = L"Вход по коду TOTP / YubiKey" + pcSuffix;
         } else {
-            if (!m_numberMatch.empty()) {
-                val = L"Контрольное число: " + m_numberMatch;
+            if (!numberMatch.empty()) {
+                val = L"Контрольное число: " + numberMatch;
             } else {
                 val = L"Ligament Enterprise 2FA" + pcSuffix;
             }
@@ -284,11 +307,11 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         val = m_password;
         break;
     case FID_STATUS_TEXT:
-        val = m_statusText;
+        val = statusText;
         break;
     case FID_NUMBER_MATCH:
-        if (!m_numberMatch.empty()) {
-            val = L"   [  " + m_numberMatch + L"  ]   ";
+        if (!numberMatch.empty()) {
+            val = L"   [  " + numberMatch + L"  ]   ";
         }
         break;
     case FID_FIDO2_BTN:
@@ -468,6 +491,9 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
 }
 
 void LigamentCredential::UpdateFieldStates() {
+    // Под m_csPoll: воркер фазы 1 пишет те же члены (см. RunAsyncJob) —
+    // одновременная запись из UI-потока без блокировки = разрыв строки.
+    EnterCriticalSection(&m_csPoll);
     if (m_currentMode == MODE_FIDO2) {
         if (m_username.empty() || m_password.empty()) {
             m_statusText = L"Passkey: введите имя пользователя и пароль для получения QR-кода";
@@ -485,6 +511,7 @@ void LigamentCredential::UpdateFieldStates() {
     } else if (m_currentMode == MODE_OTP) {
         m_statusText = L"Введите 6 цифр из приложения TOTP или коснитесь YubiKey";
     }
+    LeaveCriticalSection(&m_csPoll);
 
     if (m_pEvents) {
         NotifyFieldChanged(FID_LOGO);
@@ -739,6 +766,18 @@ void LigamentCredential::RunAsyncJob() {
             if (ok) {
                 m_worker.numberMatch = numberMatch;
                 needPolling = true;
+                // Применяем результат фазы 1 немедленно (под той же
+                // блокировкой): m_numberMatch/m_statusText читает
+                // GetStringValue с потока LogonUI. Если LogonUI
+                // перерисует тайл БЕЗ повторного GetSerialization (по
+                // provider-level CredentialsChanged), поле обязано
+                // вернуть свежие число и статус, а не «Отправка
+                // Push...». Повторный GetSerialization применит то же
+                // самое (m_beginApplied) и дернёт NotifyFieldChanged.
+                m_numberMatch = numberMatch;
+                m_statusText = !numberMatch.empty()
+                    ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
+                    : L"Push отправлен! Подтвердите вход в приложении/Telegram...";
             }
         }
         LeaveCriticalSection(&m_csPoll);
@@ -937,19 +976,35 @@ void LigamentCredential::JoinPollThread() {
 // AddRef-ссылку под m_csPoll, вызываем метод уже без блокировки (AddRef под
 // CS безопасен — in-proc), после чего отпускаем.
 void LigamentCredential::NotifyProviderChangedFromWorker() {
-    ICredentialProviderEvents* pEvents = nullptr;
+    ICredentialProviderEvents* pProviderEvents = nullptr;
+    ICredentialProviderCredentialEvents* pCredEvents = nullptr;
     UINT_PTR ctx = 0;
     EnterCriticalSection(&m_csPoll);
     if (m_pProviderEvents && m_providerAdviseContext) {
-        pEvents = m_pProviderEvents;
-        pEvents->AddRef();
+        pProviderEvents = m_pProviderEvents;
+        pProviderEvents->AddRef();
         ctx = m_providerAdviseContext;
+    }
+    if (m_pEvents) {
+        pCredEvents = m_pEvents;
+        pCredEvents->AddRef();
     }
     LeaveCriticalSection(&m_csPoll);
 
-    if (pEvents) {
-        pEvents->CredentialsChanged(ctx);
-        pEvents->Release();
+    // OnCredentialsChanged (уровень КРЕДЕНШЛА) — единственный сигнал, по
+    // которому LogonUI повторно вызывает GetSerialization незавершённого
+    // тайла. Без него после фазы 1 (StartPush) тайл замирает на «Отправка
+    // Push...»: контрольное число не показывается, результат опроса не
+    // применяется. Так работало в v0.4.71 («CP LogonUI фикс»), вызов был
+    // потерян в реworks 09-15. Provider-level CredentialsChanged оставлен —
+    // он обновляет сетку тайлов целиком (автологон/UI).
+    if (pCredEvents) {
+        pCredEvents->OnCredentialsChanged(this);
+        pCredEvents->Release();
+    }
+    if (pProviderEvents) {
+        pProviderEvents->CredentialsChanged(ctx);
+        pProviderEvents->Release();
     }
 }
 
