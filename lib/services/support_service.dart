@@ -509,8 +509,27 @@ class SupportService extends ChangeNotifier {
       ));
       _unreadChatCount++;
       notifyListeners();
+
+      // file_ack: консоль оператора ждёт подтверждения доставки (30 с)
+      // после file_end — без него успешная передача выглядит ошибкой.
+      _sendFileAck(dl.id, ok: true);
     } catch (e) {
       debugPrint('support_service: ошибка сохранения переданного файла: $e');
+      _sendFileAck(dl.id, ok: false);
+    }
+  }
+
+  /// Подтверждение приёма файла отправителю (консоль/приложение):
+  /// {ok:true} — сохранён, {ok:false} — ошибка сохранения.
+  void _sendFileAck(String transferId, {required bool ok}) {
+    try {
+      _sendSignalOrData({
+        'type': 'file_ack',
+        'transfer_id': transferId,
+        'ok': ok,
+      });
+    } catch (_) {
+      // Канал закрыт — отправитель узнает по таймауту
     }
   }
 
@@ -1199,6 +1218,7 @@ class SupportService extends ChangeNotifier {
     }
     // Сообщение об ошибке обеим сторонам: локально + обратно отправителю.
     _addSystemMessage('⚠ Файл "${dl.filename}" не сохранен: $reason');
+    _sendFileAck(transferId, ok: false);
     _notifyFileRejected(transferId, dl.filename, reason);
     notifyListeners();
   }
