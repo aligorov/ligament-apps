@@ -64,6 +64,10 @@ class AuthState extends ChangeNotifier {
   bool isCompliant = true;
   bool isOnline = false;
   List<Map<String, dynamic>> relays = [];
+
+  /// ICE-серверы (STUN/TURN) из /api/v1/app/config для WebRTC-сессий
+  /// удаленной помощи (агент + операторский экран в приложении).
+  List<Map<String, dynamic>> iceServers = [];
   String? activeRelayEndpoint;
   String? activeRelayName;
   bool get isUsingRelay => activeRelayEndpoint != null;
@@ -503,6 +507,12 @@ class AuthState extends ChangeNotifier {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('cached_relays', jsonEncode(relays));
         notifyListeners();
+      }
+      // ICE-серверы (STUN/TURN) для WebRTC удаленной помощи (B-1)
+      final ice = parseIceServersConfig(cfg);
+      if (ice.isNotEmpty) {
+        iceServers = ice;
+        support.setIceServers(ice);
       }
     } catch (e) {
       debugPrint('auth_state: ошибка обновления списка relay: $e');

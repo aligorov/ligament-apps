@@ -271,12 +271,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _setupPeerConnection() async {
+    final auth = context.read<AuthState>();
     final config = <String, dynamic>{
-      'iceServers': [
-        {'urls': 'stun:stun.l.google.com:19302'},
-        {'urls': 'stun:stun1.l.google.com:19302'},
-        {'urls': 'stun:stun.cloudflare.com:3478'},
-      ],
+      // ICE-серверы из /api/v1/app/config (B-1); emergency-фолбэк на
+      // публичные STUN — только если конфиг не отдал ice_servers.
+      'iceServers': auth.iceServers.isNotEmpty
+          ? auth.iceServers
+          : SupportService.emergencyIceServers,
       'sdpSemantics': 'unified-plan',
     };
 

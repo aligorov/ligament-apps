@@ -104,12 +104,73 @@ enum SupportSessionState {
   ended,
 }
 
+/// Разбор ICE-серверов из ответа /api/v1/app/config.
+///
+/// Ожидаемый формат поля ice_servers:
+///   [{"urls": ["turn:host:3478", "stun:..."], "username": "...", "credential": "..."}, ...]
+/// urls может быть строкой или массивом; username/credential опциональны.
+/// Возвращает пустой список, если поле отсутствует/невалидно — вызывающий
+/// код решает, использовать ли emergency-фолбэк.
+List<Map<String, dynamic>> parseIceServersConfig(Map<String, dynamic>? config) {
+  if (config == null) return const [];
+  final raw = config['ice_servers'];
+  if (raw is! List) return const [];
+  final result = <Map<String, dynamic>>[];
+  for (final item in raw) {
+    if (item is! Map) continue;
+    final urlsRaw = item['urls'];
+    List<String> urls = const [];
+    if (urlsRaw is List) {
+      urls = urlsRaw.map((e) => e?.toString() ?? '').where((u) => _isValidIceUrl(u)).toList();
+    } else if (urlsRaw is String && _isValidIceUrl(urlsRaw)) {
+      urls = [urlsRaw];
+    }
+    if (urls.isEmpty) continue;
+    result.add({
+      'urls': urls,
+      if (item['username'] != null) 'username': item['username'].toString(),
+      if (item['credential'] != null) 'credential': item['credential'].toString(),
+    });
+  }
+  return result;
+}
+
+bool _isValidIceUrl(String url) {
+  return url.startsWith('stun:') || url.startsWith('turn:') || url.startsWith('turns:');
+}
+
 /// Сервис управления WebRTC экраном и вводом для удаленной поддержки (SOS).
 class SupportService extends ChangeNotifier {
   /// Лимиты файловых передач (защита памяти/диска от нелимитированных закачек)
   static const int _maxFileTransferBytes = 50 * 1024 * 1024; // 50 МБ
   static const int _maxConcurrentDownloads = 2;
   static const Duration _downloadStallTimeout = Duration(seconds: 60);
+
+  /// Emergency-фолбэк: публичные STUN Google/Cloudflare используются ТОЛЬКО
+  /// если сервер не отдал ice_servers в /api/v1/app/config (или конфиг
+  /// недоступен). TURN всегда должен приходить из корпоративного конфига.
+  static const List<Map<String, dynamic>> emergencyIceServers = [
+    {'urls': 'stun:stun.l.google.com:19302'},
+    {'urls': 'stun:stun1.l.google.com:19302'},
+    {'urls': 'stun:stun.cloudflare.com:3478'},
+  ];
+
+  /// ICE-серверы из конфига сервера; null — конфиг еще не загружен.
+  List<Map<String, dynamic>>? _iceServersFromConfig;
+
+  /// Актуальный список ICE-серверов для RTCPeerConnection.
+  List<Map<String, dynamic>> get effectiveIceServers =>
+      (_iceServersFromConfig != null && _iceServersFromConfig!.isNotEmpty)
+          ? _iceServersFromConfig!
+          : emergencyIceServers;
+
+  /// Устанавливает ICE-серверы из конфига (вызывается AuthState после
+  /// /api/v1/app/config). Пустой список игнорируется — сохраняется фолбэк.
+  void setIceServers(List<Map<String, dynamic>>? servers) {
+    if (servers != null && servers.isNotEmpty) {
+      _iceServersFromConfig = servers;
+    }
+  }
 
   SupportSessionState _state = SupportSessionState.idle;
   String? _activeSessionId;
@@ -413,12 +474,18 @@ class SupportService extends ChangeNotifier {
     _accessMode = accessMode;
 
     try {
+      // ICE-серверы берутся из конфига сервера (B-1); Google/Cloudflare STUN —
+      // только emergency-фолбэк при недоступности конфига.
+      if (_iceServersFromConfig == null && api != null) {
+        try {
+          final cfg = await api.getConfig();
+          setIceServers(parseIceServersConfig(cfg));
+        } catch (e) {
+          debugPrint('support_service: конфиг недоступен, emergency STUN: $e');
+        }
+      }
       final rtcConfig = <String, dynamic>{
-        'iceServers': [
-          {'urls': 'stun:stun.l.google.com:19302'},
-          {'urls': 'stun:stun1.l.google.com:19302'},
-          {'urls': 'stun:stun.cloudflare.com:3478'},
-        ],
+        'iceServers': effectiveIceServers,
         'sdpSemantics': 'unified-plan',
       };
 
