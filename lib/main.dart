@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import 'services/auth_state.dart';
+import 'services/support_service.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 
@@ -172,13 +173,61 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
 
   @override
   void onWindowClose() async {
+    final auth = context.read<AuthState>();
+
+    // m-8: при активной SOS-сессии закрытие окна требует подтверждения —
+    // случайный клик по крестику не должен молча рвать сеанс помощи.
+    if (auth.support.state == SupportSessionState.active) {
+      final confirmed = await _confirmCloseDuringSupport(auth);
+      if (!confirmed) {
+        // Пользователь передумал — окно остается открытым.
+        return;
+      }
+      await auth.endSupport();
+    }
+
     // При закрытии окна не убиваем процесс, а сворачиваем в системный трей
-    final isPreventExit = !context.read<AuthState>().gpo.allowExit;
+    final isPreventExit = !auth.gpo.allowExit;
     if (isPreventExit) {
       await windowManager.hide();
     } else {
       await windowManager.destroy();
     }
+  }
+
+  /// Диалог подтверждения закрытия при активной SOS-сессии (m-8).
+  Future<bool> _confirmCloseDuringSupport(AuthState auth) async {
+    final ctx = LigamentApp.navigatorKey.currentContext;
+    if (ctx == null) return true;
+    final isRu = auth.isRu;
+    final confirmed = await showDialog<bool>(
+      context: ctx,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Text(
+          isRu ? 'Идет сеанс удаленной помощи' : 'Remote support session in progress',
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        content: Text(
+          isRu
+              ? 'Закрытие окна завершит сеанс удаленной помощи. Действительно закрыть?'
+              : 'Closing the window will end the remote support session. Close anyway?',
+          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: Text(isRu ? 'Отмена' : 'Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            child: Text(isRu ? 'Завершить и закрыть' : 'End & Close'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
   }
 
   @override

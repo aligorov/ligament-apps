@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -24,6 +26,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   final FocusNode _codeFocus = FocusNode();
   bool _processing = false;
   String? _error;
+  Timer? _expiryTimer;
 
   @override
   void initState() {
@@ -31,10 +34,43 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
     _codeController.addListener(() {
       if (_error != null) setState(() => _error = null);
     });
+    _armExpiryWatch();
+  }
+
+  /// m-3: авто-закрытие по истечении срока промпта (если сервер передал
+  /// expires_at/expires_in_seconds).
+  void _armExpiryWatch() {
+    DateTime? expiresAt;
+    final raw = widget.prompt['expires_at'];
+    if (raw is int) {
+      expiresAt = DateTime.fromMillisecondsSinceEpoch(raw * 1000);
+    } else if (raw is num) {
+      expiresAt = DateTime.fromMillisecondsSinceEpoch((raw * 1000).round());
+    } else if (raw is String) {
+      expiresAt = DateTime.tryParse(raw);
+    }
+    final inSeconds = (widget.prompt['expires_in_seconds'] as num?)?.toInt();
+    if (expiresAt == null && inSeconds != null && inSeconds > 0) {
+      expiresAt = DateTime.now().add(Duration(seconds: inSeconds));
+    }
+    if (expiresAt == null) return;
+    final wait = expiresAt.difference(DateTime.now());
+    if (wait.isNegative) {
+      _close();
+      return;
+    }
+    _expiryTimer = Timer(wait, _close);
+  }
+
+  void _close() {
+    if (mounted && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop(false);
+    }
   }
 
   @override
   void dispose() {
+    _expiryTimer?.cancel();
     _codeController.dispose();
     _codeFocus.dispose();
     super.dispose();
@@ -98,6 +134,24 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
+    final auth = context.watch<AuthState>();
+
+    // m-3: промпт исчез (сессия завершена/отклонена на сервере или из другого
+    // канала) — модалка закрывается сама, «висящее» окно подтверждения
+    // не должно пережить свой запрос. Во время обработки решения не закрываем.
+    if (!_processing) {
+      final current = auth.activeSupportPrompt;
+      final gone = current == null ||
+          (current['session_id']?.toString() ?? '') != (widget.prompt['session_id']?.toString() ?? '');
+      if (gone) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && Navigator.of(context).canPop()) {
+            Navigator.of(context).pop(false);
+          }
+        });
+      }
+    }
+
     final category = widget.prompt['category']?.toString() ?? 'it';
     final summary = widget.prompt['problem_summary']?.toString() ?? (strings.isRu ? 'Удаленная помощь' : 'Remote support');
     final operatorName = widget.prompt['admin_name']?.toString() ??

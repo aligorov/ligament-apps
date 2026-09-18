@@ -691,6 +691,17 @@ class SupportService extends ChangeNotifier {
         await _peerConnection!.addTrack(track, _localStream!);
       }
 
+      // m-6: видео экрана — читаемость текста важнее плавности
+      await _applyVideoSenderTuning();
+
+      // m-1: на macOS без Accessibility-разрешения инъекции ввода молча
+      // игнорируются — честно подсказываем пользователю до начала сеанса.
+      if (!kIsWeb && Platform.isMacOS && InputInjector.instance.macAccessibilityTrusted == false) {
+        _addSystemMessage('⚠ Для удаленного управления разрешите Ligament 2FA: '
+            'Системные настройки → Конфиденциальность и безопасность → Универсальный доступ');
+        notifyListeners();
+      }
+
       // Создаем и отправляем SDP Offer (M-1: state=active только после
       // onConnectionState==connected)
       await _sendOffer();
@@ -701,6 +712,31 @@ class SupportService extends ChangeNotifier {
       debugPrint('support_service: ошибка инициализации захвата экрана: $e');
       stopScreenSharing();
       rethrow;
+    }
+  }
+
+  /// m-6: приоритет разрешения над частотой кадров и целевой битрейт ~2.5 Мбит
+  /// для видеопотока экрана (текст/1С должны оставаться читаемыми при
+  /// просадке канала).
+  Future<void> _applyVideoSenderTuning() async {
+    final pc = _peerConnection;
+    if (pc == null) return;
+    try {
+      final senders = await pc.getSenders();
+      for (final sender in senders) {
+        if (sender.track?.kind != 'video') continue;
+        final params = sender.parameters;
+        final encodings = params.encodings;
+        if (encodings != null && encodings.isNotEmpty) {
+          encodings.first.maxBitrate = 2500000; // ~2.5 Мбит/с
+          params.encodings = encodings;
+        }
+        params.degradationPreference = RTCDegradationPreference.MAINTAIN_RESOLUTION;
+        await sender.setParameters(params);
+        break;
+      }
+    } catch (e) {
+      debugPrint('support_service: tuning видео-сендера не применился: $e');
     }
   }
 

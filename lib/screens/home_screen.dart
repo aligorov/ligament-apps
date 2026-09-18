@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -1088,6 +1089,13 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
                         const SizedBox(width: 8),
+                        // m-4: отправка файла инженеру через существующий
+                        // SupportService.sendFile (только через DataChannel).
+                        IconButton(
+                          icon: const Icon(Icons.attach_file, color: Color(0xFF38BDF8)),
+                          tooltip: auth.isRu ? 'Отправить файл' : 'Send file',
+                          onPressed: () => _pickAndSendFile(context, auth),
+                        ),
                         IconButton(
                           icon: const Icon(Icons.send, color: Color(0xFF38BDF8)),
                           onPressed: () {
@@ -1115,6 +1123,18 @@ class _HomeScreenState extends State<HomeScreen> {
       textController.dispose();
       scrollController.dispose();
     });
+  }
+
+  /// m-4: выбор файла и отправка инженеру через SupportService.sendFile.
+  Future<void> _pickAndSendFile(BuildContext context, AuthState auth) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(allowMultiple: false);
+      final path = result?.files.single.path;
+      if (path == null || path.isEmpty) return;
+      await auth.support.sendFile(File(path));
+    } catch (e) {
+      debugPrint('home_screen: ошибка выбора файла: $e');
+    }
   }
 
   Widget _buildQuickReplyChip(AuthState auth, String text) {
