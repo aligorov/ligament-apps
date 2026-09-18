@@ -307,6 +307,13 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     };
 
+    // 401 на WS-handshake: токен недействителен — прекращаем цикл
+    // реконнектов и выходим в разлогин (M-2).
+    ws.onUnauthorized = () {
+      debugPrint('auth_state: WS отвергнул токен (401) — разлогин');
+      logout();
+    };
+
     ws.onEndpointChanged = (endpoint, isRelay) {
       if (isRelay) {
         activeRelayEndpoint = endpoint;
