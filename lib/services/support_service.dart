@@ -124,6 +124,7 @@ class SupportService extends ChangeNotifier {
 
   List<Map<String, dynamic>> _screens = [];
   String? _currentScreenId;
+  ScreenRect? _currentScreenRect;
   Timer? _telemetryTimer;
   final TelemetryService _telemetry = TelemetryService();
 
@@ -472,9 +473,10 @@ class SupportService extends ChangeNotifier {
         if (sources.isEmpty) {
           throw Exception('Не найдены источники экрана для захвата');
         }
-        _screens = sources.map((s) => {'id': s.id, 'name': s.name}).toList();
+        _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
         final selectedSource = sources.first;
         _currentScreenId = selectedSource.id;
+        _applyActiveScreenRect(selectedSource.id);
 
         debugPrint('support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
         screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
@@ -600,6 +602,35 @@ class SupportService extends ChangeNotifier {
     };
   }
 
+  /// Запись списка экранов с геометрией каждого монитора (rect в координатах
+  /// виртуального рабочего стола), если она разрешается по id источника.
+  Map<String, dynamic> _screenEntryForSource(String id, String name) {
+    final entry = <String, dynamic>{'id': id, 'name': name};
+    final rect = _resolveScreenRect(id);
+    if (rect != null) {
+      entry['rect'] = rect.toJson();
+    }
+    return entry;
+  }
+
+  ScreenRect? _resolveScreenRect(String sourceId) {
+    try {
+      return InputInjector.instance.getMonitorRectForSource(sourceId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Устанавливает геометрию активного транслируемого монитора в инжекторе
+  /// ввода: нормализованные координаты оператора маппятся в этот rect,
+  /// а не в primary-монитор.
+  void _applyActiveScreenRect(String sourceId) {
+    final rect = _resolveScreenRect(sourceId);
+    _currentScreenRect = rect;
+    InputInjector.instance.setActiveMonitorRect(rect);
+    debugPrint('support_service: активный экран $sourceId rect=$rect');
+  }
+
   Future<void> _sendScreenList() async {
     if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) return;
     try {
@@ -607,7 +638,7 @@ class SupportService extends ChangeNotifier {
         try {
           final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
           if (sources.isNotEmpty) {
-            _screens = sources.map((s) => {'id': s.id, 'name': s.name}).toList();
+            _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
             debugPrint('support_service: обновлен список экранов (${_screens.length}): $_screens');
           }
         } catch (e) {
@@ -618,6 +649,9 @@ class SupportService extends ChangeNotifier {
         'type': 'screen_list',
         'screens': _screens,
         'selected_id': _currentScreenId,
+        if (_currentScreenRect != null) 'selected_rect': _currentScreenRect!.toJson(),
+        if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+          'virtual_desktop': InputInjector.instance.getVirtualDesktopRect().toJson(),
       })));
     } catch (_) {}
   }
@@ -650,6 +684,7 @@ class SupportService extends ChangeNotifier {
       _localStream?.dispose();
       _localStream = newStream;
       _currentScreenId = screenId;
+      _applyActiveScreenRect(screenId);
 
       await _sendScreenList();
       notifyListeners();
@@ -756,11 +791,14 @@ class SupportService extends ChangeNotifier {
     final type = (input['type'] ?? input['action'])?.toString();
     if (type == null) return;
 
-    // Гейт режима «Только просмотр» (view_only): единственные разрешенные
-    // команды — список экранов и чат. Управление вводом, буфер обмена,
-    // переключение экрана и файловые передачи блокируются ДО какой-либо
-    // обработки команды.
-    if (_accessMode == 'view_only' && type != 'screen_list' && type != 'chat_message') {
+    // Гейт режима «Только просмотр» (view_only): разрешены список экранов,
+    // чат и ПЕРЕКЛЮЧЕНИЕ транслируемого монитора (m-5: просмотр нескольких
+    // мониторов не дает управления). Ввод, буфер обмена и файловые передачи
+    // блокируются ДО какой-либо обработки команды.
+    if (_accessMode == 'view_only' &&
+        type != 'screen_list' &&
+        type != 'chat_message' &&
+        type != 'switch_screen') {
       debugPrint('support_service: команда "$type" отклонена (view_only)');
       return;
     }
@@ -915,6 +953,8 @@ class SupportService extends ChangeNotifier {
       _problemSummary = null;
       _screens.clear();
       _currentScreenId = null;
+      _currentScreenRect = null;
+      InputInjector.instance.setActiveMonitorRect(null);
       _cancelAllDownloads();
       notifyListeners();
 

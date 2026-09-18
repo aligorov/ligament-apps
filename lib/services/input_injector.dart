@@ -11,7 +11,7 @@ final class _CGPoint extends ffi.Struct {
   external double y;
 }
 
-// Win32 RECT struct for ClipCursor
+// Win32 RECT struct for ClipCursor / MONITORINFO
 final class _RECT extends ffi.Struct {
   @ffi.Int32()
   external int left;
@@ -21,6 +21,62 @@ final class _RECT extends ffi.Struct {
   external int right;
   @ffi.Int32()
   external int bottom;
+}
+
+// macOS CGRect / CGSize for CGDisplayBounds
+final class _CGSize extends ffi.Struct {
+  @ffi.Double()
+  external double width;
+  @ffi.Double()
+  external double height;
+}
+
+final class _CGRect extends ffi.Struct {
+  external _CGPoint origin;
+  external _CGSize size;
+}
+
+// Win32 MONITORINFO for GetMonitorInfoW
+final class _MONITORINFO extends ffi.Struct {
+  @ffi.Uint32()
+  external int cbSize;
+  external _RECT rcMonitor;
+  external _RECT rcWork;
+  @ffi.Uint32()
+  external int dwFlags;
+}
+
+/// Геометрия монитора в координатах виртуального рабочего стола
+/// (absolute desktop coordinates: x/y — смещение левого верхнего угла).
+class ScreenRect {
+  final int x;
+  final int y;
+  final int width;
+  final int height;
+
+  const ScreenRect(this.x, this.y, this.width, this.height);
+
+  factory ScreenRect.fromLTRB(int left, int top, int right, int bottom) =>
+      ScreenRect(left, top, right - left, bottom - top);
+
+  int get right => x + width;
+  int get bottom => y + height;
+
+  Map<String, dynamic> toJson() => {'x': x, 'y': y, 'width': width, 'height': height};
+
+  @override
+  String toString() => 'ScreenRect($x, $y, ${width}x$height)';
+
+  @override
+  bool operator ==(Object other) =>
+      other is ScreenRect &&
+      other.x == x &&
+      other.y == y &&
+      other.width == width &&
+      other.height == height;
+
+  @override
+  int get hashCode => Object.hash(x, y, width, height);
 }
 
 /// Сервис внедрения пользовательского ввода (мышь и клавиатура) на Windows, macOS и Linux.
@@ -42,7 +98,11 @@ class InputInjector {
   void Function(ffi.Pointer<ffi.Void>)? _cfRelease;
   ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Void>, int, _CGPoint, int)? _cgEventCreateMouseEvent;
   ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Void>, int, bool)? _cgEventCreateKeyboardEvent;
+  ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Void>, int, int, int)? _cgEventCreateScrollWheelEvent;
   void Function(int, ffi.Pointer<ffi.Void>)? _cgEventPost;
+  int Function(int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>)? _cgGetActiveDisplayList;
+  _CGRect Function(int)? _cgDisplayBounds;
+  bool Function()? _axIsProcessTrusted;
 
   // Windows User32 FFI handles
   ffi.DynamicLibrary? _user32Lib;
@@ -53,6 +113,7 @@ class InputInjector {
   int Function(ffi.Pointer<_RECT>)? _winClipCursor;
   int Function()? _winLockWorkStation;
   int Function(int)? _winGetSystemMetrics;
+  int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>)? _winGetMonitorInfo;
 
   // Windows LL-хуки блокировки физического ввода: колбэки и message loop
   // живут в нативном input_block.cpp (runner, экспорт из exe) — из чистого
@@ -84,9 +145,37 @@ class InputInjector {
           ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Void>, ffi.Uint16, ffi.Bool),
           ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Void>, int, bool)>('CGEventCreateKeyboardEvent');
 
+      // Вариадик CGEventCreateScrollWheelEvent(source, units, wheelCount, wheel1, ...)
+      _cgEventCreateScrollWheelEvent = _cgLib!.lookupFunction<
+          ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Void>, ffi.Uint32, ffi.Uint32,
+              ffi.VarArgs<(ffi.Int32,)>),
+          ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Void>, int, int, int)>(
+          'CGEventCreateScrollWheelEvent');
+
+      _cgGetActiveDisplayList = _cgLib!.lookupFunction<
+          ffi.Int32 Function(ffi.Uint32, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>),
+          int Function(int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>)>(
+              'CGGetActiveDisplayList');
+
+      _cgDisplayBounds = _cgLib!.lookupFunction<
+          _CGRect Function(ffi.Uint32),
+          _CGRect Function(int)>('CGDisplayBounds');
+
       _cgEventPost = _cgLib!.lookupFunction<
           ffi.Void Function(ffi.Uint32, ffi.Pointer<ffi.Void>),
           void Function(int, ffi.Pointer<ffi.Void>)>('CGEventPost');
+
+      // AXIsProcessTrusted (HIServices): без Accessibility-разрешения
+      // инъекции мыши/клавиатуры молча игнорируются macOS.
+      try {
+        final axLib = ffi.DynamicLibrary.open(
+            '/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices');
+        _axIsProcessTrusted = axLib.lookupFunction<
+            ffi.Bool Function(),
+            bool Function()>('AXIsProcessTrusted');
+      } catch (e) {
+        debugPrint('input_injector: AXIsProcessTrusted недоступен: $e');
+      }
     } catch (e) {
       debugPrint('input_injector: ошибка загрузки macOS CoreGraphics: $e');
     }
@@ -117,6 +206,9 @@ class InputInjector {
       _winGetSystemMetrics = _user32Lib!.lookupFunction<
           ffi.Int32 Function(ffi.Int32),
           int Function(int)>('GetSystemMetrics');
+      _winGetMonitorInfo = _user32Lib!.lookupFunction<
+          ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>),
+          int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>)>('GetMonitorInfoW');
       // Нативный хелпер блокировки: экспорт из собственного exe
       // (windows/runner/input_block.cpp, dllexport).
       try {
@@ -131,6 +223,200 @@ class InputInjector {
     } catch (e) {
       debugPrint('input_injector: ошибка загрузки user32.dll: $e');
     }
+  }
+
+  // === Мультимониторная геометрия (B-2) ===
+
+  // Windows GetSystemMetrics codes
+  static const int _smXVirtualScreen = 76;
+  static const int _smYVirtualScreen = 77;
+  static const int _smCxVirtualScreen = 78;
+  static const int _smCyVirtualScreen = 79;
+
+  // mouse_event flags
+  static const int _mouseEventfVirtualDesk = 0x4000;
+  static const int _mouseEventfAbsolute = 0x8000;
+
+  /// Геометрия АКТИВНОГО транслируемого монитора (в координатах виртуального
+  /// рабочего стола). Оператор присылает нормализованные координаты 0..1
+  /// относительно видеопотока; инъекция маппится в этот rect, чтобы клик
+  /// попадал на правильный монитор, а не всегда в primary.
+  ScreenRect? _activeMonitorRect;
+
+  ScreenRect? get activeMonitorRect => _activeMonitorRect;
+
+  void setActiveMonitorRect(ScreenRect? rect) {
+    _activeMonitorRect = (rect != null && rect.width > 0 && rect.height > 0) ? rect : null;
+  }
+
+  /// Поддерживается ли инъекция ввода на текущей платформе.
+  /// На Android/iOS/Web InputInjector — no-op: UI должен честно показывать
+  /// режим «Просмотр» вместо «Полный контроль».
+  bool get isInputInjectionSupported =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+
+  /// macOS: выдано ли приложению Accessibility-разрешение
+  /// (Системные настройки → Конфиденциальность → Универсальный доступ).
+  /// Без него CGEventPost молча отбрасывает события.
+  bool? get macAccessibilityTrusted {
+    if (kIsWeb || !Platform.isMacOS) return null;
+    try {
+      return _axIsProcessTrusted?.call() ?? false;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Нормализованные 0..1 координаты -> абсолютные координаты внутри rect.
+  /// Чистая функция (тестируемая без устройства).
+  static (int, int) mapNormToRect(double normX, double normY, ScreenRect rect) {
+    final nx = normX.isFinite ? normX.clamp(0.0, 1.0) : 0.0;
+    final ny = normY.isFinite ? normY.clamp(0.0, 1.0) : 0.0;
+    final px = (rect.x + nx * (rect.width - 1)).round().clamp(rect.x, rect.right - 1);
+    final py = (rect.y + ny * (rect.height - 1)).round().clamp(rect.y, rect.bottom - 1);
+    return (px, py);
+  }
+
+  /// Абсолютная координата виртуального рабочего стола -> 0..65535 в границах
+  /// виртуального стола (нормализация для MOUSEEVENTF_ABSOLUTE|VIRTUALDESK).
+  /// Формула по MSDN: (pos - virtMin) * 65535 / (virtSize - 1).
+  static int normalizeVirtualDeskAxis(int pos, int virtMin, int virtSize) {
+    if (virtSize <= 1) return 0;
+    final v = ((pos - virtMin) * 65535) ~/ (virtSize - 1);
+    return v.clamp(0, 65535);
+  }
+
+  /// Rect всего виртуального рабочего стола (объединение всех мониторов).
+  ScreenRect getVirtualDesktopRect() {
+    if (kIsWeb) return const ScreenRect(0, 0, 1920, 1080);
+    if (Platform.isWindows) {
+      final vx = _winGetSystemMetrics?.call(_smXVirtualScreen) ?? 0;
+      final vy = _winGetSystemMetrics?.call(_smYVirtualScreen) ?? 0;
+      final vw = _winGetSystemMetrics?.call(_smCxVirtualScreen) ?? 0;
+      final vh = _winGetSystemMetrics?.call(_smCyVirtualScreen) ?? 0;
+      if (vw > 0 && vh > 0) return ScreenRect(vx, vy, vw, vh);
+      final (w, h) = getScreenSize();
+      return ScreenRect(0, 0, w, h);
+    }
+    if (Platform.isMacOS) {
+      // Объединение bounds всех активных дисплеев (CG, координаты top-left).
+      final displays = <int>[];
+      try {
+        const maxDisplays = 16;
+        final buf = calloc<ffi.Uint32>(maxDisplays);
+        final count = calloc<ffi.Uint32>();
+        final err = _cgGetActiveDisplayList?.call(maxDisplays, buf, count) ?? -1;
+        if (err == 0 && count.value > 0) {
+          for (int i = 0; i < count.value && i < maxDisplays; i++) {
+            displays.add(buf[i]);
+          }
+        }
+        calloc.free(buf);
+        calloc.free(count);
+      } catch (_) {}
+      if (displays.isNotEmpty && _cgDisplayBounds != null) {
+        int minX = 1 << 30, minY = 1 << 30, maxX = -(1 << 30), maxY = -(1 << 30);
+        for (final d in displays) {
+          final b = _cgDisplayBounds!(d);
+          final l = b.origin.x.round();
+          final t = b.origin.y.round();
+          final r = l + b.size.width.round();
+          final bt = t + b.size.height.round();
+          if (l < minX) minX = l;
+          if (t < minY) minY = t;
+          if (r > maxX) maxX = r;
+          if (bt > maxY) maxY = bt;
+        }
+        if (maxX > minX && maxY > minY) {
+          return ScreenRect(minX, minY, maxX - minX, maxY - minY);
+        }
+      }
+      final (w, h) = getScreenSize();
+      return ScreenRect(0, 0, w, h);
+    }
+    final (w, h) = getScreenSize();
+    return ScreenRect(0, 0, w, h);
+  }
+
+  /// Геометрия primary-монитора (фолбэк, когда rect активного монитора
+  /// определить не удалось — прежнее поведение).
+  ScreenRect _fallbackInputRect() {
+    if (!kIsWeb && Platform.isWindows) {
+      final vw = _winGetSystemMetrics?.call(0) ?? 0; // SM_CXSCREEN
+      final vh = _winGetSystemMetrics?.call(1) ?? 0; // SM_CYSCREEN
+      if (vw > 0 && vh > 0) return ScreenRect(0, 0, vw, vh);
+    }
+    final (w, h) = getScreenSize();
+    return ScreenRect(0, 0, w, h);
+  }
+
+  /// Извлекает числовые идентификаторы из id источника desktopCapturer.
+  /// Форматы зависят от платформы/версии webrtc ("screen:123", "123",
+  /// "screen:0:0") — возвращаются все найденные числа, валидация делается
+  /// дальше через GetMonitorInfoW/CGDisplayBounds.
+  static List<int> _parseSourceHandles(String sourceId) {
+    final handles = <int>[];
+    for (final m in RegExp(r'\d+').allMatches(sourceId)) {
+      final v = int.tryParse(m.group(0)!);
+      if (v != null && v > 0) handles.add(v);
+    }
+    return handles;
+  }
+
+  /// Геометрия монитора по id источника desktopCapturer.
+  /// Windows: id трактуется как HMONITOR (валидируется GetMonitorInfoW);
+  /// macOS: как CGDirectDisplayID (CGDisplayBounds).
+  /// Возвращает null, если платформа не поддерживается или id не resolves.
+  ScreenRect? getMonitorRectForSource(String sourceId) {
+    if (kIsWeb) return null;
+    final handles = _parseSourceHandles(sourceId);
+    if (handles.isEmpty) return null;
+
+    if (Platform.isWindows && _winGetMonitorInfo != null) {
+      final mi = calloc<_MONITORINFO>();
+      try {
+        for (final h in handles) {
+          mi.ref.cbSize = ffi.sizeOf<_MONITORINFO>();
+          final rc = _winGetMonitorInfo!(ffi.Pointer.fromAddress(h), mi);
+          if (rc != 0) {
+            final r = mi.ref.rcMonitor;
+            if (r.right > r.left && r.bottom > r.top) {
+              return ScreenRect.fromLTRB(r.left, r.top, r.right, r.bottom);
+            }
+          }
+        }
+      } catch (_) {
+        // невалидный handle — фолбэк на primary
+      } finally {
+        calloc.free(mi);
+      }
+      return null;
+    }
+
+    if (Platform.isMacOS && _cgDisplayBounds != null) {
+      for (final h in handles) {
+        if (h <= 0 || h > 0xFFFFFFFF) continue;
+        try {
+          final b = _cgDisplayBounds!(h);
+          final w = b.size.width.round();
+          final ht = b.size.height.round();
+          if (w > 0 && ht > 0) {
+            return ScreenRect(b.origin.x.round(), b.origin.y.round(), w, ht);
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  /// Абсолютные координаты в виртуальном рабочем столе из нормализованных 0..1
+  /// координат оператора: маппинг в геометрию активного монитора, при её
+  /// отсутствии — в primary (прежнее поведение).
+  (int, int) absoluteFromNorm(double normX, double normY) {
+    final rect = _activeMonitorRect ?? _fallbackInputRect();
+    return mapNormToRect(normX, normY, rect);
   }
 
   /// Получение физических размеров основного экрана (пиксели)
@@ -151,29 +437,31 @@ class InputInjector {
     return (1920, 1080);
   }
 
-  /// Перемещение курсора мыши в абсолютные координаты 0..1
+  /// Перемещение курсора мыши в абсолютные координаты 0..1 относительно
+  /// активного транслируемого монитора.
   void moveMouse(double normX, double normY) {
     if (kIsWeb) return;
-    final (w, h) = getScreenSize();
-    final px = (normX * w).clamp(0, w - 1).toDouble();
-    final py = (normY * h).clamp(0, h - 1).toDouble();
 
     if (Platform.isMacOS) {
+      final (px, py) = absoluteFromNorm(normX, normY);
       final pt = calloc<_CGPoint>();
-      pt.ref.x = px;
-      pt.ref.y = py;
+      pt.ref.x = px.toDouble();
+      pt.ref.y = py.toDouble();
       _cgWarpMouseCursorPosition?.call(pt.ref);
       calloc.free(pt);
-      _postMacMouseEvent(5, px, py, 0); // 5 = kCGEventMouseMoved
+      _postMacMouseEvent(5, px.toDouble(), py.toDouble(), 0); // 5 = kCGEventMouseMoved
     } else if (Platform.isWindows) {
-      _winSetCursorPos?.call(px.round(), py.round());
+      final (px, py) = absoluteFromNorm(normX, normY);
+      final virt = getVirtualDesktopRect();
+      _winSetCursorPos?.call(px, py);
       const mouseEventfMove = 0x0001;
-      const mouseEventfAbsolute = 0x8000;
-      final absX = (normX * 65535).round().clamp(0, 65535);
-      final absY = (normY * 65535).round().clamp(0, 65535);
-      _winMouseEvent?.call(mouseEventfMove | mouseEventfAbsolute, absX, absY, 0, 0);
+      final absX = normalizeVirtualDeskAxis(px, virt.x, virt.width);
+      final absY = normalizeVirtualDeskAxis(py, virt.y, virt.height);
+      _winMouseEvent?.call(
+          mouseEventfMove | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
     } else if (Platform.isLinux) {
-      Process.run('xdotool', ['mousemove', px.round().toString(), py.round().toString()]);
+      final (px, py) = absoluteFromNorm(normX, normY);
+      Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
     }
   }
 
@@ -185,14 +473,12 @@ class InputInjector {
     required double normY,
   }) {
     if (kIsWeb) return;
-    final (w, h) = getScreenSize();
-    final px = (normX * w).clamp(0, w - 1).toDouble();
-    final py = (normY * h).clamp(0, h - 1).toDouble();
 
     if (Platform.isMacOS) {
+      final (px, py) = absoluteFromNorm(normX, normY);
       final pt = calloc<_CGPoint>();
-      pt.ref.x = px;
-      pt.ref.y = py;
+      pt.ref.x = px.toDouble();
+      pt.ref.y = py.toDouble();
       _cgWarpMouseCursorPosition?.call(pt.ref);
       calloc.free(pt);
 
@@ -211,24 +497,25 @@ class InputInjector {
       }
 
       if (action == 'down') {
-        _postMacMouseEvent(eventDown, px, py, mouseBtn);
+        _postMacMouseEvent(eventDown, px.toDouble(), py.toDouble(), mouseBtn);
       } else if (action == 'up') {
-        _postMacMouseEvent(eventUp, px, py, mouseBtn);
+        _postMacMouseEvent(eventUp, px.toDouble(), py.toDouble(), mouseBtn);
       } else {
-        _postMacMouseEvent(eventDown, px, py, mouseBtn);
-        _postMacMouseEvent(eventUp, px, py, mouseBtn);
+        _postMacMouseEvent(eventDown, px.toDouble(), py.toDouble(), mouseBtn);
+        _postMacMouseEvent(eventUp, px.toDouble(), py.toDouble(), mouseBtn);
       }
     } else if (Platform.isWindows) {
-      _winSetCursorPos?.call(px.round(), py.round());
+      final (px, py) = absoluteFromNorm(normX, normY);
+      final virt = getVirtualDesktopRect();
+      _winSetCursorPos?.call(px, py);
       const leftDown = 0x0002;
       const leftUp = 0x0004;
       const rightDown = 0x0008;
       const rightUp = 0x0010;
       const midDown = 0x0020;
       const midUp = 0x0040;
-      const mouseEventfAbsolute = 0x8000;
-      final absX = (normX * 65535).round().clamp(0, 65535);
-      final absY = (normY * 65535).round().clamp(0, 65535);
+      final absX = normalizeVirtualDeskAxis(px, virt.x, virt.width);
+      final absY = normalizeVirtualDeskAxis(py, virt.y, virt.height);
 
       int flagDown = leftDown;
       int flagUp = leftUp;
@@ -242,14 +529,16 @@ class InputInjector {
       }
 
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown | mouseEventfAbsolute, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagDown | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp | mouseEventfAbsolute, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagUp | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
       } else {
-        _winMouseEvent?.call(flagDown | mouseEventfAbsolute, absX, absY, 0, 0);
-        _winMouseEvent?.call(flagUp | mouseEventfAbsolute, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagDown | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagUp | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
       }
     } else if (Platform.isLinux) {
+      final (px, py) = absoluteFromNorm(normX, normY);
+      _ensureLinuxPointerAt(px, py);
       final btnStr = button == 2 ? '3' : (button == 1 ? '2' : '1');
       if (action == 'down') {
         Process.run('xdotool', ['mousedown', btnStr]);
@@ -259,6 +548,12 @@ class InputInjector {
         Process.run('xdotool', ['click', btnStr]);
       }
     }
+  }
+
+  /// Перемещение курсора перед кликом на Linux (клик исполняется в текущей
+  /// позиции курсора, поэтому координаты важны и для down/up).
+  void _ensureLinuxPointerAt(int px, int py) {
+    Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
   }
 
   void _postMacMouseEvent(int type, double x, double y, int button) {
@@ -279,8 +574,17 @@ class InputInjector {
   void mouseWheel(double deltaY) {
     if (kIsWeb) return;
     if (Platform.isMacOS) {
-      final (w, h) = getScreenSize();
-      _postMacMouseEvent(22, (w / 2), (h / 2), 0); // 22 = kCGEventScrollWheel
+      // m-1: корректный scroll через CGEventCreateScrollWheelEvent
+      // (units = kCGScrollEventUnitLine = 1, wheelCount = 1).
+      // Положительное значение прокручивает ВВЕРХ, у оператора deltaY>0 — вниз.
+      final ticks = (-deltaY).round().clamp(-50, 50);
+      if (ticks == 0) return;
+      final ev = _cgEventCreateScrollWheelEvent?.call(ffi.Pointer.fromAddress(0), 1, 1, ticks);
+      if (ev != null && ev.address != 0 && _cgEventPost != null && _cfRelease != null) {
+        _cgEventPost!(0, ev); // kCGHIDEventTap
+        _cgEventPost!(1, ev); // kCGSessionEventTap
+        _cfRelease!(ev);
+      }
     } else if (Platform.isWindows) {
       final dy = (-deltaY * 40).round();
       _winMouseEvent?.call(0x0800, 0, 0, dy, 0); // 0x0800 = MOUSEEVENTF_WHEEL
