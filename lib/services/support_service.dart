@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../api/client.dart';
 import 'input_injector.dart';
@@ -80,6 +82,7 @@ class _ActiveFileDownload {
   final String filename;
   final int totalSize;
   final int totalChunks;
+  final String? expectedChecksum;
   final Map<int, List<int>> chunks = {};
 
   /// Фактически получено байт (защита от заниженного totalSize)
@@ -93,7 +96,60 @@ class _ActiveFileDownload {
     required this.filename,
     required this.totalSize,
     required this.totalChunks,
+    this.expectedChecksum,
   });
+}
+
+/// Результат сборки файловой передачи из чанков (M-3).
+class FileAssemblyResult {
+  final Uint8List? bytes;
+  /// null — сборка успешна; иначе код/описание ошибки
+  /// ('incomplete' | 'checksum_mismatch' | 'size_mismatch').
+  final String? error;
+
+  const FileAssemblyResult.success(this.bytes)
+      : error = null;
+
+  const FileAssemblyResult.failure(this.error) : bytes = null;
+
+  bool get isOk => error == null && bytes != null;
+}
+
+/// Сборка чанков файловой передачи с проверкой полноты и целостности.
+/// Чистая функция — покрыта юнит-тестами:
+/// - все индексы 0..totalChunks-1 обязаны присутствовать;
+/// - контрольная сумма sha256 (если передана) обязана совпасть;
+/// - фактический размер (если file_start передал size>0) обязан совпасть.
+FileAssemblyResult assembleFileChunks(
+  Map<int, List<int>> chunks,
+  int totalChunks, {
+  int? expectedSize,
+  String? expectedChecksum,
+}) {
+  if (totalChunks <= 0) {
+    return const FileAssemblyResult.failure('incomplete');
+  }
+  for (int i = 0; i < totalChunks; i++) {
+    if (!chunks.containsKey(i)) {
+      return const FileAssemblyResult.failure('incomplete');
+    }
+  }
+  // Чанки вне диапазона игнорируют целостность по индексам — отбрасываем их.
+  final builder = BytesBuilder(copy: false);
+  for (int i = 0; i < totalChunks; i++) {
+    builder.add(chunks[i]!);
+  }
+  final bytes = builder.takeBytes();
+  if (expectedSize != null && expectedSize > 0 && bytes.length != expectedSize) {
+    return const FileAssemblyResult.failure('size_mismatch');
+  }
+  if (expectedChecksum != null && expectedChecksum.isNotEmpty) {
+    final actual = crypto.sha256.convert(bytes).toString();
+    if (actual != expectedChecksum.toLowerCase()) {
+      return const FileAssemblyResult.failure('checksum_mismatch');
+    }
+  }
+  return FileAssemblyResult.success(bytes);
 }
 
 enum SupportSessionState {
@@ -330,6 +386,13 @@ class SupportService extends ChangeNotifier {
       }
     }
     if (!sent && _api != null && _activeSessionId != null) {
+      // M-3: файловые передачи запрещены в HTTP-fallback (sendSupportSignal).
+      // Чанки не проходят через сигнальный шлюз: утечка в чат-историю
+      // сервера + отсутствие доставки по порядку.
+      final type = data['type']?.toString() ?? '';
+      if (type.startsWith('file_')) {
+        throw StateError('Файловая передача требует открытый DataChannel ($type)');
+      }
       _api!.sendSupportSignal(sessionId: _activeSessionId!, signal: data);
     }
   }
@@ -341,13 +404,15 @@ class SupportService extends ChangeNotifier {
     final totalSize = bytes.length;
 
     if (totalSize > _maxFileTransferBytes) {
-      _chatMessages.add(SupportChatMessage(
-        id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
-        sender: 'user',
-        senderName: 'Система',
-        text: '⚠ Файл не отправлен: превышен лимит размера 50 МБ ($filename)',
-        timestamp: DateTime.now(),
-      ));
+      _addSystemMessage('⚠ Файл не отправлен: превышен лимит размера 50 МБ ($filename)');
+      notifyListeners();
+      return;
+    }
+
+    // M-3: файловые передачи идут ТОЛЬКО через DataChannel; HTTP-fallback
+    // для file_* запрещен (см. _sendSignalOrData).
+    if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
+      _addSystemMessage('⚠ Файл не отправлен: нет открытого соединения с инженером ($filename)');
       notifyListeners();
       return;
     }
@@ -355,60 +420,61 @@ class SupportService extends ChangeNotifier {
     const chunkSize = 32768; // 32 KB
     final totalChunks = (totalSize / chunkSize).ceil();
     final transferId = 'file_${DateTime.now().millisecondsSinceEpoch}';
+    // Контрольная сумма целого файла: получатель сверяет при сборке (M-3).
+    final checksum = crypto.sha256.convert(bytes).toString();
 
-    _sendSignalOrData({
-      'type': 'file_start',
-      'transfer_id': transferId,
-      'filename': filename,
-      'size': totalSize,
-      'total_chunks': totalChunks,
-      'sender': 'user',
-    });
+    try {
+      _sendSignalOrData({
+        'type': 'file_start',
+        'transfer_id': transferId,
+        'filename': filename,
+        'size': totalSize,
+        'total_chunks': totalChunks,
+        'checksum': checksum,
+        'sender': 'user',
+      });
 
-    for (int i = 0; i < totalChunks; i++) {
-      final start = i * chunkSize;
-      final end = (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
-      final chunkBytes = bytes.sublist(start, end);
-      final b64 = base64Encode(chunkBytes);
+      for (int i = 0; i < totalChunks; i++) {
+        final start = i * chunkSize;
+        final end = (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
+        final chunkBytes = bytes.sublist(start, end);
+        final b64 = base64Encode(chunkBytes);
+
+        _sendSignalOrData({
+          'type': 'file_chunk',
+          'transfer_id': transferId,
+          'chunk_index': i,
+          'data': b64,
+        });
+        if (i % 10 == 0) {
+          await Future.delayed(const Duration(milliseconds: 15));
+        }
+      }
 
       _sendSignalOrData({
-        'type': 'file_chunk',
+        'type': 'file_end',
         'transfer_id': transferId,
-        'chunk_index': i,
-        'data': b64,
+        'checksum': checksum,
       });
-      if (i % 10 == 0) {
-        await Future.delayed(const Duration(milliseconds: 15));
-      }
+
+      _chatMessages.add(SupportChatMessage(
+        id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
+        sender: 'user',
+        senderName: 'Пользователь',
+        text: '📎 Отправлен файл: $filename (${(totalSize / 1024).toStringAsFixed(1)} КБ)',
+        timestamp: DateTime.now(),
+      ));
+      notifyListeners();
+    } catch (e) {
+      debugPrint('support_service: передача файла прервана: $e');
+      _addSystemMessage('⚠ Передача файла "$filename" прервана (нет соединения)');
+      notifyListeners();
     }
-
-    _sendSignalOrData({
-      'type': 'file_end',
-      'transfer_id': transferId,
-    });
-
-    _chatMessages.add(SupportChatMessage(
-      id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
-      sender: 'user',
-      senderName: 'Пользователь',
-      text: '📎 Отправлен файл: $filename (${(totalSize / 1024).toStringAsFixed(1)} КБ)',
-      timestamp: DateTime.now(),
-    ));
-    notifyListeners();
   }
 
-  Future<void> _saveReceivedFile(_ActiveFileDownload dl) async {
+  Future<void> _saveReceivedFile(_ActiveFileDownload dl, Uint8List bytes) async {
     try {
-      String downloadsPath = '';
-      if (Platform.isWindows) {
-        final profile = Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
-        downloadsPath = '$profile\\Downloads\\LigamentSupport';
-      } else if (Platform.isMacOS || Platform.isLinux) {
-        final home = Platform.environment['HOME'] ?? '/tmp';
-        downloadsPath = '$home/Downloads/LigamentSupport';
-      } else {
-        downloadsPath = '/sdcard/Download/LigamentSupport';
-      }
+      final downloadsPath = await _resolveDownloadsDir();
 
       final dir = Directory(downloadsPath);
       if (!await dir.exists()) {
@@ -419,36 +485,57 @@ class SupportService extends ChangeNotifier {
       final targetPath = '${dir.path}${Platform.pathSeparator}$safeName';
       final file = File(targetPath);
 
-      final builder = BytesBuilder(copy: false);
-      for (int i = 0; i < dl.totalChunks; i++) {
-        if (dl.chunks.containsKey(i)) {
-          builder.add(dl.chunks[i]!);
-        }
-      }
-      await file.writeAsBytes(builder.takeBytes(), flush: true);
+      await file.writeAsBytes(bytes, flush: true);
 
       final item = ReceivedFileItem(
         id: dl.id,
         filename: safeName,
         localPath: targetPath,
-        size: dl.totalSize,
+        size: bytes.length,
         receivedAt: DateTime.now(),
       );
       _receivedFiles.insert(0, item);
 
-      final sysMsg = SupportChatMessage(
+      _chatMessages.add(SupportChatMessage(
         id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
         sender: 'operator',
         senderName: 'Система',
-        text: '📁 Получен файл: $safeName (${(dl.totalSize / 1024).toStringAsFixed(1)} КБ)',
+        text: '📁 Получен файл: $safeName (${(bytes.length / 1024).toStringAsFixed(1)} КБ)',
         timestamp: DateTime.now(),
-      );
-      _chatMessages.add(sysMsg);
+      ));
       _unreadChatCount++;
       notifyListeners();
     } catch (e) {
       debugPrint('support_service: ошибка сохранения переданного файла: $e');
     }
+  }
+
+  /// Каталог для сохранения полученных файлов.
+  /// Desktop — Downloads/LigamentSupport; Android — через path_provider
+  /// (M-7: не /sdcard напрямую), фолбэк — документы приложения.
+  Future<String> _resolveDownloadsDir() async {
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        final dirs = await getExternalStorageDirectories(type: StorageDirectory.downloads);
+        if (dirs != null && dirs.isNotEmpty) {
+          return '${dirs.first.path}${Platform.pathSeparator}LigamentSupport';
+        }
+      } catch (e) {
+        debugPrint('support_service: externalStorageDownloads недоступен: $e');
+      }
+      // Фолбэк: документы приложения
+      final appDir = await getApplicationDocumentsDirectory();
+      return '${appDir.path}${Platform.pathSeparator}LigamentSupport';
+    }
+    if (Platform.isWindows) {
+      final profile = Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
+      return '$profile\\Downloads\\LigamentSupport';
+    }
+    if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'] ?? '/tmp';
+      return '$home/Downloads/LigamentSupport';
+    }
+    return '/tmp/LigamentSupport';
   }
 
   /// Установка локального состояния запроса
@@ -970,6 +1057,7 @@ class SupportService extends ChangeNotifier {
       filename: filename,
       totalSize: size,
       totalChunks: totalChunks,
+      expectedChecksum: input['checksum']?.toString(),
     );
     dl.stallTimer = Timer(_downloadStallTimeout, () {
       _abortDownload(transferId, 'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
@@ -978,7 +1066,8 @@ class SupportService extends ChangeNotifier {
   }
 
   /// Прием чанка: валидация, контроль фактически полученного объема и
-  /// перезапуск таймаута ожидания следующего чанка.
+  /// перезапуск таймаута ожидания следующего чанка. Битый base64 —
+  /// закачка отменяется с сообщением об ошибке (M-3).
   void _handleFileChunk(Map<String, dynamic> input) {
     final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
     final chunkIndex = (input['chunk_index'] as num?)?.toInt() ?? 0;
@@ -988,6 +1077,10 @@ class SupportService extends ChangeNotifier {
 
     try {
       final bytes = base64Decode(base64Data);
+      if (chunkIndex < 0 || chunkIndex >= dl.totalChunks) {
+        debugPrint('support_service: чанк $chunkIndex вне диапазона — дропнут');
+        return;
+      }
       if (!dl.chunks.containsKey(chunkIndex)) {
         dl.receivedBytes += bytes.length;
       }
@@ -1002,16 +1095,71 @@ class SupportService extends ChangeNotifier {
       dl.stallTimer = Timer(_downloadStallTimeout, () {
         _abortDownload(transferId, 'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
       });
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('support_service: битый base64 в чанке $chunkIndex передачи "$transferId": $e');
+      _abortDownload(transferId, 'поврежденные данные (чанк $chunkIndex)');
+      _notifyFileRejected(transferId, dl.filename, 'поврежденные данные при передаче');
+      _addSystemMessage('⚠ Файл "${dl.filename}" не получен: поврежденные данные при передаче');
+      notifyListeners();
+    }
   }
 
-  /// Завершение передачи: сборка и сохранение файла.
+  /// Завершение передачи: проверка полноты (все индексы 0..totalChunks-1)
+  /// и целостности (sha256), только после этого — сохранение (M-3).
   void _handleFileEnd(Map<String, dynamic> input) {
     final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
     final dl = _activeDownloads.remove(transferId);
     dl?.stallTimer?.cancel();
-    if (dl != null) {
-      _saveReceivedFile(dl);
+    if (dl == null) return;
+
+    // file_end может нести checksum повторно — приоритет у него.
+    final endChecksum = input['checksum']?.toString();
+    final checksum = (endChecksum != null && endChecksum.isNotEmpty) ? endChecksum : dl.expectedChecksum;
+
+    final result = assembleFileChunks(
+      dl.chunks,
+      dl.totalChunks,
+      expectedSize: dl.totalSize > 0 ? dl.totalSize : null,
+      expectedChecksum: checksum,
+    );
+    if (result.isOk) {
+      _saveReceivedFile(dl, result.bytes!);
+      return;
+    }
+
+    debugPrint('support_service: передача "${dl.filename}" отброшена: ${result.error}');
+    String reason;
+    switch (result.error) {
+      case 'incomplete':
+        reason = 'передача неполная (не все чанки дошли)';
+        break;
+      case 'size_mismatch':
+        reason = 'несовпадение размера файла';
+        break;
+      case 'checksum_mismatch':
+        reason = 'несовпадение контрольной суммы';
+        break;
+      default:
+        reason = result.error ?? 'неизвестная ошибка';
+    }
+    // Сообщение об ошибке обеим сторонам: локально + обратно отправителю.
+    _addSystemMessage('⚠ Файл "${dl.filename}" не сохранен: $reason');
+    _notifyFileRejected(transferId, dl.filename, reason);
+    notifyListeners();
+  }
+
+  /// Уведомляет отправителя (консоль оператора / приложение) об отбраковке
+  /// файла, чтобы и у него в чате появилось сообщение об ошибке.
+  void _notifyFileRejected(String transferId, String filename, String reason) {
+    try {
+      _sendSignalOrData({
+        'type': 'file_reject',
+        'transfer_id': transferId,
+        'filename': filename,
+        'reason': reason,
+      });
+    } catch (_) {
+      // DataChannel закрыт — уведомление не критично
     }
   }
 
@@ -1105,6 +1253,14 @@ class SupportService extends ChangeNotifier {
       return;
     } else if (type == 'file_end') {
       _handleFileEnd(input);
+      return;
+    } else if (type == 'file_reject') {
+      // M-3: получатель отбраковал файл (неполный/битый) — ошибка в чат
+      // отправителю (обе стороны видят один и тот же инцидент).
+      final filename = input['filename']?.toString() ?? 'файл';
+      final reason = input['reason']?.toString() ?? 'передача не удалась';
+      _addSystemMessage('⚠ Файл "$filename" не доставлен: $reason');
+      notifyListeners();
       return;
     }
 

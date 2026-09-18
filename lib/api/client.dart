@@ -358,6 +358,12 @@ class ApiClient {
     required String sessionId,
     required Map<String, dynamic> signal,
   }) async {
+    // M-3: файловые передачи запрещены через HTTP-сигнальный шлюз —
+    // только через WebRTC DataChannel (см. SupportService._sendSignalOrData).
+    final type = signal['type']?.toString() ?? '';
+    if (type.startsWith('file_')) {
+      throw ArgumentError('file_* сигналы не отправляются через HTTP-fallback: $type');
+    }
     final res = await _post(
       _cleanUrl('/api/v1/app/support/$sessionId/signal'),
       headers: _headers(),
