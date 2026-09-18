@@ -26,6 +26,15 @@ enum MouseClickMode {
   right,
 }
 
+/// Кнопка мыши для протокола агента (0 — левая, 1 — средняя, 2 — правая)
+/// по полю buttons из PointerDownEvent с учетом принудительного режима ПКМ.
+/// Чистая функция — покрыта юнит-тестами (M-4).
+int pointerDownButton(int buttons, bool rightModeForced) {
+  if (rightModeForced || buttons == kSecondaryButton) return 2;
+  if (buttons == kMiddleMouseButton) return 1;
+  return 0;
+}
+
 class SupportOperatorScreen extends StatefulWidget {
   final String sessionId;
   final String? numberMatch;
@@ -107,6 +116,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   double _zoomScale = 1.0;
   final FocusNode _keyboardFocus = FocusNode();
   final GlobalKey _videoKey = GlobalKey();
+
+  /// Кнопка, нажатая в парном PointerDownEvent, по pointer id (M-4):
+  /// в PointerUpEvent поле buttons уже 0, поэтому up обязан слать ту же
+  /// кнопку, что была нажата (иначе middle/right клики залипают на агенте).
+  final Map<int, int> _pointerDownButtons = {};
 
   final List<SupportChatMessage> _chatMessages = [];
   late final ValueNotifier<List<SupportChatMessage>> _chatMessagesNotifier;
@@ -1503,26 +1517,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 onPointerDown: (ev) {
                   if (!_isControlEnabled) return;
                   _keyboardFocus.requestFocus();
-                  int btn = 0;
-                  if (ev.buttons == 2 || _mouseClickMode == MouseClickMode.right) {
-                    btn = 2; // Right
-                  } else if (ev.buttons == 4) {
-                    btn = 1; // Middle
-                  }
+                  final btn = pointerDownButton(ev.buttons, _mouseClickMode == MouseClickMode.right);
+                  _pointerDownButtons[ev.pointer] = btn;
                   _sendPointerEvent('mouse_down', ev, btn);
                 },
                 onPointerUp: (ev) {
                   if (!_isControlEnabled) return;
-                  int btn = 0;
-                  if (ev.buttons == 2 || _mouseClickMode == MouseClickMode.right) {
-                    btn = 2;
-                  } else if (ev.buttons == 4) {
-                    btn = 1;
-                  }
+                  // M-4: up шлёт кнопку из парного down (в up buttons == 0)
+                  final btn = _pointerDownButtons.remove(ev.pointer) ?? 0;
                   _sendPointerEvent('mouse_up', ev, btn);
                   if (_mouseClickMode == MouseClickMode.right) {
                     setState(() => _mouseClickMode = MouseClickMode.left);
                   }
+                },
+                onPointerCancel: (ev) {
+                  _pointerDownButtons.remove(ev.pointer);
                 },
                 onPointerSignal: (signal) {
                   if (!_isControlEnabled) return;
