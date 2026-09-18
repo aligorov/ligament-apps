@@ -9,10 +9,12 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
+import '../services/ws_service.dart';
 import '../i18n/app_strings.dart';
 
 enum OperatorZoomMode {
@@ -122,6 +124,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   /// кнопку, что была нажата (иначе middle/right клики залипают на агенте).
   final Map<int, int> _pointerDownButtons = {};
 
+  /// Backoff реконнекта операторского WS (M-5).
+  final ReconnectBackoff _wsBackoff = ReconnectBackoff();
+  Timer? _wsReconnectTimer;
+
   final List<SupportChatMessage> _chatMessages = [];
   late final ValueNotifier<List<SupportChatMessage>> _chatMessagesNotifier;
   int _unreadChatCount = 0;
@@ -210,53 +216,90 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _connectWebSocket() {
-    if (_wsChannel != null) return;
+    if (_isCleanedUp || _wsChannel != null) return;
     final auth = context.read<AuthState>();
     var serverUrl = auth.serverUrl ?? '';
+    // M-5: принудительный wss. ws:// (в т.ч. из http:// адреса сервера)
+    // запрещён: Bearer-токен не должен уходить в открытом канале.
     if (serverUrl.startsWith('https://')) {
       serverUrl = 'wss://${serverUrl.substring(8)}';
-    } else if (serverUrl.startsWith('http://')) {
-      serverUrl = 'ws://${serverUrl.substring(7)}';
+    } else {
+      _setStatus('conn_error', auth.isRu
+          ? 'Требуется https/wss адрес сервера (открытый ws:// запрещён)'
+          : 'https/wss server URL required (plain ws:// is forbidden)');
+      return;
     }
     if (serverUrl.endsWith('/')) {
       serverUrl = serverUrl.substring(0, serverUrl.length - 1);
     }
-    final wsUrl = '$serverUrl/api/v1/support/ws/${widget.sessionId}?token=${auth.token}';
+    // M-5: токен — в Authorization-заголовке, а не в ?token= (токен в URL
+    // попадает в логи прокси/сервера).
+    final wsUrl = '$serverUrl/api/v1/support/ws/${widget.sessionId}';
 
     try {
       final uri = Uri.parse(wsUrl);
-      _wsChannel = WebSocketChannel.connect(uri);
+      if (uri.scheme != 'wss') {
+        _setStatus('conn_error', 'ws:// forbidden: $wsUrl');
+        return;
+      }
+      _wsChannel = IOWebSocketChannel.connect(
+        uri,
+        headers: {
+          if (auth.token != null && auth.token!.isNotEmpty)
+            'Authorization': 'Bearer ${auth.token}',
+        },
+        connectTimeout: const Duration(seconds: 4),
+        pingInterval: const Duration(seconds: 20),
+      );
+
+      _wsChannel!.ready.then((_) {
+        _wsBackoff.reset();
+      }).catchError((Object e) {
+        debugPrint('support_operator: WS handshake не удался: $e');
+      });
 
       _wsChannel!.stream.listen(
         (message) {
           _handleWsMessage(message);
         },
         onDone: () {
-          if (mounted) {
-            setState(() {
-              _statusKey = 'ended_by_server';
-              _statusArg = null;
-              _isConnected = false;
-              _currentNumberMatch = null;
-            });
-          }
+          _wsChannel = null;
+          if (!mounted || _isCleanedUp) return;
+          setState(() {
+            _isConnected = false;
+            _currentNumberMatch = null;
+            _statusKey = 'disconnected';
+            _statusArg = 'ws';
+          });
+          _scheduleWsReconnect();
         },
         onError: (err) {
-          if (mounted) {
-            setState(() {
-              _statusKey = 'conn_error';
-              _statusArg = err.toString();
-              _isConnected = false;
-              _currentNumberMatch = null;
-            });
-          }
+          _wsChannel = null;
+          if (!mounted || _isCleanedUp) return;
+          _setStatus('conn_error', err.toString());
+          _scheduleWsReconnect();
         },
+        cancelOnError: true,
       );
     } catch (e) {
       if (mounted) {
         _setStatus('conn_error', e.toString());
       }
     }
+  }
+
+  /// M-5: реконнект операторского WS с экспоненциальным backoff
+  /// (как в ws_service: 1с -> 2с -> ... -> 30с c джиттером).
+  void _scheduleWsReconnect() {
+    if (!mounted || _isCleanedUp) return;
+    _wsReconnectTimer?.cancel();
+    final delay = _wsBackoff.nextDelay();
+    debugPrint('support_operator: WS реконнект через ${delay.inMilliseconds}мс');
+    _wsReconnectTimer = Timer(delay, () {
+      if (mounted && !_isCleanedUp) {
+        _connectWebSocket();
+      }
+    });
   }
 
   Future<void> _requestScreenAccess() async {
@@ -1058,6 +1101,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _wsChannel?.sink.close();
       _wsChannel = null;
     } catch (_) {}
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = null;
 
     // Отложенное освобождение нативных DirectX текстур рендерера и WebRTC соединения,
     // чтобы анимация закрытия окна (route pop) завершилась абсолютно гладко без зависаний
