@@ -100,6 +100,7 @@ enum SupportSessionState {
   idle,
   requested,
   authorizing,
+  connecting,
   active,
   ended,
 }
@@ -194,12 +195,35 @@ class SupportService extends ChangeNotifier {
   final List<ReceivedFileItem> _receivedFiles = [];
   final Map<String, _ActiveFileDownload> _activeDownloads = {};
 
+  // === Живучесть P2P (M-1) ===
+  /// Таймаут установления соединения: 30с с момента offer — повторный offer,
+  /// 60с — завершение с ошибкой.
+  Timer? _establishmentTimer;
+  Timer? _establishmentDeadlineTimer;
+  /// Disconnected: ждем 10с перед ICE-рестартом (транзиентные обрывы).
+  Timer? _disconnectedTimer;
+  /// Максимум ICE-рестартов с повторным offer (интервал 5с).
+  int _iceRestartAttempts = 0;
+  DateTime? _lastIceRestartAt;
+  bool _p2pConnected = false;
+  /// Последняя ошибка сессии для UI (null — сессия завершилась без ошибок).
+  String? _lastError;
+
   SupportSessionState get state => _state;
   String? get activeSessionId => _activeSessionId;
   String? get category => _category;
   String? get problemSummary => _problemSummary;
   String get accessMode => _accessMode;
   bool get isSharing => _state == SupportSessionState.active;
+  String? get lastError => _lastError;
+
+  /// Сброс ошибки последней сессии (кнопка «Закрыть» в баннере ошибки).
+  void clearError() {
+    if (_lastError != null) {
+      _lastError = null;
+      notifyListeners();
+    }
+  }
   List<Map<String, dynamic>> get screens => _screens;
   String? get currentScreenId => _currentScreenId;
 
@@ -441,6 +465,7 @@ class SupportService extends ChangeNotifier {
     _problemSummary = problemSummary;
     _accessMode = accessMode;
     _state = SupportSessionState.requested;
+    _lastError = null;
     _unreadChatCount = 0;
     _cancelAllDownloads();
     notifyListeners();
@@ -511,16 +536,28 @@ class SupportService extends ChangeNotifier {
 
       _peerConnection!.onConnectionState = (state) {
         debugPrint('support_service: WebRTC connection state: $state');
-        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-          _state = SupportSessionState.active;
-          _startPeriodicTelemetry();
-          notifyListeners();
-        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-            state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-            state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          if (_state == SupportSessionState.active) {
-            stopScreenSharing();
-          }
+        switch (state) {
+          case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+            _onP2pConnected();
+            break;
+          case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+            _onP2pDisconnected();
+            break;
+          case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+            _onP2pFailed();
+            break;
+          case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
+            // Активная сессия закрыта не нами (stopScreenSharing сам снимает
+            // колбэки перед pc.close) — терминируем с ошибкой в UI.
+            if (!_isStopping) {
+              _p2pConnected = false;
+              if (_state == SupportSessionState.active || _state == SupportSessionState.connecting) {
+                _failSession('Соединение с инженером закрыто');
+              }
+            }
+            break;
+          default:
+            break;
         }
       };
 
@@ -566,29 +603,154 @@ class SupportService extends ChangeNotifier {
         await _peerConnection!.addTrack(track, _localStream!);
       }
 
-      // Создаем SDP Offer
-      final offer = await _peerConnection!.createOffer({
-        'offerToReceiveVideo': 0,
-        'offerToReceiveAudio': 0,
-      });
-
-      await _peerConnection!.setLocalDescription(offer);
-
-      // Отправляем оффер оператору
-      await _api?.sendSupportSignal(
-        sessionId: _activeSessionId!,
-        signal: {
-          'sdp': offer.toMap(),
-        },
-      );
-
-      _state = SupportSessionState.active;
+      // Создаем и отправляем SDP Offer (M-1: state=active только после
+      // onConnectionState==connected)
+      await _sendOffer();
+      _state = SupportSessionState.connecting;
+      _armEstablishmentTimeouts();
       notifyListeners();
     } catch (e) {
       debugPrint('support_service: ошибка инициализации захвата экрана: $e');
       stopScreenSharing();
       rethrow;
     }
+  }
+
+  /// Создание и отправка SDP Offer тем же сигнальным путём (HTTP-гейт).
+  /// При [iceRestart] предварительно вызывается pc.restartIce(), чтобы
+  /// libwebrtc сгенерировал новые ICE-учётные данные.
+  Future<void> _sendOffer({bool iceRestart = false}) async {
+    final pc = _peerConnection;
+    if (pc == null || _activeSessionId == null) return;
+    try {
+      if (iceRestart) {
+        try {
+          await pc.restartIce();
+        } catch (e) {
+          debugPrint('support_service: restartIce не поддержан: $e');
+        }
+      }
+      final offer = await pc.createOffer({
+        'offerToReceiveVideo': 0,
+        'offerToReceiveAudio': 0,
+      });
+      await pc.setLocalDescription(offer);
+      await _api?.sendSupportSignal(
+        sessionId: _activeSessionId!,
+        signal: {
+          'sdp': offer.toMap(),
+        },
+      );
+    } catch (e) {
+      debugPrint('support_service: ошибка отправки offer (iceRestart=$iceRestart): $e');
+    }
+  }
+
+  /// Таймауты установления: 30с с момента offer — повторный offer,
+  /// 60с — завершение с ошибкой в UI.
+  void _armEstablishmentTimeouts() {
+    _establishmentTimer?.cancel();
+    _establishmentTimer = Timer(const Duration(seconds: 30), () {
+      if (_p2pConnected || _peerConnection == null) return;
+      debugPrint('support_service: соединение не установилось за 30с — повторный offer');
+      _attemptIceRestart();
+    });
+    _establishmentDeadlineTimer ??= Timer(const Duration(seconds: 60), () {
+      if (_p2pConnected || _peerConnection == null) return;
+      _failSession('Не удалось установить соединение с инженером (таймаут 60 с)');
+    });
+  }
+
+  void _cancelResilienceTimers() {
+    _establishmentTimer?.cancel();
+    _establishmentTimer = null;
+    _establishmentDeadlineTimer?.cancel();
+    _establishmentDeadlineTimer = null;
+    _disconnectedTimer?.cancel();
+    _disconnectedTimer = null;
+  }
+
+  void _onP2pConnected() {
+    _p2pConnected = true;
+    _cancelResilienceTimers();
+    _iceRestartAttempts = 0;
+    _lastIceRestartAt = null;
+    if (_state != SupportSessionState.active) {
+      _state = SupportSessionState.active;
+      _startPeriodicTelemetry();
+      notifyListeners();
+    }
+  }
+
+  /// Disconnected: не убиваем шаринг сразу — транзиентные обрывы
+  /// восстанавливаются сами; 10с без connected — ICE-рестарт.
+  void _onP2pDisconnected() {
+    _p2pConnected = false;
+    if (_isStopping || _peerConnection == null) return;
+    if (_state != SupportSessionState.active && _state != SupportSessionState.connecting) return;
+    _disconnectedTimer?.cancel();
+    _disconnectedTimer = Timer(const Duration(seconds: 10), () {
+      if (_p2pConnected || _peerConnection == null || _isStopping) return;
+      debugPrint('support_service: disconnected длится >10с — ICE-рестарт');
+      _attemptIceRestart();
+    });
+  }
+
+  /// Failed: pc.restartIce() + повторный offer тем же сигнальным путём,
+  /// максимум 3 попытки с интервалом 5с, дальше — завершение с ошибкой.
+  void _onP2pFailed() {
+    _p2pConnected = false;
+    if (_isStopping || _peerConnection == null) return;
+    if (_state != SupportSessionState.active && _state != SupportSessionState.connecting) return;
+    _disconnectedTimer?.cancel();
+    _attemptIceRestart();
+  }
+
+  void _attemptIceRestart() {
+    if (_isStopping || _peerConnection == null || _activeSessionId == null) return;
+    if (_iceRestartAttempts >= 3) {
+      _failSession('Не удалось восстановить P2P-соединение после 3 попыток');
+      return;
+    }
+    final now = DateTime.now();
+    final sinceLast = _lastIceRestartAt == null ? null : now.difference(_lastIceRestartAt!);
+    if (sinceLast != null && sinceLast < const Duration(seconds: 5)) {
+      final wait = const Duration(seconds: 5) - sinceLast;
+      Timer(wait, () {
+        if (!_p2pConnected && !_isStopping && _peerConnection != null) {
+          _attemptIceRestart();
+        }
+      });
+      return;
+    }
+    _iceRestartAttempts++;
+    _lastIceRestartAt = now;
+    debugPrint('support_service: ICE-рестарт, попытка $_iceRestartAttempts/3');
+    _sendOffer(iceRestart: true);
+  }
+
+  /// Терминальный отказ сессии: остановка трансляции + ошибка в UI/чат.
+  Future<void> _failSession(String userError) async {
+    if (_isStopping) return;
+    debugPrint('support_service: $userError');
+    _lastError = userError;
+    _cancelResilienceTimers();
+    await stopScreenSharing();
+    _state = SupportSessionState.ended;
+    _addSystemMessage('⚠ $userError');
+    notifyListeners();
+  }
+
+  void _addSystemMessage(String text, {String senderName = 'Система'}) {
+    _chatMessages.add(SupportChatMessage(
+      id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
+      sender: 'user',
+      senderName: senderName,
+      text: text,
+      timestamp: DateTime.now(),
+    ));
+    _unreadChatCount++;
+    notifyListeners();
   }
 
   final List<RTCIceCandidate> _pendingCandidates = [];
@@ -1010,6 +1172,10 @@ class SupportService extends ChangeNotifier {
 
       _telemetryTimer?.cancel();
       _telemetryTimer = null;
+      _cancelResilienceTimers();
+      _p2pConnected = false;
+      _iceRestartAttempts = 0;
+      _lastIceRestartAt = null;
 
       _pendingCandidates.clear();
 

@@ -786,7 +786,12 @@ class AuthState extends ChangeNotifier {
 
         if (status == 'connecting' || status == 'authorizing') {
           final numberMatch = sess['number_match']?.toString() ?? '';
-          if (numberMatch.isNotEmpty && activeSupportPrompt == null && support.state != SupportSessionState.active) {
+          // Не переспрашиваем подтверждение, когда WebRTC уже устанавливается
+          // (connecting) — пользователь уже одобрил сессию.
+          if (numberMatch.isNotEmpty &&
+              activeSupportPrompt == null &&
+              support.state != SupportSessionState.active &&
+              support.state != SupportSessionState.connecting) {
             activeSupportPrompt = {
               'session_id': sessionId,
               'category': category,
@@ -815,7 +820,8 @@ class AuthState extends ChangeNotifier {
             notifyListeners();
           }
         } else if (status == 'requested') {
-          if (support.state != SupportSessionState.requested) {
+          if (support.state != SupportSessionState.requested &&
+              support.state != SupportSessionState.connecting) {
             support.setRequested(
               sessionId: sessionId,
               category: category,
@@ -836,7 +842,8 @@ class AuthState extends ChangeNotifier {
         }
       } else {
         // Если активных сессий на сервере нет (при этом не сбрасываем модалку, пока пользователь в процессе ввода)
-        if (support.state == SupportSessionState.requested) {
+        if (support.state == SupportSessionState.requested ||
+            support.state == SupportSessionState.connecting) {
           await support.stopScreenSharing();
           activeSupportPrompt = null;
           notifyListeners();

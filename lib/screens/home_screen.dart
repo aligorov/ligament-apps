@@ -320,7 +320,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            if (support.state != SupportSessionState.idle)
+            if (support.state != SupportSessionState.idle || support.lastError != null)
               _buildSupportSessionBanner(auth),
 
             // РАЗДЕЛ ДЛЯ ИНЖЕНЕРОВ: Входящие заявки на удаленную помощь
@@ -679,6 +679,38 @@ class _HomeScreenState extends State<HomeScreen> {
     final is1C = support.category == '1c';
     final isActive = support.state == SupportSessionState.active;
     final isAuthorizing = support.state == SupportSessionState.authorizing;
+    final isConnecting = support.state == SupportSessionState.connecting;
+    final isError = support.state == SupportSessionState.ended;
+
+    // Ошибка последней сессии (M-1: таймаут установления / исчерпание
+    // ICE-рестартов) — отдельная карточка с кнопкой закрытия.
+    if (isError || (support.state == SupportSessionState.idle && support.lastError != null)) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEF4444).withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                '${isRu ? 'Сеанс удаленной помощи завершился ошибкой' : 'Remote support session ended with error'}: ${support.lastError ?? ''}',
+                style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12),
+              ),
+            ),
+            TextButton(
+              onPressed: () => auth.support.clearError(),
+              child: Text(isRu ? 'Закрыть' : 'Close'),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -727,9 +759,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(
                   isActive
                       ? (isRu ? '🔴 Идет удаленный сеанс (${is1C ? '1С' : 'IT'})' : '🔴 Remote session active (${is1C ? '1C' : 'IT'})')
-                      : (isAuthorizing
-                          ? (isRu ? '🟡 Запрос на подключение (${is1C ? '1С' : 'IT'})' : '🟡 Connection request (${is1C ? '1C' : 'IT'})')
-                          : (isRu ? '⏳ Заявка на помощь (${is1C ? '1С-поддержка' : 'IT-служба'})' : '⏳ Assistance request (${is1C ? '1C Support' : 'IT Helpdesk'})')),
+                      : (isConnecting
+                          ? (isRu ? '🔵 Установка соединения (${is1C ? '1С' : 'IT'})' : '🔵 Connecting (${is1C ? '1C' : 'IT'})')
+                          : (isAuthorizing
+                              ? (isRu ? '🟡 Запрос на подключение (${is1C ? '1С' : 'IT'})' : '🟡 Connection request (${is1C ? '1C' : 'IT'})')
+                              : (isRu ? '⏳ Заявка на помощь (${is1C ? '1С-поддержка' : 'IT-служба'})' : '⏳ Assistance request (${is1C ? '1C Support' : 'IT Helpdesk'})'))),
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -740,11 +774,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(
                   isActive
                       ? (isRu ? 'Экран транслируется инженеру поддержки' : 'Screen is shared with support engineer')
-                      : (isAuthorizing
-                          ? (isRu ? 'Инженер ожидает ввода контрольного числа' : 'Engineer is waiting for verification code')
-                          : (support.problemSummary?.isNotEmpty == true
-                              ? '"${support.problemSummary}"'
-                              : (isRu ? 'Ожидание подключения инженера...' : 'Waiting for engineer connection...'))),
+                      : (isConnecting
+                          ? (isRu ? 'Ожидание установления P2P-соединения...' : 'Waiting for P2P connection...')
+                          : (isAuthorizing
+                              ? (isRu ? 'Инженер ожидает ввода контрольного числа' : 'Engineer is waiting for verification code')
+                              : (support.problemSummary?.isNotEmpty == true
+                                  ? '"${support.problemSummary}"'
+                                  : (isRu ? 'Ожидание подключения инженера...' : 'Waiting for engineer connection...')))),
                   style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -778,7 +814,10 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(width: 6),
           ],
-          if (isActive || support.state == SupportSessionState.requested || support.state == SupportSessionState.authorizing) ...[
+          if (isActive ||
+              support.state == SupportSessionState.requested ||
+              support.state == SupportSessionState.authorizing ||
+              support.state == SupportSessionState.connecting) ...[
             ElevatedButton.icon(
               onPressed: () => _showInSessionChatModal(context, auth),
               icon: const Icon(Icons.chat_bubble_outline, size: 13),
