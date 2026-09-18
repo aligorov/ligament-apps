@@ -476,7 +476,7 @@ class SupportService extends ChangeNotifier {
     try {
       // ICE-серверы берутся из конфига сервера (B-1); Google/Cloudflare STUN —
       // только emergency-фолбэк при недоступности конфига.
-      if (_iceServersFromConfig == null && api != null) {
+      if (_iceServersFromConfig == null) {
         try {
           final cfg = await api.getConfig();
           setIceServers(parseIceServersConfig(cfg));
