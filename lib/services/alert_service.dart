@@ -29,6 +29,18 @@ class AlertService {
       await _localNotifications.initialize(
         const InitializationSettings(android: androidInit, iOS: darwinInit, macOS: darwinInit),
       );
+
+      // Android 13+ (API 33): POST_NOTIFICATIONS — runtime-разрешение (M-7).
+      // Без него SOS-push и сообщения чата молча не показываются.
+      if (Platform.isAndroid) {
+        try {
+          final androidImpl = _localNotifications
+              .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+          await androidImpl?.requestNotificationsPermission();
+        } catch (e) {
+          debugPrint('alert_service: requestNotificationsPermission ошибка: $e');
+        }
+      }
     }
 
     _initialized = true;

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../api/client.dart';
 import 'input_injector.dart';
@@ -765,7 +766,22 @@ class SupportService extends ChangeNotifier {
     if (_state != SupportSessionState.active) {
       _state = SupportSessionState.active;
       _startPeriodicTelemetry();
+      _setWakelock(true);
       notifyListeners();
+    }
+  }
+
+  /// M-8: держим экран включенным, пока активна SOS-сессия (мобильные).
+  void _setWakelock(bool enabled) {
+    if (kIsWeb) return;
+    try {
+      if (enabled) {
+        WakelockPlus.enable();
+      } else {
+        WakelockPlus.disable();
+      }
+    } catch (e) {
+      debugPrint('support_service: wakelock ${enabled ? 'enable' : 'disable'} ошибка: $e');
     }
   }
 
@@ -1325,6 +1341,7 @@ class SupportService extends ChangeNotifier {
     try {
       // 1. Немедленно освобождаем мышь и ввод пользователя
       InputInjector.instance.setInputBlocked(false);
+      _setWakelock(false);
 
       _telemetryTimer?.cancel();
       _telemetryTimer = null;

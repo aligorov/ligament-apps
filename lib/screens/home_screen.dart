@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/input_injector.dart';
 import '../services/support_service.dart';
 import '../i18n/app_strings.dart';
 import 'approval_modal.dart';
@@ -681,6 +682,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final isAuthorizing = support.state == SupportSessionState.authorizing;
     final isConnecting = support.state == SupportSessionState.connecting;
     final isError = support.state == SupportSessionState.ended;
+    // M-8: на платформах без InputInjector (Android/iOS/Web) режим
+    // full_control фактически является просмотром — говорим об этом честно.
+    final inputControlUnavailable =
+        !InputInjector.instance.isInputInjectionSupported && support.accessMode == 'full_control';
 
     // Ошибка последней сессии (M-1: таймаут установления / исчерпание
     // ICE-рестартов) — отдельная карточка с кнопкой закрытия.
@@ -773,7 +778,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 2),
                 Text(
                   isActive
-                      ? (isRu ? 'Экран транслируется инженеру поддержки' : 'Screen is shared with support engineer')
+                      // M-8: честный режим на платформах без инъекции ввода
+                      ? (inputControlUnavailable
+                          ? (isRu ? 'Просмотр (управление недоступно на этой платформе)' : 'View only (control unavailable on this platform)')
+                          : (isRu ? 'Экран транслируется инженеру поддержки' : 'Screen is shared with support engineer'))
                       : (isConnecting
                           ? (isRu ? 'Ожидание установления P2P-соединения...' : 'Waiting for P2P connection...')
                           : (isAuthorizing
