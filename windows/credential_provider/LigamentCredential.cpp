@@ -244,19 +244,36 @@ HRESULT LigamentCredential::GetFieldState(
     return S_OK;
 }
 
+// Имя ПК для заголовка плитки: пользователь на экране входа видит, с какой
+// машины выполняется вход (то же имя уходит «host»-ом в push и журнал).
+// NetBIOS-имя (как в окружении), пустое при ошибке — суффикс не клеится.
+static std::wstring ComputerNameSuffix() {
+    static const std::wstring cached = []() -> std::wstring {
+        wchar_t nb[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+        DWORD n = ARRAYSIZE(nb);
+        if (!GetComputerNameW(nb, &n)) return std::wstring();
+        return std::wstring(nb);
+    }();
+    return cached;
+}
+
 HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     std::wstring val;
+    const std::wstring pc = ComputerNameSuffix();
+    const std::wstring pcSuffix = pc.empty() ? std::wstring() : L"  \u00B7  " + pc;
     switch (dwFieldID) {
     case FID_LARGE_TEXT:
+        // Заголовок плитки всегда называет машину; строка контрольного
+        // числа остаётся чистой — число читается за секунды.
         if (m_currentMode == MODE_FIDO2) {
-            val = L"Вход по Passkey (QR-код)";
+            val = L"Вход по Passkey (QR-код)" + pcSuffix;
         } else if (m_currentMode == MODE_OTP) {
-            val = L"Вход по коду TOTP / YubiKey";
+            val = L"Вход по коду TOTP / YubiKey" + pcSuffix;
         } else {
             if (!m_numberMatch.empty()) {
                 val = L"Контрольное число: " + m_numberMatch;
             } else {
-                val = L"Ligament Enterprise 2FA";
+                val = L"Ligament Enterprise 2FA" + pcSuffix;
             }
         }
         break;
