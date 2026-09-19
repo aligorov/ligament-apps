@@ -70,6 +70,7 @@ class WebSocketService {
   final ReconnectBackoff _backoff = ReconnectBackoff();
 
   PushPromptCallback? onPrompt;
+  PushPromptCallback? onNotification;
   PushPromptCallback? onSupportPrompt;
   PushPromptCallback? onSupportSignal;
   PushPromptCallback? onSupportEnded;
@@ -278,6 +279,11 @@ class WebSocketService {
         onSupportEnded?.call(data);
       } else if (data['type'] == 'support_incoming_request' || data['type'] == 'support_queue_update') {
         onSupportIncoming?.call(data);
+      } else if (data['type'] == 'notification') {
+        if (data['id'] != null) {
+          sendJson({'action': 'notify_delivered', 'id': data['id']});
+        }
+        onNotification?.call(data);
       }
     } catch (e) {
       debugPrint('ws_service: ошибка парсинга сообщения: $e');

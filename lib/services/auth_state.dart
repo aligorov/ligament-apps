@@ -237,6 +237,17 @@ class AuthState extends ChangeNotifier {
       loadPendingChallenges();
     };
 
+    ws.onNotification = (msg) {
+      final title = msg['title']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
+      final body = msg['body']?.toString() ?? '';
+      alert.triggerAlert(
+        title: title,
+        body: body,
+        challengeId: msg['id']?.toString(),
+      );
+      notifyListeners();
+    };
+
     ws.onSupportPrompt = (prompt) {
       activeSupportPrompt = prompt;
       support.setAuthorizing(

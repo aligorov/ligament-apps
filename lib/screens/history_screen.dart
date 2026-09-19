@@ -215,7 +215,7 @@ class HistoryScreen extends StatelessWidget {
     final auth = context.watch<AuthState>();
     final s = context.strings;
     final isRu = auth.isRu;
-    final history = auth.history;
+    final history = auth.history.where((item) => item['event']?.toString() != 'radius_acct').toList();
     final df = DateFormat('dd.MM.yyyy HH:mm:ss');
 
     return Scaffold(
@@ -443,6 +443,12 @@ class HistoryScreen extends StatelessWidget {
         return isRu ? 'Неверный 2FA код' : 'Invalid 2FA Code';
       case 'radius_auth':
         return isRu ? 'Авторизация в сети Wi-Fi/VPN' : 'Wi-Fi / VPN Authorization';
+      case 'radius_eap':
+        return isRu ? 'Авторизация в сети Wi-Fi (802.1X)' : 'Wi-Fi (802.1X) Authorization';
+      case 'radius_trust_skip':
+        return isRu ? 'Вход в сеть Wi-Fi (доверенное устройство)' : 'Wi-Fi Access (Trusted Device)';
+      case 'radius_acct':
+        return isRu ? 'Телеметрия Wi-Fi сессии' : 'Wi-Fi Session Telemetry';
       case 'oidc_token':
         return isRu ? 'Вход через SSO (OpenID)' : 'Login via SSO (OpenID)';
       case 'oidc_consent':
