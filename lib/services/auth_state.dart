@@ -217,9 +217,11 @@ class AuthState extends ChangeNotifier {
       final ipText = hostIp != null ? '$clientIp → $hostIp' : '$clientIp';
       final sName = prompt['service'] ?? 'Ligament 2FA';
       final who = prompt['who'] ?? (isRu ? 'Сотрудник' : 'Employee');
+      final host = prompt['host']?.toString();
+      final pcPart = (host != null && host.isNotEmpty) ? (isRu ? ' · Имя ПК: $host' : ' · PC: $host') : '';
       alert.triggerAlert(
         title: isRu ? 'Запрос на вход: $sName' : 'Login Request: $sName',
-        body: '$who (IP: $ipText)',
+        body: '$who$pcPart (IP: $ipText)',
         challengeId: cid,
       );
     }

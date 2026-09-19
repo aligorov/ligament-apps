@@ -125,6 +125,7 @@ class AppStrings {
   String get ipLabel => isRu ? 'IP клиента:' : 'Client IP:';
   String get serverIpLabel => isRu ? 'Сервер (IP):' : 'Server (IP):';
   String get serverNameLabel => isRu ? 'Имя сервера:' : 'Server Name:';
+  String get pcNameLabel => isRu ? 'Имя ПК:' : 'PC Name:';
   String get locationLabel => isRu ? 'Локация:' : 'Location:';
   String get timeLabel => isRu ? 'Время:' : 'Time:';
   String get deviceLabel => isRu ? 'Устройство:' : 'Device:';

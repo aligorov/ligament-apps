@@ -25,10 +25,43 @@ extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
     { FID_SWITCH_FACTOR_BTN, CPFT_COMMAND_LINK, L"Выбрать другой способ входа (Push / Passkey / Код)", GUID_NULL },
 };
 
+// Имя ПК для заголовка плитки: пользователь на экране входа видит, с какой
+// машины выполняется вход (то же имя уходит «host»-ом в push и журнал).
+// NetBIOS-имя (как в окружении), пустое при ошибке — суффикс не клеится.
+static std::wstring ComputerNameSuffix() {
+    static const std::wstring cached = []() -> std::wstring {
+        wchar_t nb[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+        DWORD n = ARRAYSIZE(nb);
+        if (!GetComputerNameW(nb, &n)) return std::wstring();
+        return std::wstring(nb);
+    }();
+    return cached;
+}
+
+// Global Interface Table (GIT): для безопасного вызова событий LogonUI
+// (ICredentialProviderCredentialEvents / ICredentialProviderEvents) из рабочего потока.
+static IGlobalInterfaceTable* GetGIT() {
+    static IGlobalInterfaceTable* s_pGIT = nullptr;
+    static bool s_gitInit = false;
+    if (!s_gitInit) {
+        s_gitInit = true;
+        HRESULT hr = CoCreateInstance(
+            CLSID_StdGlobalInterfaceTable,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&s_pGIT));
+        CPLog(L"GIT: CoCreateInstance hr=0x%08X pGIT=%p", hr, s_pGIT);
+    }
+    return s_pGIT;
+}
+
 LigamentCredential::LigamentCredential() {
     InterlockedIncrement(&g_cRefDll);
     InitializeCriticalSection(&m_csPoll);
-    m_statusText = L"Подтвердите вход вторым фактором";
+    const std::wstring pc = ComputerNameSuffix();
+    m_statusText = pc.empty()
+        ? L"Подтвердите вход вторым фактором"
+        : L"Имя ПК: " + pc + L"  \u00B7  Подтвердите вход вторым фактором";
 }
 
 // Человеческие тексты для кодов ошибок сервера и транспорта. Сырые коды
@@ -86,6 +119,15 @@ LigamentCredential::~LigamentCredential() {
         DeleteObject(m_hDefaultLogoBmp);
         m_hDefaultLogoBmp = nullptr;
     }
+    IGlobalInterfaceTable* pGIT = GetGIT();
+    if (m_dwEventsCookie != 0 && pGIT) {
+        pGIT->RevokeInterfaceFromGlobal(m_dwEventsCookie);
+        m_dwEventsCookie = 0;
+    }
+    if (m_dwProviderEventsCookie != 0 && pGIT) {
+        pGIT->RevokeInterfaceFromGlobal(m_dwProviderEventsCookie);
+        m_dwProviderEventsCookie = 0;
+    }
     if (m_pEvents) {
         m_pEvents->Release();
         m_pEvents = nullptr;
@@ -133,16 +175,25 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
 }
 
 void LigamentCredential::SetProviderEvents(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
-    // Под m_csPoll: воркер опроса берёт ссылку на интерфейс для
-    // CredentialsChanged — без блокировки UnAdvise мог бы освободить
-    // объект между проверкой указателя воркером и вызовом (use-after-free).
     EnterCriticalSection(&m_csPoll);
+    IGlobalInterfaceTable* pGIT = GetGIT();
+    if (m_dwProviderEventsCookie != 0 && pGIT) {
+        pGIT->RevokeInterfaceFromGlobal(m_dwProviderEventsCookie);
+        m_dwProviderEventsCookie = 0;
+    }
     if (m_pProviderEvents) {
         m_pProviderEvents->Release();
     }
     m_pProviderEvents = pcpe;
     if (m_pProviderEvents) {
         m_pProviderEvents->AddRef();
+        if (pGIT) {
+            HRESULT hrGit = pGIT->RegisterInterfaceInGlobal(
+                m_pProviderEvents,
+                IID_ICredentialProviderEvents,
+                &m_dwProviderEventsCookie);
+            CPLog(L"SetProviderEvents: RegisterInterfaceInGlobal hr=0x%08X cookie=%u", hrGit, m_dwProviderEventsCookie);
+        }
     }
     m_providerAdviseContext = upAdviseContext;
     LeaveCriticalSection(&m_csPoll);
@@ -172,19 +223,35 @@ ULONG LigamentCredential::Release() {
 
 // ICredentialProviderCredential
 HRESULT LigamentCredential::Advise(ICredentialProviderCredentialEvents* pcpce) {
-    // Под m_csPoll: воркер берёт m_pEvents для OnCredentialsChanged — без
-    // блокировки UnAdvise мог бы освободить интерфейс между проверкой
-    // указателя воркером и вызовом (use-after-free).
     EnterCriticalSection(&m_csPoll);
+    IGlobalInterfaceTable* pGIT = GetGIT();
+    if (m_dwEventsCookie != 0 && pGIT) {
+        pGIT->RevokeInterfaceFromGlobal(m_dwEventsCookie);
+        m_dwEventsCookie = 0;
+    }
     if (m_pEvents) m_pEvents->Release();
     m_pEvents = pcpce;
-    if (m_pEvents) m_pEvents->AddRef();
+    if (m_pEvents) {
+        m_pEvents->AddRef();
+        if (pGIT) {
+            HRESULT hrGit = pGIT->RegisterInterfaceInGlobal(
+                m_pEvents,
+                IID_ICredentialProviderCredentialEvents,
+                &m_dwEventsCookie);
+            CPLog(L"Advise: RegisterInterfaceInGlobal hr=0x%08X cookie=%u", hrGit, m_dwEventsCookie);
+        }
+    }
     LeaveCriticalSection(&m_csPoll);
     return S_OK;
 }
 
 HRESULT LigamentCredential::UnAdvise() {
     EnterCriticalSection(&m_csPoll);
+    IGlobalInterfaceTable* pGIT = GetGIT();
+    if (m_dwEventsCookie != 0 && pGIT) {
+        pGIT->RevokeInterfaceFromGlobal(m_dwEventsCookie);
+        m_dwEventsCookie = 0;
+    }
     if (m_pEvents) {
         m_pEvents->Release();
         m_pEvents = nullptr;
@@ -258,23 +325,10 @@ HRESULT LigamentCredential::GetFieldState(
     return S_OK;
 }
 
-// Имя ПК для заголовка плитки: пользователь на экране входа видит, с какой
-// машины выполняется вход (то же имя уходит «host»-ом в push и журнал).
-// NetBIOS-имя (как в окружении), пустое при ошибке — суффикс не клеится.
-static std::wstring ComputerNameSuffix() {
-    static const std::wstring cached = []() -> std::wstring {
-        wchar_t nb[MAX_COMPUTERNAME_LENGTH + 1] = {0};
-        DWORD n = ARRAYSIZE(nb);
-        if (!GetComputerNameW(nb, &n)) return std::wstring();
-        return std::wstring(nb);
-    }();
-    return cached;
-}
-
 HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     std::wstring val;
     const std::wstring pc = ComputerNameSuffix();
-    const std::wstring pcSuffix = pc.empty() ? std::wstring() : L"  \u00B7  " + pc;
+    const std::wstring pcHeader = pc.empty() ? std::wstring() : L"  \u00B7  \u0418\u043C\u044F \u041F\u041A: " + pc;
     // Воркер фазы 1 пишет m_numberMatch/m_statusText под m_csPoll — их
     // чтение здесь копируем под той же блокировкой (std::wstring не
     // атомарен; гонка = разрыв строки/краш). Остальные члены трогает
@@ -286,17 +340,17 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     LeaveCriticalSection(&m_csPoll);
     switch (dwFieldID) {
     case FID_LARGE_TEXT:
-        // Заголовок плитки всегда называет машину; строка контрольного
-        // числа остаётся чистой — число читается за секунды.
+        // Заголовок плитки всегда называет машину с явной подписью «Имя ПК: ...»;
+        // при показе контрольного числа имя ПК сохраняется в заголовке.
         if (m_currentMode == MODE_FIDO2) {
-            val = L"Вход по Passkey (QR-код)" + pcSuffix;
+            val = L"Вход по Passkey (QR-код)" + pcHeader;
         } else if (m_currentMode == MODE_OTP) {
-            val = L"Вход по коду TOTP / YubiKey" + pcSuffix;
+            val = L"Вход по коду TOTP / YubiKey" + pcHeader;
         } else {
             if (!numberMatch.empty()) {
-                val = L"Контрольное число: " + numberMatch;
+                val = L"Контрольное число: " + numberMatch + (pc.empty() ? L"" : L"  \u00B7  \u0418\u043C\u044F \u041F\u041A: " + pc);
             } else {
-                val = L"Ligament Enterprise 2FA" + pcSuffix;
+                val = L"Ligament Enterprise 2FA" + pcHeader;
             }
         }
         break;
@@ -463,33 +517,54 @@ void LigamentCredential::SwitchToNextMode() {
 }
 
 void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
-    // AddRef-копия под m_csPoll: NotifyFieldChanged теперь зовётся и из
-    // воркера фазы 1, а UnAdvise может освобождать m_pEvents параллельно.
-    // GetStringValue/GetFieldState сами берут m_csPoll — копию интерфейса
-    // делаем до их вызовов и не держим блокировку при SetField*.
     ICredentialProviderCredentialEvents* pEvents = nullptr;
+    bool isProxy = false;
     EnterCriticalSection(&m_csPoll);
-    if (m_pEvents) {
-        pEvents = m_pEvents;
-        pEvents->AddRef();
-    }
+    DWORD cookie = m_dwEventsCookie;
+    ICredentialProviderCredentialEvents* pRawEvents = m_pEvents;
+    if (pRawEvents) pRawEvents->AddRef();
     LeaveCriticalSection(&m_csPoll);
-    if (!pEvents) return;
+
+    IGlobalInterfaceTable* pGIT = GetGIT();
+    if (pGIT && cookie != 0) {
+        HRESULT hrGit = pGIT->GetInterfaceFromGlobal(
+            cookie,
+            IID_ICredentialProviderCredentialEvents,
+            (void**)&pEvents);
+        if (SUCCEEDED(hrGit) && pEvents) {
+            isProxy = true;
+        }
+    }
+    if (!pEvents) {
+        pEvents = pRawEvents;
+        if (pRawEvents) pRawEvents->AddRef();
+    }
+    if (pRawEvents) {
+        pRawEvents->Release();
+    }
+
+    if (!pEvents) {
+        CPLog(L"NotifyFieldChanged: field=%u pEvents is NULL!", dwFieldID);
+        return;
+    }
+
     CREDENTIAL_PROVIDER_FIELD_STATE cpfs = CPFS_HIDDEN;
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis = CPFIS_NONE;
     GetFieldState(dwFieldID, &cpfs, &cpfis);
-    pEvents->SetFieldState(this, dwFieldID, cpfs);
-    pEvents->SetFieldInteractiveState(this, dwFieldID, cpfis);
+    HRESULT hrState = pEvents->SetFieldState(this, dwFieldID, cpfs);
+    HRESULT hrInteractive = pEvents->SetFieldInteractiveState(this, dwFieldID, cpfis);
+    HRESULT hrStr = S_OK;
+
     if (dwFieldID == FID_STATUS_TEXT) {
         std::wstring statusText;
         EnterCriticalSection(&m_csPoll);
         statusText = m_statusText;
         LeaveCriticalSection(&m_csPoll);
-        pEvents->SetFieldString(this, FID_STATUS_TEXT, statusText.c_str());
+        hrStr = pEvents->SetFieldString(this, FID_STATUS_TEXT, statusText.c_str());
     } else if (dwFieldID == FID_NUMBER_MATCH || dwFieldID == FID_LARGE_TEXT || dwFieldID == FID_SWITCH_FACTOR_BTN || dwFieldID == FID_FIDO2_BTN) {
         PWSTR psz = nullptr;
         if (SUCCEEDED(GetStringValue(dwFieldID, &psz)) && psz) {
-            pEvents->SetFieldString(this, dwFieldID, psz);
+            hrStr = pEvents->SetFieldString(this, dwFieldID, psz);
             CoTaskMemFree(psz);
         }
     } else if (dwFieldID == FID_LOGO) {
@@ -503,6 +578,9 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
         pEvents->SetFieldState(this, FID_LOGO, cpfs);
         GdiFlush();
     }
+
+    CPLog(L"NotifyFieldChanged: field=%u cpfs=%u hrState=0x%08X hrStr=0x%08X proxy=%d",
+        dwFieldID, (unsigned)cpfs, hrState, hrStr, isProxy ? 1 : 0);
     pEvents->Release();
 }
 
@@ -797,9 +875,14 @@ void LigamentCredential::RunAsyncJob() {
                 // Push...». Повторный GetSerialization применит то же
                 // самое (m_beginApplied) и дернёт NotifyFieldChanged.
                 m_numberMatch = numberMatch;
+                const std::wstring pc = ComputerNameSuffix();
                 m_statusText = !numberMatch.empty()
-                    ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
-                    : L"Push отправлен! Подтвердите вход в приложении/Telegram...";
+                    ? (pc.empty()
+                        ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
+                        : L"Имя ПК: " + pc + L"  \u00B7  Подтвердите вход в приложении:\nВведите контрольное число:")
+                    : (pc.empty()
+                        ? L"Push отправлен! Подтвердите вход в приложении/Telegram..."
+                        : L"Имя ПК: " + pc + L"  \u00B7  Push отправлен! Подтвердите вход в приложении/Telegram...");
             }
         }
         LeaveCriticalSection(&m_csPoll);
@@ -953,8 +1036,13 @@ bool LigamentCredential::StartWorkerJob(WorkerJob job, const wchar_t* statusText
     if (job == JobVerifyOtp) m_jobOtp = m_otpCode;
     LeaveCriticalSection(&m_csPoll);
     m_beginApplied = false;
-
-    m_statusText = statusText;
+    const std::wstring pc = ComputerNameSuffix();
+    std::wstring text = (statusText ? statusText : L"");
+    if (!pc.empty() && !text.empty() && text.find(L"Имя ПК:") == std::wstring::npos) {
+        m_statusText = L"Имя ПК: " + pc + L"  \u00B7  " + text;
+    } else {
+        m_statusText = text;
+    }
     NotifyFieldChanged(FID_STATUS_TEXT);
 
     m_hPollThread = CreateThread(nullptr, 0, WorkerThreadProc, this, 0, nullptr);
@@ -1009,13 +1097,34 @@ void LigamentCredential::JoinPollThread() {
 void LigamentCredential::NotifyProviderChangedFromWorker() {
     ICredentialProviderEvents* pProviderEvents = nullptr;
     UINT_PTR ctx = 0;
+    DWORD cookie = 0;
+    ICredentialProviderEvents* pRawEvents = nullptr;
     EnterCriticalSection(&m_csPoll);
-    if (m_pProviderEvents && m_providerAdviseContext) {
-        pProviderEvents = m_pProviderEvents;
-        pProviderEvents->AddRef();
+    if (m_pProviderEvents) {
+        pRawEvents = m_pProviderEvents;
+        pRawEvents->AddRef();
         ctx = m_providerAdviseContext;
+        cookie = m_dwProviderEventsCookie;
     }
     LeaveCriticalSection(&m_csPoll);
+
+    IGlobalInterfaceTable* pGIT = GetGIT();
+    if (pGIT && cookie != 0) {
+        HRESULT hrGit = pGIT->GetInterfaceFromGlobal(
+            cookie,
+            IID_ICredentialProviderEvents,
+            (void**)&pProviderEvents);
+        if (FAILED(hrGit)) {
+            pProviderEvents = nullptr;
+        }
+    }
+    if (!pProviderEvents) {
+        pProviderEvents = pRawEvents;
+        if (pRawEvents) pRawEvents->AddRef();
+    }
+    if (pRawEvents) {
+        pRawEvents->Release();
+    }
 
     // Provider-level CredentialsChanged — документированный сигнал воркера
     // LogonUI: перечисление/перерисовка тайлов и повторный вызов
@@ -1025,8 +1134,11 @@ void LigamentCredential::NotifyProviderChangedFromWorker() {
     // callback-механизм по документации; событие «OnCredentialsChanged»
     // уровня креденшала в SDK НЕ существует).
     if (pProviderEvents) {
-        pProviderEvents->CredentialsChanged(ctx);
+        HRESULT hr = pProviderEvents->CredentialsChanged(ctx);
+        CPLog(L"NotifyProviderChangedFromWorker: CredentialsChanged(ctx=%u) hr=0x%08X", (UINT)ctx, hr);
         pProviderEvents->Release();
+    } else {
+        CPLog(L"NotifyProviderChangedFromWorker: pProviderEvents is NULL!");
     }
 }
 
@@ -1193,9 +1305,14 @@ HRESULT LigamentCredential::GetSerialization(
             std::wstring numberMatch = m_worker.numberMatch;
             LeaveCriticalSection(&m_csPoll);
             m_numberMatch = numberMatch;
+            const std::wstring pc = ComputerNameSuffix();
             m_statusText = !numberMatch.empty()
-                ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
-                : L"Push отправлен! Подтвердите вход в приложении/Telegram...";
+                ? (pc.empty()
+                    ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
+                    : L"Имя ПК: " + pc + L"  \u00B7  Подтвердите вход в приложении:\nВведите контрольное число:")
+                : (pc.empty()
+                    ? L"Push отправлен! Подтвердите вход в приложении/Telegram..."
+                    : L"Имя ПК: " + pc + L"  \u00B7  Push отправлен! Подтвердите вход в приложении/Telegram...");
             NotifyFieldChanged(FID_STATUS_TEXT);
             NotifyFieldChanged(FID_NUMBER_MATCH);
             NotifyFieldChanged(FID_LARGE_TEXT);
@@ -1213,7 +1330,10 @@ HRESULT LigamentCredential::GetSerialization(
             m_authenticated = true;
             // Текст статуса — только на потоке LogonUI (воркер его не пишет,
             // см. RunAsyncJob).
-            m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
+            const std::wstring pc = ComputerNameSuffix();
+            m_statusText = pc.empty()
+                ? L"✅ Вход подтверждён! Выполняется вход в систему..."
+                : L"Имя ПК: " + pc + L"  \u00B7  ✅ Вход подтверждён! Выполняется вход в систему...";
             if (m_pEvents) {
                 m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
             }
@@ -1236,6 +1356,10 @@ HRESULT LigamentCredential::GetSerialization(
         }
         JoinPollThread();
         m_numberMatch.clear();
+        const std::wstring pc = ComputerNameSuffix();
+        if (!pc.empty() && msg.find(L"Имя ПК:") == std::wstring::npos) {
+            msg = L"Имя ПК: " + pc + L"  \u00B7  " + msg;
+        }
         m_statusText = msg;
         if (m_pEvents) {
             NotifyFieldChanged(FID_NUMBER_MATCH);

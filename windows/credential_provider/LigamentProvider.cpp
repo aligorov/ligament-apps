@@ -166,8 +166,8 @@ HRESULT LigamentProvider::GetCredentialCount(DWORD* pdwCount, DWORD* pdwDefault,
     if (m_shouldEnforce2FA && m_pCredential) {
         *pdwCount = 1;
         *pdwDefault = 0;
-        *pbAutoLogonWithDefault = FALSE;
-        LogDebug(L"credcount: 1 тайл (enforce), default=0, autologon=0");
+        *pbAutoLogonWithDefault = m_pCredential->IsAuthenticated() ? TRUE : FALSE;
+        LogDebug(L"credcount: 1 тайл (enforce), default=0, autologon=%d", *pbAutoLogonWithDefault ? 1 : 0);
     } else {
         *pdwCount = 0;
         *pdwDefault = CREDENTIAL_PROVIDER_NO_DEFAULT;

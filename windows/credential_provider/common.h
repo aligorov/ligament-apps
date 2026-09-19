@@ -10,6 +10,7 @@
 #include <iphlpapi.h>
 #include <windows.h>
 #include <objbase.h> // CoInitializeEx/CoUninitialize (воркер: SetField*/CredentialsChanged)
+#include <objidl.h>   // IGlobalInterfaceTable, CLSID_StdGlobalInterfaceTable
 #include <credentialprovider.h>
 #include <ntsecapi.h>
 #include <winhttp.h>

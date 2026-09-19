@@ -75,7 +75,9 @@ public:
 private:
     LONG m_cRef = 1;
     ICredentialProviderCredentialEvents* m_pEvents = nullptr;
+    DWORD m_dwEventsCookie = 0;
     ICredentialProviderEvents* m_pProviderEvents = nullptr;
+    DWORD m_dwProviderEventsCookie = 0;
     UINT_PTR m_providerAdviseContext = 0;
     Config m_config;
     bool m_isRemoteSession = false;

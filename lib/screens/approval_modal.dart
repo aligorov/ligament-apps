@@ -280,7 +280,41 @@ class _ApprovalModalState extends State<ApprovalModal> {
                     ],
                     if (host != null && host.isNotEmpty) ...[
                       const SizedBox(height: 8),
-                      _metaRow(Icons.computer, strings.serverNameLabel, host),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E293B),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFF38BDF8), width: 1.5),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.computer, size: 18, color: Color(0xFF38BDF8)),
+                            const SizedBox(width: 8),
+                            Text(
+                              strings.pcNameLabel,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF38BDF8),
+                              ),
+                            ),
+                            const Spacer(),
+                            Flexible(
+                              child: Text(
+                                host,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                  letterSpacing: 0.5,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                     const SizedBox(height: 8),
                     _metaRow(Icons.devices, strings.deviceLabel, device),
@@ -297,7 +331,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  strings.numberMatchSub,
+                  (host != null && host.isNotEmpty)
+                      ? '${strings.numberMatchSub}\n(${strings.pcNameLabel} $host)'
+                      : strings.numberMatchSub,
                   style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
                 const SizedBox(height: 12),
