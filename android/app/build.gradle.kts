@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.ligament.twofa.authenticator"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
