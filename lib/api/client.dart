@@ -257,6 +257,53 @@ class ApiClient {
     throw ApiException(res.statusCode, 'notifications_test_failed');
   }
 
+  /// Получение списка уведомлений пользователя (Inbox)
+  Future<List<Map<String, dynamic>>> getNotifications({int limit = 50}) async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/me/notifications?limit=$limit'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final list = (data['notifications'] as List<dynamic>?) ?? [];
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'notifications_fetch_failed');
+  }
+
+  /// Отметка уведомления как доставленного
+  Future<void> markNotificationDelivered(String id) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/me/notifications/$id/delivered'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'notification_delivered_failed');
+    }
+  }
+
+  /// Отметка уведомления как прочитанного
+  Future<void> markNotificationRead(String id) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/me/notifications/$id/read'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'notification_read_failed');
+    }
+  }
+
+  /// Отметка всех уведомлений как прочитанных
+  Future<void> markAllNotificationsRead() async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/me/notifications/read-all'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'notifications_read_all_failed');
+    }
+  }
+
   /// Список доступных корпоративных приложений (SSO Launchpad)
   Future<List<Map<String, dynamic>>> getAllowedApps() async {
     final res = await _get(

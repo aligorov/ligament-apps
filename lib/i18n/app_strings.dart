@@ -387,6 +387,18 @@ class AppStrings {
   String get testDeliveryTitle => isRu ? 'Проверка доставки' : 'Delivery Test';
   String get testDeliveryRunning => isRu ? 'Отправка тестовых уведомлений...' : 'Sending test alerts...';
 
+  // --- Notification Center ---
+  String get notificationsTitle => isRu ? 'Центр уведомлений' : 'Notification Center';
+  String get notificationsTooltip => isRu ? 'Уведомления' : 'Notifications';
+  String get markAllRead => isRu ? 'Отметить все' : 'Mark all as read';
+  String get noNotifications => isRu ? 'Входящих уведомлений пока нет' : 'No notifications yet';
+  String get noNotificationsDesc => isRu
+      ? 'Здесь будут отображаться важные события безопасности, входы и оповещения'
+      : 'Security events, logins, and system alerts will appear here';
+  String get notificationMarkRead => isRu ? 'Прочитано' : 'Mark as read';
+  String get notificationStatusDelivered => isRu ? 'Доставлено' : 'Delivered';
+  String get notificationStatusSent => isRu ? 'Отправлено' : 'Sent';
+
   // --- Branch Relays ---
   String get branchRelaysSection => isRu ? 'Филиалы Relay' : 'Branch Relays';
   String get branchRelaysSubtitle => isRu

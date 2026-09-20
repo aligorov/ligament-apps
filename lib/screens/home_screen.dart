@@ -11,6 +11,7 @@ import '../i18n/app_strings.dart';
 import 'approval_modal.dart';
 import 'apps_screen.dart';
 import 'history_screen.dart';
+import 'notifications_modal.dart';
 import 'settings_screen.dart';
 import 'support_approval_modal.dart';
 import 'support_dialog.dart';
@@ -183,6 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildRequestsTab(AuthState auth) {
+    final s = context.strings;
     final isRu = auth.isRu;
     final challenges = auth.pendingChallenges;
     final supportQueue = auth.supportQueue;
@@ -296,6 +298,19 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(width: 8),
+            IconButton(
+              icon: Badge(
+                isLabelVisible: auth.unreadNotificationsCount > 0,
+                label: Text('${auth.unreadNotificationsCount}'),
+                backgroundColor: const Color(0xFF0284C7),
+                child: const Icon(Icons.notifications_outlined, color: Colors.white, size: 22),
+              ),
+              tooltip: s.notificationsTooltip,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              onPressed: () => NotificationsModal.show(context),
+            ),
+            const SizedBox(width: 6),
             ElevatedButton.icon(
               onPressed: () {
                 showDialog(

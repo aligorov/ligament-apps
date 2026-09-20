@@ -59,6 +59,8 @@ class AuthState extends ChangeNotifier {
   List<Map<String, dynamic>> pendingChallenges = [];
   List<Map<String, dynamic>> allowedApps = [];
   List<Map<String, dynamic>> history = [];
+  List<Map<String, dynamic>> notifications = [];
+  int unreadNotificationsCount = 0;
   List<Map<String, dynamic>> supportQueue = [];
   Map<String, dynamic>? currentPosture;
   bool isCompliant = true;
@@ -245,6 +247,7 @@ class AuthState extends ChangeNotifier {
         body: body,
         challengeId: msg['id']?.toString(),
       );
+      loadNotifications();
       notifyListeners();
     };
 
@@ -312,6 +315,7 @@ class AuthState extends ChangeNotifier {
 
     ws.onConnected = () {
       isOnline = true;
+      loadNotifications();
       notifyListeners();
     };
 
@@ -373,15 +377,20 @@ class AuthState extends ChangeNotifier {
 
     // 3. Периодический опрос pending-запросов и сессий поддержки (fallback при временном обрыве WS)
     _pollingTimer?.cancel();
+    int pollTicks = 0;
     _pollingTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
       if (!isLoggedIn || _isPollingInFlight) return;
       // Не порождаем новый цикл опроса, пока предыдущий еще выполняется
       _isPollingInFlight = true;
+      pollTicks++;
       try {
         await loadPendingChallenges();
         await checkSupportSession();
         if (isEngineer) {
           await loadSupportQueue();
+        }
+        if (pollTicks % 4 == 0) {
+          await loadNotifications();
         }
       } finally {
         _isPollingInFlight = false;
@@ -447,7 +456,7 @@ class AuthState extends ChangeNotifier {
       deviceName: deviceName,
       platform: platform,
       osVersion: osVersion,
-      appVersion: '1.0.1+5',
+      appVersion: '1.0.10+21',
       securityPosture: initialPosture,
     );
 
@@ -487,6 +496,8 @@ class AuthState extends ChangeNotifier {
     pendingChallenges.clear();
     allowedApps.clear();
     history.clear();
+    notifications.clear();
+    unreadNotificationsCount = 0;
     supportQueue.clear();
     _resolvedChallengeIds.clear();
     _alertedChallengeIds.clear();
@@ -507,6 +518,7 @@ class AuthState extends ChangeNotifier {
       loadPendingChallenges(),
       loadAllowedApps(),
       loadHistory(),
+      loadNotifications(),
       checkPosture(),
       checkSupportSession(),
       refreshRelays(),
@@ -625,6 +637,53 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки истории: $e');
+    }
+  }
+
+  Future<void> loadNotifications() async {
+    if (api == null || !isLoggedIn) return;
+    try {
+      final list = await api!.getNotifications();
+      notifications = list;
+      unreadNotificationsCount = list.where((n) => n['is_read'] != true && n['read_at'] == null).length;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('auth_state: ошибка загрузки уведомлений: $e');
+    }
+  }
+
+  Future<void> markNotificationRead(String id) async {
+    if (api == null) return;
+    try {
+      await api!.markNotificationRead(id);
+      for (var i = 0; i < notifications.length; i++) {
+        if (notifications[i]['id'] == id) {
+          notifications[i] = Map<String, dynamic>.from(notifications[i])
+            ..['is_read'] = true
+            ..['read_at'] = DateTime.now().toIso8601String();
+          break;
+        }
+      }
+      unreadNotificationsCount = notifications.where((n) => n['is_read'] != true && n['read_at'] == null).length;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('auth_state: ошибка отметки прочитанным: $e');
+    }
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    if (api == null) return;
+    try {
+      await api!.markAllNotificationsRead();
+      for (var i = 0; i < notifications.length; i++) {
+        notifications[i] = Map<String, dynamic>.from(notifications[i])
+          ..['is_read'] = true
+          ..['read_at'] = DateTime.now().toIso8601String();
+      }
+      unreadNotificationsCount = 0;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('auth_state: ошибка отметки всех прочитанными: $e');
     }
   }
 
