@@ -13,16 +13,16 @@ static void GetMachineNames(std::wstring& netBios, std::wstring& dnsDomain);
 
 // Field descriptors
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
-    { FID_LOGO, CPFT_TILE_IMAGE, L"Логотип", GUID_NULL },
-    { FID_LARGE_TEXT, CPFT_LARGE_TEXT, L"Ligament 2FA", GUID_NULL },
-    { FID_USERNAME, CPFT_EDIT_TEXT, L"Имя пользователя", GUID_NULL },
-    { FID_PASSWORD, CPFT_PASSWORD_TEXT, L"Пароль", GUID_NULL },
-    { FID_SUBMIT, CPFT_SUBMIT_BUTTON, L"Войти", GUID_NULL },
-    { FID_STATUS_TEXT, CPFT_SMALL_TEXT, L"Статус", GUID_NULL },
-    { FID_NUMBER_MATCH, CPFT_LARGE_TEXT, L"Контрольное число", GUID_NULL },
-    { FID_FIDO2_BTN, CPFT_COMMAND_LINK, L"Войти с помощью Passkey (Windows Hello / Телефон / Ключ)", GUID_NULL },
-    { FID_OTP_CODE, CPFT_EDIT_TEXT, L"Код подтверждения (TOTP / YubiKey OTP)", GUID_NULL },
-    { FID_SWITCH_FACTOR_BTN, CPFT_COMMAND_LINK, L"Выбрать другой способ входа (Push / Passkey / Код)", GUID_NULL },
+    { FID_LOGO, CPFT_TILE_IMAGE, const_cast<LPWSTR>(L"Логотип"), GUID_NULL },
+    { FID_LARGE_TEXT, CPFT_LARGE_TEXT, const_cast<LPWSTR>(L"Ligament 2FA"), GUID_NULL },
+    { FID_USERNAME, CPFT_EDIT_TEXT, const_cast<LPWSTR>(L"Имя пользователя"), GUID_NULL },
+    { FID_PASSWORD, CPFT_PASSWORD_TEXT, const_cast<LPWSTR>(L"Пароль"), GUID_NULL },
+    { FID_SUBMIT, CPFT_SUBMIT_BUTTON, const_cast<LPWSTR>(L"Войти"), GUID_NULL },
+    { FID_STATUS_TEXT, CPFT_SMALL_TEXT, const_cast<LPWSTR>(L"Статус"), GUID_NULL },
+    { FID_NUMBER_MATCH, CPFT_LARGE_TEXT, const_cast<LPWSTR>(L"Контрольное число"), GUID_NULL },
+    { FID_FIDO2_BTN, CPFT_COMMAND_LINK, const_cast<LPWSTR>(L"Войти по Passkey (QR-код)"), GUID_NULL },
+    { FID_OTP_CODE, CPFT_EDIT_TEXT, const_cast<LPWSTR>(L"Код подтверждения (TOTP / YubiKey OTP)"), GUID_NULL },
+    { FID_SWITCH_FACTOR_BTN, CPFT_COMMAND_LINK, const_cast<LPWSTR>(L"Выбрать другой способ входа"), GUID_NULL },
 };
 
 // Имя ПК для заголовка плитки: пользователь на экране входа видит, с какой
@@ -58,10 +58,7 @@ static IGlobalInterfaceTable* GetGIT() {
 LigamentCredential::LigamentCredential() {
     InterlockedIncrement(&g_cRefDll);
     InitializeCriticalSection(&m_csPoll);
-    const std::wstring pc = ComputerNameSuffix();
-    m_statusText = pc.empty()
-        ? L"Подтвердите вход вторым фактором"
-        : L"Имя ПК: " + pc + L"  \u00B7  Подтвердите вход вторым фактором";
+    m_statusText = L"Подтвердите вход вторым фактором";
 }
 
 // Человеческие тексты для кодов ошибок сервера и транспорта. Сырые коды
@@ -289,7 +286,6 @@ HRESULT LigamentCredential::GetFieldState(
     case FID_PASSWORD:
     case FID_SUBMIT:
     case FID_STATUS_TEXT:
-    case FID_SWITCH_FACTOR_BTN:
         *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
         if (dwFieldID == FID_USERNAME || dwFieldID == FID_PASSWORD) {
             *pcpfis = CPFIS_FOCUSED;
@@ -308,13 +304,28 @@ HRESULT LigamentCredential::GetFieldState(
         break;
 
     case FID_FIDO2_BTN:
-        *pcpfs = (m_currentMode != MODE_FIDO2 && m_config.fido2Enabled) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        if (m_currentMode == MODE_PUSH) {
+            *pcpfs = m_config.fido2Enabled ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        } else {
+            // In MODE_FIDO2 or MODE_OTP, Button 1 is Push
+            *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
+        }
         break;
 
     case FID_OTP_CODE:
         *pcpfs = (m_currentMode == MODE_OTP) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         if (m_currentMode == MODE_OTP) {
             *pcpfis = CPFIS_FOCUSED;
+        }
+        break;
+
+    case FID_SWITCH_FACTOR_BTN:
+        if (m_currentMode == MODE_PUSH || m_currentMode == MODE_FIDO2) {
+            // Button 2 is OTP
+            *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
+        } else {
+            // In MODE_OTP, Button 2 is Passkey
+            *pcpfs = m_config.fido2Enabled ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         }
         break;
 
@@ -340,17 +351,15 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     LeaveCriticalSection(&m_csPoll);
     switch (dwFieldID) {
     case FID_LARGE_TEXT:
-        // Заголовок плитки всегда называет машину с явной подписью «Имя ПК: ...»;
-        // при показе контрольного числа имя ПК сохраняется в заголовке.
         if (m_currentMode == MODE_FIDO2) {
-            val = L"Вход по Passkey (QR-код)" + pcHeader;
+            val = L"🔑 Вход по Passkey (QR-код)" + pcHeader;
         } else if (m_currentMode == MODE_OTP) {
-            val = L"Вход по коду TOTP / YubiKey" + pcHeader;
+            val = L"⏱️ Вход по коду TOTP / YubiKey" + pcHeader;
         } else {
             if (!numberMatch.empty()) {
-                val = L"Контрольное число: " + numberMatch + (pc.empty() ? L"" : L"  \u00B7  \u0418\u043C\u044F \u041F\u041A: " + pc);
+                val = L"🔢 Контрольное число: " + numberMatch + (pc.empty() ? L"" : L"  \u00B7  \u0418\u043C\u044F \u041F\u041A: " + pc);
             } else {
-                val = L"Ligament Enterprise 2FA" + pcHeader;
+                val = L"🛡️ Ligament Enterprise 2FA" + pcHeader;
             }
         }
         break;
@@ -369,18 +378,20 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         }
         break;
     case FID_FIDO2_BTN:
-        val = L"📱 Войти по Passkey (QR-код на телефоне / Face ID)";
+        if (m_currentMode == MODE_PUSH) {
+            val = L"📱 Войти по Passkey (QR-код)";
+        } else {
+            val = L"📲 Войти через Push в приложение";
+        }
         break;
     case FID_OTP_CODE:
         val = m_otpCode;
         break;
     case FID_SWITCH_FACTOR_BTN:
-        if (m_currentMode == MODE_PUSH) {
-            val = L"🔑 Войти по коду TOTP / YubiKey OTP";
-        } else if (m_currentMode == MODE_FIDO2) {
-            val = L"📲 Войти через Push в приложение Ligament";
+        if (m_currentMode == MODE_PUSH || m_currentMode == MODE_FIDO2) {
+            val = L"🔑 Войти по коду TOTP / YubiKey";
         } else {
-            val = L"📲 Войти через Push в приложение Ligament";
+            val = L"📱 Войти по Passkey (QR-код)";
         }
         break;
     default:
@@ -391,12 +402,15 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
 
 HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
     if (dwFieldID == FID_LOGO && phbmp) {
-        HBITMAP src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        HBITMAP src = nullptr;
+        EnterCriticalSection(&m_csPoll);
+        src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        LeaveCriticalSection(&m_csPoll);
         if (src) {
             *phbmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
             if (*phbmp) {
                 CPLog(L"GetBitmapValue: returning copy of %s bitmap=%p",
-                    m_hQrBmp ? L"QR" : L"DefaultLogo", *phbmp);
+                    (src != m_hDefaultLogoBmp) ? L"QR" : L"DefaultLogo", *phbmp);
                 return S_OK;
             }
         }
@@ -479,40 +493,56 @@ HRESULT LigamentCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSe
 
 HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
     if (dwFieldID == FID_FIDO2_BTN) {
-        StopPollThread();
-        m_currentMode = MODE_FIDO2;
-        m_numberMatch.clear();
-        if (!m_username.empty() && !m_password.empty()) {
-            TriggerFIDO2Auth();
+        if (m_currentMode == MODE_PUSH) {
+            SwitchToMode(MODE_FIDO2);
         } else {
-            ClearQrBitmap();
-            m_statusText = L"Passkey: введите логин и пароль для генерации QR-кода";
-            UpdateFieldStates();
+            SwitchToMode(MODE_PUSH);
         }
     } else if (dwFieldID == FID_SWITCH_FACTOR_BTN) {
-        SwitchToNextMode();
+        if (m_currentMode == MODE_PUSH || m_currentMode == MODE_FIDO2) {
+            SwitchToMode(MODE_OTP);
+        } else {
+            SwitchToMode(MODE_FIDO2);
+        }
     }
     return S_OK;
 }
 
-void LigamentCredential::SwitchToNextMode() {
+void LigamentCredential::SwitchToMode(AUTH_FACTOR_MODE newMode) {
+    if (m_currentMode == newMode) return;
     StopPollThread();
     ClearQrBitmap();
-    if (m_currentMode == MODE_PUSH) {
-        if (m_config.fido2Enabled) {
-            m_currentMode = MODE_FIDO2;
-        } else {
-            m_currentMode = MODE_OTP;
-        }
-    } else if (m_currentMode == MODE_FIDO2) {
-        m_currentMode = MODE_OTP;
-    } else {
-        m_currentMode = MODE_PUSH;
-    }
+    m_currentMode = newMode;
     m_numberMatch.clear();
+
+    EnterCriticalSection(&m_csPoll);
+    if (m_currentMode == MODE_PUSH) {
+        m_statusText = L"Нажмите «Войти» для отправки Push-уведомления";
+    } else if (m_currentMode == MODE_OTP) {
+        m_statusText = L"Введите одноразовый код TOTP или коснитесь YubiKey";
+    } else if (m_currentMode == MODE_FIDO2) {
+        if (!m_username.empty() && !m_password.empty()) {
+            m_statusText = L"Генерация сессии Passkey...";
+        } else {
+            m_statusText = L"Passkey: введите имя пользователя и пароль";
+        }
+    }
+    LeaveCriticalSection(&m_csPoll);
+
     UpdateFieldStates();
+
     if (m_currentMode == MODE_FIDO2 && !m_username.empty() && !m_password.empty()) {
         TriggerFIDO2Auth();
+    }
+}
+
+void LigamentCredential::SwitchToNextMode() {
+    if (m_currentMode == MODE_PUSH) {
+        SwitchToMode(m_config.fido2Enabled ? MODE_FIDO2 : MODE_OTP);
+    } else if (m_currentMode == MODE_FIDO2) {
+        SwitchToMode(MODE_OTP);
+    } else {
+        SwitchToMode(MODE_PUSH);
     }
 }
 
@@ -568,7 +598,10 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
             CoTaskMemFree(psz);
         }
     } else if (dwFieldID == FID_LOGO) {
-        HBITMAP bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        HBITMAP bmp = nullptr;
+        EnterCriticalSection(&m_csPoll);
+        bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        LeaveCriticalSection(&m_csPoll);
         if (bmp) {
             HBITMAP copyBmp = (HBITMAP)CopyImage(bmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
             if (copyBmp) {
@@ -619,7 +652,10 @@ void LigamentCredential::UpdateFieldStates() {
 }
 
 void LigamentCredential::NotifyQrChanged() {
-    HBITMAP src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+    HBITMAP src = nullptr;
+    EnterCriticalSection(&m_csPoll);
+    src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+    LeaveCriticalSection(&m_csPoll);
     if (m_pEvents && src) {
         HBITMAP copyBmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
         if (copyBmp) {
@@ -636,11 +672,14 @@ void LigamentCredential::NotifyQrChanged() {
 }
 
 void LigamentCredential::ClearQrBitmap() {
-    bool hadQr = (m_hQrBmp != nullptr);
+    bool hadQr = false;
+    EnterCriticalSection(&m_csPoll);
     if (m_hQrBmp) {
         DeleteObject(m_hQrBmp);
         m_hQrBmp = nullptr;
+        hadQr = true;
     }
+    LeaveCriticalSection(&m_csPoll);
     if (hadQr) {
         NotifyQrChanged();
     }
@@ -739,7 +778,7 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
                         int memY = targetSize - 1 - visualY;
                         for (int dx = 0; dx < moduleScale; ++dx) {
                             int visualX = leftX + dx;
-                            pixels[memY * targetSize + visualX] = 0xFF000000; // Solid opaque black
+                            pixels[memY * targetSize + visualX] = 0xFF0A0F1D; // Solid dark slate
                         }
                     }
                 }
@@ -750,7 +789,7 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
         int cx = targetSize / 2;
         int cy = targetSize / 2;
         int rOuterSq = 126 * 126;
-        int rInnerSq = 124 * 124;
+        int rInnerSq = 123 * 123;
         for (int visualY = 0; visualY < targetSize; ++visualY) {
             int memY = targetSize - 1 - visualY;
             int dy = visualY - cy;
@@ -875,14 +914,9 @@ void LigamentCredential::RunAsyncJob() {
                 // Push...». Повторный GetSerialization применит то же
                 // самое (m_beginApplied) и дернёт NotifyFieldChanged.
                 m_numberMatch = numberMatch;
-                const std::wstring pc = ComputerNameSuffix();
                 m_statusText = !numberMatch.empty()
-                    ? (pc.empty()
-                        ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
-                        : L"Имя ПК: " + pc + L"  \u00B7  Подтвердите вход в приложении:\nВведите контрольное число:")
-                    : (pc.empty()
-                        ? L"Push отправлен! Подтвердите вход в приложении/Telegram..."
-                        : L"Имя ПК: " + pc + L"  \u00B7  Push отправлен! Подтвердите вход в приложении/Telegram...");
+                    ? L"Подтвердите вход в приложении:\nВведите контрольное число:"
+                    : L"Push отправлен! Подтвердите вход в приложении/Telegram...";
             }
         }
         LeaveCriticalSection(&m_csPoll);
@@ -905,6 +939,12 @@ void LigamentCredential::RunAsyncJob() {
         SecureWipe(pass);
 
         bool ok = r.success;
+        HBITMAP newQrBmp = nullptr;
+        if (ok) {
+            std::string qrUrlStr = WideToUtf8(cfg.serverUrl) + "/auth/passkey?handle=" + r.handle;
+            newQrBmp = CreateQrBitmap(qrUrlStr, 256);
+        }
+
         EnterCriticalSection(&m_csPoll);
         bool stop = m_worker.stop;
         if (!stop) {
@@ -917,12 +957,32 @@ void LigamentCredential::RunAsyncJob() {
                     WideToUtf8(cfg.serverUrl) + "/auth/passkey?handle=" + r.handle);
                 challengeId = Utf8ToWide(r.challengeId);
                 needPolling = true;
+                if (m_hQrBmp) {
+                    DeleteObject(m_hQrBmp);
+                }
+                m_hQrBmp = newQrBmp;
+                newQrBmp = nullptr; // transferred ownership
+                m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
+            } else {
+                if (m_hQrBmp) {
+                    DeleteObject(m_hQrBmp);
+                    m_hQrBmp = nullptr;
+                }
+                m_statusText = L"Ошибка Passkey: " + DescribeServerError(r.error, m_worker.retryAfterSec);
             }
         }
         LeaveCriticalSection(&m_csPoll);
-        CPLog(L"passkey: WebAuthnBegin (воркер) ok=%d err=%hs", ok ? 1 : 0, r.error.c_str());
+
+        if (newQrBmp) {
+            DeleteObject(newQrBmp);
+        }
+
+        CPLog(L"passkey: WebAuthnBegin (воркер) ok=%d err=%hs qrBmp=%p",
+            ok ? 1 : 0, r.error.c_str(), m_hQrBmp);
 
         if (stop) return;
+        NotifyFieldChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_LOGO);
         NotifyProviderChangedFromWorker();
     } else if (job == JobVerifyOtp) {
         std::string err;
@@ -940,11 +1000,18 @@ void LigamentCredential::RunAsyncJob() {
             m_worker.beginError = err;
             m_worker.retryAfterSec = retryAfter;
             m_worker.done = true;
+            if (ok) {
+                m_authenticated = true;
+                m_statusText = L"✅ Код подтверждён! Выполняется вход в систему...";
+            } else {
+                m_statusText = L"❌ Вход отклонён: " + DescribeServerError(err, retryAfter);
+            }
         }
         LeaveCriticalSection(&m_csPoll);
         CPLog(L"otp: VerifyCombined (воркер) ok=%d err=%hs", ok ? 1 : 0, err.c_str());
 
         if (stop) return;
+        NotifyFieldChanged(FID_STATUS_TEXT);
         NotifyProviderChangedFromWorker();
         return;
     } else {
@@ -978,21 +1045,32 @@ void LigamentCredential::RunAsyncJob() {
                 if (!stop) {
                     m_worker.status = status;
                     m_worker.done = true;
-                    // Второй фактор подтверждён: флаг ставим ЗДЕСЬ (до
-                    // CredentialsChanged), иначе SetSelected не увидит его
-                    // для авто-логона. Тексты статуса воркер НЕ пишет:
-                    // std::wstring не переживёт одновременное чтение в
-                    // GetStringValue потоком LogonUI (повреждение кучи в
-                    // SYSTEM-процессе). Текст применит GetSerialization
-                    // по m_worker.status.
                     if (status == L"approved") {
                         m_authenticated = true;
+                        m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
+                    } else if (status == L"denied") {
+                        m_statusText = (job == JobWebAuthnBegin)
+                            ? L"❌ Вход по Passkey отклонён на телефоне"
+                            : L"❌ Вход отклонён пользователем";
+                    } else if (status == L"expired") {
+                        m_statusText = (job == JobWebAuthnBegin)
+                            ? L"⌛ Срок действия QR-кода истёк, повторите попытку"
+                            : L"⌛ Срок действия подтверждения истёк, повторите попытку";
                     }
+                    if (m_hQrBmp) {
+                        DeleteObject(m_hQrBmp);
+                        m_hQrBmp = nullptr;
+                    }
+                    m_numberMatch.clear();
                 }
                 LeaveCriticalSection(&m_csPoll);
 
                 if (!stop) {
-                    CPLog(L"push: %s — вызов CredentialsChanged (auto-logon / UI update)", status.c_str());
+                    CPLog(L"poll: %s — вызов CredentialsChanged (auto-logon / UI update)", status.c_str());
+                    NotifyFieldChanged(FID_STATUS_TEXT);
+                    NotifyFieldChanged(FID_LOGO);
+                    NotifyFieldChanged(FID_NUMBER_MATCH);
+                    NotifyFieldChanged(FID_LARGE_TEXT);
                     NotifyProviderChangedFromWorker();
                 }
                 return;
@@ -1013,11 +1091,23 @@ void LigamentCredential::RunAsyncJob() {
     if (!stop) {
         m_worker.status = L"timeout";
         m_worker.done = true;
+        m_statusText = (job == JobWebAuthnBegin)
+            ? L"⌛ Время ожидания Passkey истекло"
+            : L"⌛ Время ожидания подтверждения истекло";
+        if (m_hQrBmp) {
+            DeleteObject(m_hQrBmp);
+            m_hQrBmp = nullptr;
+        }
+        m_numberMatch.clear();
     }
     LeaveCriticalSection(&m_csPoll);
 
     if (!stop) {
-        CPLog(L"push: timeout — вызов CredentialsChanged");
+        CPLog(L"poll: timeout — вызов CredentialsChanged");
+        NotifyFieldChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_LOGO);
+        NotifyFieldChanged(FID_NUMBER_MATCH);
+        NotifyFieldChanged(FID_LARGE_TEXT);
         NotifyProviderChangedFromWorker();
     }
 }
@@ -1034,15 +1124,9 @@ bool LigamentCredential::StartWorkerJob(WorkerJob job, const wchar_t* statusText
     m_jobUser = m_username;
     m_jobPass = m_password;
     if (job == JobVerifyOtp) m_jobOtp = m_otpCode;
+    m_statusText = (statusText ? statusText : L"");
     LeaveCriticalSection(&m_csPoll);
     m_beginApplied = false;
-    const std::wstring pc = ComputerNameSuffix();
-    std::wstring text = (statusText ? statusText : L"");
-    if (!pc.empty() && !text.empty() && text.find(L"Имя ПК:") == std::wstring::npos) {
-        m_statusText = L"Имя ПК: " + pc + L"  \u00B7  " + text;
-    } else {
-        m_statusText = text;
-    }
     NotifyFieldChanged(FID_STATUS_TEXT);
 
     m_hPollThread = CreateThread(nullptr, 0, WorkerThreadProc, this, 0, nullptr);
@@ -1286,7 +1370,9 @@ HRESULT LigamentCredential::GetSerialization(
             }
             CPLog(L"push: StartPush err=%hs failClose=%d", err.c_str(), m_config.failClose ? 1 : 0);
             std::wstring msg = L"Не удалось отправить Push: " + DescribeServerError(err, retryAfter);
+            EnterCriticalSection(&m_csPoll);
             m_statusText = msg;
+            LeaveCriticalSection(&m_csPoll);
             if (m_pEvents) {
                 NotifyFieldChanged(FID_NUMBER_MATCH);
                 NotifyFieldChanged(FID_LARGE_TEXT);
@@ -1303,16 +1389,11 @@ HRESULT LigamentCredential::GetSerialization(
             m_beginApplied = true;
             EnterCriticalSection(&m_csPoll);
             std::wstring numberMatch = m_worker.numberMatch;
-            LeaveCriticalSection(&m_csPoll);
             m_numberMatch = numberMatch;
-            const std::wstring pc = ComputerNameSuffix();
             m_statusText = !numberMatch.empty()
-                ? (pc.empty()
-                    ? L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:"
-                    : L"Имя ПК: " + pc + L"  \u00B7  Подтвердите вход в приложении:\nВведите контрольное число:")
-                : (pc.empty()
-                    ? L"Push отправлен! Подтвердите вход в приложении/Telegram..."
-                    : L"Имя ПК: " + pc + L"  \u00B7  Push отправлен! Подтвердите вход в приложении/Telegram...");
+                ? L"Подтвердите вход в приложении:\nВведите контрольное число:"
+                : L"Push отправлен! Подтвердите вход в приложении/Telegram...";
+            LeaveCriticalSection(&m_csPoll);
             NotifyFieldChanged(FID_STATUS_TEXT);
             NotifyFieldChanged(FID_NUMBER_MATCH);
             NotifyFieldChanged(FID_LARGE_TEXT);
@@ -1323,17 +1404,14 @@ HRESULT LigamentCredential::GetSerialization(
             return S_OK;
         }
 
-        if (status == L"approved") {
+        if (status == L"approved" || m_authenticated) {
             CPLog(L"push: approved — сериализация кредов тайла");
             JoinPollThread();
             m_numberMatch.clear();
             m_authenticated = true;
-            // Текст статуса — только на потоке LogonUI (воркер его не пишет,
-            // см. RunAsyncJob).
-            const std::wstring pc = ComputerNameSuffix();
-            m_statusText = pc.empty()
-                ? L"✅ Вход подтверждён! Выполняется вход в систему..."
-                : L"Имя ПК: " + pc + L"  \u00B7  ✅ Вход подтверждён! Выполняется вход в систему...";
+            EnterCriticalSection(&m_csPoll);
+            m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
+            LeaveCriticalSection(&m_csPoll);
             if (m_pEvents) {
                 m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
             }
@@ -1345,22 +1423,20 @@ HRESULT LigamentCredential::GetSerialization(
         // which starts a fresh push challenge.
         std::wstring msg;
         if (status == L"denied") {
-            msg = L"Вход отклонен пользователем";
+            msg = L"❌ Вход отклонён пользователем";
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
         } else if (status == L"expired") {
-            msg = L"Срок действия подтверждения истек, попробуйте еще раз";
+            msg = L"⌛ Срок действия подтверждения истёк, повторите попытку";
             *pcpsiOptionalStatusIcon = CPSI_WARNING;
         } else {
-            msg = L"Время ожидания подтверждения истекло";
+            msg = L"⌛ Время ожидания подтверждения истекло";
             *pcpsiOptionalStatusIcon = CPSI_WARNING;
         }
         JoinPollThread();
         m_numberMatch.clear();
-        const std::wstring pc = ComputerNameSuffix();
-        if (!pc.empty() && msg.find(L"Имя ПК:") == std::wstring::npos) {
-            msg = L"Имя ПК: " + pc + L"  \u00B7  " + msg;
-        }
+        EnterCriticalSection(&m_csPoll);
         m_statusText = msg;
+        LeaveCriticalSection(&m_csPoll);
         if (m_pEvents) {
             NotifyFieldChanged(FID_NUMBER_MATCH);
             NotifyFieldChanged(FID_LARGE_TEXT);
@@ -1400,27 +1476,35 @@ HRESULT LigamentCredential::GetSerialization(
         if (beginDone && !beginOk) {
             JoinPollThread();
             ClearQrBitmap();
-            m_statusText = L"Ошибка Passkey: " + DescribeServerError(err, retryAfter);
+            std::wstring msg = L"Ошибка Passkey: " + DescribeServerError(err, retryAfter);
+            EnterCriticalSection(&m_csPoll);
+            m_statusText = msg;
+            LeaveCriticalSection(&m_csPoll);
             NotifyFieldChanged(FID_STATUS_TEXT);
             NotifyFieldChanged(FID_LOGO);
-            SHStrDupW(m_statusText.c_str(), ppszOptionalStatusText);
+            SHStrDupW(msg.c_str(), ppszOptionalStatusText);
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
             return S_OK;
         }
 
-        // Ссылка от сервера получена: строим QR ровно один раз, опрос
-        // подтверждения на телефоне уже идёт в фазе 2.
+        // Ссылка от сервера получена: строим QR ровно один раз, если воркер ещё не построил
         if (beginDone && beginOk && !m_beginApplied) {
             m_beginApplied = true;
             EnterCriticalSection(&m_csPoll);
             std::wstring qrUrl = m_worker.qrUrl;
+            bool hasQr = (m_hQrBmp != nullptr);
             LeaveCriticalSection(&m_csPoll);
-            ClearQrBitmap();
-            m_hQrBmp = CreateQrBitmap(WideToUtf8(qrUrl), 256);
-            m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
-            UpdateFieldStates();
-            NotifyQrChanged();
-            CPLog(L"passkey: QR-код построен по ссылке воркера, опрос продолжается");
+            if (!hasQr && !qrUrl.empty()) {
+                HBITMAP qrBmp = CreateQrBitmap(WideToUtf8(qrUrl), 256);
+                EnterCriticalSection(&m_csPoll);
+                if (m_hQrBmp) DeleteObject(m_hQrBmp);
+                m_hQrBmp = qrBmp;
+                m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
+                LeaveCriticalSection(&m_csPoll);
+                UpdateFieldStates();
+                NotifyQrChanged();
+                CPLog(L"passkey: QR-код построен по ссылке воркера, опрос продолжается");
+            }
         }
 
         if (!done) {
@@ -1428,13 +1512,14 @@ HRESULT LigamentCredential::GetSerialization(
             return S_OK;
         }
 
-        if (status == L"approved") {
+        if (status == L"approved" || m_authenticated) {
             CPLog(L"passkey: approved — вход подтвержден через телефон");
             JoinPollThread();
             ClearQrBitmap();
             m_authenticated = true;
-            // Текст статуса — только на потоке LogonUI (см. RunAsyncJob).
+            EnterCriticalSection(&m_csPoll);
             m_statusText = L"✅ Вход подтверждён! Выполняется вход в систему...";
+            LeaveCriticalSection(&m_csPoll);
             if (m_pEvents) {
                 m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
             }
@@ -1443,18 +1528,20 @@ HRESULT LigamentCredential::GetSerialization(
 
         std::wstring msg;
         if (status == L"denied") {
-            msg = L"Вход по Passkey отклонен";
+            msg = L"❌ Вход по Passkey отклонён на телефоне";
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
         } else if (status == L"expired") {
-            msg = L"Срок действия QR-кода истек, нажмите для повтора";
+            msg = L"⌛ Срок действия QR-кода истёк, нажмите для повтора";
             *pcpsiOptionalStatusIcon = CPSI_WARNING;
         } else {
-            msg = L"Время ожидания Passkey истекло";
+            msg = L"⌛ Время ожидания Passkey истекло";
             *pcpsiOptionalStatusIcon = CPSI_WARNING;
         }
         JoinPollThread();
         ClearQrBitmap();
+        EnterCriticalSection(&m_csPoll);
         m_statusText = msg;
+        LeaveCriticalSection(&m_csPoll);
         if (m_pEvents) {
             m_pEvents->SetFieldString(this, FID_STATUS_TEXT, msg.c_str());
         }

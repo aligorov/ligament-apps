@@ -150,6 +150,7 @@ private:
     void ResetAuthState();
 
     void TriggerFIDO2Auth();
+    void SwitchToMode(AUTH_FACTOR_MODE newMode);
     void SwitchToNextMode();
     void UpdateFieldStates();
     void NotifyFieldChanged(DWORD dwFieldID);
