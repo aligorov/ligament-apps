@@ -77,6 +77,7 @@ class AuthState extends ChangeNotifier {
 
   Map<String, dynamic>? activePrompt;
   Map<String, dynamic>? activeSupportPrompt;
+  Map<String, dynamic>? activeNotificationPrompt;
   Timer? _pollingTimer;
   bool _isPollingInFlight = false;
   final Set<String> _resolvedChallengeIds = {};
@@ -128,6 +129,11 @@ class AuthState extends ChangeNotifier {
     }
     activePrompt = null;
     alert.resetWindowPriority();
+    notifyListeners();
+  }
+
+  void dismissNotificationPrompt() {
+    activeNotificationPrompt = null;
     notifyListeners();
   }
 
@@ -242,10 +248,21 @@ class AuthState extends ChangeNotifier {
     ws.onNotification = (msg) {
       final title = msg['title']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
       final body = msg['body']?.toString() ?? '';
+      final notifId = msg['id']?.toString();
+
+      activeNotificationPrompt = {
+        'id': notifId,
+        'title': title,
+        'body': body,
+        'source': msg['source'] ?? msg['category'] ?? 'system',
+        'data': msg['data'],
+        'created_at': msg['timestamp'] ?? DateTime.now().toIso8601String(),
+      };
+
       alert.triggerAlert(
         title: title,
         body: body,
-        challengeId: msg['id']?.toString(),
+        challengeId: notifId,
       );
       loadNotifications();
       notifyListeners();
@@ -491,6 +508,7 @@ class AuthState extends ChangeNotifier {
     api = null;
     activePrompt = null;
     activeSupportPrompt = null;
+    activeNotificationPrompt = null;
     activeRelayEndpoint = null;
     activeRelayName = null;
     pendingChallenges.clear();

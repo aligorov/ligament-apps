@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:ligament_authenticator/services/auth_state.dart';
 import 'package:ligament_authenticator/screens/notifications_modal.dart';
+import 'package:ligament_authenticator/screens/notification_popup_dialog.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -105,4 +106,34 @@ void main() {
       expect(find.byIcon(Icons.done_all), findsOneWidget);
     });
   });
+
+  group('NotificationPopupDialog Widget', () {
+    testWidgets('renders popup with title, body, source badge and action buttons', (tester) async {
+      final auth = AuthState();
+      final notification = {
+        'id': 'notif-100',
+        'title': 'Важное оповещение',
+        'body': 'Текст важного сообщения безопасности',
+        'source': 'security',
+        'created_at': '2026-09-20T10:30:00Z',
+      };
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ChangeNotifierProvider<AuthState>.value(
+            value: auth,
+            child: Scaffold(
+              body: NotificationPopupDialog(notification: notification),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Важное оповещение'), findsOneWidget);
+      expect(find.text('Текст важного сообщения безопасности'), findsOneWidget);
+      expect(find.text('Понятно'), findsOneWidget);
+      expect(find.text('Все'), findsOneWidget);
+    });
+  });
 }
+

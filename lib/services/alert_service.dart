@@ -59,7 +59,6 @@ class AlertService {
     await init();
 
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
-      bool windowVisible = true;
       try {
         // Показываем окно и разворачиваем, если было скрыто/минимизировано в трей
         if (await windowManager.isMinimized()) {
@@ -67,7 +66,6 @@ class AlertService {
         }
         await windowManager.show();
         await windowManager.focus();
-        windowVisible = await windowManager.isVisible();
 
         if (_gpo.alwaysOnTop) {
           await windowManager.setAlwaysOnTop(true);
@@ -89,10 +87,8 @@ class AlertService {
         }
       }
 
-      // macOS: приложение в фоне/трее могло не получить фокус (show/focus
-      // из скрытого состояния не всегда выводит окно на передний план) —
-      // дублируем системным баннером с звуком: запрос 2FA виден всегда.
-      if (Platform.isMacOS && !windowVisible) {
+      // macOS: всегда дублируем нативным системным баннером с текстом сообщения и звуком
+      if (Platform.isMacOS) {
         await _showDarwinNotification(title, body, challengeId);
       }
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {

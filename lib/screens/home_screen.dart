@@ -11,7 +11,8 @@ import '../i18n/app_strings.dart';
 import 'approval_modal.dart';
 import 'apps_screen.dart';
 import 'history_screen.dart';
-import 'notifications_modal.dart';
+import 'notification_popup_dialog.dart';
+import 'notifications_screen.dart';
 import 'settings_screen.dart';
 import 'support_approval_modal.dart';
 import 'support_dialog.dart';
@@ -28,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   bool _modalShown = false;
   bool _supportModalShown = false;
+  bool _notificationModalShown = false;
   bool _connectingToSession = false;
 
   @override
@@ -77,6 +79,29 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (_) => SupportApprovalModal(prompt: prompt),
         ).whenComplete(() {
           _supportModalShown = false;
+        });
+      });
+    }
+
+    if (auth.activeNotificationPrompt == null) {
+      _notificationModalShown = false;
+    } else if (!_notificationModalShown) {
+      _notificationModalShown = true;
+      final notif = auth.activeNotificationPrompt!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          _notificationModalShown = false;
+          return;
+        }
+        showDialog(
+          context: context,
+          barrierDismissible: true,
+          builder: (_) => NotificationPopupDialog(notification: notif),
+        ).whenComplete(() {
+          _notificationModalShown = false;
+          if (mounted) {
+            context.read<AuthState>().dismissNotificationPrompt();
+          }
         });
       });
     }
@@ -140,6 +165,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final pages = [
       _buildRequestsTab(auth),
+      const NotificationsScreen(),
       const AppsScreen(),
       const HistoryScreen(),
       const SettingsScreen(),
@@ -165,6 +191,14 @@ class _HomeScreenState extends State<HomeScreen> {
               child: const Icon(Icons.shield_outlined),
             ),
             label: isRu ? 'Запросы' : 'Requests',
+          ),
+          BottomNavigationBarItem(
+            icon: Badge(
+              isLabelVisible: auth.unreadNotificationsCount > 0,
+              label: Text('${auth.unreadNotificationsCount}'),
+              child: const Icon(Icons.mark_email_unread_outlined),
+            ),
+            label: isRu ? 'Сообщения' : 'Inbox',
           ),
           BottomNavigationBarItem(
             icon: const Icon(Icons.apps_outlined),
@@ -308,7 +342,7 @@ class _HomeScreenState extends State<HomeScreen> {
               tooltip: s.notificationsTooltip,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              onPressed: () => NotificationsModal.show(context),
+              onPressed: () => setState(() => _currentIndex = 1),
             ),
             const SizedBox(width: 6),
             ElevatedButton.icon(
