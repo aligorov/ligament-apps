@@ -10,7 +10,19 @@ class AppsScreen extends StatelessWidget {
   Future<void> _launchApp(BuildContext context, String url) async {
     final s = context.stringsRead;
     final uri = Uri.tryParse(url);
-    if (uri != null && await canLaunchUrl(uri)) {
+    // VULN-29 (CWE-20): launch_url приходит с сервера; внешнему приложению
+    // (браузеру) разрешаем отдавать только http/https. Прочие схемы
+    // (file:, intent:, custom:// и т.п.) не запускаются — это исполнение
+    // произвольных URI по данным сервера.
+    if (uri == null || (!uri.isScheme('http') && !uri.isScheme('https'))) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${s.appsSchemeBlocked}: $url')),
+        );
+      }
+      return;
+    }
+    if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } else {
       if (context.mounted) {

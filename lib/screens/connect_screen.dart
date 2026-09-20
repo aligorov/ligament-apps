@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/server_url_validator.dart';
 import '../i18n/app_strings.dart';
 import 'login_screen.dart';
 
@@ -22,36 +23,32 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final auth = context.read<AuthState>();
     if (auth.serverUrl != null && auth.serverUrl!.isNotEmpty) {
       _urlController.text = auth.serverUrl!;
-    } else if (auth.gpo.enforcedServerUrl != null) {
+    } else if (auth.configError == null && auth.gpo.enforcedServerUrl != null) {
+      // Отклонённый валидатором GPO-адрес в поле не подставляем.
       _urlController.text = auth.gpo.enforcedServerUrl!;
     } else {
       _urlController.text = 'https://';
     }
   }
 
-  /// Проверка адреса сервера: допускается HTTPS (любой хост) и HTTP только
-  /// для localhost / 127.* (локальная отладка). Возвращает текст ошибки или null.
+  /// Проверка адреса сервера — централизованный валидатор
+  /// (lib/services/server_url_validator.dart): HTTPS для любого хоста, HTTP
+  /// только для loopback (точные localhost/127.0.0.1/::1 и диапазон
+  /// 127.0.0.0/8 — префикс «127.» больше не пропускает 127.evil.example).
+  /// Возвращает текст ошибки или null.
   String? _validateServerUrl(String url, AppStrings s) {
-    if (url.isEmpty || url == 'https://' || url == 'http://') {
-      return s.errEnterValidHttps;
-    }
-    final uri = Uri.tryParse(url);
-    if (uri == null) {
-      return s.errInvalidServerUrl;
-    }
-    final scheme = uri.scheme.toLowerCase();
-    final host = uri.host.toLowerCase();
-    if (scheme == 'http') {
-      final isLocalDev = host == 'localhost' || host.startsWith('127.');
-      if (!isLocalDev) {
+    switch (validateServerUrl(url)) {
+      case null:
+        return null;
+      case ServerUrlError.empty:
+        return s.errEnterValidHttps;
+      case ServerUrlError.invalid:
+        return s.errInvalidServerUrl;
+      case ServerUrlError.insecureHttp:
         return s.errInsecureHttp;
-      }
-      return null;
+      case ServerUrlError.unsupportedScheme:
+        return s.errSchemeHttps;
     }
-    if (scheme != 'https') {
-      return s.errSchemeHttps;
-    }
-    return null;
   }
 
   Future<void> _handleConnect() async {
@@ -167,7 +164,10 @@ class _ConnectScreenState extends State<ConnectScreen> {
                           style: const TextStyle(fontSize: 12, color: Colors.amber),
                         ),
                       ),
-                    if (_error != null) ...[
+                    // Фатальная ошибка конфигурации (отклонённый GPO/
+                    // сохранённый URL) показываем, пока нет свежей ошибки
+                    // ввода от пользователя.
+                    if (_error != null || auth.configError != null) ...[
                       const SizedBox(height: 16),
                       Container(
                         padding: const EdgeInsets.all(12),
@@ -177,7 +177,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                           border: Border.all(color: const Color(0xFFEF4444)),
                         ),
                         child: Text(
-                          _error!,
+                          _error ?? auth.configError!,
                           style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 13),
                         ),
                       ),

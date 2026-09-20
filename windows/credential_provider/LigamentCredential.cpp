@@ -836,7 +836,7 @@ void LigamentCredential::RunAsyncJob() {
     // Короткий receive-таймаут: один запрос блокирует поток не дольше ~8 c,
     // поэтому остановка (stop-флаг проверяется между запросами) и join в
     // LogonUI занимают секунды — это же ограничивает ожидание в деструкторе.
-    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000, cfg.fallbackRelayUrl);
+    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000, cfg.fallbackRelayUrl, cfg.allowHttp);
 
     auto stopRequested = [this]() -> bool {
         EnterCriticalSection(&m_csPoll);

@@ -43,6 +43,29 @@ namespace ligament {
 
 extern LONG g_cRefDll;
 
+// Классификация схемы URL (VULN-27, CWE-319): ServerURL обязан идти по
+// https — по этому каналу с экрана входа Windows уходят доменные логин и
+// пароль, открытый текст недопустим. None = URL не парсится как абсолютный
+// с известной схемой (в т.ч. без схемы вовсе, ftp:// и т.п.).
+enum class UrlSchemeKind { None, Http, Https };
+
+inline UrlSchemeKind ClassifyUrlScheme(const std::wstring& url) {
+    URL_COMPONENTS urlComp = {0};
+    urlComp.dwStructSize = sizeof(urlComp);
+    // Буферы-компоненты не запрашиваем: нужна только схема (nScheme).
+    if (!WinHttpCrackUrl(url.c_str(), (DWORD)url.length(), 0, &urlComp)) {
+        return UrlSchemeKind::None;
+    }
+    if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) return UrlSchemeKind::Https;
+    if (urlComp.nScheme == INTERNET_SCHEME_HTTP) return UrlSchemeKind::Http;
+    return UrlSchemeKind::None;
+}
+
+// Forward-декларация: Config::LoadFromRegistry пишет в cp.log (WARN при
+// AllowHttp=1 и запись об отклонённом URL), а полное определение LogDebug
+// находится ниже по файлу — тело inline-метода его без этого «не видит».
+inline void LogDebug(const wchar_t* fmt, ...);
+
 // Configuration loaded from registry (GPO: HKLM\SOFTWARE\Policies\Ligament\2FA)
 struct Config {
     // Пустая = сервер не настроен: провайдер НЕ применяет 2FA ни к RDP, ни
@@ -60,6 +83,10 @@ struct Config {
     int pushTimeoutSec = 45;
     bool failClose = true;
     bool allowSelfSigned = false;
+    // Разрешить http:// в ServerURL (небезопасно: доменные креды с экрана
+    // входа уходят открытым текстом). Только для изолированных тестовых
+    // стендов; при включении провайдер пишет WARN в cp.log.
+    bool allowHttp = false;
     // Диагностическая SAM-проба (LogonUser) после неудачного входа.
     // ВЫКЛЮЧЕНА по умолчанию: каждая неудачная проба += 1 к badPwdCount,
     // до 3 проб на вход ускоряют AD-lockout учётки в 4 раза.
@@ -143,7 +170,30 @@ struct Config {
         readInt(L"PushTimeoutSeconds", cfg.pushTimeoutSec);
         readDword(L"FailClose", cfg.failClose);
         readDword(L"AllowSelfSigned", cfg.allowSelfSigned);
+        readDword(L"AllowHttp", cfg.allowHttp);
         readDword(L"SamProbeEnabled", cfg.samProbeEnabled);
+
+        // VULN-27 (CWE-319): ServerURL обязан идти по https. Не-https URL
+        // приравнивается к НЕзаданному: провайдер пассивен (тот же режим,
+        // что и при пустом ServerURL — тайл не создаётся, парольный не
+        // подавляется), а не «мёртвая» 2FA-плитка, блокирующая вход при
+        // FailClose=1. Исключение — явное разрешение политикой AllowHttp=1
+        // (только изолированные тестовые стенды): провайдер работает, но
+        // помечает это WARN-записью в cp.log. Сам URL в лог не пишем
+        // (winlogon-контекст: инфраструктурные детали не логируем).
+        if (cfg.serverUrlConfigured) {
+            const UrlSchemeKind scheme = ClassifyUrlScheme(cfg.serverUrl);
+            if (scheme == UrlSchemeKind::Https) {
+                // Нормальный путь.
+            } else if (scheme == UrlSchemeKind::Http && cfg.allowHttp) {
+                LogDebug(L"WARN: ServerURL использует небезопасный HTTP, разрешён политикой AllowHttp — доменные креды уходят открытым текстом");
+            } else {
+                LogDebug(L"ServerURL отклонён: требуется https:// (AllowHttp=%d). Провайдер пассивен, 2FA выключена",
+                    cfg.allowHttp ? 1 : 0);
+                cfg.serverUrl.clear();
+                cfg.serverUrlConfigured = false;
+            }
+        }
 
         std::wstring bypassRaw;
         if (readString(L"BypassAccounts", bypassRaw)) {

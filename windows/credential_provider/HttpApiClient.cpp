@@ -8,8 +8,10 @@ HttpApiClient::HttpApiClient(
     const std::wstring& serverUrl,
     bool allowSelfSigned,
     int receiveTimeoutMs,
-    const std::wstring& fallbackRelayUrl)
-    : m_serverUrl(serverUrl), m_allowSelfSigned(allowSelfSigned), m_fallbackRelayUrl(fallbackRelayUrl) {
+    const std::wstring& fallbackRelayUrl,
+    bool allowHttp)
+    : m_serverUrl(serverUrl), m_allowSelfSigned(allowSelfSigned),
+      m_fallbackRelayUrl(fallbackRelayUrl), m_allowHttp(allowHttp) {
     ParseUrl(serverUrl);
     if (!fallbackRelayUrl.empty()) {
         ParseRelayUrl(fallbackRelayUrl);
@@ -47,6 +49,25 @@ bool HttpApiClient::ParseUrl(const std::wstring& url) {
     urlComp.dwUrlPathLength = _countof(urlPath);
 
     if (WinHttpCrackUrl(url.c_str(), (DWORD)url.length(), 0, &urlComp)) {
+        // VULN-27 (CWE-319): по ServerURL уходят доменные логин/пароль с
+        // экрана входа Windows — открытый HTTP-канал недопустим. Любая схема,
+        // кроме https, отвергается; исключение — http при явном разрешении
+        // политикой AllowHttp=1 (изолированные тестовые стенды) с WARN в
+        // cp.log. Отклонённый URL = пустой m_host: SendRequest не выполняется
+        // (см. также Config::LoadFromRegistry — там провайдер уходит в
+        // пассивный режим, как при незаданном ServerURL).
+        if (urlComp.nScheme != INTERNET_SCHEME_HTTPS) {
+            if (urlComp.nScheme == INTERNET_SCHEME_HTTP && m_allowHttp) {
+                LogDebug(L"WARN: ServerURL использует небезопасный HTTP, разрешён политикой AllowHttp — доменные креды уходят открытым текстом");
+            } else {
+                LogDebug(L"Server URL отклонён: требуется https (схема %u, AllowHttp=%d) — запросы не выполняются",
+                    (unsigned)urlComp.nScheme, m_allowHttp ? 1 : 0);
+                m_host.clear();
+                m_port = 0;
+                m_isHttps = false;
+                return false;
+            }
+        }
         m_host = hostName;
         m_port = urlComp.nPort;
         m_isHttps = (urlComp.nScheme == INTERNET_SCHEME_HTTPS);

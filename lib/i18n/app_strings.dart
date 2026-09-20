@@ -42,8 +42,8 @@ class AppStrings {
   String get errEnterValidHttps => isRu ? 'Введите корректный HTTPS адрес сервера' : 'Please enter a valid HTTPS server URL';
   String get errInvalidServerUrl => isRu ? 'Некорректный адрес сервера' : 'Invalid server URL';
   String get errInsecureHttp => isRu
-      ? 'Небезопасное соединение: пароль и токены будут передаваться открытым текстом. Укажите HTTPS-адрес сервера (http:// разрешен только для localhost / 127.*)'
-      : 'Insecure connection: password and tokens will be transmitted in plaintext. Please specify an HTTPS server URL (http:// is only allowed for localhost / 127.*)';
+      ? 'Небезопасное соединение: пароль и токены будут передаваться открытым текстом. Укажите HTTPS-адрес сервера (http:// разрешен только для localhost / 127.0.0.1 / ::1)'
+      : 'Insecure connection: password and tokens will be transmitted in plaintext. Please specify an HTTPS server URL (http:// is only allowed for localhost / 127.0.0.1 / ::1)';
   String get errSchemeHttps => isRu
       ? 'Адрес сервера должен начинаться с https:// (http:// — только localhost для отладки)'
       : 'Server URL must start with https:// (http:// is only for localhost debugging)';
@@ -155,6 +155,9 @@ class AppStrings {
   String get appsEmptyTitle => isRu ? 'Доступных SSO приложений нет' : 'No SSO apps available';
   String get appsEmptySub => isRu ? 'Администратор еще не назначил права доступа к сервисам' : 'Administrator has not granted access to any services yet';
   String get appsCantOpen => isRu ? 'Не удалось открыть ссылку' : 'Could not open link';
+  String get appsSchemeBlocked => isRu
+      ? 'Открытие ссылки запрещено: допускаются только http/https'
+      : 'Link blocked: only http/https schemes are allowed';
 
   // --- History Screen ---
   String get historyTitle => isRu ? 'Журнал безопасности' : 'Security Log';

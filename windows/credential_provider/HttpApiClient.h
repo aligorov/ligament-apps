@@ -26,7 +26,8 @@ public:
         const std::wstring& serverUrl,
         bool allowSelfSigned = false,
         int receiveTimeoutMs = 45000,
-        const std::wstring& fallbackRelayUrl = L""
+        const std::wstring& fallbackRelayUrl = L"",
+        bool allowHttp = false
     );
     ~HttpApiClient();
 
@@ -59,6 +60,9 @@ private:
     bool m_isHttps = true;
     bool m_relayIsHttps = false;
     bool m_allowSelfSigned = false;
+    // AllowHttp=1 из реестра: единственное исключение, при котором ParseUrl
+    // принимает http:// для ServerURL (VULN-27). Relay — всегда https-only.
+    bool m_allowHttp = false;
     HINTERNET m_hSession = nullptr;
     int m_lastRetryAfterSec = 0;
 

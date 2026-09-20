@@ -11,6 +11,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import '../api/client.dart';
 import 'alert_service.dart';
 import 'gpo_service.dart';
+import 'server_url_validator.dart';
 import 'support_service.dart';
 import 'telemetry_service.dart';
 import 'ws_service.dart';
@@ -55,6 +56,14 @@ class AuthState extends ChangeNotifier {
   String? serverUrl;
   String? token;
   Map<String, dynamic>? currentUser;
+
+  /// Фатальная ошибка конфигурации (VULN-27): принудительный ServerURL из
+  /// GPO/MDM отклонён централизованным валидатором схемы. URL НЕ
+  /// используется (креды и токены не уходят по открытому каналу), текст
+  /// показывается на экране подключения. Локально сохранённый server_url
+  /// сознательно не подставляется: иначе подмена реестра/MDM открывала бы
+  /// канал по пользовательскому значению.
+  String? configError;
 
   List<Map<String, dynamic>> pendingChallenges = [];
   List<Map<String, dynamic>> allowedApps = [];
@@ -148,8 +157,52 @@ class AuthState extends ChangeNotifier {
       _localeCode = sysLang.startsWith('en') ? 'en' : 'ru';
     }
 
-    // Если GPO принудительно задает ServerURL, используем его
-    serverUrl = gpo.enforcedServerUrl ?? prefs.getString('server_url');
+    // Если GPO принудительно задает ServerURL, используем его — но только
+    // после централизованной валидации (VULN-27): GPO-значение никто не
+    // перепроверял, а по этому каналу уходят пароль и Bearer-токен.
+    // http допустим лишь для loopback (localhost / 127.0.0.0/8 / ::1).
+    final enforced = gpo.enforcedServerUrl;
+    if (enforced != null) {
+      switch (validateServerUrl(enforced)) {
+        case null:
+          serverUrl = enforced;
+          break;
+        case ServerUrlError.empty:
+        case ServerUrlError.invalid:
+          configError = isRu
+              ? 'Адрес сервера из групповой политики некорректен. Обратитесь к администратору.'
+              : 'Server URL from Group Policy is invalid. Contact your administrator.';
+          break;
+        case ServerUrlError.insecureHttp:
+          configError = isRu
+              ? 'GPO задал http-адрес сервера вне loopback: пароль передавался бы открытым текстом. Адрес отклонён, обратитесь к администратору.'
+              : 'Group Policy set a non-loopback http server URL: the password would be sent in plaintext. URL rejected, contact your administrator.';
+          break;
+        case ServerUrlError.unsupportedScheme:
+          configError = isRu
+              ? 'GPO задал адрес сервера без https://. Адрес отклонён, обратитесь к администратору.'
+              : 'Group Policy set a server URL without https://. URL rejected, contact your administrator.';
+          break;
+      }
+      if (configError != null) {
+        debugPrint('auth_state: GPO ServerURL отклонён валидатором — URL не используется');
+      }
+    } else {
+      final saved = prefs.getString('server_url');
+      if (saved != null) {
+        // Сохранённый адрес тоже проходит централизованную проверку:
+        // значения, вписанные до ужесточения валидатора (http для хостов
+        // вида 127.evil.example), молча использоваться больше не должны.
+        if (validateServerUrl(saved) == null) {
+          serverUrl = saved;
+        } else {
+          configError = isRu
+              ? 'Сохранённый адрес сервера отклонён проверкой безопасности. Укажите https-адрес заново.'
+              : 'Saved server URL failed the security check. Please re-enter the https URL.';
+          debugPrint('auth_state: сохранённый server_url отклонён валидатором — URL не используется');
+        }
+      }
+    }
 
     final cachedRelaysRaw = prefs.getString('cached_relays');
     if (cachedRelaysRaw != null && cachedRelaysRaw.isNotEmpty) {
