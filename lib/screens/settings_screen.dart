@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:window_manager/window_manager.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 
@@ -20,6 +21,7 @@ class SettingsScreen extends StatelessWidget {
     final isMac = !kIsWeb && Platform.isMacOS;
     final isWin = !kIsWeb && Platform.isWindows;
     final isLin = !kIsWeb && Platform.isLinux;
+    final isDesktop = isMac || isWin || isLin;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
@@ -650,6 +652,24 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
+
+          // Сворачивание окна в системный трей (только десктоп): приложение
+          // продолжает работать в фоне и доступно из иконки в трее. Это не
+          // выход из аккаунта, поэтому GPO-политика AllowExit не ограничивает.
+          if (isDesktop) ...[
+            OutlinedButton.icon(
+              onPressed: () => windowManager.hide(),
+              icon: const Icon(Icons.minimize),
+              label: Text(s.trayMinimize),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF38BDF8),
+                side: const BorderSide(color: Color(0xFF334155)),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
 
           // Кнопка выхода
           ElevatedButton.icon(

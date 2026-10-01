@@ -5,6 +5,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
 import 'gpo_service.dart';
+import 'windows_identity.dart';
 import '../api/client.dart';
 
 /// Сервис сбора телеметрии устройства и контроля соответствия политикам (GPO).
@@ -114,6 +115,14 @@ class TelemetryService {
       'platform': _platformName(),
       'timestamp': now.toUtc().toIso8601String(),
     };
+
+    // 0. Аттестация Windows-сессии: истинный пользователь/машина за клиентом
+    // (Win32 API, не env) — мониторинг «кто где» на сервере. Не-Windows →
+    // полей нет вовсе.
+    final winIdentity = WindowsIdentity.snapshot();
+    if (winIdentity != null) {
+      posture.addAll(winIdentity);
+    }
 
     // 1. Биометрия
     try {
@@ -349,29 +358,73 @@ class TelemetryService {
           }
         }
       } else if (Platform.isLinux) {
-        final res = await Process.run('sh', ['-c', "grep 'cpu ' /proc/stat"]).timeout(
-          const Duration(seconds: 2),
-          onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
-        );
-        if (res.exitCode == 0) {
-          metrics['cpu_percent'] = 15; // fallback
+        final usage = await _readLinuxCpuPercent();
+        if (usage != null) {
+          metrics['cpu_percent'] = usage;
+        } else {
+          // Провал чтения/парсинга — не подставляем фиктивное число
+          metrics.remove('cpu_percent');
         }
       }
 
-      final cpu = metrics['cpu_percent'] as int;
-      if (cpu >= 90) {
-        _consecutiveHighCpuCount++;
-      } else {
-        _consecutiveHighCpuCount = 0;
+      final cpu = metrics['cpu_percent'] as int?;
+      if (cpu != null) {
+        if (cpu >= 90) {
+          _consecutiveHighCpuCount++;
+        } else {
+          _consecutiveHighCpuCount = 0;
+        }
       }
 
-      metrics['cpu_warning'] = cpu >= 90;
-      metrics['cpu_spike_100'] = cpu >= 98 || _consecutiveHighCpuCount >= 3;
+      metrics['cpu_warning'] = cpu != null && cpu >= 90;
+      metrics['cpu_spike_100'] =
+          cpu != null && (cpu >= 98 || _consecutiveHighCpuCount >= 3);
     } catch (e) {
       debugPrint('telemetry_service: ошибка сбора CPU: $e');
     }
 
     return metrics;
+  }
+
+  /// Два замера агрегированной cpu-строки /proc/stat с интервалом 250 мс:
+  /// доля занятости = 1 - idle_delta / total_delta (idle — 4-й числовой
+  /// столбец, total — сумма всех столбцов). При провале чтения/парсинга
+  /// возвращает null — фиктивное число не подставляется.
+  Future<int?> _readLinuxCpuPercent() async {
+    (int, int)? readIdleTotal() {
+      try {
+        final stat = File('/proc/stat').readAsStringSync();
+        for (final line in stat.split('\n')) {
+          if (!line.startsWith('cpu ')) continue; // только агрегированная строка
+          final parts = line.trim().split(RegExp(r'\s+'));
+          if (parts.length < 5) return null;
+          final values = <int>[];
+          for (final p in parts.skip(1)) {
+            final v = int.tryParse(p);
+            if (v == null) return null;
+            values.add(v);
+          }
+          var total = 0;
+          for (final v in values) {
+            total += v;
+          }
+          return (values[3], total); // (idle, total)
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    final first = readIdleTotal();
+    if (first == null) return null;
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    final second = readIdleTotal();
+    if (second == null) return null;
+
+    final idleDelta = second.$1 - first.$1;
+    final totalDelta = second.$2 - first.$2;
+    if (totalDelta <= 0) return null;
+    final busyFraction = 1.0 - idleDelta / totalDelta;
+    return (busyFraction * 100).clamp(0.0, 100.0).round();
   }
 
   String _platformName() {
@@ -409,13 +462,20 @@ class TelemetryService {
         'Get-MpComputerStatus | Select-Object -ExpandProperty RealTimeProtectionEnabled'
       ]).timeout(
         const Duration(seconds: 3),
-        onTimeout: () => ProcessResult(0, 0, 'True', ''),
+        onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
       );
-      if (result.stdout.toString().trim() == 'True') {
+      final out = result.stdout.toString().trim();
+      if (out == 'True') {
         return 'active';
       }
+      if (out == 'False') {
+        return 'off';
+      }
     } catch (_) {}
-    return 'active'; // fallback при ограниченных правах обычного пользователя
+    // Ошибка / таймаут / нераспознанный вывод — честно 'unknown',
+    // чтобы серверные политики не строились на фиктивном 'active'
+    // (прежний фолбэк 'active' был из-за ограниченных прав обычного юзера).
+    return 'unknown';
   }
 
   Future<String> _checkWindowsFirewall() async {
@@ -424,11 +484,16 @@ class TelemetryService {
         const Duration(seconds: 3),
         onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
       );
-      if (result.stdout.toString().contains('ON') || result.stdout.toString().contains('ВКЛ')) {
+      final out = result.stdout.toString();
+      if (out.contains('ON') || out.contains('ВКЛ')) {
         return 'active';
       }
+      if (out.contains('OFF') || out.contains('ВЫКЛ')) {
+        return 'off';
+      }
     } catch (_) {}
-    return 'active';
+    // Не распознано / ошибка / таймаут — честно 'unknown'
+    return 'unknown';
   }
 
   Future<bool> _checkRootOrJailbreak() async {
@@ -476,11 +541,16 @@ class TelemetryService {
   Future<String> _checkMacOSGatekeeper() async {
     try {
       final result = await Process.run('spctl', ['--status']);
-      if (result.stdout.toString().contains('assessments enabled')) {
+      final out = result.stdout.toString();
+      if (out.contains('assessments enabled')) {
         return 'active';
       }
+      if (out.contains('assessments disabled')) {
+        return 'off';
+      }
     } catch (_) {}
-    return 'active';
+    // Ошибка / нераспознанный вывод — честно 'unknown'
+    return 'unknown';
   }
 
   Future<String> _checkMacOSFirewall() async {

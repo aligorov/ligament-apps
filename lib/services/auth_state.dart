@@ -9,11 +9,13 @@ import 'package:local_auth/local_auth.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 
 import '../api/client.dart';
+import '../app_version.dart';
 import 'alert_service.dart';
 import 'gpo_service.dart';
 import 'server_url_validator.dart';
 import 'support_service.dart';
 import 'telemetry_service.dart';
+import 'windows_identity.dart';
 import 'ws_service.dart';
 
 class AuthState extends ChangeNotifier {
@@ -96,6 +98,12 @@ class AuthState extends ChangeNotifier {
   final Set<String> _alertedChallengeIds = {};
 
   bool get isLoggedIn => token != null && currentUser != null;
+
+  /// Подтверждение Windows-сессии: совпадает ли аккаунт приложения с
+  /// пользователем текущей Windows-сессии (true/false; null — не Windows
+  /// или identity недоступна). Сигнал уходит с телеметрией
+  /// (identity_mismatch) — см. docs/windows-sso-analysis.md.
+  bool? get windowsIdentityMatch => WindowsIdentity.matchesAccount(username);
 
   String get username => currentUser?['username']?.toString() ?? '';
   String get displayName {
@@ -526,8 +534,9 @@ class AuthState extends ChangeNotifier {
       deviceName: deviceName,
       platform: platform,
       osVersion: osVersion,
-      appVersion: '1.0.10+21',
+      appVersion: kAppVersion,
       securityPosture: initialPosture,
+      windowsIdentity: WindowsIdentity.snapshot(),
     );
 
     token = resp['token'] as String;
@@ -662,7 +671,19 @@ class AuthState extends ChangeNotifier {
           activePrompt = null;
           alert.resetWindowPriority();
         }
-      } else if (!stillPending) {
+      } else if (stillPending) {
+        // Челлендж ещё жив: поддерживаем в существующем activePrompt свежий
+        // остаток TTL — ЕДИНСТВЕННОЕ поле, которое меняется со временем.
+        // Остальные поля не трогаем: модалка строит опты number matching
+        // один раз, и перегенерация кнопок каждые 4с недопустима. Сама
+        // модалка это поле для того же challenge_id не перечитывает
+        // (отсчёт локальный), значение — для внешних потребителей.
+        final fresh = pendingChallenges
+            .firstWhere((c) => c['id']?.toString() == activeId)['expires_in_seconds'];
+        if (fresh != null && activePrompt != null) {
+          activePrompt!['expires_in_seconds'] = fresh;
+        }
+      } else {
         // Активного prompt нет, либо он исчез из pending (закрыт в другом
         // канале) — выводим свежейший из очереди. Это и есть показ
         // RADIUS-push из polling-фолбэка (WS был offline/в трее).
@@ -762,6 +783,12 @@ class AuthState extends ChangeNotifier {
     if (api == null) return;
     try {
       currentPosture = await telemetry.collectPosture();
+      // Аттестация Windows-сессии: флаг расхождения «кто в приложении» и
+      // «кто за Windows» — ключевой сигнал мониторинга для сервера.
+      final match = windowsIdentityMatch;
+      if (currentPosture != null && match != null) {
+        currentPosture!['identity_mismatch'] = !match;
+      }
       isCompliant = currentPosture?['is_compliant'] == true;
       notifyListeners();
     } catch (_) {}
@@ -782,7 +809,8 @@ class AuthState extends ChangeNotifier {
     await alert.resetWindowPriority();
 
     if (approve) {
-      // 1. Если включена GPO политика Windows Hello или системная биометрия
+      // 1. Если включена GPO политика Windows Hello (desktop) или на мобильном
+      // устройстве зарегистрирована системная биометрия (отпечаток / Face ID)
       if (gpo.requireWindowsHello) {
         final didAuth = await localAuth.authenticate(
           localizedReason: isRu
@@ -794,6 +822,29 @@ class AuthState extends ChangeNotifier {
           throw Exception(isRu
               ? 'Подтверждение Windows Hello отклонено'
               : 'Windows Hello authentication rejected');
+        }
+      } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        // Мобильная биометрия: гейт только если биометрии ЗАРЕГИСТРИРОВАНЫ
+        var mobileBiometricsEnrolled = false;
+        try {
+          mobileBiometricsEnrolled =
+              (await localAuth.getAvailableBiometrics()).isNotEmpty;
+        } catch (_) {
+          // Плагин local_auth недоступен (стенд/эмулятор без биометрии) —
+          // не ломаем approve, пропускаем гейт
+        }
+        if (mobileBiometricsEnrolled) {
+          final didAuth = await localAuth.authenticate(
+            localizedReason: isRu
+                ? 'Подтвердите вход в корпоративную систему с помощью биометрии'
+                : 'Confirm login with biometrics',
+            options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+          );
+          if (!didAuth) {
+            throw Exception(isRu
+                ? 'Биометрическое подтверждение отклонено'
+                : 'Biometric confirmation rejected');
+          }
         }
       }
 
@@ -847,7 +898,8 @@ class AuthState extends ChangeNotifier {
     activeSupportPrompt = null;
     await alert.resetWindowPriority();
 
-    // 1. Биометрия / Windows Hello при политике GPO
+    // 1. Биометрия / Windows Hello при политике GPO (desktop) либо
+    // зарегистрированная системная биометрия на мобильном устройстве
     if (gpo.requireWindowsHello) {
       final didAuth = await localAuth.authenticate(
         localizedReason: isRu
@@ -859,6 +911,29 @@ class AuthState extends ChangeNotifier {
         throw Exception(isRu
             ? 'Биометрическая авторизация отклонена'
             : 'Biometric authorization rejected');
+      }
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      // Мобильная биометрия: гейт только если биометрии ЗАРЕГИСТРИРОВАНЫ
+      var mobileBiometricsEnrolled = false;
+      try {
+        mobileBiometricsEnrolled =
+            (await localAuth.getAvailableBiometrics()).isNotEmpty;
+      } catch (_) {
+        // Плагин local_auth недоступен (стенд/эмулятор без биометрии) —
+        // не ломаем approve, пропускаем гейт
+      }
+      if (mobileBiometricsEnrolled) {
+        final didAuth = await localAuth.authenticate(
+          localizedReason: isRu
+              ? 'Подтвердите разрешение удаленного доступа к экрану'
+              : 'Authorize remote screen sharing access',
+          options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+        );
+        if (!didAuth) {
+          throw Exception(isRu
+              ? 'Биометрическая авторизация отклонена'
+              : 'Biometric authorization rejected');
+        }
       }
     }
 

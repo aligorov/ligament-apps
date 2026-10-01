@@ -97,9 +97,34 @@ cd client
    - Соберёт компоненты через WiX Heat.
    - Слинкует MSI-установщик: `client\dist\Ligament-2FA-Windows-x64.msi`.
 3. **Тихая установка через Active Directory GPO / SCCM / Intune**:
+
+   MSI содержит две функции (features):
+   - `ProductFeature` — приложение, ярлыки, автозапуск, реестр `ServerURL` (ставится всегда);
+   - `RdpCredentialProviderFeature` — RDP Credential Provider (DLL в System32, COM/CP-регистрация, CP-дефолты, политика WebAuthn). По умолчанию **не ставится** (Level=2), а её локальный дефолт `RDP2FAEnabled=0` дополнительно держит 2FA для RDP выключенной даже при установленном провайдере — активацию выполняет только явная политика/GPO.
+
+   Только приложение (типовой вариант для рабочих станций):
    ```cmd
-   msiexec /i Ligament-2FA-Windows-x64.msi /qn
+   msiexec /i Ligament-2FA-Windows-x64.msi /qn SERVERURL=https://2fa.corp.ru
    ```
+
+   Приложение + RDP Credential Provider одним пакетом:
+   ```cmd
+   msiexec /i Ligament-2FA-Windows-x64.msi /qn SERVERURL=https://2fa.corp.ru INSTALLRDP=1
+   ```
+
+   Управление функцией RDP-провайдера после установки:
+   ```cmd
+   :: добавить RDP-провайдер к уже установленному приложению
+   msiexec /i Ligament-2FA-Windows-x64.msi ADDLOCAL=RdpCredentialProviderFeature /qn
+
+   :: убрать RDP-провайдер, не трогая приложение
+   msiexec /i Ligament-2FA-Windows-x64.msi REMOVE=RdpCredentialProviderFeature /qn
+   ```
+
+   Сама 2FA для RDP включается политикой (при установленном провайдере и заданном `ServerURL`):
+   `HKLM\SOFTWARE\Policies\Ligament\2FA` → `RDP2FAEnabled=1` (GPO-шаблон из `deploy/gpo/`).
+
+   Для серверов терминалов (RDS) без GUI предназначен отдельный архив `Ligament-2FA-RDP-CredentialProvider-x64.zip` (см. `scripts/install-latest.ps1`, режим `CP`).
 
 ---
 

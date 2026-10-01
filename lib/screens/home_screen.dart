@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 import '../services/auth_state.dart';
 import '../services/input_injector.dart';
 import '../services/support_service.dart';
@@ -31,6 +33,11 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _supportModalShown = false;
   bool _notificationModalShown = false;
   bool _connectingToSession = false;
+
+  /// Сворачивание в трей имеет смысл только на десктопе (Windows/macOS/Linux):
+  /// на мобильных платформах и в вебе системного трея нет.
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
   @override
   void didChangeDependencies() {
@@ -363,6 +370,20 @@ class _HomeScreenState extends State<HomeScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
             ),
+            // Сворачивание окна в системный трей (только десктоп): окно
+            // прячется, процесс остается жить — 2FA-push и SOS продолжают
+            // приходить, окно возвращается из меню трея. Это не выход,
+            // поэтому GPO-политика AllowExit кнопку не ограничивает.
+            if (_isDesktop) ...[
+              const SizedBox(width: 6),
+              IconButton(
+                icon: const Icon(Icons.minimize, color: Colors.white, size: 22),
+                tooltip: s.trayMinimize,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                onPressed: () => windowManager.hide(),
+              ),
+            ],
           ],
         ),
       ),

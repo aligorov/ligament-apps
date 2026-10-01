@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import '../app_version.dart';
+
 class ApiException implements Exception {
   final int statusCode;
   final String code;
@@ -97,9 +99,10 @@ class ApiClient {
     required String deviceName,
     required String platform,
     String osVersion = '',
-    String appVersion = '1.0.1',
+    String appVersion = kAppVersion,
     String pushToken = '',
     Map<String, dynamic>? securityPosture,
+    Map<String, dynamic>? windowsIdentity,
   }) async {
     final payload = {
       'username': username,
@@ -111,6 +114,9 @@ class ApiClient {
       'app_version': appVersion,
       'push_token': pushToken,
       'security_posture': securityPosture ?? {},
+      // Аттестация Windows-сессии (desktop): кто за машиной на самом деле —
+      // для мониторинга/аудита на сервере. null = не Windows.
+      if (windowsIdentity != null) 'windows_identity': windowsIdentity,
     };
 
     final res = await _post(

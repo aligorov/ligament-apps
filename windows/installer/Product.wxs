@@ -11,10 +11,31 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of Ligament 2FA is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Структура функций (Features) установки:
+         ProductFeature (Level=1) — ставится всегда: приложение, ярлыки,
+           автозапуск и реестр ServerURL (адрес сервера нужен и десктоп-клиенту).
+         RdpCredentialProviderFeature (Level=2) — по умолчанию НЕ ставится
+           (Level > INSTALLLEVEL=1): DLL Credential Provider в System32,
+           COM/CP/Filter-регистрация, CP-дефолты и политика WebAuthn для RDP.
+           Включается тремя способами:
+             msiexec /i ... INSTALLRDP=1                          (свойство);
+             msiexec /i ... ADDLOCAL=RdpCredentialProviderFeature (выбор feature);
+           выборочное выключение без переустановки приложения:
+             msiexec /i ... REMOVE=RdpCredentialProviderFeature.
+           RDP-провайдер «выключен по умолчанию» на двух уровнях:
+           1) feature не ставится вовсе; 2) даже при установке feature
+           локальный дефолт RDP2FAEnabled=0 — активацию выполняет только
+           явная политика (GPO / HKLM\SOFTWARE\Policies\Ligament\2FA). -->
     <Feature Id="ProductFeature" Title="Ligament 2FA" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="AutoStartupRegistry" />
+      <ComponentRef Id="AppServerUrlRegistry" />
+    </Feature>
+    <Feature Id="RdpCredentialProviderFeature" Title="RDP Credential Provider (2FA для входа по RDP)" Level="2">
+      <!-- Таблица Feature~Condition: INSTALLRDP=1 поднимает Level с 2 до 1,
+           feature попадает в установку. Без свойства — снята (не ставится). -->
+      <Condition Level="1">INSTALLRDP = 1</Condition>
       <ComponentRef Id="CredentialProviderComponent" />
       <ComponentRef Id="RdpWebAuthnPolicyComponent" />
     </Feature>
@@ -28,6 +49,10 @@
          через HKLM\SOFTWARE\Policies\Ligament\2FA\ServerURL или
          ligament-cp-settings.reg из RDP-ZIP. -->
     <Property Id="SERVERURL" Secure="yes" />
+    <!-- INSTALLRDP: включить RdpCredentialProviderFeature в установку:
+         msiexec /i Ligament-2FA-Windows-x64.msi INSTALLRDP=1
+         По умолчанию 0 — ставится только приложение. -->
+    <Property Id="INSTALLRDP" Value="0" Secure="yes" />
   </Product>
 
   <Fragment>
@@ -66,10 +91,25 @@
                        Value="&quot;[INSTALLFOLDER]ligament_authenticator.exe&quot; --minimized"
                        KeyPath="yes" />
       </Component>
+
+      <!-- Реестр ServerURL принадлежит приложению (ProductFeature, ставится
+           всегда): адрес сервера нужен и десктоп-клиенту, и CP. Credential
+           Provider читает тот же ключ SOFTWARE\Ligament\2FA\ServerURL, но не
+           владеет значением — без CP-feature оно всё равно будет в реестре. -->
+      <Component Id="AppServerUrlRegistry" Guid="ADA3283C-1B4A-4DAE-8AC6-D931728C7E3B" Win64="yes">
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\Ligament\2FA"
+                       Name="ServerURL"
+                       Type="string"
+                       Value="[SERVERURL]"
+                       KeyPath="yes" />
+      </Component>
     </DirectoryRef>
 
     <DirectoryRef Id="System64Folder">
-      <!-- Ligament 2FA Windows Credential Provider DLL & COM/Security Registration -->
+      <!-- Ligament 2FA Windows Credential Provider DLL & COM/Security Registration.
+           Принадлежит RdpCredentialProviderFeature: без неё (INSTALLRDP не задан)
+           ни DLL, ни CP-регистрация, ни CP-дефолты не ставятся. -->
       <Component Id="CredentialProviderComponent" Guid="A3B7C9D1-5E2F-4A8B-9C0D-1E2F3A4B5C6D" Win64="yes">
         <File Id="LigamentCPDll"
               Name="LigamentCredentialProvider.dll"
@@ -95,9 +135,13 @@
           <RegistryValue Type="string" Value="Ligament 2FA Credential Provider Filter" />
         </RegistryKey>
 
-        <!-- Local Default Settings -->
+        <!-- Local Default Settings. RDP2FAEnabled=0: провайдер может быть
+             установлен, но 2FA для RDP по умолчанию ВЫКЛЮЧЕНА — включается
+             только явной политикой HKLM\SOFTWARE\Policies\Ligament\2FA
+             (RDP2FAEnabled=1) или GPO-шаблоном. ServerURL сюда не входит —
+             значением владеет AppServerUrlRegistry из ProductFeature. -->
         <RegistryKey Root="HKLM" Key="SOFTWARE\Ligament\2FA">
-          <RegistryValue Name="RDP2FAEnabled" Type="integer" Value="1" />
+          <RegistryValue Name="RDP2FAEnabled" Type="integer" Value="0" />
           <RegistryValue Name="Console2FAEnabled" Type="integer" Value="0" />
           <RegistryValue Name="FIDO2Enabled" Type="integer" Value="1" />
           <RegistryValue Name="DefaultFactor" Type="integer" Value="0" />
@@ -105,7 +149,6 @@
           <RegistryValue Name="FailClose" Type="integer" Value="1" />
           <RegistryValue Name="AllowSelfSigned" Type="integer" Value="0" />
           <RegistryValue Name="BypassAccounts" Type="string" Value="" />
-          <RegistryValue Name="ServerURL" Type="string" Value="[SERVERURL]" />
         </RegistryKey>
       </Component>
 

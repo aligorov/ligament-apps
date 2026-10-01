@@ -21,6 +21,12 @@ class _ApprovalModalState extends State<ApprovalModal> {
   /// (например, подтверждено в Telegram или истёк TTL).
   late Map<String, dynamic> _prompt;
   AuthState? _auth;
+  /// Остаток TTL челленджа. Инициализируется ОДИН раз при показе
+  /// конкретного challenge_id (initState) и реинициализируется только при
+  /// смене challenge_id в listener. Для того же id счётчик исключительно
+  /// убывает локальным тиком: повторное чтение expires_in_seconds из
+  /// pending-ответа застывшим значением сбрасывало счётчик вверх
+  /// (X→X-3→X→…) и TTL никогда не доходил до нуля.
   late int _secondsLeft;
   Timer? _timer;
   String? _selectedMatch;
@@ -33,7 +39,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
     _numberMatchOptions.clear();
     if (expectedMatch != null && expectedMatch.isNotEmpty) {
       final set = <String>{expectedMatch};
-      final rnd = Random(); // Недетерминированный генератор случайных чисел
+      final rnd = Random.secure(); // Криптостойкий генератор для дистракторов number matching
       while (set.length < 3) {
         final cand = (rnd.nextInt(90) + 10).toString();
         set.add(cand);
@@ -80,8 +86,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
     final liveId = live['challenge_id']?.toString();
     final curId = _prompt['challenge_id']?.toString();
     if (liveId != null && liveId != curId) {
-      // Новый челлендж пришёл, пока окно открыто: обновляем содержимое
-      // этого же окна вместо второго диалога.
+      // Новый челлендж пришёл, пока окно открыто: полная реинициализация
+      // этого же окна (prompt/опции числа/таймер/ошибка/processing)
+      // вместо второго диалога.
       setState(() {
         _prompt = Map<String, dynamic>.from(live);
         _selectedMatch = null;
@@ -91,14 +98,11 @@ class _ApprovalModalState extends State<ApprovalModal> {
         _generateOptions(live['number_match']?.toString());
       });
       _restartTimer();
-    } else if (liveId != null && liveId == curId) {
-      // Тот же челлендж: подтягиваем актуальный остаток TTL из polling
-      // (локальный отсчёт может отставать/спешить).
-      final ttl = live['expires_in_seconds'] as int?;
-      if (ttl != null && ttl > _secondsLeft && !_isProcessing) {
-        setState(() => _secondsLeft = ttl);
-      }
     }
+    // Тот же challenge_id: НИЧЕГО не обновляем. Отсчёт строго локальный —
+    // expires_in_seconds из polling для живого челленджа не перечитывается
+    // (см. комментарий у _secondsLeft); актуальный остаток TTL при этом
+    // поддерживается в AuthState.activePrompt для внешних потребителей.
   }
 
   void _restartTimer() {

@@ -14,4 +14,3 @@ Categories=Network;Security;Utility;
 Keywords=2FA;MFA;Security;OTP;TOTP;Auth;Astra;RED;РЕД;Астра;Безопасность;
 StartupNotify=true
 StartupWMClass=ligament_authenticator
-MimeType=x-scheme-handler/ligament;

@@ -414,6 +414,7 @@ class AppStrings {
   // --- Tray ---
   String get trayOpen => isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA';
   String get trayExit => isRu ? 'Выход' : 'Exit';
+  String get trayMinimize => isRu ? 'Свернуть в трей' : 'Minimize to tray';
 }
 
 extension BuildContextI18n on BuildContext {

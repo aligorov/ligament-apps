@@ -210,9 +210,12 @@ class WebSocketService {
 
   /// 401 распознаётся по строке ошибки: dart:io WebSocket не даёт
   /// типизированного статуса handshake-отказа (best effort).
+  /// 401 матчится по границам цифр — иначе ловятся ложные совпадения
+  /// вида IP-адреса 10.0.40.1x в тексте ошибки.
   bool _isUnauthorized(Object err) {
     final s = err.toString().toLowerCase();
-    return s.contains('401') || s.contains('unauthorized') || s.contains('connection denied');
+    final is401 = RegExp(r'(^|[^0-9])401([^0-9]|$)').hasMatch(s);
+    return is401 || s.contains('unauthorized') || s.contains('connection denied');
   }
 
   void _handleUnauthorized() {

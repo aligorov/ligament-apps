@@ -192,7 +192,8 @@ try {
     Write-Host " Размер: $((Get-Item $OutputMsi).Length / 1MB) МБ" -ForegroundColor White
     Write-Host "========================================================" -ForegroundColor Green
     Write-Host "Тихая установка для Active Directory GPO / SCCM / Intune:" -ForegroundColor Cyan
-    Write-Host "  msiexec /i Ligament-2FA-Windows-x64.msi /qn" -ForegroundColor White
+    Write-Host "  msiexec /i Ligament-2FA-Windows-x64.msi /qn              (только приложение; RDP-провайдер выключен)" -ForegroundColor White
+    Write-Host "  msiexec /i Ligament-2FA-Windows-x64.msi /qn INSTALLRDP=1  (приложение + RDP Credential Provider)" -ForegroundColor White
 } finally {
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
 }

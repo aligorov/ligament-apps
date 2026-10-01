@@ -1,8 +1,13 @@
 # ==============================================================================
 # Ligament 2FA — Автоматическая загрузка и установка последней версии
 # Поддерживает:
-#   1. Полную установку (Десктоп-клиент + Windows Credential Provider) через MSI
-#   2. Установку только Credential Provider для RDP-серверов (без GUI) через ZIP
+#   1. Полную установку через MSI: десктоп-клиент + RDP Credential Provider
+#      одним пакетом (MSI запускается с INSTALLRDP=1 — включает опциональную
+#      feature RdpCredentialProviderFeature; ZIP-развёртывание не используется)
+#   2. Установку только десктоп-приложения через MSI (RDP-провайдер по
+#      умолчанию НЕ ставится; ключ -InstallRDP включает его тем же MSI)
+#   3. Установку только Credential Provider для RDP-серверов терминалов
+#      (без GUI) через ZIP Ligament-2FA-RDP-CredentialProvider-x64.zip
 #
 # Запуск в PowerShell (от Администратора):
 #   .\install-latest.ps1
@@ -24,7 +29,12 @@ param (
 
     # Разрешить установку компонентов БЕЗ цифровой подписи (CI/тест).
     # Битая/отозванная подпись блокируется всегда.
-    [switch]$AllowUnsigned
+    [switch]$AllowUnsigned,
+
+    # Включить RDP Credential Provider в составе MSI (в msiexec передаётся
+    # INSTALLRDP=1). Имеет смысл в режиме App; в режиме All провайдер
+    # включается всегда. По умолчанию RDP-провайдер НЕ ставится.
+    [switch]$InstallRDP
 )
 
 # 1. Проверка прав Администратора и авто-элевация
@@ -38,6 +48,7 @@ if (-not $isAdmin) {
         if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
         if ($Silent) { $argsList += " -Silent" }
         if ($AllowUnsigned) { $argsList += " -AllowUnsigned" }
+        if ($InstallRDP) { $argsList += " -InstallRDP" }
     } else {
         $cmd = "irm 'https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1?v=$(Get-Random)' | iex"
         $argsList = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
@@ -121,16 +132,16 @@ try {
 if ($Component -eq "Interactive" -and -not $Silent) {
     Write-Host ""
     Write-Host "Выберите тип установки:" -ForegroundColor Cyan
-    Write-Host "  [1] Всё вместе: Десктоп-приложение (MSI) + RDP Credential Provider (DLL)" -ForegroundColor White
-    Write-Host "  [2] Только RDP Credential Provider для серверов (ZIP DLL в System32, без GUI)" -ForegroundColor White
-    Write-Host "  [3] Только десктоп-приложение (MSI)" -ForegroundColor White
+    Write-Host "  [1] Всё вместе: Десктоп-приложение + RDP Credential Provider (один MSI, INSTALLRDP=1)" -ForegroundColor White
+    Write-Host "  [2] Только десктоп-приложение (MSI, RDP-провайдер не ставится — по умолчанию выключен)" -ForegroundColor White
+    Write-Host "  [3] Только RDP Credential Provider для серверов терминалов (ZIP DLL в System32, без GUI)" -ForegroundColor White
     Write-Host "  [4] Выход" -ForegroundColor Gray
     Write-Host ""
     $choice = (Read-Host "Введите номер (1-4) [по умолчанию 1]").Trim()
     if ($choice -eq "2") {
-        $Component = "CP"
-    } elseif ($choice -eq "3") {
         $Component = "App"
+    } elseif ($choice -eq "3") {
+        $Component = "CP"
     } elseif ($choice -eq "4") {
         Write-Host "Отменено пользователем." -ForegroundColor Yellow
         exit 0
@@ -191,6 +202,18 @@ try {
             $msiArgs += " SERVERURL=`"$ServerURL`""
         }
 
+        # RDP Credential Provider включается свойством INSTALLRDP=1
+        # (feature RdpCredentialProviderFeature, Level=2 — по умолчанию не ставится).
+        # Режим «All»: ставим приложение + RDP-провайдер одним MSI —
+        # DLL кладётся в System32 и регистрируется самим установщиком,
+        # ZIP-развёртывание в System32 больше не выполняется.
+        # Режим «App»: только приложение; ключ -InstallRDP опционально
+        # добавляет RDP-провайдер тем же пакетом.
+        if ($Component -eq "All" -or $InstallRDP) {
+            $msiArgs += " INSTALLRDP=1"
+            Write-Host " Включена MSI-feature RdpCredentialProviderFeature (INSTALLRDP=1)" -ForegroundColor Gray
+        }
+
         $process = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
         if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
             Write-Error "Ошибка установки MSI. Код выхода msiexec: $($process.ExitCode)"
@@ -206,12 +229,21 @@ try {
         if ($ServerURL) {
             Set-ItemProperty -Path $RegPolicyPath -Name "ServerURL" -Value $ServerURL -Type String -Force
         }
+
+        # Дефолт MSI: RDP2FAEnabled=0 (провайдер установлен, но 2FA для RDP
+        # выключена). Здесь — явный выбор администратора (режим «All» или
+        # ключ -InstallRDP), поэтому включаем политику на уровне Policies.
+        if ($Component -eq "All" -or $InstallRDP) {
+            Set-ItemProperty -Path $RegPolicyPath -Name "RDP2FAEnabled" -Value 1 -Type DWord -Force
+        }
     }
 
     # -------------------------------------------------------------------------
-    # КОМПОНЕНТ 2: РАЗВЕРТЫВАНИЕ RDP CREDENTIAL PROVIDER (System32 + COM DLL)
+    # КОМПОНЕНТ 2: РАЗВЕРТЫВАНИЕ RDP CREDENTIAL PROVIDER ЧЕРЕЗ ZIP (System32 + COM DLL)
+    # Только для режима "CP" — установка на серверы терминалов (RDS) без GUI.
+    # Для рабочих станций провайдер ставится MSI с INSTALLRDP=1 (режим выше).
     # -------------------------------------------------------------------------
-    if ($Component -in @("All", "CP")) {
+    if ($Component -eq "CP") {
         $ZipFileName = "Ligament-2FA-RDP-CredentialProvider-x64.zip"
         $ZipUrl = "$downloadBaseUrl/$ZipFileName"
         $LocalZip = Join-Path $TempDir $ZipFileName
@@ -291,6 +323,13 @@ try {
     Write-Host "==================================================================" -ForegroundColor Green
     Write-Host " Версия:             $tag" -ForegroundColor White
     Write-Host " Режим по умолчанию: Push Number Matching (число в приложении Ligament)" -ForegroundColor White
+    $rdpInstalled = ($Component -in @("All", "CP") -or $InstallRDP)
+    if ($rdpInstalled) {
+        Write-Host " RDP Credential Provider: установлен, RDP2FAEnabled=1 (политика включена)" -ForegroundColor White
+    } else {
+        Write-Host " RDP Credential Provider: НЕ установлен (по умолчанию выключен)" -ForegroundColor White
+        Write-Host "   Включить позже: msiexec /i Ligament-2FA-Windows-x64.msi ADDLOCAL=RdpCredentialProviderFeature" -ForegroundColor Gray
+    }
     $srv = (Get-ItemProperty -Path $RegPolicyPath -Name "ServerURL" -ErrorAction SilentlyContinue).ServerURL
     Write-Host " Сервер 2FA:         $srv" -ForegroundColor White
     Write-Host ""
