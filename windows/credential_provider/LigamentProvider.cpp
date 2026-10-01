@@ -1,11 +1,42 @@
 // LigamentProvider.cpp — Implementation of ICredentialProvider and ICredentialProviderFilter
 #include "LigamentProvider.h"
+#include <wincred.h> // CREDUIWIN_*/CRED_PACK_WOW_BUFFER — флаги CPUS_CREDUI (wincred.h)
 
 namespace ligament {
 
 // Microsoft standard Password Credential Provider GUID: {60b78e88-ead8-445c-9cfd-0b87f74ea6cd}
 static const GUID CLSID_PasswordProvider =
     { 0x60b78e88, 0xead8, 0x445c, { 0x9c, 0xfd, 0x0b, 0x87, 0xf7, 0x4e, 0xa6, 0xcd } };
+
+// ---------------------------------------------------------- CPUS_CREDUI/UAC
+// Имя исполняемого файла текущего хост-процесса без пути (сравнение дальше
+// без регистра). UAC-промпт хостят consent.exe / CredentialUIBroker.exe /
+// LogonUI.exe на secure desktop; произвольный app-CredUI (браузеры, runas)
+// грузит DLL в процесс самого приложения — по имени хоста отличаем одно от
+// другого (эмпирика флагов CREDUIWIN_* на живой элевации зависит от версии
+// ОС и пути повышения, имя хоста закрывает остальное).
+static std::wstring CurrentHostProcessName() {
+    wchar_t path[MAX_PATH] = {0};
+    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    const wchar_t* base = path + n;
+    while (base > path && base[-1] != L'\\' && base[-1] != L'/') --base;
+    return std::wstring(base);
+}
+
+// CREDUI-сценарий является UAC-элевацией («путь Duo»). Дискриминаторы:
+//  - CREDUIWIN_ENUMERATE_ADMINS (0x100) — документированный маркер
+//    «intended for User Account Control purposes only» (wincred.h);
+//  - хост-процесс — системный UAC-хост (consent.exe и компания);
+//  - CREDUIWIN_GENERIC — точно НЕ UAC-secure (несовместим с
+//    CREDUIWIN_SECURE_PROMPT): произвольный app-CredUI, всегда «нет».
+static bool IsUacElevationCredUI(DWORD dwFlags, const std::wstring& hostProcess) {
+    if (dwFlags & CREDUIWIN_GENERIC) return false;
+    if (dwFlags & CREDUIWIN_ENUMERATE_ADMINS) return true;
+    return _wcsicmp(hostProcess.c_str(), L"consent.exe") == 0
+        || _wcsicmp(hostProcess.c_str(), L"credentialuibroker.exe") == 0
+        || _wcsicmp(hostProcess.c_str(), L"logonui.exe") == 0;
+}
 
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[];
 
@@ -62,6 +93,7 @@ ULONG LigamentProvider::Release() {
 
 // ICredentialProvider
 HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwFlags) {
+    bool scenarioChanged = (m_scenario != cpus);
     m_scenario = cpus;
     m_flags = dwFlags;
     m_isRemoteSession = CheckIfRemoteSession();
@@ -76,7 +108,32 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     // (ServerURL отсутствует/пуст) = 2FA не применяется ВООБЩЕ: ни RDP, ни
     // консоль. Важно согласованной логикой с Filter() — иначе наш тайл не
     // создан, а штатный парольный подавлен, и вход невозможен.
-    if (m_config.serverUrlConfigured && (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION)) {
+    if (cpus == CPUS_CREDUI) {
+        // 2FA на повышение прав (UAC). Гейт строже, чем в LOGON: только
+        // ЯВНЫЙ UAC-промпт — флаг CREDUIWIN_ENUMERATE_ADMINS или системный
+        // хост (consent.exe / CredentialUIBroker.exe / LogonUI.exe) и НЕ
+        // CREDUIWIN_GENERIC. Во всех прочих CredUI-диалогах (браузеры,
+        // runas, app-CredUI) тайла быть не должно: E_NOTIMPL —
+        // канонический способ скрыть провайдер из чужого перечисления
+        // (паттерн MS-сэмпла SampleCredUICredentialProvider). Для
+        // LOGON/UNLOCK поведение ниже не менялось.
+        std::wstring host = CurrentHostProcessName();
+        bool isUacPrompt = IsUacElevationCredUI(dwFlags, host);
+        m_shouldEnforce2FA = m_config.serverUrlConfigured
+            && m_config.elevation2faEnabled
+            && isUacPrompt;
+        // Паттерн privacyidea: cpus/flags/host/решение в лог — снимает
+        // эмпирику флагов на живом стенде (секретов не пишем).
+        LogDebug(L"SetUsageScenario(CREDUI): flags=0x%08lX host=%s uacPrompt=%d elev2fa=%d srvCfg=%d enforce2fa=%d",
+            (unsigned long)dwFlags, host.empty() ? L"?" : host.c_str(), isUacPrompt ? 1 : 0,
+            m_config.elevation2faEnabled ? 1 : 0, m_config.serverUrlConfigured ? 1 : 0,
+            m_shouldEnforce2FA ? 1 : 0);
+        if (!m_shouldEnforce2FA) {
+            // Тайл НЕ создаём; GetCredentialCount=0 мало — S_OK заставил бы
+            // хост держать нас в перечислении пустым провайдером.
+            return E_NOTIMPL;
+        }
+    } else if (m_config.serverUrlConfigured && (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION)) {
         if (m_isRemoteSession && m_config.rdp2faEnabled) {
             m_shouldEnforce2FA = true;
         } else if (!m_isRemoteSession && m_config.console2faEnabled) {
@@ -88,9 +145,20 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     LogDebug(L"SetUsageScenario: cpus=%d, remote=%d, srvCfg=%d, enforce2fa=%d",
         cpus, m_isRemoteSession ? 1 : 0, m_config.serverUrlConfigured ? 1 : 0, m_shouldEnforce2FA ? 1 : 0);
 
-    if (m_shouldEnforce2FA && !m_pCredential) {
-        m_pCredential = new LigamentCredential();
-        m_pCredential->Initialize(m_config, m_isRemoteSession, cpus);
+    if (m_shouldEnforce2FA) {
+        if (!m_pCredential) {
+            m_pCredential = new LigamentCredential();
+            scenarioChanged = true;
+        }
+        // Один инстанс провайдера может пережить смену сценария
+        // (LOGON → CREDUI в одном процессе): без пере-Initialize кредл
+        // остался бы с m_cpus=LOGON — KERB-блоб вместо CredPack, метка
+        // «Windows RDP» вместо «UAC Elevation», FIDO2 открыт на secure
+        // desktop. Повторный вызов с тем же cpus — не пере-инициализируем
+        // (иначе сбросится подтверждённый push→автологон-флоу).
+        if (scenarioChanged) {
+            m_pCredential->Initialize(m_config, m_isRemoteSession, cpus, dwFlags);
+        }
         if (m_pEvents) {
             m_pCredential->SetProviderEvents(m_pEvents, m_adviseContext);
         }
@@ -194,14 +262,12 @@ HRESULT LigamentProvider::Filter(
     BOOL* rgbAllow,
     DWORD cProviders)
 {
-    UNREFERENCED_PARAMETER(dwFlags);
-
     bool isRemote = CheckIfRemoteSession();
     Config cfg = Config::LoadFromRegistry();
 
     // Suppress the stock password tile only in interactive logon scenarios
     // where Ligament 2FA is actually enforced. Other usage scenarios
-    // (CPUS_CHANGE_PASSWORD, CPUS_CREDUI, CPUS_CRED_PICKER, ...) must keep
+    // (CPUS_CHANGE_PASSWORD, CPUS_CRED_PICKER, ...) must keep
     // the standard providers working, otherwise password change and
     // credential dialogs become unusable.
     bool enforce = false;
@@ -210,6 +276,21 @@ HRESULT LigamentProvider::Filter(
         // парольный тайл НЕ подавляем (2FA полностью выключена).
         enforce = cfg.serverUrlConfigured &&
             ((isRemote && cfg.rdp2faEnabled) || (!isRemote && cfg.console2faEnabled));
+    } else if (cpus == CPUS_CREDUI) {
+        // UAC-элевация: тот же гейт, что и SetUsageScenario(CREDUI).
+        // Официальные правила CredUI-фильтра (паттерн multiOTP): при
+        // CREDUIWIN_GENERIC НЕ фильтровать никогда — чужой app-CredUI
+        // обязан работать с штатными провайдерами. Ниже подавляется
+        // ТОЛЬКО CLSID_PasswordProvider; неизвестные CLSID не трогаем.
+        std::wstring host = CurrentHostProcessName();
+        bool isUacPrompt = IsUacElevationCredUI(dwFlags, host);
+        enforce = !(dwFlags & CREDUIWIN_GENERIC)
+            && cfg.serverUrlConfigured
+            && cfg.elevation2faEnabled
+            && isUacPrompt;
+        LogDebug(L"filter(CREDUI): flags=0x%08lX host=%s uacPrompt=%d elev2fa=%d srvCfg=%d enforce=%d",
+            (unsigned long)dwFlags, host.empty() ? L"?" : host.c_str(), isUacPrompt ? 1 : 0,
+            cfg.elevation2faEnabled ? 1 : 0, cfg.serverUrlConfigured ? 1 : 0, enforce ? 1 : 0);
     }
 
     DWORD suppressed = 0;
@@ -222,9 +303,9 @@ HRESULT LigamentProvider::Filter(
             }
         }
     }
-    LogDebug(L"filter: cpus=%lu remote=%d srvCfg=%d rdp2fa=%d console2fa=%d enforce=%d providers=%lu suppressedStock=%lu",
-        (unsigned long)cpus, isRemote ? 1 : 0, cfg.serverUrlConfigured ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0,
-        cfg.console2faEnabled ? 1 : 0, enforce ? 1 : 0,
+    LogDebug(L"filter: cpus=%lu flags=0x%08lX remote=%d srvCfg=%d rdp2fa=%d console2fa=%d elev2fa=%d enforce=%d providers=%lu suppressedStock=%lu",
+        (unsigned long)cpus, (unsigned long)dwFlags, isRemote ? 1 : 0, cfg.serverUrlConfigured ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0,
+        cfg.console2faEnabled ? 1 : 0, cfg.elevation2faEnabled ? 1 : 0, enforce ? 1 : 0,
         (unsigned long)cProviders, (unsigned long)suppressed);
     return S_OK;
 }

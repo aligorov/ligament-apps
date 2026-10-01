@@ -212,6 +212,16 @@
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
 
+    <!-- 2FA on UAC Elevation (Run as administrator) -->
+    <policy name="Elevation2FA_Policy" class="Machine" displayName="$(string.Elevation2FA_Policy)"
+      explainText="$(string.Elevation2FA_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="Elevation2FAEnabled">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
     <!-- RDP 2FA: Enable FIDO2 / YubiKey -->
     <policy name="FIDO2_Policy" class="Machine" displayName="$(string.FIDO2_Policy)"
       explainText="$(string.FIDO2_Policy_Help)" key="Software\Policies\Ligament\2FA"

@@ -68,7 +68,10 @@ public:
         CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon
     );
 
-    void Initialize(const Config& cfg, bool isRemote, CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus);
+    // dwProviderFlags — dwFlags из SetUsageScenario провайдера: в CPUS_LOGON
+    // всегда 0, в CPUS_CREDUI приходят флаги CREDUIWIN_* (wincred.h) —
+    // CREDUIWIN_PACK_32_WOW влияет на формат сериализации (WOW-буфер).
+    void Initialize(const Config& cfg, bool isRemote, CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwProviderFlags = 0);
     void SetProviderEvents(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext);
     bool IsAuthenticated() const { return m_authenticated; }
 
@@ -82,10 +85,12 @@ private:
     Config m_config;
     bool m_isRemoteSession = false;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;
+    DWORD m_providerFlags = 0; // dwFlags SetUsageScenario: в CREDUI — CREDUIWIN_*
 
     AUTH_FACTOR_MODE m_currentMode = MODE_PUSH;
     std::wstring m_username;
     std::wstring m_domain;
+    std::wstring m_usernameRaw; // сырой ввод (user@домен как есть) — для CredPackAuthenticationBufferW в CREDUI
     std::wstring m_password;
     std::wstring m_otpCode;
     std::wstring m_statusText;
@@ -154,12 +159,18 @@ private:
     void SwitchToNextMode();
     void UpdateFieldStates();
     void NotifyFieldChanged(DWORD dwFieldID);
+    // Passkey доступен только на LOGON/UNLOCK: в CREDUI (secure desktop
+    // consent.exe) WebAuthn/QR не работают — режим не предлагается.
+    bool Fido2Allowed() const;
     HRESULT KerbInteractiveLogonPack(
         const std::wstring& domain,
         const std::wstring& user,
         const std::wstring& password,
         CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs
     );
+    // Сериализация для CPUS_CREDUI: packed-буфер CredPackAuthenticationBufferW
+    // (двухшаговый вызов) вместо KERB-блоба — этого ждёт CredUI-хост.
+    HRESULT CredUiPackAuthentication(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs);
     HRESULT PackAndFinish(
         CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
         CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs,

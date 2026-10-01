@@ -27,7 +27,11 @@ public:
         bool allowSelfSigned = false,
         int receiveTimeoutMs = 45000,
         const std::wstring& fallbackRelayUrl = L"",
-        bool allowHttp = false
+        bool allowHttp = false,
+        // База подписи сценария в поле "service" (UTF-8). Пустая = авто-детект
+        // RDP/консоль по WTS; CPUS_CREDUI передаёт "UAC Elevation", чтобы
+        // сервер отличал подтверждение элевации от входа в систему.
+        const std::string& serviceBaseUtf8 = std::string()
     );
     ~HttpApiClient();
 
@@ -63,6 +67,8 @@ private:
     // AllowHttp=1 из реестра: единственное исключение, при котором ParseUrl
     // принимает http:// для ServerURL (VULN-27). Relay — всегда https-only.
     bool m_allowHttp = false;
+    // Непустая база (напр. "UAC Elevation") подменяет авто-детект service.
+    std::string m_serviceBase;
     HINTERNET m_hSession = nullptr;
     int m_lastRetryAfterSec = 0;
 

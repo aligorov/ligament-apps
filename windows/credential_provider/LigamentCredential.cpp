@@ -145,16 +145,32 @@ LigamentCredential::~LigamentCredential() {
     InterlockedDecrement(&g_cRefDll);
 }
 
-void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) {
+void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwProviderFlags) {
     m_config = cfg;
     m_isRemoteSession = isRemote;
     m_cpus = cpus;
+    m_providerFlags = dwProviderFlags;
     // HTTP-клиент не держим: все запросы к серверу идут с воркер-потока
     // через его собственный HttpApiClient (LogonUI не блокируется, F4).
     m_webAuthn = std::make_unique<WebAuthnClient>();
     m_hDefaultLogoBmp = CreateLogoBitmap(256);
 
-    if (cfg.defaultFactor == 1 && cfg.fido2Enabled) {
+    if (cpus == CPUS_CREDUI) {
+        // UAC-элевация (secure desktop: consent.exe/CredentialUIBroker):
+        // FIDO2/WebAuthn и QR-скан там НЕ работают (нет браузерного
+        // контекста у хоста, практика RCDevs) — только Push и OTP.
+        // DefaultFactor=Passkey сознательно понижаем до Push с пометкой.
+        if (cfg.defaultFactor == 2) {
+            m_currentMode = MODE_OTP;
+            m_statusText = L"Повышение прав: введите код TOTP или коснитесь YubiKey";
+        } else {
+            if (cfg.defaultFactor == 1 && cfg.fido2Enabled) {
+                CPLog(L"init(CREDUI): DefaultFactor=Passkey не поддержан на secure desktop — дефолт PUSH");
+            }
+            m_currentMode = MODE_PUSH;
+            m_statusText = L"Повышение прав: подтвердите вход вторым фактором";
+        }
+    } else if (cfg.defaultFactor == 1 && cfg.fido2Enabled) {
         m_currentMode = MODE_FIDO2;
         m_statusText = L"Passkey: введите имя пользователя и пароль для получения QR-кода";
     } else if (cfg.defaultFactor == 2) {
@@ -305,7 +321,9 @@ HRESULT LigamentCredential::GetFieldState(
 
     case FID_FIDO2_BTN:
         if (m_currentMode == MODE_PUSH) {
-            *pcpfs = m_config.fido2Enabled ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+            // В PUSH-режиме кнопка 1 — Passkey: на secure desktop (CREDUI)
+            // WebAuthn/QR не работают, кнопку не показываем.
+            *pcpfs = Fido2Allowed() ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         } else {
             // In MODE_FIDO2 or MODE_OTP, Button 1 is Push
             *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
@@ -324,8 +342,8 @@ HRESULT LigamentCredential::GetFieldState(
             // Button 2 is OTP
             *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
         } else {
-            // In MODE_OTP, Button 2 is Passkey
-            *pcpfs = m_config.fido2Enabled ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+            // In MODE_OTP, Button 2 is Passkey (кроме CREDUI — см. Fido2Allowed)
+            *pcpfs = Fido2Allowed() ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         }
         break;
 
@@ -426,6 +444,9 @@ HRESULT LigamentCredential::GetCheckboxValue(DWORD dwFieldID, BOOL* pbChecked, P
 HRESULT LigamentCredential::GetSubmitButtonValue(DWORD dwFieldID, DWORD* pdwAdjacentTo) {
     if (dwFieldID == FID_SUBMIT) {
         *pdwAdjacentTo = FID_PASSWORD;
+        // В CREDUI хост прячет CPFT_SUBMIT_BUTTON тайла и рисует общий
+        // submit сам: дескриптор и adjacency остаются валидными, поле
+        // просто не отрисовывается — layout это переживает.
         return S_OK;
     }
     return E_NOTIMPL;
@@ -454,6 +475,7 @@ HRESULT LigamentCredential::SetStringValue(DWORD dwFieldID, PCWSTR psz) {
             ResetAuthState();
         }
         // Split DOMAIN\user if present; a plain name clears any stale domain
+        m_usernameRaw = raw; // CREDUI-упаковке нужен ввод как есть: user@dom.com ≠ dom.com\user
         size_t slash = raw.find(L'\\');
         if (slash != std::wstring::npos) {
             m_domain = raw.substr(0, slash);
@@ -508,7 +530,16 @@ HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
     return S_OK;
 }
 
+// Passkey/FIDO2 доступен только на LOGON/UNLOCK-экране: в CREDUI (secure
+// desktop consent.exe) WebAuthn-канал телефона и QR-скан не работают.
+bool LigamentCredential::Fido2Allowed() const {
+    return m_config.fido2Enabled && m_cpus != CPUS_CREDUI;
+}
+
 void LigamentCredential::SwitchToMode(AUTH_FACTOR_MODE newMode) {
+    // CREDUI: переключение на Passkey запрещено (см. Fido2Allowed) — сюда
+    // можно попасть только защитным кликом по скрытому полю, страхуемся.
+    if (newMode == MODE_FIDO2 && !Fido2Allowed()) return;
     if (m_currentMode == newMode) return;
     StopPollThread();
     ClearQrBitmap();
@@ -538,7 +569,7 @@ void LigamentCredential::SwitchToMode(AUTH_FACTOR_MODE newMode) {
 
 void LigamentCredential::SwitchToNextMode() {
     if (m_currentMode == MODE_PUSH) {
-        SwitchToMode(m_config.fido2Enabled ? MODE_FIDO2 : MODE_OTP);
+        SwitchToMode(Fido2Allowed() ? MODE_FIDO2 : MODE_OTP);
     } else if (m_currentMode == MODE_FIDO2) {
         SwitchToMode(MODE_OTP);
     } else {
@@ -875,7 +906,10 @@ void LigamentCredential::RunAsyncJob() {
     // Короткий receive-таймаут: один запрос блокирует поток не дольше ~8 c,
     // поэтому остановка (stop-флаг проверяется между запросами) и join в
     // LogonUI занимают секунды — это же ограничивает ожидание в деструкторе.
-    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000, cfg.fallbackRelayUrl, cfg.allowHttp);
+    // CREDUI: service = "UAC Elevation (HOST)" вместо авто-детекта RDP/
+    // консоль — сервер различает подтверждение элевации по полю service.
+    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000, cfg.fallbackRelayUrl, cfg.allowHttp,
+        (m_cpus == CPUS_CREDUI) ? std::string("UAC Elevation") : std::string());
 
     auto stopRequested = [this]() -> bool {
         EnterCriticalSection(&m_csPoll);
@@ -1562,6 +1596,9 @@ HRESULT LigamentCredential::ReportResult(
     *ppszOptionalStatusText = nullptr;
     *pcpsiOptionalStatusIcon = CPSI_NONE;
 
+    // В CPUS_CREDUI хост этот метод НЕ вызывает (результат уходит вызывающему
+    // приложению, а не LSASS→LogonUI): флоу на нём не висит — очистка секре-
+    // тов/сброс 2FA-состояния продублированы деструктором и SetDeselected.
     CPLog(L"ReportResult: ntsStatus=0x%08X ntsSubstatus=0x%08X",
         (unsigned)ntsStatus, (unsigned)ntsSubstatus);
     switch ((unsigned)ntsStatus) {
@@ -1847,18 +1884,91 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     return S_OK;
 }
 
+// Сериализация для CPUS_CREDUI (паттерн MS-сэмпла SampleCredUICredentialProvider):
+// CredUI-хост ждёт packed-буфер CredPackAuthenticationBufferW (username/password
+// строками), а НЕ KERB_INTERACTIVE_UNLOCK_LOGON. Двухшаговый вызов: первый —
+// только размер (NULL-буфер, ожидаем ERROR_INSUFFICIENT_BUFFER), второй —
+// упаковка. Пароль кладём ОТКРЫТЫМ текстом: блоб уходит вызывающему приложению
+// (consent.exe → LSASS), а не в LSASS напрямую — CredProtect здесь не каноничен
+// (в отличие от LOGON-пути, см. KerbInteractiveLogonPack). Владение
+// rgbSerialization — у хоста, он освобождает CoTaskMemFree: контракт тот же,
+// что у LOGON-пути. CREDUIWIN_PACK_32_WOW у провайдера → CRED_PACK_WOW_BUFFER
+// (32-бит-совместимый блоб для WOW64-вызывающего).
+HRESULT LigamentCredential::CredUiPackAuthentication(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs) {
+    if (!pcpcs) return E_POINTER;
+    // Креды — ровно то, что ввёл пользователь: UPN user@dom.com остаётся
+    // UPN (down-level «DNS-домен\user» резолвится нестабильно); собранное
+    // Domain\User — только если сырого ввода нет.
+    std::wstring user = !m_usernameRaw.empty() ? m_usernameRaw
+        : (m_domain.empty() ? m_username : m_domain + L"\\" + m_username);
+    DWORD dwPackFlags = (m_providerFlags & CREDUIWIN_PACK_32_WOW) ? CRED_PACK_WOW_BUFFER : 0;
+
+    // Шаг 1: размер. Успех с NULL-буфером невозможен по контракту API —
+    // обязателен ERROR_INSUFFICIENT_BUFFER.
+    DWORD cbPack = 0;
+    if (CredPackAuthenticationBufferW(dwPackFlags,
+            const_cast<LPWSTR>(user.c_str()),
+            const_cast<LPWSTR>(m_password.c_str()),
+            nullptr, &cbPack)) {
+        return E_FAIL;
+    }
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || cbPack == 0) {
+        CPLog(L"pack(credui): размер не получен err=%lu", (unsigned long)GetLastError());
+        return E_FAIL;
+    }
+
+    // Шаг 2: упаковка сразу в CoTaskMem-буфер (лишняя копия через HeapAlloc,
+    // как в сэмпле, не нужна — API пишет в память вызывающего).
+    BYTE* buffer = (BYTE*)CoTaskMemAlloc(cbPack);
+    if (!buffer) return E_OUTOFMEMORY;
+    if (!CredPackAuthenticationBufferW(dwPackFlags,
+            const_cast<LPWSTR>(user.c_str()),
+            const_cast<LPWSTR>(m_password.c_str()),
+            buffer, &cbPack)) {
+        CPLog(L"pack(credui): упаковка не удалась err=%lu", (unsigned long)GetLastError());
+        CoTaskMemFree(buffer);
+        return E_FAIL;
+    }
+
+    // id пакета Negotiate — тот же механизм, что в LOGON-пути (LSA-lookup
+    // с кэшем; 0 валиден, признак успеха — только статус lookup).
+    ULONG authPkg = GetNegotiateAuthPackage();
+    if (!g_authPkgValid) {
+        CPLog(L"pack(credui): CRITICAL — LSA не отдал пакет, сериализация отменена");
+        CoTaskMemFree(buffer);
+        return E_FAIL;
+    }
+
+    pcpcs->clsidCredentialProvider = CLSID_LigamentProvider;
+    pcpcs->ulAuthenticationPackage = authPkg;
+    pcpcs->cbSerialization = cbPack;
+    pcpcs->rgbSerialization = buffer;
+
+    CPLog(L"pack(credui): user=\"%s\" passLen=%u wow=%d authPkg=%lu pkgResolved=%d cb=%lu",
+        user.c_str(), (unsigned)m_password.length(),
+        (dwPackFlags & CRED_PACK_WOW_BUFFER) ? 1 : 0,
+        authPkg, g_authPkgValid ? 1 : 0, (unsigned long)cbPack);
+    return S_OK;
+}
+
 HRESULT LigamentCredential::PackAndFinish(
     CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs,
     PWSTR* ppszOptionalStatusText,
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon)
 {
-    HRESULT hr = KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
+    // Формат сериализации зависит от сценария: LOGON/UNLOCK — KERB-блоб для
+    // Winlogon/LSASS; CREDUI (UAC) — packed-буфер CredPackAuthenticationBufferW
+    // для credui-хоста. Логика 2FA (push-воркер → approved → сериализация)
+    // общая и живёт в GetSerialization.
+    HRESULT hr = (m_cpus == CPUS_CREDUI)
+        ? CredUiPackAuthentication(pcpcs)
+        : KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
     if (SUCCEEDED(hr)) {
         *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
         return S_OK;
     }
-    CPLog(L"pack: отказ сериализации hr=0x%08X", (unsigned)hr);
+    CPLog(L"pack: отказ сериализации hr=0x%08X (cpus=%u)", (unsigned)hr, (unsigned)m_cpus);
     SHStrDupW(L"Внутренняя ошибка провайдера, попробуйте еще раз", ppszOptionalStatusText);
     *pcpsiOptionalStatusIcon = CPSI_ERROR;
     *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
