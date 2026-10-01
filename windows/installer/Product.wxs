@@ -32,7 +32,7 @@
       <ComponentRef Id="AutoStartupRegistry" />
       <ComponentRef Id="AppServerUrlRegistry" />
     </Feature>
-    <Feature Id="RdpCredentialProviderFeature" Title="RDP Credential Provider (2FA для входа по RDP)" Level="2">
+    <Feature Id="RdpCredentialProviderFeature" Title="RDP Credential Provider (2FA for RDP logon)" Level="2">
       <!-- Таблица Feature~Condition: INSTALLRDP=1 поднимает Level с 2 до 1,
            feature попадает в установку. Без свойства — снята (не ставится). -->
       <Condition Level="1">INSTALLRDP = 1</Condition>
