@@ -82,6 +82,12 @@ struct Config {
     // условиях не должна молча включать 2FA входа в Windows.
     bool rdp2faEnabled = false;
     bool console2faEnabled = false;
+    // 2FA на повышение прав (UAC elevation, CPUS_CREDUI): по умолчанию
+    // ВЫКЛЮЧЕНА — включается только явным Elevation2FAEnabled=1 (GPO/MSI).
+    // Действует лишь на UAC-промпты (CREDUIWIN_ENUMERATE_ADMINS или хост
+    // consent.exe/CredentialUIBroker.exe/LogonUI.exe); обычные app-CredUI
+    // диалоги (браузеры, CREDUIWIN_GENERIC) тайл не получают вовсе.
+    bool elevation2faEnabled = false;
     bool fido2Enabled = true;
     int defaultFactor = 0; // 0 = Push (приложение Ligament / Telegram), 1 = Passkey (QR-код), 2 = OTP (TOTP)
     int pushTimeoutSec = 45;
@@ -169,6 +175,7 @@ struct Config {
         readString(L"FallbackRelayURL", cfg.fallbackRelayUrl);
         readDword(L"RDP2FAEnabled", cfg.rdp2faEnabled);
         readDword(L"Console2FAEnabled", cfg.console2faEnabled);
+        readDword(L"Elevation2FAEnabled", cfg.elevation2faEnabled);
         readDword(L"FIDO2Enabled", cfg.fido2Enabled);
         readInt(L"DefaultFactor", cfg.defaultFactor);
         readInt(L"PushTimeoutSeconds", cfg.pushTimeoutSec);

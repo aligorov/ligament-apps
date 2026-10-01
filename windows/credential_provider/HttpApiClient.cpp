@@ -9,9 +9,11 @@ HttpApiClient::HttpApiClient(
     bool allowSelfSigned,
     int receiveTimeoutMs,
     const std::wstring& fallbackRelayUrl,
-    bool allowHttp)
+    bool allowHttp,
+    const std::string& serviceBaseUtf8)
     : m_serverUrl(serverUrl), m_allowSelfSigned(allowSelfSigned),
-      m_fallbackRelayUrl(fallbackRelayUrl), m_allowHttp(allowHttp) {
+      m_fallbackRelayUrl(fallbackRelayUrl), m_allowHttp(allowHttp),
+      m_serviceBase(serviceBaseUtf8) {
     ParseUrl(serverUrl);
     if (!fallbackRelayUrl.empty()) {
         ParseRelayUrl(fallbackRelayUrl);
@@ -291,6 +293,14 @@ struct SessionEndpointInfo {
     bool isRemote = false;
 };
 
+// Подмена авто-детекта service (CPUS_CREDUI / UAC elevation): база из
+// конструктора вместо «Windows RDP»/«Windows»; формат скобок с именем хоста —
+// как у штатных меток, чтобы сервер различал сценарий элевации по service.
+static void ApplyServiceBase(SessionEndpointInfo& ep, const std::string& base) {
+    if (base.empty()) return;
+    ep.service = base + " (" + (ep.hostName.empty() ? "Устройство" : ep.hostName) + ")";
+}
+
 static SessionEndpointInfo GetSessionEndpointInfo() {
     SessionEndpointInfo info;
 
@@ -398,6 +408,7 @@ bool HttpApiClient::StartPush(
     std::string u8Pass = EscapeJson(WideToUtf8(password));
 
     SessionEndpointInfo ep = GetSessionEndpointInfo();
+    ApplyServiceBase(ep, m_serviceBase);
 
     std::string body = "{\"username\":\"" + u8User +
                        "\",\"password\":\"" + u8Pass +
@@ -480,6 +491,7 @@ bool HttpApiClient::VerifyCombined(
     std::string u8Code = EscapeJson(WideToUtf8(code));
 
     SessionEndpointInfo ep = GetSessionEndpointInfo();
+    ApplyServiceBase(ep, m_serviceBase);
 
     std::string body = "{\"username\":\"" + u8User +
                        "\",\"password\":\"" + u8Pass +
@@ -548,6 +560,7 @@ WebAuthnBeginResult HttpApiClient::WebAuthnBegin(
     std::string u8Pass = EscapeJson(WideToUtf8(password));
 
     SessionEndpointInfo ep = GetSessionEndpointInfo();
+    ApplyServiceBase(ep, m_serviceBase);
 
     std::string body = "{\"username\":\"" + u8User +
                        "\",\"password\":\"" + u8Pass +

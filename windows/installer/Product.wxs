@@ -138,11 +138,14 @@
         <!-- Local Default Settings. RDP2FAEnabled=0: провайдер может быть
              установлен, но 2FA для RDP по умолчанию ВЫКЛЮЧЕНА — включается
              только явной политикой HKLM\SOFTWARE\Policies\Ligament\2FA
-             (RDP2FAEnabled=1) или GPO-шаблоном. ServerURL сюда не входит —
+             (RDP2FAEnabled=1) или GPO-шаблоном. Elevation2FAEnabled=0 —
+             2FA на повышение прав (UAC) аналогично opt-in, включается
+             политикой Elevation2FAEnabled=1. ServerURL сюда не входит —
              значением владеет AppServerUrlRegistry из ProductFeature. -->
         <RegistryKey Root="HKLM" Key="SOFTWARE\Ligament\2FA">
           <RegistryValue Name="RDP2FAEnabled" Type="integer" Value="0" />
           <RegistryValue Name="Console2FAEnabled" Type="integer" Value="0" />
+          <RegistryValue Name="Elevation2FAEnabled" Type="integer" Value="0" />
           <RegistryValue Name="FIDO2Enabled" Type="integer" Value="1" />
           <RegistryValue Name="DefaultFactor" Type="integer" Value="0" />
           <RegistryValue Name="PushTimeoutSeconds" Type="integer" Value="45" />

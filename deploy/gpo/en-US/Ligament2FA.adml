@@ -58,6 +58,8 @@
       <string id="RDP2FA_Policy_Help">Enforces mandatory two-factor authentication for all incoming Remote Desktop sessions via Ligament Credential Provider.</string>
       <string id="Console2FA_Policy">Enable 2FA for Local Console Logon</string>
       <string id="Console2FA_Policy_Help">Enforces two-factor authentication for physical console logins.</string>
+      <string id="Elevation2FA_Policy">Enable 2FA for UAC elevation (Run as administrator)</string>
+      <string id="Elevation2FA_Policy_Help">Requires a second factor — a push notification to the Ligament Authenticator app with a control number — when Windows requests elevation of privileges (UAC, "Run as administrator"). When enabled, the Ligament tile appears on the UAC prompt on the secure desktop: the user enters their password, receives a push, and confirms the control number shown on the tile. REQUIREMENT: for this policy to take effect, the Windows policy "User Account Control: Behavior of the elevation prompt for administrators in Admin Approval Mode" must be set to "Prompt for credentials on the secure desktop" (and "Prompt for credentials" for standard users). Without this, the UAC prompt shows only Yes/No buttons and the second factor is never requested. Limitation: this policy does not cover "Run as different user" (Shift+right-click) or non-interactive elevations (services, scheduled tasks) — the same limitation applies to all vendors of this class.</string>
       <string id="FIDO2_Policy">Enable FIDO2 / YubiKey Security Keys</string>
       <string id="FIDO2_Policy_Help">Allows hardware FIDO2/WebAuthn tokens (YubiKey) via RDP WebAuthn Redirection.</string>
       <string id="PushTimeout_Policy">Push Timeout (seconds)</string>
