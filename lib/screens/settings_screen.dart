@@ -229,6 +229,16 @@ class SettingsScreen extends StatelessWidget {
                     );
                   },
                 ),
+                const Divider(color: Color(0xFF334155), height: 20),
+                // Фаза 2b: автоподтверждение browser_sso без диалога.
+                // По умолчанию выключено: явное согласие в аудите важнее
+                // удобства (серверная политика auto_allowed лишь разрешает).
+                _switchTile(
+                  title: s.browserSsoAutoTitle,
+                  subtitle: s.browserSsoAutoSubtitle,
+                  value: auth.browserSsoAutoApprove,
+                  onChanged: (val) => auth.setBrowserSsoAutoApprove(val),
+                ),
                 _switchTile(
                   title: s.notifyViaEmail,
                   subtitle: (user['email'] != null && user['email'].toString().isNotEmpty)

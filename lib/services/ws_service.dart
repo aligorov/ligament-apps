@@ -70,6 +70,7 @@ class WebSocketService {
   final ReconnectBackoff _backoff = ReconnectBackoff();
 
   PushPromptCallback? onPrompt;
+  PushPromptCallback? onBrowserSso;
   PushPromptCallback? onNotification;
   PushPromptCallback? onSupportPrompt;
   PushPromptCallback? onSupportSignal;
@@ -274,6 +275,13 @@ class WebSocketService {
 
       if (data['type'] == 'challenge_prompt' || data['type'] == 'push_prompt') {
         onPrompt?.call(data);
+      } else if (data['type'] == 'browser_sso') {
+        // Фаза 2b: SSO-мост — вход в SAML/OIDC-сервис по CP-билету.
+        // Полезная нагрузка может лежать прямо в сообщении или в 'challenge'.
+        final payload = (data['challenge'] is Map)
+            ? Map<String, dynamic>.from(data['challenge'] as Map)
+            : data;
+        onBrowserSso?.call(payload);
       } else if (data['type'] == 'support_prompt') {
         onSupportPrompt?.call(data);
       } else if (data['type'] == 'support_signal' || data['type'] == 'chat_message') {

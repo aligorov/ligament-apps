@@ -16,7 +16,31 @@ import 'server_url_validator.dart';
 import 'support_service.dart';
 import 'telemetry_service.dart';
 import 'windows_identity.dart';
+import 'sso/sso_ticket.dart';
+import 'sso/sso_ticket_flow.dart';
 import 'ws_service.dart';
+
+/// Нормализация browser_sso-челленджа из WS-сообщения или pending-записи:
+/// поля {id, sp_name, username, machine, auto_allowed, expires_at}, при этом
+/// имя SP может приезжать как sp_name/sp/service, а челлендж — вложенно в
+/// 'challenge'. Чистая функция — тестируется без сервера.
+Map<String, dynamic> normalizeBrowserSsoPrompt(Map<String, dynamic> raw) {
+  final src = (raw['challenge'] is Map)
+      ? Map<String, dynamic>.from(raw['challenge'] as Map)
+      : raw;
+  final meta = (src['metadata'] is Map)
+      ? Map<String, dynamic>.from(src['metadata'] as Map)
+      : const <String, dynamic>{};
+  String? pick(String key) => (src[key] ?? meta[key])?.toString();
+  return {
+    'id': (src['id'] ?? src['challenge_id'] ?? meta['id'])?.toString(),
+    'sp_name': pick('sp_name') ?? pick('sp') ?? pick('service') ?? 'SSO',
+    'username': pick('username') ?? pick('who'),
+    'machine': pick('machine') ?? pick('host'),
+    'auto_allowed': src['auto_allowed'] == true || meta['auto_allowed'] == true,
+    'expires_at': src['expires_at'] ?? meta['expires_at'],
+  };
+}
 
 class AuthState extends ChangeNotifier {
   static const String _tokenKey = 'auth_token';
@@ -104,6 +128,146 @@ class AuthState extends ChangeNotifier {
   /// или identity недоступна). Сигнал уходит с телеметрией
   /// (identity_mismatch) — см. docs/windows-sso-analysis.md.
   bool? get windowsIdentityMatch => WindowsIdentity.matchesAccount(username);
+
+  /// Отображаемое имя Windows-пользователя (CORP\ivanov) для баннера.
+  String get windowsUserDisplay =>
+      WindowsIdentity.instance.collect()?.samCompatibleName ?? '';
+
+  // --- Фаза 1: mismatch-баннер (гасится на сессию) ---
+  bool _identityBannerDismissed = false;
+  bool get showIdentityMismatchBanner =>
+      windowsIdentityMatch == false && !_identityBannerDismissed;
+  void dismissIdentityBanner() {
+    _identityBannerDismissed = true;
+    notifyListeners();
+  }
+
+  // --- Фаза 2: предъявление CP-билета серверу ---
+  final SsoTicketReader _ssoTicketReader = createSsoTicketReader();
+  SsoTicketFlow? _ssoTicketFlow;
+
+  /// Статус «подтверждено Windows» для профиля (null — нет proof-а).
+  DateTime? get ssoVerifiedUntil => _ssoTicketFlow?.verifiedUntil;
+
+  /// Предъявить живой билет после логина/старта сессии. Тихая деградация
+  /// при любой ошибке: cooldown 1/мин и sticky-404 живут в SsoTicketFlow.
+  Future<void> presentSsoTicket() async {
+    if (api == null || !isLoggedIn) return;
+    _ssoTicketFlow ??= SsoTicketFlow(submit: (ticket) async {
+      final client = api;
+      if (client == null) return null;
+      try {
+        final (code, expiresAt) = await client.submitSsoTicket(ticket);
+        return SsoSubmitResponse(code, expiresAt: expiresAt);
+      } catch (_) {
+        return null; // транспорт — тихо
+      }
+    });
+    try {
+      final ticket = await _ssoTicketReader.readTicket();
+      final outcome = await _ssoTicketFlow!.present(ticket?.value);
+      if (outcome == SsoSubmitOutcome.ok) {
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('auth_state: sso-ticket предъявление пропущено: $e');
+    }
+  }
+
+  // --- Фаза 2b: browser_sso-челлендж (SSO-мост) ---
+  static const String _browserSsoAutoKey = 'browser_sso_auto_approve';
+  Map<String, dynamic>? activeBrowserSsoPrompt;
+  bool browserSsoMachineOk = false;
+  bool browserSsoHasTicket = false;
+  String? _browserSsoTicket;
+  bool _browserSsoAutoApprove = false;
+
+  bool get browserSsoAutoApprove => _browserSsoAutoApprove;
+
+  Future<void> setBrowserSsoAutoApprove(bool value) async {
+    _browserSsoAutoApprove = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_browserSsoAutoKey, value);
+    notifyListeners();
+  }
+
+  Future<void> _loadBrowserSsoAutoApprove() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _browserSsoAutoApprove = prefs.getBool(_browserSsoAutoKey) ?? false;
+    } catch (_) {}
+  }
+
+  /// Доставка browser_sso-челленджа (WS и polling-фолбэк). Истёкшие не
+  /// показываем вовсе; авто-approve — только при включённом тумблере И
+  /// серверном auto_allowed, иначе всегда явный диалог.
+  Future<void> _surfaceBrowserSso(Map<String, dynamic> raw) async {
+    final prompt = normalizeBrowserSsoPrompt(raw);
+    final id = prompt['id']?.toString();
+    if (id == null || id.isEmpty) return;
+    if (_resolvedChallengeIds.contains(id)) return;
+    if (isExpired(prompt['expires_at'])) return;
+    if (activeBrowserSsoPrompt?['id']?.toString() == id) return;
+
+    // Живой билет + сверка машины (machine-claim челленджа ↔ наш ПК).
+    final identity = WindowsIdentity.instance.collect();
+    String? ticket;
+    try {
+      ticket = (await _ssoTicketReader.readTicket())?.value;
+    } catch (_) {}
+    _browserSsoTicket = ticket;
+    browserSsoHasTicket = ticket != null && ticket.isNotEmpty;
+    browserSsoMachineOk = machineMatches(
+      prompt['machine']?.toString(),
+      identity?.computerName,
+    );
+
+    final autoAllowed = prompt['auto_allowed'] == true;
+    if (autoAllowed && _browserSsoAutoApprove && browserSsoHasTicket && browserSsoMachineOk) {
+      await resolveBrowserSso(true, silent: true, prompt: prompt);
+      return;
+    }
+
+    activeBrowserSsoPrompt = prompt;
+    final sp = prompt['sp_name']?.toString() ?? 'SSO';
+    alert.triggerAlert(
+      title: isRu ? 'Вход в $sp' : 'Sign in to $sp',
+      body: isRu
+          ? 'Подтвердите вход по Windows-билету в приложении'
+          : 'Confirm Windows-ticket sign-in in the app',
+      challengeId: id,
+    );
+    notifyListeners();
+  }
+
+  /// Решение по browser_sso: approve — всегда с живым билетом, deny — без.
+  /// [silent] — авто-approve по тумблеру (без диалога).
+  Future<void> resolveBrowserSso(bool approve,
+      {bool silent = false, Map<String, dynamic>? prompt}) async {
+    final data = prompt ?? activeBrowserSsoPrompt;
+    if (data == null) return;
+    final id = data['id']?.toString() ?? '';
+    if (id.isEmpty) return;
+
+    activeBrowserSsoPrompt = null;
+    _resolvedChallengeIds.add(id);
+    notifyListeners();
+
+    if (api == null) return;
+    final useApprove = approve && browserSsoHasTicket && browserSsoMachineOk;
+    if (approve && !useApprove) {
+      debugPrint('auth_state: browser_sso approve без живого билета — отправляем deny');
+    }
+    try {
+      await api!.browserSsoDecision(
+        challengeId: id,
+        approve: useApprove,
+        ssoTicket: useApprove ? _browserSsoTicket : null,
+      );
+    } catch (e) {
+      debugPrint('auth_state: browser_sso decision отклонён сервером: $e');
+    }
+  }
 
   String get username => currentUser?['username']?.toString() ?? '';
   String get displayName {
@@ -251,8 +415,12 @@ class AuthState extends ChangeNotifier {
 
       try {
         currentUser = await api!.getProfile();
+        await _loadBrowserSsoAutoApprove();
         _setupServices();
         await refreshAll();
+        // Фаза 2: предъявляем CP-билет при старте сессии (TTL ~5 мин с
+        // входа в Windows) — тихо, любой сбой не влияет на работу.
+        unawaited(presentSsoTicket());
       } catch (e) {
         debugPrint('auth_state: токен недействителен или сервер недоступен: $e');
         // Если ошибка 401, сбрасываем токен
@@ -303,6 +471,12 @@ class AuthState extends ChangeNotifier {
     // 1. WebSocket для мгновенных push-оповещений
     ws.onPrompt = (prompt) {
       _surfacePrompt(prompt);
+      loadPendingChallenges();
+    };
+
+    // Фаза 2b: SSO-мост — browser_sso-челлендж из WS-канала
+    ws.onBrowserSso = (data) {
+      _surfaceBrowserSso(data);
       loadPendingChallenges();
     };
 
@@ -548,8 +722,11 @@ class AuthState extends ChangeNotifier {
     await _secureStorage.write(key: _tokenKey, value: token!);
     await prefs.setString('server_url', serverUrl!);
 
+    _loadBrowserSsoAutoApprove();
     _setupServices();
     await refreshAll();
+    // Фаза 2: после успешного логина один раз предъявляем CP-билет.
+    unawaited(presentSsoTicket());
     notifyListeners();
   }
 
@@ -564,6 +741,15 @@ class AuthState extends ChangeNotifier {
     telemetry.stopReporting();
     support.stopScreenSharing();
     support.clearChat();
+
+    // Windows-identity / SSO-состояние не переживает разлогин: proof
+    // привязан к сессии устройства, баннер сбрасываем для следующего входа.
+    _ssoTicketFlow = null;
+    activeBrowserSsoPrompt = null;
+    _browserSsoTicket = null;
+    browserSsoHasTicket = false;
+    browserSsoMachineOk = false;
+    _identityBannerDismissed = false;
 
     token = null;
     currentUser = null;
@@ -654,11 +840,30 @@ class AuthState extends ChangeNotifier {
   Future<void> loadPendingChallenges() async {
     if (api == null) return;
     try {
-      final list = await api!.getPendingChallenges();
-      pendingChallenges = list.where((c) {
+      final all = await api!.getPendingChallenges();
+
+      // browser_sso-челленджи идут отдельным флоу (фаза 2b): их не смешиваем
+      // с обычными push-промптами и не показываем как модалку входа.
+      final browserSso = <Map<String, dynamic>>[];
+      pendingChallenges = all.where((c) {
         final id = c['id']?.toString();
-        return id != null && !_resolvedChallengeIds.contains(id);
+        if (id == null || _resolvedChallengeIds.contains(id)) return false;
+        final isBrowserSso =
+            c['type']?.toString() == 'browser_sso' || c['purpose']?.toString() == 'browser_sso';
+        if (isBrowserSso) {
+          browserSso.add(c);
+          return false;
+        }
+        return true;
       }).toList();
+
+      // Polling-доставка browser_sso (WS был offline): нормализуем и
+      // показываем; активный/закрытый/истёкший отсеется внутри.
+      for (final item in browserSso) {
+        if (activeBrowserSsoPrompt == null) {
+          await _surfaceBrowserSso(item);
+        }
+      }
 
       final activeId = activePrompt?['challenge_id']?.toString();
       final stillPending = activeId != null &&

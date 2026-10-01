@@ -135,6 +135,7 @@ private:
 
     WorkerJob m_job = JobNone;
     std::wstring m_jobUser;
+    std::wstring m_jobDomain;       // для WriteSsoTicketFile (SID по ДОМЕН\user)
     std::wstring m_jobPass;         // копия для воркера; затирается сразу после получения
     std::wstring m_jobOtp;
     bool m_beginApplied = false;    // LogonUI уже применил результат фазы 1 к UI

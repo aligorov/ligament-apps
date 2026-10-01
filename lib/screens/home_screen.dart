@@ -11,6 +11,8 @@ import '../services/input_injector.dart';
 import '../services/support_service.dart';
 import '../i18n/app_strings.dart';
 import 'approval_modal.dart';
+import 'browser_sso_dialog.dart';
+import 'identity_mismatch_banner.dart';
 import 'apps_screen.dart';
 import 'history_screen.dart';
 import 'notification_popup_dialog.dart';
@@ -32,6 +34,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _modalShown = false;
   bool _supportModalShown = false;
   bool _notificationModalShown = false;
+  bool _browserSsoModalShown = false;
   bool _connectingToSession = false;
 
   /// Сворачивание в трей имеет смысл только на десктопе (Windows/macOS/Linux):
@@ -44,6 +47,38 @@ class _HomeScreenState extends State<HomeScreen> {
     super.didChangeDependencies();
     final auth = context.read<AuthState>();
     _checkPrompts(auth);
+    _checkBrowserSsoPrompt(auth);
+  }
+
+  void _checkBrowserSsoPrompt(AuthState auth) {
+    if (auth.activeBrowserSsoPrompt == null) {
+      _browserSsoModalShown = false;
+    } else if (!_browserSsoModalShown) {
+      _browserSsoModalShown = true;
+      final prompt = Map<String, dynamic>.from(auth.activeBrowserSsoPrompt!);
+      final ready = auth.browserSsoHasTicket && auth.browserSsoMachineOk;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          _browserSsoModalShown = false;
+          return;
+        }
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => BrowserSsoDialog(
+            spName: prompt['sp_name']?.toString() ?? 'SSO',
+            identityDisplay: auth.windowsUserDisplay,
+            ready: ready,
+            onDecision: (approve) {
+              Navigator.of(context, rootNavigator: true).pop();
+              context.read<AuthState>().resolveBrowserSso(approve);
+            },
+          ),
+        ).whenComplete(() {
+          _browserSsoModalShown = false;
+        });
+      });
+    }
   }
 
   void _checkPrompts(AuthState auth) {
@@ -392,6 +427,18 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            // Фаза 1 Windows-identity: ненавязчивый баннер расхождения
+            // «кто в приложении ↔ кто за Windows-сессией», закрывается на сессию.
+            if (auth.showIdentityMismatchBanner)
+              IdentityMismatchBanner(
+                accountUsername: auth.username,
+                windowsUser: auth.windowsUserDisplay,
+                onClose: () => auth.dismissIdentityBanner(),
+              ),
+
+            // Фаза 2: proof-backed статус «подтверждено Windows»
+            if (auth.ssoVerifiedUntil != null) _buildSsoVerifiedChip(auth),
+
             if (support.state != SupportSessionState.idle || support.lastError != null)
               _buildSupportSessionBanner(auth),
 
@@ -741,6 +788,32 @@ class _HomeScreenState extends State<HomeScreen> {
           style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
           child: Text(s.open),
         ),
+      ),
+    );
+  }
+
+  /// Статус proof-backed идентичности (фаза 2): «Подтверждено Windows · до HH:mm».
+  Widget _buildSsoVerifiedChip(AuthState auth) {
+    final s = context.stringsRead;
+    final until = auth.ssoVerifiedUntil!;
+    final time = DateFormat('HH:mm').format(until);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF065F46).withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.verified_user_outlined, color: Color(0xFF34D399), size: 18),
+          const SizedBox(width: 8),
+          Text(
+            '${s.ssoVerifiedPrefix} · ${s.ssoVerifiedUntil(time)}',
+            style: const TextStyle(color: Color(0xFFA7F3D0), fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ],
       ),
     );
   }

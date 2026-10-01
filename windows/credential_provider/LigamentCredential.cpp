@@ -858,12 +858,14 @@ static void SecureWipe(std::wstring& s) {
 void LigamentCredential::RunAsyncJob() {
     // 1. Забрать вход задачи и сразу затереть копии секретов в членах.
     WorkerJob job;
-    std::wstring user, pass, otp;
+    std::wstring user, domain, pass, otp;
     EnterCriticalSection(&m_csPoll);
     job = m_job;
     m_job = JobNone;
     user = m_jobUser;
     m_jobUser.clear();
+    domain = m_jobDomain;
+    m_jobDomain.clear();
     pass = m_jobPass;
     otp = m_jobOtp;
     SecureWipe(m_jobPass);
@@ -1035,11 +1037,18 @@ void LigamentCredential::RunAsyncJob() {
 
         std::wstring status;
         std::string err;
+        std::string ssoTicket;
         // Server statuses: "approved" | "denied" | "pending" | "expired".
         // Network errors are tolerated until consecutive error limit or overall timeout.
-        if (client.PollStatus(challengeId, status, err)) {
+        if (client.PollStatus(challengeId, status, err, ssoTicket)) {
             consecutiveNetworkErrors = 0;
             if (status == L"approved" || status == L"denied" || status == L"expired") {
+                // Фаза 2 Windows-identity: accept-ответ несёт одноразовый
+                // sso_ticket — кладём его в per-SID файл (DACL владельца).
+                // Ошибка записи не влияет на вход в Windows (тихий лог).
+                if (status == L"approved" && !ssoTicket.empty()) {
+                    WriteSsoTicketFile(domain, user, ssoTicket);
+                }
                 EnterCriticalSection(&m_csPoll);
                 bool stop = m_worker.stop;
                 if (!stop) {
@@ -1122,6 +1131,7 @@ bool LigamentCredential::StartWorkerJob(WorkerJob job, const wchar_t* statusText
     m_worker = WorkerState();
     m_job = job;
     m_jobUser = m_username;
+    m_jobDomain = m_domain;
     m_jobPass = m_password;
     if (job == JobVerifyOtp) m_jobOtp = m_otpCode;
     m_statusText = (statusText ? statusText : L"");
@@ -1135,6 +1145,7 @@ bool LigamentCredential::StartWorkerJob(WorkerJob job, const wchar_t* statusText
         EnterCriticalSection(&m_csPoll);
         m_job = JobNone;
         m_jobUser.clear();
+        m_jobDomain.clear();
         SecureWipe(m_jobPass);
         SecureWipe(m_jobOtp);
         m_worker = WorkerState();
@@ -1168,6 +1179,7 @@ void LigamentCredential::JoinPollThread() {
     EnterCriticalSection(&m_csPoll);
     m_job = JobNone;
     m_jobUser.clear();
+    m_jobDomain.clear();
     SecureWipe(m_jobPass);
     SecureWipe(m_jobOtp);
     m_worker = WorkerState();

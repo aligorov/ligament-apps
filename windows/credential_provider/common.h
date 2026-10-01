@@ -345,6 +345,81 @@ inline void LogCPFileLine(const wchar_t* line) {
     CloseHandle(h);
 }
 
+// Запись sso-билета (фаза 2 Windows-identity) в
+// %ProgramData%\Ligament\sso\<SID пользователя>\sso.bin.
+//
+// DACL: SYSTEM/Админы — полный (наследуемо), SID залогиненного пользователя —
+// только чтение: под чужой учёткой файл не читается, идентичность становится
+// доказательством, а не заявлением (docs/windows-identity-server-design.md).
+// Запись атомарна (tmp + MoveFileEx REPLACE). ЛЮБАЯ ошибка только логируется
+// и возвращает false — сбой записи не имеет права ломать вход в Windows.
+inline bool WriteSsoTicketFile(const std::wstring& domain, const std::wstring& user, const std::string& ticketUtf8) {
+    if (user.empty() || ticketUtf8.empty()) return false;
+    do {
+        // 1. SID залогиненного пользователя по имени учётки
+        BYTE sidBuf[SECURITY_MAX_SID_SIZE] = {0};
+        DWORD sidLen = sizeof(sidBuf);
+        wchar_t refDomain[DNLEN + 1] = {0};
+        DWORD refLen = _countof(refDomain);
+        SID_NAME_USE sidUse = SidTypeInvalid;
+        std::wstring account = (domain.empty() || domain == L".") ? user : domain + L"\\" + user;
+        if (!LookupAccountNameW(nullptr, account.c_str(), sidBuf, &sidLen, refDomain, &refLen, &sidUse)) {
+            LogDebug(L"sso: LookupAccountNameW('%s') failed: %lu", account.c_str(), GetLastError());
+            break;
+        }
+        LPWSTR sidStr = nullptr;
+        if (!ConvertSidToStringSidW(sidBuf, &sidStr) || !sidStr) {
+            LogDebug(L"sso: ConvertSidToStringSidW failed: %lu", GetLastError());
+            break;
+        }
+        std::wstring sid(sidStr);
+        LocalFree(sidStr);
+        if (sid.empty()) break;
+
+        // 2. Каталог %ProgramData%\Ligament\sso\<SID> с явным DACL
+        wchar_t progData[MAX_PATH] = {0};
+        if (FAILED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, progData))) break;
+        std::wstring dir = std::wstring(progData) + L"\\Ligament\\sso\\" + sid;
+
+        // SDDL: protected DACL; SYSTEM и Админы full (container-inherit),
+        // SID владельца — file-read (FR = GENERIC_READ для файлов).
+        std::wstring sddl = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;" + sid + L")";
+        SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sa.lpSecurityDescriptor, nullptr)) {
+            LogDebug(L"sso: SDDL build failed: %lu", GetLastError());
+            break;
+        }
+
+        SECURITY_ATTRIBUTES* pSa = &sa;
+        CreateDirectoryW(dir.c_str(), pSa); // уже существует — ок
+
+        // 3. Атомарная запись: tmp-файл + MoveFileEx(REPLACE)
+        std::wstring tmp = dir + L"\\sso.bin.tmp";
+        std::wstring dst = dir + L"\\sso.bin";
+        HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, pSa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            LogDebug(L"sso: CreateFileW(tmp) failed: %lu", GetLastError());
+            break;
+        }
+        DWORD written = 0;
+        BOOL ok = WriteFile(h, ticketUtf8.data(), (DWORD)ticketUtf8.size(), &written, nullptr);
+        CloseHandle(h);
+        if (!ok || written != ticketUtf8.size()) {
+            DeleteFileW(tmp.c_str());
+            LogDebug(L"sso: WriteFile failed: %lu", GetLastError());
+            break;
+        }
+        if (!MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            DeleteFileW(tmp.c_str());
+            LogDebug(L"sso: MoveFileExW failed: %lu", GetLastError());
+            break;
+        }
+        LogDebug(L"sso: билет записан (%u байт) для %s", (unsigned)ticketUtf8.size(), account.c_str());
+        return true;
+    } while (false);
+    return false;
+}
+
 // Logging helper: DebugView + файл cp.log (с таймстемпом, как CPLog).
 inline void LogDebug(const wchar_t* fmt, ...) {
     wchar_t buf[1024];

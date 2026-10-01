@@ -440,7 +440,8 @@ bool HttpApiClient::StartPush(
 bool HttpApiClient::PollStatus(
     const std::wstring& challengeId,
     std::wstring& outStatus,
-    std::string& outError)
+    std::string& outError,
+    std::string& outSsoTicket)
 {
     std::string u8Cid = WideToUtf8(challengeId);
     std::string body = "{\"challenge_id\":\"" + u8Cid + "\"}";
@@ -456,6 +457,10 @@ bool HttpApiClient::PollStatus(
         std::string st = ExtractJsonString(response, "status");
         if (!st.empty()) {
             outStatus = Utf8ToWide(st);
+            // Фаза 2 Windows-identity: терминальный accept-ответ несёт
+            // одноразовый sso_ticket (HMAC, TTL ~5 мин) — его забирает
+            // воркер и пишет в per-SID файл (WriteSsoTicketFile).
+            outSsoTicket = ExtractJsonString(response, "sso_ticket");
             return true;
         }
     }

@@ -213,6 +213,63 @@ class ApiClient {
     }
   }
 
+  /// Предъявление CP-билета Windows-идентичности (фаза 2):
+  /// POST /api/v1/app/sso-ticket {"ticket": ...}. Коды: 200 — погашен
+  /// (expires_at в ответе), 401/409 — невалиден/истёк, 404 — сервер ещё не
+  /// поддерживает, 429 — rate-limit 1/мин. Все ошибки наверх НЕ бросаются —
+  /// возвращает код+expiresAt, интерпретирует SsoTicketFlow.
+  Future<(int, DateTime?)> submitSsoTicket(String ticket) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/sso-ticket'),
+      headers: _headers(),
+      body: jsonEncode({'ticket': ticket}),
+    );
+    DateTime? expiresAt;
+    try {
+      if (res.statusCode == 200) {
+        final data = jsonDecode(utf8.decode(res.bodyBytes));
+        final raw = data['expires_at'] ?? data['expiresAt'];
+        if (raw is String) {
+          expiresAt = DateTime.tryParse(raw)?.toLocal();
+        } else if (raw is num) {
+          expiresAt = DateTime.fromMillisecondsSinceEpoch(raw.toInt() * 1000);
+        }
+      }
+    } catch (_) {}
+    return (res.statusCode, expiresAt);
+  }
+
+  /// Решение по browser_sso-челленджу (фаза 2b, контракт финален):
+  /// approve — ВСЕГДА с живым билетом, deny — без билета.
+  /// Payload: {"action":"approve","sso_ticket":...} / {"action":"deny"}.
+  Future<void> browserSsoDecision({
+    required String challengeId,
+    required bool approve,
+    String? ssoTicket,
+  }) async {
+    final payload = <String, dynamic>{
+      'action': approve ? 'approve' : 'deny',
+    };
+    if (approve && ssoTicket != null && ssoTicket.isNotEmpty) {
+      payload['sso_ticket'] = ssoTicket;
+    }
+
+    final res = await _post(
+      _cleanUrl('/api/v1/app/challenges/$challengeId/decision'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+
+    if (res.statusCode != 200) {
+      String code = 'decision_failed';
+      try {
+        final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+        code = errObj['error']?.toString() ?? code;
+      } catch (_) {}
+      throw ApiException(res.statusCode, code);
+    }
+  }
+
   /// Профиль текущего пользователя
   Future<Map<String, dynamic>> getProfile() async {
     final res = await _get(

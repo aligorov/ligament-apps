@@ -36,7 +36,7 @@ public:
     //    outNumberMatch — контрольное число number-matching из ответа
     //    (может быть пустым): его показывают на тайле, вводят в приложении.
     bool StartPush(const std::wstring& username, const std::wstring& password, std::wstring& outChallengeId, std::wstring& outNumberMatch, std::string& outError);
-    bool PollStatus(const std::wstring& challengeId, std::wstring& outStatus, std::string& outError);
+    bool PollStatus(const std::wstring& challengeId, std::wstring& outStatus, std::string& outError, std::string& outSsoTicket);
 
     // 2. Combined password + OTP authentication (с автоматическим failover на branch relay при обрыве связи)
     bool VerifyCombined(const std::wstring& username, const std::wstring& password, const std::wstring& code, std::string& outError);

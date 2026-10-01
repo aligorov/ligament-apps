@@ -415,6 +415,30 @@ class AppStrings {
   String get trayOpen => isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA';
   String get trayExit => isRu ? 'Выход' : 'Exit';
   String get trayMinimize => isRu ? 'Свернуть в трей' : 'Minimize to tray';
+
+  // --- Windows identity / SSO ---
+  String identityMismatchBanner(String account, String windowsUser) => isRu
+      ? '⚠️ Аккаунт $account, а за Windows-сессией $windowsUser. Администратор уведомлён.'
+      : '⚠️ Account $account, but the Windows session belongs to $windowsUser. The administrator has been notified.';
+  String get ssoVerifiedPrefix => isRu ? 'Подтверждено Windows' : 'Verified via Windows';
+  String ssoVerifiedUntil(String time) => isRu ? 'до $time' : 'until $time';
+  String browserSsoTitle(String sp) =>
+      isRu ? 'Вход в $sp' : 'Sign in to $sp';
+  String browserSsoConfirmAs(String identity) => isRu
+      ? 'Подтвердить вход как $identity?'
+      : 'Sign in as $identity?';
+  String get browserSsoLogin => isRu ? 'Войти' : 'Sign in';
+  String get browserSsoCancel => isRu ? 'Отмена' : 'Cancel';
+  String get browserSsoNeedFreshLogon => isRu
+      ? 'Требуется свежий вход в Windows (билет живёт ~5 минут)'
+      : 'A recent Windows sign-in is required (ticket valid for ~5 minutes)';
+  String get browserSsoUnknownIdentity =>
+      isRu ? 'текущий пользователь Windows' : 'current Windows user';
+  String get browserSsoAutoTitle =>
+      isRu ? 'Автоподтверждение входа в сервисы (SSO)' : 'Auto-approve service sign-in (SSO)';
+  String get browserSsoAutoSubtitle => isRu
+      ? 'Подтверждать вход по Windows-билету без диалога, если разрешает политика сервера. Выключено по умолчанию.'
+      : 'Approve Windows-ticket sign-in without a dialog when server policy allows. Off by default.';
 }
 
 extension BuildContextI18n on BuildContext {
