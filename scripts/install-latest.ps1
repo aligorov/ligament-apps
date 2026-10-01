@@ -230,12 +230,10 @@ try {
             Set-ItemProperty -Path $RegPolicyPath -Name "ServerURL" -Value $ServerURL -Type String -Force
         }
 
-        # Дефолт MSI: RDP2FAEnabled=0 (провайдер установлен, но 2FA для RDP
-        # выключена). Здесь — явный выбор администратора (режим «All» или
-        # ключ -InstallRDP), поэтому включаем политику на уровне Policies.
-        if ($Component -eq "All" -or $InstallRDP) {
-            Set-ItemProperty -Path $RegPolicyPath -Name "RDP2FAEnabled" -Value 1 -Type DWord -Force
-        }
+        # 2FA для RDP и консоли ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНА (RDP2FAEnabled=0 и
+        # Console2FAEnabled=0 — локальные дефолты MSI и дефолт кода CP).
+        # Установка провайдера и включение 2FA — независимые действия:
+        # включается только явной политикой (команды — в итоговой сводке).
     }
 
     # -------------------------------------------------------------------------
@@ -305,7 +303,8 @@ try {
         Set-ItemProperty -Path $tsPolicy -Name "fEnableWebAuthn" -Value 1 -Type DWord -Force
 
         if (-not (Test-Path $RegPolicyPath)) { New-Item -Path $RegPolicyPath -Force | Out-Null }
-        Set-ItemProperty -Path $RegPolicyPath -Name "RDP2FAEnabled" -Value 1 -Type DWord -Force
+        # RDP2FAEnabled НЕ включаем: 2FA для RDP и консоли по умолчанию
+        # выключена, активация — только явной политикой (сводка в конце).
         Set-ItemProperty -Path $RegPolicyPath -Name "FIDO2Enabled" -Value 1 -Type DWord -Force
         Set-ItemProperty -Path $RegPolicyPath -Name "DefaultFactor" -Value 0 -Type DWord -Force
         if ($ServerURL) {
@@ -325,7 +324,9 @@ try {
     Write-Host " Режим по умолчанию: Push Number Matching (число в приложении Ligament)" -ForegroundColor White
     $rdpInstalled = ($Component -in @("All", "CP") -or $InstallRDP)
     if ($rdpInstalled) {
-        Write-Host " RDP Credential Provider: установлен, RDP2FAEnabled=1 (политика включена)" -ForegroundColor White
+        Write-Host " RDP Credential Provider: установлен; 2FA для RDP/консоли ВЫКЛЮЧЕНА (по умолчанию)" -ForegroundColor White
+        Write-Host "   Включить 2FA для RDP:    reg add `"$RegPolicyPath`" /v RDP2FAEnabled /t REG_DWORD /d 1 /f" -ForegroundColor Gray
+        Write-Host "   Включить 2FA для консоли: reg add `"$RegPolicyPath`" /v Console2FAEnabled /t REG_DWORD /d 1 /f" -ForegroundColor Gray
     } else {
         Write-Host " RDP Credential Provider: НЕ установлен (по умолчанию выключен)" -ForegroundColor White
         Write-Host "   Включить позже: msiexec /i Ligament-2FA-Windows-x64.msi ADDLOCAL=RdpCredentialProviderFeature" -ForegroundColor Gray

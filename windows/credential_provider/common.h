@@ -76,7 +76,11 @@ struct Config {
     std::wstring serverUrl;
     bool serverUrlConfigured = false; // ServerURL реально задан в реестре (GPO/MSI)
     std::wstring fallbackRelayUrl; // Relay fallback URL — ТОЛЬКО https (напр. "https://relay-branch.corp:8443"): по relay уходят доменные креды
-    bool rdp2faEnabled = true;
+    // 2FA для RDP и консоли по умолчанию ВЫКЛЮЧЕНА (согласовано с дефолтами
+    // MSI и install-latest.ps1): включение — только явное значение реестра/
+    // GPO (RDP2FAEnabled=1 / Console2FAEnabled=1). Установка ни при каких
+    // условиях не должна молча включать 2FA входа в Windows.
+    bool rdp2faEnabled = false;
     bool console2faEnabled = false;
     bool fido2Enabled = true;
     int defaultFactor = 0; // 0 = Push (приложение Ligament / Telegram), 1 = Passkey (QR-код), 2 = OTP (TOTP)
