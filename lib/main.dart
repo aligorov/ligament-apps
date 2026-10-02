@@ -158,11 +158,35 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
     }
   }
 
+  /// Возврат окна из трея. Порядок как в AlertService.triggerAlert
+  /// (проверен на проде): hide() мог застать окно свёрнутым — тогда
+  /// show() без restore() возвращает его в панель задач, но не на экран,
+  /// что выглядело как «из трея не разворачивается».
+  Future<void> _restoreWindowFromTray() async {
+    try {
+      if (await windowManager.isMinimized()) {
+        await windowManager.restore();
+      }
+      await windowManager.show();
+      await windowManager.focus();
+    } catch (e) {
+      debugPrint('tray: ошибка восстановления окна: $e');
+    }
+  }
+
+  @override
+  void onTrayIconMouseDown() {
+    // Левый клик по иконке трея разворачивает окно (Windows/Linux). На macOS
+    // клик по иконке открывает контекстное меню — там работает пункт меню.
+    if (Platform.isWindows || Platform.isLinux) {
+      _restoreWindowFromTray();
+    }
+  }
+
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
     if (menuItem.key == 'show') {
-      windowManager.show();
-      windowManager.focus();
+      _restoreWindowFromTray();
     } else if (menuItem.key == 'exit') {
       final auth = context.read<AuthState>();
       if (auth.gpo.allowExit) {
