@@ -644,6 +644,12 @@ class AuthState extends ChangeNotifier {
         if (pollTicks % 4 == 0) {
           await loadNotifications();
         }
+        // Плитки приложений: админ заводит/убирает приложения на сервере —
+        // список догоняет реальность без перелогина (раз в минуту;
+        // мгновенно — pull-to-refresh на экране приложений).
+        if (pollTicks % 15 == 0) {
+          await loadAllowedApps();
+        }
       } finally {
         _isPollingInFlight = false;
       }
