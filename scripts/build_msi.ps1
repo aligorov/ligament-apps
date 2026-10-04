@@ -43,100 +43,25 @@ if (Test-Path "$CpDir\CMakeLists.txt") {
     }
 }
 
-# 3. Создание каталога дистрибутивов и автономного RDP-пакета
+# 3. Сборка службы Ligament 2FA Service (watchdog; входит в MSI)
+$SvcDir = "$ClientDir\windows\service"
+if (Test-Path "$SvcDir\CMakeLists.txt") {
+    Write-Host "`n[2b/5] Компиляция Ligament 2FA Service (ligament_service.exe)..." -ForegroundColor Yellow
+    cmake -B "$SvcDir\build" -S "$SvcDir" -A x64
+    cmake --build "$SvcDir\build" --config Release
+    if (Test-Path "$SvcDir\build\Release\ligament_service.exe") {
+        Write-Host " Успешно скомпилирована служба: ligament_service.exe" -ForegroundColor Green
+    } else {
+        Write-Error "Ошибка: ligament_service.exe не скомпилировалась!"
+    }
+}
+
+# 4. Каталог дистрибутивов (отдельный RDP-ZIP больше не создаётся:
+#    единый MSI = приложение + CP + служба)
 if (-not (Test-Path $DistDir)) {
     New-Item -ItemType Directory -Path $DistDir | Out-Null
 }
 
-if (Test-Path "$CpDir\build\Release\LigamentCredentialProvider.dll") {
-    $RdpDistDir = [System.IO.Path]::GetTempPath() + "LigamentRdp_" + [System.Guid]::NewGuid().ToString("N")
-    New-Item -ItemType Directory -Path $RdpDistDir | Out-Null
-    Copy-Item "$CpDir\build\Release\LigamentCredentialProvider.dll" "$RdpDistDir\"
-    if (Test-Path "$CpDir\README.md") {
-        Copy-Item "$CpDir\README.md" "$RdpDistDir\"
-    }
-    if (Test-Path "$CpDir\ligament-cp-settings.reg") {
-        Copy-Item "$CpDir\ligament-cp-settings.reg" "$RdpDistDir\"
-    }
-    $GpoDir = if (Test-Path "$ClientDir\deploy\gpo") { "$ClientDir\deploy\gpo" } else { "$ClientDir\..\deploy\gpo" }
-    if (Test-Path $GpoDir) {
-        New-Item -ItemType Directory -Path "$RdpDistDir\gpo" -Force | Out-Null
-        Copy-Item "$GpoDir\*" "$RdpDistDir\gpo\" -Recurse -Force
-    }
-    
-    $installBat = @"
-@echo off
-:: Check for Administrator privileges
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ========================================================
-    echo [ERROR] Требуются права Администратора!
-    echo Запустите install.bat правой кнопкой мыши:
-    echo "Запуск от имени администратора" (Run as administrator).
-    echo ========================================================
-    pause
-    exit /b 1
-)
-
-echo ========================================================
-echo Updating Ligament 2FA Credential Provider for RDP...
-echo ========================================================
-
-:: 1. Force kill LogonUI if running
-taskkill /f /im logonui.exe >nul 2>&1
-
-:: 2. Handle in-use DLL: delete previous .old, rename active DLL
-del /f /q "%SystemRoot%\System32\LigamentCredentialProvider.dll.old" >nul 2>&1
-if exist "%SystemRoot%\System32\LigamentCredentialProvider.dll" (
-    move /y "%SystemRoot%\System32\LigamentCredentialProvider.dll" "%SystemRoot%\System32\LigamentCredentialProvider.dll.old" >nul 2>&1
-)
-
-:: 3. Copy new DLL into place
-copy /Y "%~dp0LigamentCredentialProvider.dll" "%SystemRoot%\System32\LigamentCredentialProvider.dll"
-if %errorlevel% neq 0 (
-    echo ========================================================
-    echo [ERROR] Ошибка копирования DLL в %SystemRoot%\System32 (код %errorlevel%)!
-    echo ========================================================
-    pause
-    exit /b 1
-)
-
-:: 4. Register COM & Credential Provider
-regsvr32.exe /s "%SystemRoot%\System32\LigamentCredentialProvider.dll"
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v fEnableWebAuthn /t REG_DWORD /d 1 /f
-reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v FIDO2Enabled /t REG_DWORD /d 1 /f
-reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v DefaultFactor /t REG_DWORD /d 0 /f
-
-:: 5. Restart LogonUI to load the new DLL immediately
-taskkill /f /im logonui.exe >nul 2>&1
-
-echo.
-echo ========================================================
-echo [OK] Ligament Credential Provider successfully updated!
-echo ========================================================
-echo.
-echo [!] Configure the 2FA server URL if not done yet:
-echo     reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v ServerURL /t REG_SZ /d "https://your-2fa-server" /f
-echo.
-pause
-"@
-    Set-Content -Path "$RdpDistDir\install.bat" -Value $installBat -Encoding Ascii
-
-    $uninstallBat = @"
-@echo off
-echo ========================================================
-echo Uninstalling Ligament 2FA Credential Provider...
-echo ========================================================
-regsvr32.exe /u /s "%SystemRoot%\System32\LigamentCredentialProvider.dll"
-del /F /Q "%SystemRoot%\System32\LigamentCredentialProvider.dll"
-echo [OK] Ligament Credential Provider unregistered and removed.
-"@
-    Set-Content -Path "$RdpDistDir\uninstall.bat" -Value $uninstallBat -Encoding Ascii
-
-    Compress-Archive -Path "$RdpDistDir\*" -DestinationPath "$DistDir\Ligament-2FA-RDP-CredentialProvider-x64.zip" -Force
-    Remove-Item -Recurse -Force $RdpDistDir -ErrorAction SilentlyContinue
-    Write-Host " Создан автономный RDP пакет: $DistDir\Ligament-2FA-RDP-CredentialProvider-x64.zip" -ForegroundColor Green
-}
 
 # 4. Проверка наличия WiX Toolset
 $wixInstalled = $false

@@ -109,7 +109,7 @@ cd client
 
    Приложение + RDP Credential Provider одним пакетом:
    ```cmd
-   msiexec /i Ligament-2FA-Windows-x64.msi /qn SERVERURL=https://2fa.corp.ru INSTALLRDP=1
+   msiexec /i Ligament-2FA-Windows-x64.msi SERVERURL=https://2fa.corp.ru /qn   # полный пакет: приложение + CP + служба; 2FA входа выключена
    ```
 
    Управление функцией RDP-провайдера после установки:
@@ -127,6 +127,19 @@ cd client
    Для серверов терминалов (RDS) без GUI предназначен отдельный архив `Ligament-2FA-RDP-CredentialProvider-x64.zip` (см. `scripts/install-latest.ps1`, режим `CP`).
 
 ---
+
+## Состав MSI и служба Windows (с v0.4.107)
+
+Один MSI-пакет устанавливает всё (отдельный RDP-ZIP больше не выпускается):
+- **приложение** `ligament_authenticator.exe` (автозапуск через Run-ключ `Ligament2FA`);
+- **RDP Credential Provider** (DLL в System32, 2FA входа по умолчанию ВЫКЛЮЧЕНА — включение политикой `RDP2FAEnabled=1`/`Console2FAEnabled=1`);
+- **службу** `Ligament2FAService` (display name «Ligament 2FA Service», auto-start, LocalSystem) — сторож: при политике `AllowExit=0` следит, чтобы клиент был запущен в каждой активной пользовательской сессии, и перезапускает его (не чаще раза в минуту), если процесс убит. При `AllowExit=1` пассивна. Лог: `C:\ProgramData\Ligament\service.log`.
+
+```cmd
+sc query Ligament2FAService
+sc stop Ligament2FAService
+sc start Ligament2FAService
+```
 
 ## Развертывание корпоративных политик
 

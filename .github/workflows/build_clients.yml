@@ -38,12 +38,6 @@ jobs:
           name: Ligament-2FA-Windows-MSI
           path: dist/Ligament-2FA-Windows-x64.msi
 
-      - name: Upload Windows RDP Credential Provider Artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: Ligament-2FA-Windows-RDP-Zip
-          path: dist/Ligament-2FA-RDP-CredentialProvider-x64.zip
-
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest

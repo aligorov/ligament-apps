@@ -17,33 +17,21 @@
                   DowngradeErrorMessage="A newer version of Ligament 2FA is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- Структура функций (Features) установки:
-         ProductFeature (Level=1) — ставится всегда: приложение, ярлыки,
-           автозапуск и реестр ServerURL (адрес сервера нужен и десктоп-клиенту).
-         RdpCredentialProviderFeature (Level=2) — по умолчанию НЕ ставится
-           (Level > INSTALLLEVEL=1): DLL Credential Provider в System32,
-           COM/CP/Filter-регистрация, CP-дефолты и политика WebAuthn для RDP.
-           Включается тремя способами:
-             msiexec /i ... INSTALLRDP=1                          (свойство);
-             msiexec /i ... ADDLOCAL=RdpCredentialProviderFeature (выбор feature);
-           выборочное выключение без переустановки приложения:
-             msiexec /i ... REMOVE=RdpCredentialProviderFeature.
-           RDP-провайдер «выключен по умолчанию» на двух уровнях:
-           1) feature не ставится вовсе; 2) даже при установке feature
-           локальный дефолт RDP2FAEnabled=0 — активацию выполняет только
-           явная политика (GPO / HKLM\SOFTWARE\Policies\Ligament\2FA). -->
+    <!-- ОДИН полный пакет (требование 2026-10-04): приложение + RDP
+         Credential Provider + служба Ligament2FAService ставятся вместе,
+         отдельного ZIP-артефакта больше нет. 2FA входа (RDP и консоль)
+         при этом ВЫКЛЮЧЕНА по умолчанию: RDP2FAEnabled=0/Console2FAEnabled=0
+         в локальных дефолтах и в коде CP — включение только явной политикой
+         (GPO / HKLM\SOFTWARE\Policies\Ligament\2FA). Служба-сторож
+         активна только при AllowExit=0 (см. windows/service). -->
     <Feature Id="ProductFeature" Title="Ligament 2FA" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="AutoStartupRegistry" />
       <ComponentRef Id="AppServerUrlRegistry" />
-    </Feature>
-    <Feature Id="RdpCredentialProviderFeature" Title="RDP Credential Provider (2FA for RDP logon)" Level="2">
-      <!-- Таблица Feature~Condition: INSTALLRDP=1 поднимает Level с 2 до 1,
-           feature попадает в установку. Без свойства — снята (не ставится). -->
-      <Condition Level="1">INSTALLRDP = 1</Condition>
       <ComponentRef Id="CredentialProviderComponent" />
       <ComponentRef Id="RdpWebAuthnPolicyComponent" />
+      <ComponentRef Id="LigamentServiceComponent" />
     </Feature>
 
     <Icon Id="AppIcon.ico" SourceFile="windows/runner/resources/app_icon.ico" />
@@ -55,11 +43,7 @@
          через HKLM\SOFTWARE\Policies\Ligament\2FA\ServerURL или
          ligament-cp-settings.reg из RDP-ZIP. -->
     <Property Id="SERVERURL" Secure="yes" />
-    <!-- INSTALLRDP: включить RdpCredentialProviderFeature в установку:
-         msiexec /i Ligament-2FA-Windows-x64.msi INSTALLRDP=1
-         По умолчанию 0 — ставится только приложение. -->
-    <Property Id="INSTALLRDP" Value="0" Secure="yes" />
-  </Product>
+</Product>
 
   <Fragment>
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -113,9 +97,9 @@
     </DirectoryRef>
 
     <DirectoryRef Id="System64Folder">
-      <!-- Ligament 2FA Windows Credential Provider DLL & COM/Security Registration.
-           Принадлежит RdpCredentialProviderFeature: без неё (INSTALLRDP не задан)
-           ни DLL, ни CP-регистрация, ни CP-дефолты не ставятся. -->
+      <!-- Ligament 2FA Windows Credential Provider DLL & COM/Security
+           Registration. Ставится ВСЕГДА (единый полный пакет); 2FA входа
+           выключена по умолчанию — включение только политикой. -->
       <Component Id="CredentialProviderComponent" Guid="A3B7C9D1-5E2F-4A8B-9C0D-1E2F3A4B5C6D" Win64="yes">
         <File Id="LigamentCPDll"
               Name="LigamentCredentialProvider.dll"
@@ -166,6 +150,30 @@
         <RegistryKey Root="HKLM" Key="SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services">
           <RegistryValue Name="fEnableWebAuthn" Type="integer" Value="1" KeyPath="yes" />
         </RegistryKey>
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <!-- Ligament 2FA Service (watchdog): exe лежит рядом с приложением.
+           Auto-start, LocalSystem. Активна только при AllowExit=0:
+           перезапускает клиент в активных пользовательских сессиях, если
+           процесс убит. При AllowExit=1 (по умолчанию) пассивна. -->
+      <Component Id="LigamentServiceComponent" Guid="C4D8E0F2-7A4B-4C3E-9D5E-6F7A8B9C0D1E" Win64="yes">
+        <File Id="LigamentServiceExe"
+              Name="ligament_service.exe"
+              Source="windows/service/build/Release/ligament_service.exe"
+              KeyPath="yes" />
+        <ServiceInstall Name="Ligament2FAService"
+                        DisplayName="Ligament 2FA Service"
+                        Description="Ligament 2FA watchdog: keeps the client running where exit is disabled by policy (AllowExit=0)"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="ignore" />
+        <ServiceControl Id="Ligament2FAServiceControl"
+                        Name="Ligament2FAService"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall" />
       </Component>
     </DirectoryRef>
   </Fragment>

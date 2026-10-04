@@ -1,16 +1,11 @@
 # ==============================================================================
-# Ligament 2FA — Автоматическая загрузка и установка последней версии
-# Поддерживает:
-#   1. Полную установку через MSI: десктоп-клиент + RDP Credential Provider
-#      одним пакетом (MSI запускается с INSTALLRDP=1 — включает опциональную
-#      feature RdpCredentialProviderFeature; ZIP-развёртывание не используется)
-#   2. Установку только десктоп-приложения через MSI (RDP-провайдер по
-#      умолчанию НЕ ставится; ключ -InstallRDP включает его тем же MSI)
-#   3. Установку только Credential Provider для RDP-серверов терминалов
-#      (без GUI) через ZIP Ligament-2FA-RDP-CredentialProvider-x64.zip
+# Ligament 2FA — Установка последней версии (единый полный MSI)
+# Пакет содержит: десктоп-приложение + RDP Credential Provider + службу
+# Ligament2FAService. 2FA входа (RDP/консоль) ВЫКЛЮЧЕНА по умолчанию —
+# включается политикой (см. итоговую сводку скрипта).
 #
 # Запуск в PowerShell (от Администратора):
-#   .\install-latest.ps1
+#   .\scripts\install-latest.ps1
 #
 # Однострочный запуск напрямую из сети:
 #   irm https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1 | iex
@@ -32,9 +27,7 @@ param (
     [switch]$AllowUnsigned,
 
     # Включить RDP Credential Provider в составе MSI (в msiexec передаётся
-    # INSTALLRDP=1). Имеет смысл в режиме App; в режиме All провайдер
     # включается всегда. По умолчанию RDP-провайдер НЕ ставится.
-    [switch]$InstallRDP
 )
 
 # 1. Проверка прав Администратора и авто-элевация
@@ -48,7 +41,6 @@ if (-not $isAdmin) {
         if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
         if ($Silent) { $argsList += " -Silent" }
         if ($AllowUnsigned) { $argsList += " -AllowUnsigned" }
-        if ($InstallRDP) { $argsList += " -InstallRDP" }
     } else {
         $cmd = "irm 'https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1?v=$(Get-Random)' | iex"
         $argsList = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
@@ -132,22 +124,15 @@ try {
 if ($Component -eq "Interactive" -and -not $Silent) {
     Write-Host ""
     Write-Host "Выберите тип установки:" -ForegroundColor Cyan
-    Write-Host "  [1] Всё вместе: Десктоп-приложение + RDP Credential Provider (один MSI, INSTALLRDP=1)" -ForegroundColor White
-    Write-Host "  [2] Только десктоп-приложение (MSI, RDP-провайдер не ставится — по умолчанию выключен)" -ForegroundColor White
-    Write-Host "  [3] Только RDP Credential Provider для серверов терминалов (ZIP DLL в System32, без GUI)" -ForegroundColor White
-    Write-Host "  [4] Выход" -ForegroundColor Gray
+    Write-Host "  [1] Полная установка: приложение + RDP Credential Provider + служба (один MSI; 2FA входа по умолчанию выключена)" -ForegroundColor White
+    Write-Host "  [2] Выход" -ForegroundColor Gray
     Write-Host ""
-    $choice = (Read-Host "Введите номер (1-4) [по умолчанию 1]").Trim()
+    $choice = (Read-Host "Введите номер (1-2) [по умолчанию 1]").Trim()
     if ($choice -eq "2") {
-        $Component = "App"
-    } elseif ($choice -eq "3") {
-        $Component = "CP"
-    } elseif ($choice -eq "4") {
         Write-Host "Отменено пользователем." -ForegroundColor Yellow
         exit 0
-    } else {
-        $Component = "All"
     }
+    $Component = "All"
 } elseif ($Component -eq "Interactive") {
     $Component = "All"
 }
@@ -177,10 +162,9 @@ New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
 try {
     # -------------------------------------------------------------------------
-    # КОМПОНЕНТ 1: УСТАНОВКА ЧЕРЕЗ MSI (Десктоп приложение)
+    # ЕДИНЫЙ ПОЛНЫЙ MSI: приложение + RDP Credential Provider + служба
     # -------------------------------------------------------------------------
-    if ($Component -in @("All", "App")) {
-        $MsiFileName = "Ligament-2FA-Windows-x64.msi"
+    $MsiFileName = "Ligament-2FA-Windows-x64.msi"
         $MsiUrl = "$downloadBaseUrl/$MsiFileName"
         $LocalMsi = Join-Path $TempDir $MsiFileName
 
@@ -202,17 +186,9 @@ try {
             $msiArgs += " SERVERURL=`"$ServerURL`""
         }
 
-        # RDP Credential Provider включается свойством INSTALLRDP=1
-        # (feature RdpCredentialProviderFeature, Level=2 — по умолчанию не ставится).
-        # Режим «All»: ставим приложение + RDP-провайдер одним MSI —
-        # DLL кладётся в System32 и регистрируется самим установщиком,
-        # ZIP-развёртывание в System32 больше не выполняется.
-        # Режим «App»: только приложение; ключ -InstallRDP опционально
-        # добавляет RDP-провайдер тем же пакетом.
-        if ($Component -eq "All" -or $InstallRDP) {
-            $msiArgs += " INSTALLRDP=1"
-            Write-Host " Включена MSI-feature RdpCredentialProviderFeature (INSTALLRDP=1)" -ForegroundColor Gray
-        }
+        # ЕДИНЫЙ полный пакет: приложение + CP + служба Ligament2FAService
+        # ставятся одним MSI без свойств выбора. 2FA входа (RDP/консоль)
+        # остаётся ВЫКЛЮЧЕНОЙ — включение только явной политикой.
 
         $process = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
         if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
@@ -232,89 +208,9 @@ try {
 
         # 2FA для RDP и консоли ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНА (RDP2FAEnabled=0 и
         # Console2FAEnabled=0 — локальные дефолты MSI и дефолт кода CP).
-        # Установка провайдера и включение 2FA — независимые действия:
-        # включается только явной политикой (команды — в итоговой сводке).
-    }
+    # Установка провайдера и включение 2FA — независимые действия:
+    # включается только явной политикой (команды — в итоговой сводке).
 
-    # -------------------------------------------------------------------------
-    # КОМПОНЕНТ 2: РАЗВЕРТЫВАНИЕ RDP CREDENTIAL PROVIDER ЧЕРЕЗ ZIP (System32 + COM DLL)
-    # Только для режима "CP" — установка на серверы терминалов (RDS) без GUI.
-    # Для рабочих станций провайдер ставится MSI с INSTALLRDP=1 (режим выше).
-    # -------------------------------------------------------------------------
-    if ($Component -eq "CP") {
-        $ZipFileName = "Ligament-2FA-RDP-CredentialProvider-x64.zip"
-        $ZipUrl = "$downloadBaseUrl/$ZipFileName"
-        $LocalZip = Join-Path $TempDir $ZipFileName
-
-        Write-Host "`nЗагрузка RDP Credential Provider $ZipFileName..." -ForegroundColor Yellow
-        Write-Host "URL: $ZipUrl" -ForegroundColor Gray
-        Invoke-WebRequest -Uri $ZipUrl -OutFile $LocalZip -UseBasicParsing
-        Write-Host " [OK] Загружено: $LocalZip ($([math]::Round((Get-Item $LocalZip).Length / 1MB, 2)) МБ)" -ForegroundColor Green
-
-        Write-Host "`n[3/4] Распаковка компонентов..." -ForegroundColor Yellow
-        $ExtractDir = Join-Path $TempDir "ExtractedCP"
-        Expand-Archive -Path $LocalZip -DestinationPath $ExtractDir -Force
-
-        $DllSource = Join-Path $ExtractDir "LigamentCredentialProvider.dll"
-        if (-not (Test-Path $DllSource)) {
-            $found = Get-ChildItem -Path $ExtractDir -Filter "LigamentCredentialProvider.dll" -Recurse | Select-Object -First 1
-            if ($found) { $DllSource = $found.FullName }
-        }
-
-        if (-not (Test-Path $DllSource)) {
-            Write-Error "В архиве не найдена библиотека LigamentCredentialProvider.dll!"
-        }
-
-        # DLL грузится в logonui.exe (SYSTEM) — неподписанный бинарник здесь
-        # недопустим: проверяем подпись ДО копирования в System32.
-        Write-Host "`nПроверка цифровой подписи Credential Provider DLL..." -ForegroundColor Yellow
-        Assert-ArtifactTrusted -Path $DllSource -Label "LigamentCredentialProvider.dll"
-
-        Write-Host "`n[4/4] Развертывание Credential Provider в System32..." -ForegroundColor Yellow
-        taskkill /f /im logonui.exe 2>$null | Out-Null
-
-        $Sys32 = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
-        $TargetDll = Join-Path $Sys32 "LigamentCredentialProvider.dll"
-        $OldDll = Join-Path $Sys32 "LigamentCredentialProvider.dll.old"
-
-        # Если DLL занята процессом LogonUI — удаляем старый .old и переименовываем активную
-        if (Test-Path $OldDll) { Remove-Item -Path $OldDll -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $TargetDll) {
-            try {
-                Move-Item -Path $TargetDll -Destination $OldDll -Force -ErrorAction Stop
-            } catch {
-                Write-Host " [!] Файл занят, принудительное завершение logonui..." -ForegroundColor Yellow
-                taskkill /f /im logonui.exe 2>$null | Out-Null
-                Start-Sleep -Milliseconds 500
-                Move-Item -Path $TargetDll -Destination $OldDll -Force
-            }
-        }
-
-        Copy-Item -Path $DllSource -Destination $TargetDll -Force
-        Write-Host " [OK] Скопировано в $TargetDll" -ForegroundColor Green
-
-        # Регистрация COM DLL
-        $regSvr = Start-Process "regsvr32.exe" -ArgumentList "/s `"$TargetDll`"" -Wait -PassThru
-        Write-Host " [OK] Регистрация DLL выполнена (regsvr32 exit code: $($regSvr.ExitCode))" -ForegroundColor Green
-
-        # Политики реестра
-        $tsPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-        if (-not (Test-Path $tsPolicy)) { New-Item -Path $tsPolicy -Force | Out-Null }
-        Set-ItemProperty -Path $tsPolicy -Name "fEnableWebAuthn" -Value 1 -Type DWord -Force
-
-        if (-not (Test-Path $RegPolicyPath)) { New-Item -Path $RegPolicyPath -Force | Out-Null }
-        # RDP2FAEnabled НЕ включаем: 2FA для RDP и консоли по умолчанию
-        # выключена, активация — только явной политикой (сводка в конце).
-        Set-ItemProperty -Path $RegPolicyPath -Name "FIDO2Enabled" -Value 1 -Type DWord -Force
-        Set-ItemProperty -Path $RegPolicyPath -Name "DefaultFactor" -Value 0 -Type DWord -Force
-        if ($ServerURL) {
-            Set-ItemProperty -Path $RegPolicyPath -Name "ServerURL" -Value $ServerURL -Type String -Force
-        }
-
-        # Перезапуск экрана входа LogonUI
-        taskkill /f /im logonui.exe 2>$null | Out-Null
-        Write-Host " [OK] LogonUI обновлен" -ForegroundColor Green
-    }
 
     Write-Host ""
     Write-Host "==================================================================" -ForegroundColor Green
@@ -322,15 +218,10 @@ try {
     Write-Host "==================================================================" -ForegroundColor Green
     Write-Host " Версия:             $tag" -ForegroundColor White
     Write-Host " Режим по умолчанию: Push Number Matching (число в приложении Ligament)" -ForegroundColor White
-    $rdpInstalled = ($Component -in @("All", "CP") -or $InstallRDP)
-    if ($rdpInstalled) {
-        Write-Host " RDP Credential Provider: установлен; 2FA для RDP/консоли ВЫКЛЮЧЕНА (по умолчанию)" -ForegroundColor White
-        Write-Host "   Включить 2FA для RDP:    reg add `"$RegPolicyPath`" /v RDP2FAEnabled /t REG_DWORD /d 1 /f" -ForegroundColor Gray
-        Write-Host "   Включить 2FA для консоли: reg add `"$RegPolicyPath`" /v Console2FAEnabled /t REG_DWORD /d 1 /f" -ForegroundColor Gray
-    } else {
-        Write-Host " RDP Credential Provider: НЕ установлен (по умолчанию выключен)" -ForegroundColor White
-        Write-Host "   Включить позже: msiexec /i Ligament-2FA-Windows-x64.msi ADDLOCAL=RdpCredentialProviderFeature" -ForegroundColor Gray
-    }
+    Write-Host " Служба: Ligament2FAService (сторож, активна при AllowExit=0) — установлена и запущена" -ForegroundColor White
+    Write-Host " RDP Credential Provider: установлен; 2FA для RDP/консоли ВЫКЛЮЧЕНА (по умолчанию)" -ForegroundColor White
+    Write-Host "   Включить 2FA для RDP:     reg add `"$RegPolicyPath`" /v RDP2FAEnabled /t REG_DWORD /d 1 /f" -ForegroundColor Gray
+    Write-Host "   Включить 2FA для консоли: reg add `"$RegPolicyPath`" /v Console2FAEnabled /t REG_DWORD /d 1 /f" -ForegroundColor Gray
     $srv = (Get-ItemProperty -Path $RegPolicyPath -Name "ServerURL" -ErrorAction SilentlyContinue).ServerURL
     Write-Host " Сервер 2FA:         $srv" -ForegroundColor White
     Write-Host ""
