@@ -182,8 +182,22 @@ try {
     # Генерируем фрагмент с файлами релиза Flutter
     & $heatCmd dir "$BuildReleaseDir" -cg AppFiles -dr INSTALLFOLDER -gg -scom -sreg -srd -var "var.SourceDir" -out "$TempDir\Files.wxs"
 
+    # Версия MSI = version из pubspec.yaml (1.0.10+21 -> 1.0.10.21; 4-е поле
+    # MSI информационное, в сравнениях апгрейдов участвуют первые три).
+    # Растущая версия + AllowSameVersionUpgrades гарантируют REPLACE старой
+    # установки вместо параллельной записи.
+    $pubspec = Get-Content "$ClientDir\pubspec.yaml" -Raw
+    if ($pubspec -match '(?m)^version:\s*(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?') {
+        $build4 = if ($Matches[4]) { $Matches[4] } else { "0" }
+        $msiVersion = "{0}.{1}.{2}.{3}" -f $Matches[1], $Matches[2], $Matches[3], $build4
+    } else {
+        Write-Error "Не удалось извлечь version из pubspec.yaml — версия MSI обязательна."
+        exit 1
+    }
+    Write-Host " Версия MSI: $msiVersion" -ForegroundColor Cyan
+
     Write-Host "`n[5/5] Компиляция WiX XML (Candle) и линковка MSI (Light)..." -ForegroundColor Yellow
-    & $candleCmd -arch x64 -dSourceDir="$BuildReleaseDir" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
+    & $candleCmd -arch x64 -dSourceDir="$BuildReleaseDir" -dProductVersion="$msiVersion" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
     & $lightCmd -sval -ext WixUIExtension "$TempDir\Product.wixobj" "$TempDir\Files.wixobj" -o "$OutputMsi"
 
     Write-Host "`n========================================================" -ForegroundColor Green

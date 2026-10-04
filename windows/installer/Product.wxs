@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- Версию передаёт build_msi.ps1 из pubspec.yaml (-dProductVersion):
+       зашитая константа приводила к тому, что каждая сборка (Product Id="*")
+       ставилась ОТДЕЛЬНОЙ записью в «Программы и компоненты» — MajorUpgrade
+       не считает равную версию апгрейдом. AllowSameVersionUpgrades —
+       страховка от забытого бампа pubspec: равная версия заменяет старую. -->
   <Product Id="*"
            Name="Ligament 2FA Authenticator"
            Language="1033"
            Codepage="1252"
-           Version="1.0.3"
+           Version="$(var.ProductVersion)"
            Manufacturer="Ligament Security"
            UpgradeCode="4B5F3776-E1E7-44E8-BAA5-7FD81CE1B732">
     <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Platform="x64" Description="Ligament 2FA Client Installer" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Ligament 2FA is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Ligament 2FA is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Структура функций (Features) установки:
