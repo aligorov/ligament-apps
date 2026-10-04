@@ -1077,12 +1077,6 @@ void LigamentCredential::RunAsyncJob() {
         if (client.PollStatus(challengeId, status, err, ssoTicket)) {
             consecutiveNetworkErrors = 0;
             if (status == L"approved" || status == L"denied" || status == L"expired") {
-                // Фаза 2 Windows-identity: accept-ответ несёт одноразовый
-                // sso_ticket — кладём его в per-SID файл (DACL владельца).
-                // Ошибка записи не влияет на вход в Windows (тихий лог).
-                if (status == L"approved" && !ssoTicket.empty()) {
-                    WriteSsoTicketFile(domain, user, ssoTicket);
-                }
                 EnterCriticalSection(&m_csPoll);
                 bool stop = m_worker.stop;
                 if (!stop) {
@@ -1115,6 +1109,15 @@ void LigamentCredential::RunAsyncJob() {
                     NotifyFieldChanged(FID_NUMBER_MATCH);
                     NotifyFieldChanged(FID_LARGE_TEXT);
                     NotifyProviderChangedFromWorker();
+                }
+
+                // Фаза 2 Windows-identity: accept-ответ несёт одноразовый
+                // sso_ticket — кладём его в per-SID файл (DACL владельца)
+                // ПОСЛЕ сигнала авто-логона: LookupAccountNameW доменной
+                // учётки может блокироваться на DC-таймаутах и не имеет
+                // права тормозить вход в Windows. Ошибка записи — тихий лог.
+                if (!stop && status == L"approved" && !ssoTicket.empty()) {
+                    WriteSsoTicketFile(domain, user, ssoTicket);
                 }
                 return;
             }

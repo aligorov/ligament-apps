@@ -440,6 +440,19 @@ class AuthState extends ChangeNotifier {
   /// Модалка (ApprovalModal через activePrompt) открывается/обновляется
   /// из ОБЕИХ цепочек без второго окна.
   void _surfacePrompt(Map<String, dynamic> prompt) {
+    // browser_sso-челленджи (SSO-мост, фаза 2b) могут приехать и типом
+    // challenge_prompt с purpose/type=browser_sso: их UI — отдельный
+    // диалог с билетом, в модалку подтверждения входа они попадать не
+    // должны. Маршрутизируем в отдельный флоу и выходим.
+    final purpose = prompt['purpose']?.toString() ?? prompt['type']?.toString();
+    final metaPurpose = (prompt['metadata'] is Map)
+        ? (prompt['metadata'] as Map)['purpose']?.toString()
+        : null;
+    if (purpose == 'browser_sso' || metaPurpose == 'browser_sso') {
+      _surfaceBrowserSso(prompt);
+      return;
+    }
+
     final cid = prompt['challenge_id']?.toString();
     if (cid != null && cid.isNotEmpty && _resolvedChallengeIds.contains(cid)) {
       return;

@@ -78,6 +78,7 @@ class WindowsSsoTicketReader implements SsoTicketReader {
 
       final tokenOut = calloc<ffi.IntPtr>();
       if (openProcessToken(getCurrentProcess(), tokenQuery, tokenOut) == 0) {
+        calloc.free(tokenOut);
         return null;
       }
       token = ffi.Pointer.fromAddress(tokenOut.value);
@@ -108,6 +109,7 @@ class WindowsSsoTicketReader implements SsoTicketReader {
 
       final sidOut = calloc<ffi.Pointer<ffi.Uint16>>();
       if (convertSidToStringSidW(sidPtr, sidOut) == 0) {
+        calloc.free(sidOut);
         return null;
       }
       final sidStr = sidOut.value.cast<Utf16>().toDartString();
