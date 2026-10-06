@@ -12,6 +12,7 @@ import '../api/client.dart';
 import '../app_version.dart';
 import 'alert_service.dart';
 import 'gpo_service.dart';
+import 'local_detect_service.dart';
 import 'server_url_validator.dart';
 import 'support_service.dart';
 import 'telemetry_service.dart';
@@ -66,6 +67,12 @@ class AuthState extends ChangeNotifier {
   final WebSocketService ws = WebSocketService();
   final LocalAuthentication localAuth = LocalAuthentication();
   final SupportService support = SupportService();
+
+  /// Локальный детект «умного 2FA» (этап D): HTTP-слушатель на
+  /// 127.0.0.1:8757, по которому сервер отличает «вход начат с этого же
+  /// ПК». Только windows/linux/macos (см. LocalDetectService.isSupported),
+  /// на мобильных start/stop — no-op. Ошибка bind не роняет приложение.
+  final LocalDetectService localDetect = LocalDetectService();
 
   /// Токен сессии устройства хранится в безопасном хранилище
   /// (Keychain / Keystore / DPAPI / libsecret), а не в SharedPreferences.
@@ -415,6 +422,13 @@ class AuthState extends ChangeNotifier {
 
       try {
         currentUser = await api!.getProfile();
+        // Этап D «умный 2FA»: восстанавливаем локальный детект по device_id,
+        // сохранённому при логине (сессия устройства живёт и через рестарт
+        // приложения, пока не был logout).
+        final savedDeviceId = prefs.getString(LocalDetectService.kDeviceIdPrefKey);
+        if (savedDeviceId != null && savedDeviceId.isNotEmpty) {
+          unawaited(localDetect.start(savedDeviceId));
+        }
         await _loadBrowserSsoAutoApprove();
         _setupServices();
         await refreshAll();
@@ -741,8 +755,20 @@ class AuthState extends ChangeNotifier {
     await _secureStorage.write(key: _tokenKey, value: token!);
     await prefs.setString('server_url', serverUrl!);
 
+    // Этап D «умный 2FA»: сервер выдаёт сессии устройства device_id
+    // (appLoginResponse.DeviceID) — по нему он отличает вход, начатый с
+    // этого же ПК. Сохраняем для восстановления после рестарта.
+    final deviceId = resp['device_id']?.toString() ?? resp['deviceId']?.toString();
+    if (deviceId != null && deviceId.isNotEmpty) {
+      await prefs.setString(LocalDetectService.kDeviceIdPrefKey, deviceId);
+    }
+
     _loadBrowserSsoAutoApprove();
     _setupServices();
+    // Слушатель localhost:8757 поднимаем только после успешного логина.
+    if (deviceId != null && deviceId.isNotEmpty) {
+      await localDetect.start(deviceId);
+    }
     await refreshAll();
     // Фаза 2: после успешного логина один раз предъявляем CP-билет.
     unawaited(presentSsoTicket());
@@ -756,6 +782,9 @@ class AuthState extends ChangeNotifier {
       await api?.logout();
     } catch (_) {}
 
+    // Этап D: сессия устройства завершена — локальный детект больше не
+    // должен отвечать device_id этого входа.
+    await localDetect.stop();
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();
@@ -789,6 +818,7 @@ class AuthState extends ChangeNotifier {
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
+    await prefs.remove(LocalDetectService.kDeviceIdPrefKey);
     try {
       await _secureStorage.delete(key: _tokenKey);
     } catch (e) {
@@ -1026,6 +1056,9 @@ class AuthState extends ChangeNotifier {
   }) async {
     if (api == null) return;
 
+    // Снимок карточки ДО закрытия: при 403 desktop_confirm_forbidden
+    // (вход начат с этого же ПК — этап D) карточка возвращается на экран.
+    final promptSnapshot = activePrompt;
     if (challengeId.isNotEmpty) {
       _resolvedChallengeIds.add(challengeId);
     }
@@ -1073,11 +1106,25 @@ class AuthState extends ChangeNotifier {
       }
 
       // 2. Отправка подтверждения
-      await api!.challengeDecision(
-        challengeId: challengeId,
-        decision: 'approve',
-        numberMatch: selectedNumberMatch,
-      );
+      try {
+        await api!.challengeDecision(
+          challengeId: challengeId,
+          decision: 'approve',
+          numberMatch: selectedNumberMatch,
+        );
+      } on ApiException catch (e) {
+        if (e.statusCode == 403 && e.code == 'desktop_confirm_forbidden') {
+          // Сервер запретил подтверждать вход с того же ПК, с которого он
+          // начат: карточка ВОЗВРАЩАЕТСЯ — id вынимается из resolved (чтобы
+          // polling-тик не счёл челлендж закрытым и не погасил модалку),
+          // снимок восстанавливается, ошибка уходит в модал с пояснением
+          // «подтвердите с телефона или введите код».
+          _resolvedChallengeIds.remove(challengeId);
+          activePrompt = promptSnapshot;
+          notifyListeners();
+        }
+        rethrow;
+      }
     } else {
       await api!.challengeDecision(
         challengeId: challengeId,
@@ -1346,6 +1393,7 @@ class AuthState extends ChangeNotifier {
   @override
   void dispose() {
     _pollingTimer?.cancel();
+    unawaited(localDetect.stop());
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();

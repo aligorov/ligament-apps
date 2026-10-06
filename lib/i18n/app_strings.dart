@@ -139,6 +139,9 @@ class AppStrings {
       ? 'Вход заблокирован: устройство не соответствует требованиям безопасности (отключен BitLocker или обнаружен root)'
       : 'Login blocked: device does not comply with security requirements (BitLocker disabled or root detected)';
   String get errExpired => isRu ? 'Время действия запроса истекло' : 'Request has expired';
+  String get errDesktopConfirm => isRu
+      ? 'Этот вход начат с этого же ПК — подтвердите его с телефона или введите код'
+      : 'This sign-in started on this same PC — approve it from your phone or enter a code';
   String get errWinHello => isRu ? 'Подтверждение Windows Hello отклонено' : 'Windows Hello confirmation rejected';
   String get approveBtn => isRu ? 'Принять' : 'Approve';
   String get denyBtn => isRu ? 'Отклонить' : 'Deny';

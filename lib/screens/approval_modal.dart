@@ -137,6 +137,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
     if (msg.contains('challenge_expired')) {
       return strings.errExpired;
     }
+    if (msg.contains('desktop_confirm_forbidden')) {
+      return strings.errDesktopConfirm;
+    }
     if (msg.contains('Windows Hello')) {
       return strings.errWinHello;
     }
