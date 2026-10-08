@@ -236,6 +236,16 @@ class SupportService extends ChangeNotifier {
   String? _problemSummary;
   String _accessMode = 'full_control';
 
+  /// Режим «Экран» (этап 2.4): трансляция инициирована ВЛАДЕЛЬЦЕМ с его
+  /// другого устройства (grant mode=screen, support_prompt с owner:true).
+  /// Отличается от обычного SOS: не было accept-диалога, «инженера» нет —
+  /// на другой стороне сам владелец. Влияет на тексты ошибок/баннера.
+  bool _ownerSession = false;
+
+  /// Имя/идентификатор устройства-инициатора (с кого открыли «Экран») —
+  /// для баннера на цели «Ваш экран открыт вам с устройства X».
+  String? _ownerInitiatorDevice;
+
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   RTCDataChannel? _dataChannel;
@@ -272,6 +282,8 @@ class SupportService extends ChangeNotifier {
   String? get problemSummary => _problemSummary;
   String get accessMode => _accessMode;
   bool get isSharing => _state == SupportSessionState.active;
+  bool get ownerSession => _ownerSession;
+  String? get ownerInitiatorDevice => _ownerInitiatorDevice;
   String? get lastError => _lastError;
 
   /// Сброс ошибки последней сессии (кнопка «Закрыть» в баннере ошибки).
@@ -574,6 +586,8 @@ class SupportService extends ChangeNotifier {
     _category = category;
     _problemSummary = problemSummary;
     _accessMode = accessMode;
+    _ownerSession = false;
+    _ownerInitiatorDevice = null;
     _state = SupportSessionState.requested;
     _lastError = null;
     _unreadChatCount = 0;
@@ -581,19 +595,25 @@ class SupportService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Установка состояния авторизации (когда оператор запросил подключение)
+  /// Установка состояния авторизации (когда оператор запросил подключение).
+  /// [owner] — owner-режим «Экрана» (этап 2.4): сессию инициировал сам
+  /// владелец с другого устройства; accept-диалог не показывается.
   void setAuthorizing({
     required String sessionId,
     String? category,
     String? problemSummary,
     String? accessMode,
     ApiClient? api,
+    bool owner = false,
+    String? initiatorDevice,
   }) {
     _activeSessionId = sessionId;
     if (api != null) _api = api;
     if (category != null) _category = category;
     if (problemSummary != null) _problemSummary = problemSummary;
     if (accessMode != null && accessMode.isNotEmpty) _accessMode = accessMode;
+    _ownerSession = owner;
+    _ownerInitiatorDevice = owner ? initiatorDevice : null;
     _state = SupportSessionState.authorizing;
     notifyListeners();
   }
@@ -662,7 +682,9 @@ class SupportService extends ChangeNotifier {
             if (!_isStopping) {
               _p2pConnected = false;
               if (_state == SupportSessionState.active || _state == SupportSessionState.connecting) {
-                _failSession('Соединение с инженером закрыто');
+                _failSession(_ownerSession
+                    ? 'Соединение с вашим устройством закрыто'
+                    : 'Соединение с инженером закрыто');
               }
             }
             break;
@@ -803,7 +825,9 @@ class SupportService extends ChangeNotifier {
     });
     _establishmentDeadlineTimer ??= Timer(const Duration(seconds: 60), () {
       if (_p2pConnected || _peerConnection == null) return;
-      _failSession('Не удалось установить соединение с инженером (таймаут 60 с)');
+      _failSession(_ownerSession
+          ? 'Не удалось подключиться к вашему устройству (таймаут 60 с)'
+          : 'Не удалось установить соединение с инженером (таймаут 60 с)');
     });
   }
 
@@ -1416,6 +1440,8 @@ class SupportService extends ChangeNotifier {
       _activeSessionId = null;
       _category = null;
       _problemSummary = null;
+      _ownerSession = false;
+      _ownerInitiatorDevice = null;
       _screens.clear();
       _currentScreenId = null;
       _currentScreenRect = null;

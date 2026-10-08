@@ -419,6 +419,57 @@ class AppStrings {
   String get trayExit => isRu ? 'Выход' : 'Exit';
   String get trayMinimize => isRu ? 'Свернуть в трей' : 'Minimize to tray';
 
+  // --- RDP «Мой ПК» (этап 2) ---
+  String get rdpSectionTitle => isRu ? 'Мои рабочие места' : 'My Workstations';
+  String get rdpKindPc => isRu ? 'ПК' : 'PC';
+  String get rdpKindTerminal => isRu ? 'Терминальный сервер' : 'Terminal Server';
+  String rdpParallelSessions(int n) => isRu
+      ? '$n параллельн${n % 10 == 1 && n % 100 != 11 ? 'ая сессия' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'ые сессии' : 'ых сессий')}'
+      : '$n parallel session${n == 1 ? '' : 's'}';
+  String get rdpConnectBtn => isRu ? 'Подключиться' : 'Connect';
+  String get rdpScreenBtn => isRu ? 'Экран' : 'Screen';
+  String get rdpServiceOffline => isRu ? 'Служба Ligament offline' : 'Ligament service offline';
+  String get rdpOfflineHint => isRu
+      ? 'Включите ПК или службу Ligament на нём'
+      : 'Turn on the PC or its Ligament service';
+  String get rdpScreenSoon => isRu
+      ? 'Режим «Экран» появится на следующем этапе'
+      : 'Screen mode arrives in the next stage';
+  String get rdpConnTitle => isRu ? 'Подключение к рабочему месту' : 'Connecting to Workstation';
+  String get rdpStepGrant => isRu ? 'Получение доступа…' : 'Requesting access…';
+  String get rdpStepListener => isRu ? 'Локальный слушатель…' : 'Local listener…';
+  String get rdpStepTunnel => isRu ? 'Туннель до сервера…' : 'Tunnel to server…';
+  String get rdpStepLaunch => isRu ? 'Запуск удалённого рабочего стола…' : 'Launching Remote Desktop…';
+  String get rdpStepActive => isRu ? 'Сессия установлена' : 'Session established';
+  String get rdpActiveBanner => isRu ? 'RDP-сессия активна' : 'RDP session active';
+  String rdpActiveBannerTarget(String name) => isRu
+      ? 'RDP-сессия: $name'
+      : 'RDP session: $name';
+  String get rdpEndSessionBtn => isRu ? 'Завершить' : 'End';
+  String get rdpClosedBanner => isRu ? 'RDP-сессия завершена' : 'RDP session ended';
+
+  // --- «Экран моего ПК» owner-режим (этап 2.4, план §5.2) ---
+  String get ownerScreenTitle => isRu ? 'Экран моего ПК' : 'My PC Screen';
+  String get ownerScreenBadge => isRu ? 'Мой ПК' : 'My PC';
+  String get ownerScreenWaiting => isRu
+      ? 'Ждём начала трансляции с вашего ПК…'
+      : 'Waiting for your PC to start sharing…';
+  String ownerScreenProgress(String name) => isRu
+      ? 'Открываем экран «$name»…'
+      : 'Opening screen of "$name"…';
+  String get ownerScreenUnsupportedTitle => isRu
+      ? 'Режим «Экран» пока не поддерживается сервером'
+      : 'Screen mode is not supported by this server yet';
+  String get ownerScreenUnsupportedBody => isRu
+      ? 'Сервер выдал доступ, но не создал сессию просмотра — требуется ядро Ligament с этапом 2.4 (склейка mode=screen с support-сессиями). Обновите сервер и повторите.'
+      : 'The server granted access but did not create a viewing session — a Ligament core with stage 2.4 (mode=screen to support-session glue) is required. Update the server and try again.';
+  String get ownerScreenBannerTitle => isRu
+      ? '🖥 Ваш экран открыт вам'
+      : '🖥 Your screen is shared with you';
+  String ownerScreenBannerBody(String device) => isRu
+      ? 'Трансляция экрана этого ПК для вашего устройства ${device.isEmpty ? 'в сети' : '\u00AB$device\u00BB'}. Виден только вам.'
+      : 'This PC\'s screen is streamed to your device ${device.isEmpty ? 'online' : '\u00AB$device\u00BB'}. Visible only to you.';
+
   // --- Windows identity / SSO ---
   String identityMismatchBanner(String account, String windowsUser) => isRu
       ? '⚠️ Аккаунт $account, а за Windows-сессией $windowsUser. Администратор уведомлён.'

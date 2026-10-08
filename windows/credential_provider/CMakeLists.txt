@@ -22,6 +22,7 @@ set(SOURCES
     LigamentCredential.cpp
     HttpApiClient.cpp
     WebAuthnClient.cpp
+    rdp_gate.cpp
     qrcodegen.cpp
     exports.def
 )
@@ -34,6 +35,7 @@ set(HEADERS
     LigamentCredential.h
     HttpApiClient.h
     WebAuthnClient.h
+    rdp_gate.h
     qrcodegen.hpp
     app_logo_data.h
 )
@@ -52,6 +54,7 @@ target_link_libraries(LigamentCredentialProvider PRIVATE
     advapi32
     ws2_32
     iphlpapi
+    bcrypt
 )
 
 set_target_properties(LigamentCredentialProvider PROPERTIES

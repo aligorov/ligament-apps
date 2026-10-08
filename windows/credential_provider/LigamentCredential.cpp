@@ -1,5 +1,6 @@
 // LigamentCredential.cpp — Implementation of Credential tile logic
 #include "LigamentCredential.h"
+#include "rdp_gate.h"
 #include "qrcodegen.hpp"
 #include "app_logo_data.h"
 #include <wincred.h> // CredProtectW/CredIsProtectedW (wincred.h)
@@ -922,6 +923,49 @@ void LigamentCredential::RunAsyncJob() {
 
     std::wstring challengeId;
     bool needPolling = false;
+
+    // ---- Фаза 0: CP-гейт RDP MFA (сервер internal/api/rdp_cp.go) ---------
+    // Удалённый вход (LOGON/UNLOCK, RDP-сессия): перед MFA-каскадом спрашиваем
+    // ядро, подтверждён ли второй фактор ШЛЮЗОМ Ligament для ЭТОЙ машины
+    // (активная RDP-сессия шлюза, hostname эндпоинта == имя этого ПК).
+    // satisfied → пропускаем каскад (результат = успешный второй фактор);
+    // любой отказ гейта (сеть/секрет/не-200) → обычный каскад (fail-closed),
+    // существующий CP-флоу не меняется. Локальная консоль и UAC-элевация
+    // (CREDUI) гейт не спрашивают. Вызов идёт с воркер-потока: блокирующий
+    // WinHTTP на потоке LogonUI замораживал экран входа (см. шапку класса).
+    if (m_isRemoteSession && m_cpus != CPUS_CREDUI &&
+        (job == JobStartPush || job == JobWebAuthnBegin || job == JobVerifyOtp)) {
+        RdpGateResult gate = CheckRdpMfaSatisfied(
+            cfg.serverUrl, user, ComputerNameSuffix(),
+            cfg.allowSelfSigned, cfg.allowHttp);
+        LogDebug(L"rdp_mfa_gateway: satisfied=%d responded=%d note=%hs",
+            gate.satisfied ? 1 : 0, gate.responded ? 1 : 0, gate.note.c_str());
+        if (gate.satisfied) {
+            LogDebug(L"rdp_mfa_gateway: satisfied, skipping 2FA");
+            // Копии секретов задачи затираем как в остальных ветках jobs.
+            SecureWipe(pass);
+            SecureWipe(otp);
+            EnterCriticalSection(&m_csPoll);
+            bool stop = m_worker.stop;
+            if (!stop) {
+                // Тот же терминальный результат, что у approved-push:
+                // CredentialsChanged → SetSelected(auto-logon) → ветка
+                // already_authenticated в GetSerialization → PackAndFinish.
+                m_worker.beginDone = true;
+                m_worker.beginOk = true;
+                m_worker.done = true;
+                m_authenticated = true;
+                m_statusText = L"✅ Вход подтверждён через шлюз Ligament, выполняется вход...";
+            }
+            LeaveCriticalSection(&m_csPoll);
+            if (!stop) {
+                NotifyFieldChanged(FID_STATUS_TEXT);
+                NotifyProviderChangedFromWorker();
+            }
+            return;
+        }
+        // not satisfied / гейт недоступен → обычный MFA-каскад (фаза 1).
+    }
 
     // ---- Фаза 1: стартовый вызов сервера (без блокировки LogonUI) --------
     if (job == JobStartPush) {

@@ -13,6 +13,7 @@ import '../app_version.dart';
 import 'alert_service.dart';
 import 'gpo_service.dart';
 import 'local_detect_service.dart';
+import 'rdp_service.dart';
 import 'server_url_validator.dart';
 import 'support_service.dart';
 import 'telemetry_service.dart';
@@ -68,6 +69,10 @@ class AuthState extends ChangeNotifier {
   final LocalAuthentication localAuth = LocalAuthentication();
   final SupportService support = SupportService();
 
+  /// RDP-коннектор «Мой ПК» (этап 2): grant → loopback-слушатель →
+  /// WS-мост → mstsc. Владеет активным туннелем; logout рвёт сессию.
+  final RdpConnectorService rdp = RdpConnectorService();
+
   /// Локальный детект «умного 2FA» (этап D): HTTP-слушатель на
   /// 127.0.0.1:8757, по которому сервер отличает «вход начат с этого же
   /// ПК». Только windows/linux/macos (см. LocalDetectService.isSupported),
@@ -108,6 +113,21 @@ class AuthState extends ChangeNotifier {
   bool isCompliant = true;
   bool isOnline = false;
   List<Map<String, dynamic>> relays = [];
+
+  /// RDP-цели «Мой ПК» (этап 2.1): GET /api/v1/app/rdp/targets. Секция на
+  /// главной рисуется только при непустом списке и доступности фичи
+  /// (free-лицензии могут не монтировать /rdp/* — та же деградация, что у
+  /// apps_rdp_url).
+  List<Map<String, dynamic>> rdpTargets = [];
+  bool rdpFeatureAvailable = true;
+
+  /// device_id этой сессии (выдаётся сервером при логине, хранится в prefs
+  /// под тем же ключом, что у LocalDetectService). Режиму «Экран» (этап
+  /// 2.4, план §5.2) он нужен, чтобы отличить инициатора от цели: пуш
+  /// support_prompt с owner:true уходит ВСЕМ устройствам юзера, а делиться
+  /// экраном должно только устройство-цель (инициатор — viewer).
+  String? _ownDeviceId;
+  String? get ownDeviceId => _ownDeviceId;
 
   /// ICE-серверы (STUN/TURN) из /api/v1/app/config для WebRTC-сессий
   /// удаленной помощи (агент + операторский экран в приложении).
@@ -427,6 +447,7 @@ class AuthState extends ChangeNotifier {
         // приложения, пока не был logout).
         final savedDeviceId = prefs.getString(LocalDetectService.kDeviceIdPrefKey);
         if (savedDeviceId != null && savedDeviceId.isNotEmpty) {
+          _ownDeviceId = savedDeviceId;
           unawaited(localDetect.start(savedDeviceId));
         }
         await _loadBrowserSsoAutoApprove();
@@ -531,6 +552,13 @@ class AuthState extends ChangeNotifier {
     };
 
     ws.onSupportPrompt = (prompt) {
+      // Этап 2.4 «Экран» (план §5.2): сессию инициировал САМ владелец с
+      // его другого устройства (grant mode=screen → S3-склейка на сервере).
+      // Цель стартует трансляцию БЕЗ accept-диалога и number-match.
+      if (prompt['owner'] == true) {
+        unawaited(_handleOwnerScreenPrompt(prompt));
+        return;
+      }
       activeSupportPrompt = prompt;
       support.setAuthorizing(
         sessionId: prompt['session_id']?.toString() ?? '',
@@ -556,6 +584,17 @@ class AuthState extends ChangeNotifier {
     }
     support.removeListener(notifyListeners);
     support.addListener(notifyListeners);
+
+    // Этап 2: RDP-коннектор. Туннель закрывает грант через api.rdpClose
+    // (идемпотентно, в т.ч. из dispose/logout после сброса api — хук сам
+    // проверяет живость клиента).
+    rdp.closeGrantHandler = (grantId) async {
+      final client = api;
+      if (client == null) return;
+      await client.rdpClose(grantId);
+    };
+    rdp.removeListener(notifyListeners);
+    rdp.addListener(notifyListeners);
 
     support.onChatMessageReceived = (msg) {
       alert.triggerChatNotification(
@@ -676,6 +715,12 @@ class AuthState extends ChangeNotifier {
         // мгновенно — pull-to-refresh на экране приложений).
         if (pollTicks % 15 == 0) {
           await loadAllowedApps();
+          // Этап 2.1: онлайн-статус RDP-целей (агент тухнет по disconnect/
+          // таймауту — без обновления плитка врёт). Тот же ритм 60с, пока
+          // есть хоть одна цель.
+          if (rdpTargets.isNotEmpty) {
+            await loadRdpTargets();
+          }
         }
       } finally {
         _isPollingInFlight = false;
@@ -760,6 +805,7 @@ class AuthState extends ChangeNotifier {
     // этого же ПК. Сохраняем для восстановления после рестарта.
     final deviceId = resp['device_id']?.toString() ?? resp['deviceId']?.toString();
     if (deviceId != null && deviceId.isNotEmpty) {
+      _ownDeviceId = deviceId;
       await prefs.setString(LocalDetectService.kDeviceIdPrefKey, deviceId);
     }
 
@@ -790,6 +836,14 @@ class AuthState extends ChangeNotifier {
     support.stopScreenSharing();
     support.clearChat();
 
+    // Этап 2: активный RDP-туннель не переживает разлогин — режем сразу
+    // (грант закроется сервером по разрыву трубы, повторный /rdp/close не
+    // нужен: api уже сбрасывается ниже).
+    unawaited(rdp.close(isRu: isRu));
+    rdp.closeGrantHandler = null;
+    rdpTargets.clear();
+    rdpFeatureAvailable = true;
+
     // Windows-identity / SSO-состояние не переживает разлогин: proof
     // привязан к сессии устройства, баннер сбрасываем для следующего входа.
     _ssoTicketFlow = null;
@@ -819,6 +873,7 @@ class AuthState extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
     await prefs.remove(LocalDetectService.kDeviceIdPrefKey);
+    _ownDeviceId = null;
     try {
       await _secureStorage.delete(key: _tokenKey);
     } catch (e) {
@@ -837,11 +892,34 @@ class AuthState extends ChangeNotifier {
       checkPosture(),
       checkSupportSession(),
       refreshRelays(),
+      loadRdpTargets(),
     ];
     if (isEngineer) {
       tasks.add(loadSupportQueue());
     }
     await Future.wait(tasks);
+  }
+
+  /// Загрузка RDP-целей «Мой ПК» (этап 2.1). 404/free-лицензия — фича
+  /// выключена: список пуст, секция скрыта, НЕ ошибка. Прочие сбои —
+  /// debugPrint, прежние данные не трогаем (плитка не мигает).
+  Future<void> loadRdpTargets() async {
+    if (api == null) return;
+    try {
+      rdpTargets = await api!.getRdpTargets();
+      rdpFeatureAvailable = true;
+      notifyListeners();
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) {
+        rdpFeatureAvailable = false;
+        rdpTargets = [];
+        notifyListeners();
+        return;
+      }
+      debugPrint('auth_state: ошибка загрузки RDP-целей: $e');
+    } catch (e) {
+      debugPrint('auth_state: ошибка загрузки RDP-целей: $e');
+    }
   }
 
   /// Загрузка и кэширование списка филиальных Relay-узлов
@@ -1160,6 +1238,81 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Owner-режим «Экрана» (этап 2.4, план §5.2): это устройство — ЦЕЛЬ,
+  /// владелец открыл экран своего ПК с другого устройства (grant
+  /// mode=screen → S3-склейка на сервере → support_prompt с owner:true).
+  /// Без accept-диалога и number-match: сразу startScreenSharing().
+  ///
+  /// Гейты:
+  /// - инициатор (initiator_device_id == наш device_id) — это viewer, он
+  ///   экран НЕ транслирует;
+  /// - мобильные/web цели не поддержаны (getDisplayMedia нет) — «Экран»
+  ///   открывают только НА десктоп, с телефона — только просмотр;
+  /// - занятость: уже идёт другая трансляция (например, живой SOS к
+  ///   инженеру) — owner-сессия закрывается на сервере, чтобы инициатор
+  ///   сразу увидел завершение, а не молчание.
+  Future<void> _handleOwnerScreenPrompt(Map<String, dynamic> prompt) async {
+    final sessionId = prompt['session_id']?.toString() ?? '';
+    if (sessionId.isEmpty || api == null) return;
+
+    final initiator = prompt['initiator_device_id']?.toString();
+    if (initiator != null && initiator.isNotEmpty && initiator == _ownDeviceId) {
+      debugPrint('auth_state: owner-экран инициирован этим устройством — оно viewer, не цель');
+      return;
+    }
+
+    if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      debugPrint('auth_state: owner-экран проигнорирован: платформа не может быть целью');
+      return;
+    }
+
+    if (support.activeSessionId == sessionId &&
+        (support.state == SupportSessionState.connecting ||
+            support.state == SupportSessionState.active)) {
+      return; // эта сессия уже транслируется
+    }
+
+    if (support.state == SupportSessionState.connecting ||
+        support.state == SupportSessionState.active) {
+      debugPrint('auth_state: owner-экран отклонён — уже идёт другая сессия поддержки');
+      try {
+        await api!.endSupportSession(sessionId: sessionId);
+      } catch (_) {}
+      return;
+    }
+
+    final initiatorName = prompt['initiator_device_name']?.toString() ??
+        prompt['initiator_device']?.toString();
+    // Ключевое отличие от SOS: accept-диалог (SupportApprovalModal) не
+    // показывается — activeSupportPrompt остаётся null.
+    support.setAuthorizing(
+      sessionId: sessionId,
+      category: prompt['category']?.toString(),
+      accessMode: 'full_control', // свой ПК — всегда полный доступ (§5.2)
+      api: api,
+      owner: true,
+      initiatorDevice: initiatorName,
+    );
+    notifyListeners();
+
+    try {
+      await support.startScreenSharing(
+        sessionId: sessionId,
+        api: api!,
+        accessMode: 'full_control',
+      );
+    } catch (e) {
+      debugPrint('auth_state: не удалось начать трансляцию owner-экрана: $e');
+      await support.stopScreenSharing();
+      // Сессию закрываем на сервере — инициатор увидит support_ended,
+      // а не зависший «ожидание экрана».
+      try {
+        await api!.endSupportSession(sessionId: sessionId);
+      } catch (_) {}
+    }
+    notifyListeners();
+  }
+
   /// Подтверждение удаленного доступа инженеру (approve) с проверкой контрольного числа
   Future<void> confirmSupport({
     required String sessionId,
@@ -1280,12 +1433,22 @@ class AuthState extends ChangeNotifier {
         final summary = sess['problem_summary']?.toString() ?? '';
         final accessMode = sess['access_mode']?.toString() ?? 'full_control';
 
+        // Этап 2.4: owner-сессия «Экрана» (S3 помечает сессию owner=true,
+        // план §5.2) видна в /support/current ВСЕМ устройствам юзера, но
+        // это не SOS-обращение: ни number-match промпт, ни «Заявка на
+        // помощь» по ней не показываются. Управление жизнью — через WS-пуш
+        // support_prompt(owner:true)/support_ended и экран viewer'а.
+        final isOwnerSess = sess['owner'] == true ||
+            sess['mode']?.toString() == 'screen' ||
+            (support.ownerSession && sessionId == support.activeSessionId);
+
         if (status == 'connecting' || status == 'authorizing') {
           final numberMatch = sess['number_match']?.toString() ?? '';
           // Не переспрашиваем подтверждение, когда WebRTC уже устанавливается
           // (connecting) или сессия завершилась ошибкой на клиенте (ended) —
           // пользователь уже одобрил/увидел ошибку.
-          if (numberMatch.isNotEmpty &&
+          if (!isOwnerSess &&
+              numberMatch.isNotEmpty &&
               activeSupportPrompt == null &&
               support.state != SupportSessionState.active &&
               support.state != SupportSessionState.connecting &&
@@ -1318,7 +1481,8 @@ class AuthState extends ChangeNotifier {
             notifyListeners();
           }
         } else if (status == 'requested') {
-          if (support.state != SupportSessionState.requested &&
+          if (!isOwnerSess &&
+              support.state != SupportSessionState.requested &&
               support.state != SupportSessionState.connecting) {
             support.setRequested(
               sessionId: sessionId,
@@ -1397,6 +1561,9 @@ class AuthState extends ChangeNotifier {
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();
+    // Этап 2: выход из приложения = обрыв туннеля = конец RDP-сессии
+    // (дизайн §2.2); грант на сервере закрывается по разрыву WS.
+    rdp.dispose();
     super.dispose();
   }
 }

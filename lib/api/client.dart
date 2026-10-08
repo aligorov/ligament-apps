@@ -608,6 +608,75 @@ class ApiClient {
     return [];
   }
 
+  // ---- RDP Access Gateway (этап 2: /api/v1/app/rdp/*) ----
+
+  /// Мои RDP-цели («Мой ПК», этап 2.1): GET /api/v1/app/rdp/targets.
+  ///
+  /// 404 трактуются вызывающей стороной как «фича не смонтирована на
+  /// сервере» (free-лицензия) — возвращаем пустой список, секция на главной
+  /// скрывается. Коды ошибок пробрасываются ApiException'ом с серверным
+  /// code (db_error и т.п.).
+  Future<List<Map<String, dynamic>>> getRdpTargets() async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/rdp/targets'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final list = (data['targets'] as List<dynamic>?);
+      if (list == null) return [];
+      return list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    }
+    if (res.statusCode == 404) {
+      // Фича выключена на этом сервере — не ошибка, просто пусто.
+      return [];
+    }
+    throw ApiException(res.statusCode, 'rdp_targets_fetch_failed');
+  }
+
+  /// Одноразовый грант доступа к цели: POST /api/v1/app/rdp/grant.
+  ///
+  /// Ответ 201: {grant_id, token (64 hex = 32 байта), route, expires_in}.
+  /// Серверные ошибки пробрасываются как ApiException с точным кодом:
+  /// 403 target_not_assigned | 403 passkey_required | 428 mfa_required |
+  /// 409 target_busy | 500 db_error — UI мапит их в человеческий текст.
+  Future<Map<String, dynamic>> rdpGrant({
+    required String targetId,
+    String mode = 'rdp',
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/grant'),
+      headers: _headers(),
+      body: jsonEncode({'target_id': targetId, 'mode': mode}),
+    );
+    if (res.statusCode == 201) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String code = 'grant_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      code = errObj['error']?.toString() ?? code;
+    } catch (_) {}
+    throw ApiException(res.statusCode, code);
+  }
+
+  /// Закрыть свой грант и активную сессию: POST /api/v1/app/rdp/close.
+  /// Чужой грант → 404 not_found (не ошибка для идемпотентного закрытия).
+  Future<void> rdpClose(String grantId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/close'),
+      headers: _headers(),
+      body: jsonEncode({'grant_id': grantId}),
+    );
+    if (res.statusCode == 200) return;
+    String code = 'close_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      code = errObj['error']?.toString() ?? code;
+    } catch (_) {}
+    throw ApiException(res.statusCode, code);
+  }
+
   /// Инициация подключения инженера к удаленной сессии из приложения
   Future<Map<String, dynamic>> connectToSupport({
     required String sessionId,

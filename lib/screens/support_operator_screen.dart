@@ -43,12 +43,20 @@ class SupportOperatorScreen extends StatefulWidget {
   final Map<String, dynamic> sessionData;
   final bool isChatOnly;
 
+  /// Режим «Экран» (этап 2.4, план §5.2): viewer — ВЛАДЕЛЕЦ ПК, а не
+  /// инженер поддержки. Отличия: заголовок «Мой ПК», нет number-match и
+  /// инженерных атрибутов SOS (бейдж категории), статус-тексты про своё
+  /// устройство. Доступ не требует роли инженера — подключение к сессии
+  /// разрешено владельцу (серверная склейка S3).
+  final bool ownerMode;
+
   const SupportOperatorScreen({
     super.key,
     required this.sessionId,
     this.numberMatch,
     required this.sessionData,
     this.isChatOnly = false,
+    this.ownerMode = false,
   });
 
   @override
@@ -86,6 +94,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return strings.chatModeStatus;
       case 'waiting_consent':
         return strings.waitingUserConsent(_statusArg ?? '2FA');
+      case 'owner_waiting':
+        // Этап 2.4: цель получила support_prompt(owner:true) и стартует
+        // трансляцию без accept-диалога — ждём первый кадр.
+        return strings.ownerScreenWaiting;
       case 'ended_by_server':
         return strings.sessionEndedByServer;
       case 'conn_error':
@@ -209,7 +221,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _initRendererAndWebRTC() async {
-    _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
+    // Этап 2.4: в owner-режиме consent не нужен — цель стартует шаринг
+    // сама по support_prompt(owner:true); number-match отсутствует.
+    if (widget.ownerMode) {
+      _setStatus('owner_waiting');
+    } else {
+      _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
+    }
     await _remoteRenderer.initialize();
     _connectWebSocket();
     await _setupPeerConnection();
@@ -1166,12 +1184,28 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
-    final clientName = widget.sessionData['display_name'] ??
-        widget.sessionData['employee_name'] ??
-        widget.sessionData['username'] ??
-        strings.clientFallback;
-    final pcName = widget.sessionData['device_name'] ?? widget.sessionData['pc_name'] ?? 'PC';
-    final is1C = widget.sessionData['category'] == '1c';
+    final isOwner = widget.ownerMode;
+    final String clientName;
+    final String pcName;
+    final bool is1C;
+    if (isOwner) {
+      // Этап 2.4: заголовок окна — «Мой ПК», а не «Помощь»: на другой
+      // стороне экран самого владельца, категория SOS не показывается.
+      clientName = widget.sessionData['name']?.toString() ??
+          widget.sessionData['device_name']?.toString() ??
+          strings.ownerScreenTitle;
+      pcName = widget.sessionData['endpoint']?.toString() ??
+          widget.sessionData['device_name']?.toString() ??
+          strings.ownerScreenTitle;
+      is1C = false;
+    } else {
+      clientName = (widget.sessionData['display_name'] ??
+          widget.sessionData['employee_name'] ??
+          widget.sessionData['username'] ??
+          strings.clientFallback).toString();
+      pcName = widget.sessionData['device_name'] ?? widget.sessionData['pc_name'] ?? 'PC';
+      is1C = widget.sessionData['category'] == '1c';
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFF0B0F19),
@@ -1201,17 +1235,37 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         tooltip: strings.backTooltip,
                         onPressed: () => Navigator.of(context).pop(),
                       ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7),
-                          borderRadius: BorderRadius.circular(6),
+                      if (isOwner)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.home_work_outlined, size: 12, color: Colors.white),
+                              const SizedBox(width: 4),
+                              Text(
+                                strings.ownerScreenBadge,
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            is1C ? (strings.isRu ? '1С' : '1C') : 'IT',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                          ),
                         ),
-                        child: Text(
-                          is1C ? (strings.isRu ? '1С' : '1C') : 'IT',
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
-                        ),
-                      ),
                       const SizedBox(width: 8),
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1499,8 +1553,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             ),
           ),
 
-          // Карточка с контрольным числом (если сеанс еще авторизуется клиентом)
-          if (!_isConnected && !_isChatOnly && _currentNumberMatch != null && _statusKey == 'waiting_consent')
+          // Карточка с контрольным числом (если сеанс еще авторизуется клиентом).
+          // В owner-режиме контрольного числа нет (§5.2: без number-match).
+          if (!isOwner && !_isConnected && !_isChatOnly && _currentNumberMatch != null && _statusKey == 'waiting_consent')
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
