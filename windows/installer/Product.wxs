@@ -29,6 +29,7 @@
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="AutoStartupRegistry" />
       <ComponentRef Id="AppServerUrlRegistry" />
+      <ComponentRef Id="UrlProtocolRegistry" />
       <ComponentRef Id="CredentialProviderComponent" />
       <ComponentRef Id="RdpWebAuthnPolicyComponent" />
       <ComponentRef Id="LigamentServiceComponent" />
@@ -107,6 +108,31 @@
                        Type="string"
                        Value="[SERVERURL]"
                        KeyPath="yes" />
+      </Component>
+
+      <!-- Схема URL ligament:// (T6, аудит RDP-11): HKCR\ligament —
+           «URL Protocol» объявляет схему Windows, shell\open\command
+           запускает приложение и передаёт URI в %1 (холодный старт:
+           windows/runner/main.cpp пробрасывает argv в Dart,
+           ligamentUriFromArgs). Контракт ссылки — ТОЛЬКО целевой
+           идентификатор (ligament://rdp/<target_uuid> либо легаси
+           ligament://rdp/<grant_id>): НИКАКИХ грант-токенов/секретов в
+           URI — командная строка видна любому процессу (урок аудита).
+           perMachine-пакет пишет HKCR → HKLM\SOFTWARE\Classes; отдельной
+           HKCU-ветки нет (установка только машинная, InstallScope выше).
+           KeyPath — RegistryValue «URL Protocol» (пустое имя = значение
+           ключа по умолчанию), как у ApplicationShortcut-паттерна. -->
+      <Component Id="UrlProtocolRegistry" Guid="0D9E4F61-8C2B-47D3-9A6E-5F80B2C4D917" Win64="yes">
+        <RegistryKey Root="HKCR" Key="ligament">
+          <RegistryValue Type="string" Value="URL:Ligament 2FA deep link" KeyPath="yes" />
+          <RegistryValue Name="URL Protocol" Type="string" Value="" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Type="string" Value="[INSTALLFOLDER]ligament_authenticator.exe,1" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]ligament_authenticator.exe&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
       </Component>
     </DirectoryRef>
 
