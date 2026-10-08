@@ -19,6 +19,10 @@ class ApiClient {
   /// Защищает UI от вечного спиннера при сетевых проблемах.
   static const Duration _requestTimeout = Duration(seconds: 10);
 
+  /// Локальный IP и хостнейм клиента для телеметрии и заголовков
+  static String? clientInternalIP;
+  static String? clientHostname;
+
   String baseUrl;
   String? token;
 
@@ -59,7 +63,24 @@ class ApiClient {
     if (token != null && token!.isNotEmpty) {
       h['Authorization'] = 'Bearer $token';
     }
+    if (clientInternalIP != null && clientInternalIP!.isNotEmpty) {
+      h['X-Ligament-Internal-IP'] = clientInternalIP!;
+    }
+    if (clientHostname != null && clientHostname!.isNotEmpty) {
+      h['X-Ligament-Hostname'] = clientHostname!;
+    }
     return h;
+  }
+
+  /// Определение внешнего IP-адреса через эндпоинт сервера 2FA
+  Future<Map<String, dynamic>> getMyIP() async {
+    try {
+      final res = await _get(_cleanUrl('/api/v1/app/my-ip'), headers: _headers());
+      if (res.statusCode == 200) {
+        return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return {};
   }
 
   List<Map<String, dynamic>> relays = [];

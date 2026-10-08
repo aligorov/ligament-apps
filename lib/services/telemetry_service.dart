@@ -45,6 +45,45 @@ class TelemetryService {
   Map<String, dynamic>? _cachedPosture;
   DateTime? _lastPostureCheck;
 
+  // Сетевые параметры клиента (LAN IP, интерфейсы, WAN IP)
+  static List<String> cachedInternalIPs = [];
+  static String? cachedHostname;
+  static String? cachedExternalIP;
+
+  /// Сбор реальных сетевых адресов устройства (LAN IP, сетевые адаптеры, имя хоста)
+  static Future<Map<String, dynamic>> collectNetworkInfo() async {
+    final netInfo = <String, dynamic>{};
+    if (kIsWeb) return netInfo;
+    try {
+      cachedHostname = Platform.localHostname;
+      netInfo['hostname'] = Platform.localHostname;
+      final ifaces = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      final ips = <String>[];
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback && !addr.isLinkLocal && addr.address.isNotEmpty) {
+            ips.add(addr.address);
+          }
+        }
+      }
+      cachedInternalIPs = ips;
+      if (ips.isNotEmpty) {
+        netInfo['internal_ip'] = ips.first;
+        netInfo['internal_ips'] = ips;
+        ApiClient.clientInternalIP = ips.first;
+      }
+      if (cachedHostname != null) {
+        ApiClient.clientHostname = cachedHostname;
+      }
+    } catch (e) {
+      debugPrint('telemetry_service: collectNetworkInfo error: $e');
+    }
+    return netInfo;
+  }
+
   // Windows Kernel32 FFI дескрипторы для мгновенного сбора метрик без запуска
   // процессов. Могут ОСТАТЬСЯ NULL (не-Windows платформа или kernel32.dll
   // не открылась — catch в _initWinKernel32): все обращения идут через
@@ -133,6 +172,10 @@ class TelemetryService {
     if (winIdentity != null) {
       posture.addAll(winIdentity);
     }
+
+    // 0b. Сетевые адреса устройства (LAN IP, адаптеры, имя хоста)
+    final netInfo = await collectNetworkInfo();
+    posture.addAll(netInfo);
 
     // 1. Биометрия
     try {
@@ -224,6 +267,19 @@ class TelemetryService {
       final start = DateTime.now();
       final posture = await collectPosture();
       posture['latency_ms'] = DateTime.now().difference(start).inMilliseconds;
+
+      // Определение внешнего IP через бэкенд
+      if (cachedExternalIP == null) {
+        try {
+          final myIpData = await api.getMyIP();
+          if (myIpData['ip'] != null && myIpData['ip'].toString().isNotEmpty) {
+            cachedExternalIP = myIpData['ip'].toString();
+          }
+        } catch (_) {}
+      }
+      if (cachedExternalIP != null) {
+        posture['external_ip'] = cachedExternalIP;
+      }
 
       final isCompliant = await api.sendTelemetry(posture);
       return isCompliant;

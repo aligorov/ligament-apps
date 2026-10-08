@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/telemetry_service.dart';
 import '../i18n/app_strings.dart';
 
 class ApprovalModal extends StatefulWidget {
@@ -37,9 +40,33 @@ class _ApprovalModalState extends State<ApprovalModal> {
   final _totpController = TextEditingController();
   bool _showTotpInput = false;
 
+  bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+
+  bool get _isSameMachine {
+    if (!_isDesktop) return false;
+    final clientIp = _prompt['client_ip']?.toString() ?? _prompt['ip']?.toString();
+    final host = _prompt['host']?.toString();
+    final myHost = Platform.localHostname.toLowerCase();
+    if (host != null && host.isNotEmpty) {
+      final h = host.toLowerCase();
+      if (h == myHost || myHost.startsWith(h) || h.startsWith(myHost)) {
+        return true;
+      }
+    }
+    if (clientIp != null && clientIp.isNotEmpty) {
+      if (clientIp == '127.0.0.1' || clientIp == '::1') return true;
+      if (TelemetryService.cachedInternalIPs.contains(clientIp)) return true;
+      if (TelemetryService.cachedExternalIP != null && TelemetryService.cachedExternalIP == clientIp) return true;
+    }
+    return false;
+  }
+
   void _generateOptions(String? expectedMatch) {
     _numberMatchOptions.clear();
     if (expectedMatch != null && expectedMatch.isNotEmpty) {
+      if (_isDesktop) {
+        _selectedMatch = expectedMatch;
+      }
       final set = <String>{expectedMatch};
       final rnd = Random.secure(); // Криптостойкий генератор для дистракторов number matching
       while (set.length < 3) {
@@ -152,6 +179,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
   Future<void> _handleDecision(bool approve, {bool passkey = false, String? code}) async {
     final expectedMatch = _prompt['number_match']?.toString();
     if (approve && code == null && !passkey && expectedMatch != null && expectedMatch.isNotEmpty) {
+      if (_isSameMachine || _isDesktop) {
+        _selectedMatch = expectedMatch;
+      }
       if (_selectedMatch == null || _selectedMatch != expectedMatch) {
         setState(() => _error = context.stringsRead.errSelectMatch);
         return;
@@ -170,7 +200,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
       await auth.submitDecision(
         challengeId: challengeId,
         approve: approve,
-        selectedNumberMatch: _selectedMatch,
+        selectedNumberMatch: _selectedMatch ?? expectedMatch,
         code: code,
         passkey: passkey,
       );
@@ -340,48 +370,96 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
               // Number Matching (Защита от push-fatigue)
               if (expectedMatch != null && expectedMatch.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                Text(
-                  strings.numberMatchHeader,
-                  style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  (host != null && host.isNotEmpty)
-                      ? '${strings.numberMatchSub}\n(${strings.pcNameLabel} $host)'
-                      : strings.numberMatchSub,
-                  style: const TextStyle(fontSize: 12, color: Colors.white70),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: _numberMatchOptions.map((opt) {
-                    final isSelected = _selectedMatch == opt;
-                    return InkWell(
-                      onTap: () => setState(() => _selectedMatch = opt),
+                const SizedBox(height: 16),
+                if (_isSameMachine) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F2E23),
                       borderRadius: BorderRadius.circular(10),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: isSelected ? const Color(0xFF0284C7) : const Color(0xFF0F172A),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: isSelected ? const Color(0xFF38BDF8) : const Color(0xFF475569),
-                            width: 2,
+                      border: Border.all(color: const Color(0xFF10B981)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.verified_user, color: Color(0xFF10B981), size: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                strings.isRu
+                                    ? 'Вход на этом компьютере (код: $expectedMatch)'
+                                    : 'Sign-in on this PC (code: $expectedMatch)',
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                strings.isRu
+                                    ? 'Подтвердите действие кнопкой ниже или через Passkey'
+                                    : 'Confirm with button below or with Passkey',
+                                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                              ),
+                            ],
                           ),
                         ),
-                        child: Text(
-                          opt,
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: isSelected ? Colors.white : const Color(0xFFE2E8F0),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            expectedMatch,
+                            style: const TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold, fontSize: 16),
                           ),
                         ),
-                      ),
-                    );
-                  }).toList(),
-                ),
+                      ],
+                    ),
+                  ),
+                ] else ...[
+                  Text(
+                    strings.numberMatchHeader,
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    (host != null && host.isNotEmpty)
+                        ? '${strings.numberMatchSub}\n(${strings.pcNameLabel} $host)'
+                        : strings.numberMatchSub,
+                    style: const TextStyle(fontSize: 12, color: Colors.white70),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: _numberMatchOptions.map((opt) {
+                      final isSelected = _selectedMatch == opt;
+                      return InkWell(
+                        onTap: () => setState(() => _selectedMatch = opt),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: isSelected ? const Color(0xFF0284C7) : const Color(0xFF0F172A),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: isSelected ? const Color(0xFF38BDF8) : const Color(0xFF475569),
+                              width: 2,
+                            ),
+                          ),
+                          child: Text(
+                            opt,
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: isSelected ? Colors.white : const Color(0xFFE2E8F0),
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
               ],
 
               if (_error != null) ...[
