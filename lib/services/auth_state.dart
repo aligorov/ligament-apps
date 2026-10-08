@@ -199,12 +199,13 @@ class AuthState extends ChangeNotifier {
   /// Отказы сервера пробрасываются как ApiException (в т.ч. 428
   /// mfa_required — HomeScreen показывает диалог «войти заново /
   /// подтвердить»); не залогинен — ApiException(401, not_authenticated).
-  Future<Map<String, dynamic>> grantRdpTargetBridge(String targetId) async {
+  Future<Map<String, dynamic>> grantRdpTargetBridge(String targetId,
+      {String? code}) async {
     final client = api;
     if (client == null) {
       throw ApiException(401, 'not_authenticated');
     }
-    return client.rdpGrant(targetId: targetId, mode: 'bridge');
+    return client.rdpGrant(targetId: targetId, mode: 'bridge', code: code);
   }
 
   /// ICE-серверы (STUN/TURN) из /api/v1/app/config для WebRTC-сессий

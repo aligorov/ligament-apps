@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
+import '../widgets/rdp_mfa_dialog.dart';
 import '../services/auth_state.dart';
 import '../services/deep_link_service.dart';
 import '../services/input_injector.dart';
@@ -157,15 +158,36 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Грант для target-ссылки (T6): POST /rdp/grant mode=bridge. null —
-  /// сервер отказал и диалог уже показан (428 mfa_required → «войти
-  /// заново / подтвердил — повторить», прочие коды → rdpConnectErrorText).
+  /// сервер отказал и диалог уже показан (428 mfa_required → инлайн-код,
+  /// затем «войти заново / подтвердил — повторить», прочие коды →
+  /// rdpConnectErrorText).
   Future<Map<String, dynamic>?> _grantDeepLinkTarget(
       AuthState auth, String targetId, AppStrings s) async {
     try {
       return await auth.grantRdpTargetBridge(targetId);
     } on ApiException catch (e) {
-      if (e.statusCode == 428 || e.code == 'mfa_required') {
+      if (e.statusCode == 428 || e.code == 'mfa_required' ||
+          e.code == 'invalid_code') {
         if (!mounted) return null;
+        // Инлайн-подтверждение кодом (фикс 10-08-3): сначала код…
+        final code = await showRdpMfaCodeDialog(context,
+            isRu: s.isRu, wrongCode: e.code == 'invalid_code');
+        if (code != null) {
+          try {
+            return await auth.grantRdpTargetBridge(targetId, code: code);
+          } on ApiException catch (e2) {
+            if (e2.statusCode == 428 || e2.code == 'mfa_required' ||
+                e2.code == 'invalid_code') {
+              return _grantDeepLinkTarget(auth, targetId, s);
+            }
+            if (mounted) {
+              await _showDeepLinkInfoDialog(s.rdpDeepLinkGrantErrorTitle,
+                  rdpConnectErrorText(e2, isRu: s.isRu), s.close);
+            }
+            return null;
+          }
+        }
+        // …отмена кода — прежние пути (подтвердил в вебе / перелогин).
         final retry = await _showDeepLinkMfaDialog(s);
         if (retry == true) {
           return _grantDeepLinkTarget(auth, targetId, s);
@@ -382,6 +404,9 @@ class _HomeScreenState extends State<HomeScreen> {
         targetId: id,
         name: name,
         isRu: auth.isRu,
+        // Инлайн-подтверждение 428 кодом (фикс 10-08-3).
+        mfaCodePrompt: (wrong) =>
+            showRdpMfaCodeDialog(context, isRu: auth.isRu, wrongCode: wrong),
       ),
     );
     await showDialog(
@@ -418,7 +443,31 @@ class _HomeScreenState extends State<HomeScreen> {
         beforeId = (await api.getCurrentSupportSession())?['id']?.toString();
       } catch (_) {}
 
-      final grant = await api.rdpGrant(targetId: targetId, mode: 'screen');
+      Map<String, dynamic>? grant;
+      {
+        // Инлайн-подтверждение 428 кодом (фикс 10-08-3): без требования
+        // выходить из приложения; отмена = тихий отказ от «Экрана».
+        String? code;
+        while (true) {
+          try {
+            grant = await api.rdpGrant(
+                targetId: targetId, mode: 'screen', code: code);
+            break;
+          } on ApiException catch (e) {
+            if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
+            if (!mounted) return;
+            _popOwnerScreenProgress();
+            code = await showRdpMfaCodeDialog(context,
+                isRu: s.isRu, wrongCode: e.code == 'invalid_code');
+            if (code == null) break;
+            unawaited(_showOwnerScreenProgress(s.ownerScreenProgress(targetName)));
+          }
+        }
+      }
+      if (grant == null) {
+        _popOwnerScreenProgress();
+        return;
+      }
 
       // Быстрый путь: S3 вложил сессию в ответ гранта.
       String grantSessionId = grant['session_id']?.toString() ??

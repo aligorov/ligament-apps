@@ -643,21 +643,28 @@ class ApiClient {
   Future<Map<String, dynamic>> rdpGrant({
     required String targetId,
     String mode = 'rdp',
+    String? code,
   }) async {
     final res = await _post(
       _cleanUrl('/api/v1/app/rdp/grant'),
       headers: _headers(),
-      body: jsonEncode({'target_id': targetId, 'mode': mode}),
+      body: jsonEncode({
+        'target_id': targetId,
+        'mode': mode,
+        // Инлайн-подтверждение при 428 mfa_required (фикс 10-08-3):
+        // верный код чеканит свежую completed-попытку на сервере.
+        if (code != null && code.isNotEmpty) 'code': code,
+      }),
     );
     if (res.statusCode == 201) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
-    String code = 'grant_failed';
+    String errCode = 'grant_failed';
     try {
       final errObj = jsonDecode(utf8.decode(res.bodyBytes));
-      code = errObj['error']?.toString() ?? code;
+      errCode = errObj['error']?.toString() ?? errCode;
     } catch (_) {}
-    throw ApiException(res.statusCode, code);
+    throw ApiException(res.statusCode, errCode);
   }
 
   /// Закрыть свой грант и активную сессию: POST /api/v1/app/rdp/close.

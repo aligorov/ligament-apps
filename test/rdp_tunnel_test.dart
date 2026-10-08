@@ -15,12 +15,12 @@ void main() {
         ApiException(428, 'mfa_required'),
         isRu: true,
       );
-      expect(ru, contains('подтверждение входа'));
+      expect(ru, contains('подтверждение'));
       final en = rdpConnectErrorText(
         ApiException(428, 'mfa_required'),
         isRu: false,
       );
-      expect(en, contains('sign-in'));
+      expect(en, contains('second-factor'));
     });
 
     test('403 target_not_assigned / passkey_required', () {
@@ -164,7 +164,7 @@ void main() {
         isRu: true,
       );
       expect(svc.phase, RdpTunnelPhase.failed);
-      expect(svc.lastError, contains('подтверждение входа'));
+      expect(svc.lastError, contains('подтверждение'));
       expect(svc.targetName, 'ws-001');
     });
 
@@ -328,6 +328,7 @@ class _FakeApi extends ApiClient {
   Future<Map<String, dynamic>> rdpGrant({
     required String targetId,
     String mode = 'rdp',
+    String? code,
   }) =>
       _behavior(targetId);
 

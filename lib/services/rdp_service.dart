@@ -52,6 +52,26 @@ class RdpConnectorService extends ChangeNotifier {
   }
 
   /// Тестируемый шов платформенного guard'а (flutter test на macOS/Linux).
+  /// _grantWithInlineMfa — grant с инлайн-подтверждением кода: 428
+  /// mfa_required (или 401 invalid_code при повторе) спрашивает код через
+  /// mfaCodePrompt и повторяет запрос с ним. Пустая карта = отмена.
+  static Future<Map<String, dynamic>> _grantWithInlineMfa(
+    Future<Map<String, dynamic>> Function(String? code) grant,
+    Future<String?> Function(bool wrongCode)? mfaCodePrompt,
+  ) async {
+    String? code;
+    while (true) {
+      try {
+        return await grant(code);
+      } on ApiException catch (e) {
+        if (mfaCodePrompt == null) rethrow;
+        if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
+        code = await mfaCodePrompt(e.code == 'invalid_code');
+        if (code == null || code.isEmpty) return const {};
+      }
+    }
+  }
+
   @visibleForTesting
   static bool? windowsOverride;
 
@@ -66,6 +86,7 @@ class RdpConnectorService extends ChangeNotifier {
     required String targetId,
     required String name,
     bool isRu = true,
+    Future<String?> Function(bool wrongCode)? mfaCodePrompt,
   }) async {
     if (isBusy || isActive) return;
     if (!_canRunMstsc) {
@@ -78,14 +99,25 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.grant);
 
     // 1. Грант (ошибки 403/409/428 мапятся ниже в человеческий текст).
+    // 428 mfa_required с mfaCodePrompt — инлайн-подтверждение кодом
+    // (фикс 10-08-3): без требования выходить из приложения; неверный
+    // код переспрашивается, отмена тихо останавливает подключение.
     final Map<String, dynamic> grant;
     try {
-      grant = await api.rdpGrant(targetId: targetId, mode: 'rdp');
+      grant = await _grantWithInlineMfa(
+        (code) => api.rdpGrant(targetId: targetId, mode: 'rdp', code: code),
+        mfaCodePrompt,
+      );
     } on ApiException catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
+      return;
+    }
+    if (grant.isEmpty) {
+      // Пользователь отменил ввод кода — тихий отказ, без «ошибки».
+      _setPhase(RdpTunnelPhase.idle);
       return;
     }
     final grantId = grant['grant_id']?.toString() ?? '';
@@ -672,8 +704,12 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
           : 'This target requires a passkey — confirm sign-in with your security key';
     case 'mfa_required':
       return isRu
-          ? 'Требуется свежее подтверждение входа: войдите в приложение заново с кодом второго фактора или выполните вход в веб-кабинете (действует 10 минут)'
-          : 'A recent sign-in confirmation is required: re-login with a second-factor code or sign in to the web portal (valid for 10 minutes)';
+          ? 'Требуется свежее подтверждение входа — введите код второго фактора'
+          : 'A recent sign-in confirmation is required — enter a second-factor code';
+    case 'invalid_code':
+      return isRu
+          ? 'Код подтверждения не принят — проверьте и введите заново'
+          : 'The confirmation code was rejected — check and try again';
     case 'target_busy':
       return isRu
           ? 'Все сессии рабочего места заняты — попробуйте позже'
