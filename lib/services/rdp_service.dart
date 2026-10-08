@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -229,6 +230,196 @@ class RdpConnectorService extends ChangeNotifier {
     );
   }
 
+  /// Bridge Connector-helper (закрытие P1 #3 аудита 2026-10-08, план §4.3):
+  /// подключение через одноразовый TCP-порт ядра для гранта чужого ПК.
+  ///
+  /// .rdp-файл несовместим с token-handshake моста (mstsc первым делом шлёт
+  /// X.224 Connection Request, а не hex-токен гранта), поэтому приложение
+  /// само выступает коннектором:
+  ///
+  ///   POST /api/v1/app/rdp/bridge-info {grant_id, token} → {host, port}
+  ///   TCP connect host:port
+  ///   → token + "\n" (hex; handshake порта, аудит #1 first-come-wins)
+  ///   → окно подтверждения: порт не разорвал соединение (= токен принят;
+  ///     подтверждения байтом нет — отказ порта это немедленный EOF)
+  ///   → ServerSocket.bind(127.0.0.2, 0)
+  ///   → mstsc /v:127.0.0.2:<localPort>
+  ///   → мост: mstsc ↔ listener ↔ bridge-сокет ↔ ядро ↔ цель
+  ///
+  /// Грант+токен выдаёт вызывающая сторона (POST /rdp/grant mode=bridge);
+  /// claim происходит на сервере в момент handshake порта.
+  Future<void> connectBridge({
+    required ApiClient api,
+    required String grantId,
+    required String token,
+    String? name,
+    bool isRu = true,
+  }) async {
+    if (isBusy || isActive) return;
+    if (!_canRunMstsc) {
+      _fail(isRu
+          ? 'RDP-подключение доступно только на Windows'
+          : 'RDP connection is available on Windows only');
+      return;
+    }
+    if (grantId.isEmpty || token.isEmpty) {
+      _fail(isRu
+          ? 'Некорректный грант сессии'
+          : 'Malformed session grant');
+      return;
+    }
+    if (name != null && name.isNotEmpty) {
+      targetName = name;
+    }
+    _setPhase(RdpTunnelPhase.grant);
+
+    // 1. Адрес bridge-порта от сервера (токен — телом POST, не в query).
+    final Map<String, dynamic> info;
+    try {
+      info = await api.rdpBridgeInfo(grantId: grantId, token: token);
+    } catch (e) {
+      _fail(rdpConnectErrorText(e, isRu: isRu));
+      return;
+    }
+    final endpoint = rdpBridgeEndpoint(info);
+    if (endpoint == null) {
+      _fail(isRu
+          ? 'Сервер вернул некорректный адрес моста'
+          : 'Server returned a malformed bridge endpoint');
+      return;
+    }
+    final (bridgeHost, bridgePort) = endpoint;
+
+    final session = _RdpTunnelSession(grantId: grantId);
+    _session = session;
+
+    // 2. TCP до bridge-порта ядра.
+    _setPhase(RdpTunnelPhase.tunnel);
+    Socket bridge;
+    try {
+      bridge = await Socket.connect(
+        bridgeHost,
+        bridgePort,
+        timeout: const Duration(seconds: 10),
+      );
+    } catch (e) {
+      _fail(rdpConnectErrorText(e, isRu: isRu));
+      return;
+    }
+    session.remote = bridge;
+
+    // 3. Handshake: hex-токен + "\n" первыми байтами (формат openBridgePort).
+    //    Подтверждения байтом в протоколе нет: отказ (неверный токен/
+    //    недоступная цель) — немедленный разрыв порта, поэтому «первый ответ
+    //    ≠ EOF» проверяем коротким окном живости сокета. Ранние байты цели
+    //    (X.224 Connection Confirm) буферизуются в сокете и уходят mstsc
+    //    после мостирования — не drain'им.
+    bridge.add(utf8.encode('$token\n'));
+    bool rejected;
+    try {
+      rejected = await bridge.done.then((_) => true).timeout(
+            rdpBridgeHandshakeWindow,
+            onTimeout: () => false,
+          );
+    } catch (_) {
+      rejected = true;
+    }
+    if (_session != session) {
+      // close() успел отработать между await'ами — тихо выходим.
+      await _quietTeardownBridge(session);
+      return;
+    }
+    if (rejected) {
+      _fail(isRu
+          ? 'Сервер отклонил подключение к мосту: токен гранта не принят или цель недоступна'
+          : 'The server rejected the bridge connection: grant token not accepted or target unreachable');
+      await _quietTeardownBridge(session);
+      return;
+    }
+
+    // 4. Loopback-слушатель на случайном порту (как в connect(): 127.0.0.2).
+    _setPhase(RdpTunnelPhase.listener);
+    ServerSocket listener;
+    try {
+      listener = await _bindLoopback();
+    } catch (e) {
+      _fail(rdpConnectErrorText(e, isRu: isRu));
+      await _quietTeardownBridge(session);
+      return;
+    }
+    session.listener = listener;
+    final port = listener.port;
+    final host = listener.address.address;
+
+    // 5. mstsc на локальный слушатель — мост мостит его до bridge-порта.
+    _setPhase(RdpTunnelPhase.launching);
+    Process? mstsc;
+    try {
+      mstsc = await _startMstsc(host, port);
+    } catch (e) {
+      _fail(rdpConnectErrorText(e, isRu: isRu));
+      await _quietTeardownBridge(session);
+      return;
+    }
+    if (mstsc == null) {
+      _fail(isRu
+          ? 'Не удалось запустить удаленный рабочий стол (mstsc.exe)'
+          : 'Failed to launch Remote Desktop (mstsc.exe)');
+      await _quietTeardownBridge(session);
+      return;
+    }
+    session.mstsc = mstsc;
+    // Пользователь закрыл окно mstsc → сессия завершена (как в connect()).
+    unawaited(mstsc.exitCode.then(
+      (_) {
+        if (_session == session) {
+          _finish(session, reason: _TunnelEndReason.mstscExited, isRu: isRu);
+        }
+      },
+    ));
+
+    // 6. Одно TCP-соединение на грант: слушатель умирает вместе с ним.
+    _setPhase(RdpTunnelPhase.active, detail: '$host:$port');
+    final Socket socket;
+    try {
+      socket = await listener.first.timeout(
+        const Duration(seconds: 45),
+        onTimeout: () => throw TimeoutException('mstsc connect timeout'),
+      );
+    } catch (e) {
+      if (_session != session) return; // уже закрыто параллельным путём
+      _fail(rdpConnectErrorText(e, isRu: isRu));
+      await _quietTeardownBridge(session);
+      return;
+    }
+    if (_session != session) {
+      try {
+        socket.destroy();
+      } catch (_) {}
+      return;
+    }
+    session.socket = socket;
+
+    // 7. Мост TCP↔TCP: mstsc ↔ bridge-порт ядра. addStream в обе стороны —
+    //    честный backpressure (§3.3); завершение любой стороны завершает
+    //    сессию (kill-switch/ревок на сервере рвёт bridge-сокет — это и есть
+    //    детектор обрыва трубы).
+    unawaited(
+      socket.addStream(bridge).then(
+            (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+            onError: (Object e) =>
+                _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+          ),
+    );
+    unawaited(
+      bridge.addStream(socket).then(
+            (_) => _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
+            onError: (Object e) =>
+                _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
+          ),
+    );
+  }
+
   /// Завершить сессию (кнопка «Завершить»/«Отменить», logout, dispose).
   Future<void> close({bool isRu = true}) async {
     final s = _session;
@@ -261,6 +452,10 @@ class RdpConnectorService extends ChangeNotifier {
     try {
       s.socket?.destroy();
     } catch (_) {}
+    // Bridge-сокет (connectBridge): разрыв удалённой ноги гасит локальную.
+    try {
+      s.remote?.destroy();
+    } catch (_) {}
     try {
       await s.ws?.sink.close();
     } catch (_) {}
@@ -277,6 +472,7 @@ class RdpConnectorService extends ChangeNotifier {
       case _TunnelEndReason.mstscExited:
       case _TunnelEndReason.socketClosed:
       case _TunnelEndReason.wsClosed:
+      case _TunnelEndReason.remoteClosed:
         _setPhase(RdpTunnelPhase.closed);
         break;
       case _TunnelEndReason.expired:
@@ -317,6 +513,19 @@ class RdpConnectorService extends ChangeNotifier {
     await _teardownListener(s);
   }
 
+  /// Разнос bridge-сессии без смены фазы (ошибки запуска connectBridge):
+  /// гасим удалённую ногу, локальный сокет и слушатель.
+  Future<void> _quietTeardownBridge(_RdpTunnelSession s) async {
+    s.grantTtl?.cancel();
+    try {
+      s.socket?.destroy();
+    } catch (_) {}
+    try {
+      s.remote?.destroy();
+    } catch (_) {}
+    await _teardownListener(s);
+  }
+
   @override
   void dispose() {
     final s = _session;
@@ -327,6 +536,9 @@ class RdpConnectorService extends ChangeNotifier {
     } catch (_) {}
     try {
       s?.socket?.destroy();
+    } catch (_) {}
+    try {
+      s?.remote?.destroy();
     } catch (_) {}
     try {
       s?.ws?.sink.close();
@@ -349,12 +561,16 @@ enum RdpTunnelPhase {
   failed,
 }
 
-enum _TunnelEndReason { user, mstscExited, socketClosed, wsClosed, expired }
+enum _TunnelEndReason { user, mstscExited, socketClosed, wsClosed, remoteClosed, expired }
 
 class _RdpTunnelSession {
   final String grantId;
   ServerSocket? listener;
   IOWebSocketChannel? ws;
+
+  /// remote — TCP-нога до bridge-порта ядра (connectBridge); в connect()
+  /// эту роль играет WS-труба [ws].
+  Socket? remote;
   Socket? socket;
   Process? mstsc;
   Timer? grantTtl;
@@ -363,6 +579,24 @@ class _RdpTunnelSession {
 }
 
 // ---- чистые функции (тестируются без сети/сокетов) ----
+
+/// Окно подтверждения handshake bridge-порта (connectBridge): после отправки
+/// hex-токена порт-мост либо жив (токен принят, цель дозванивается), либо
+/// молча разрывает соединение (неверный токен) — подтверждения байтом в
+/// протоколе нет, живость ждём не дольше этого окна.
+const Duration rdpBridgeHandshakeWindow = Duration(seconds: 2);
+
+/// Разбор ответа POST /api/v1/app/rdp/bridge-info: {host, port} →
+/// (host, port). null — некорректный ответ (нет полей/вне диапазона портов).
+/// Чистая функция — покрыта тестами (test/rdp_tunnel_test.dart).
+(String, int)? rdpBridgeEndpoint(Map<String, dynamic> info) {
+  final host = info['host']?.toString().trim() ?? '';
+  final port = int.tryParse(info['port']?.toString() ?? '');
+  if (host.isEmpty || port == null || port < 1 || port > 65535) {
+    return null;
+  }
+  return (host, port);
+}
 
 /// Адрес локального слушателя: 127.0.0.2 — весь 127/8 это loopback, адрес
 /// не конфликтует с занятыми портами других localhost-сервисов клиента
@@ -448,6 +682,10 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
       return isRu
           ? 'Маршрут цели не поддерживается: служба Ligament на рабочем месте не подключена'
           : 'Unsupported target route: the Ligament endpoint service is not connected';
+    case 'bridge_already_open':
+      return isRu
+          ? 'Мост для этой сессии уже открыт — завершите текущее подключение и повторите'
+          : 'A bridge for this session is already open — finish the current connection and try again';
   }
   switch (status) {
     case 410:

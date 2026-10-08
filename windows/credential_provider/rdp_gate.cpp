@@ -1,114 +1,131 @@
-// rdp_gate.cpp — клиент CP-гейта RDP MFA: WinHTTP GET + BCrypt (CNG) SHA256.
+// rdp_gate.cpp — клиент CP-гейта RDP MFA: logon-bound assertion
+// (WinHTTP POST + named pipe + реестр; LogonId через GetTokenInformation).
 //
-// Контракт сервера (2fa internal/api/rdp_cp.go):
-//   GET /api/v1/cp/rdp-mfa-satisfied?username=X&machine=Y
-//   X-CP-Secret: hex(SHA256("ligament-cp:" + server.domain))   → {"satisfied": bool}
-// server.domain на сервере = настроенный домен БЕЗ хвостового '/'
-// (strings.TrimRight при загрузке настроек) — CP вычисляет тот же секрет
-// из ServerURL реестра с идентичной нормализацией.
+// Контракт сервера (2fa internal/api/rdp_cp.go, миграция 0065):
+//   POST /api/v1/cp/rdp-assert  {"nonce":hex,"logon_id":hex,"machine":...}
+//   Authorization: Bearer <agent_key endpoint'а>            → {"satisfied": bool}
+// Аутентификация запроса — агентским ключом endpoint'а (sha256 в БД):
+// вычислить его из домена/имени машины нельзя, в отличие от прежнего
+// X-CP-Secret (аудит P1 #2).
 #include "rdp_gate.h"
-
-#include <bcrypt.h>
-
-#pragma comment(lib, "bcrypt.lib")
 
 namespace ligament {
 
-// Нормализация домена ровно как на сервере: TrimSpace + TrimRight "/"
-// (settings.go: t.Server.Domain = strings.TrimRight(parseString(...), "/")).
-// Реестр-значение может нести хвостовые слэши/пробелы — секрет обязан
-// совпасть с вычисленным ядром от «чистого» домена.
-static std::wstring NormalizeDomain(const std::wstring& url) {
-    size_t first = url.find_first_not_of(L" \t\r\n");
-    if (first == std::wstring::npos) return std::wstring();
-    size_t last = url.find_last_not_of(L" \t\r\n");
-    std::wstring d = url.substr(first, last - first + 1);
-    while (!d.empty() && d.back() == L'/') {
-        d.pop_back();
-    }
-    return d;
-}
+#ifndef GetCurrentThreadEffectiveToken
+#define GetCurrentThreadEffectiveToken() ((HANDLE)(LONG_PTR)-6)
+#endif
 
-// Percent-encoding UTF-8 строки для query-string (RFC 3986, unreserved
-// набор). Имя пользователя может содержать кириллицу/спецсимволы —
-// Go-сторона r.URL.Query() раскодирует percent+UTF-8 обратно.
-static std::string UrlEncodeUtf8(const std::string& s) {
-    static const char hex[] = "0123456789ABCDEF";
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (unsigned char c : s) {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
-            out += (char)c;
-        } else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 0x0F];
+// ---- agent_key endpoint'службы из реестра (приоритет Policies → локальный,
+// как endpoint_service.cpp / GPO-настройки CP) ----
+static std::wstring ReadAgentKeyFromRegistry() {
+    const wchar_t* keys[2] = {
+        L"SOFTWARE\\Policies\\Ligament\\2FA",
+        L"SOFTWARE\\Ligament\\2FA",
+    };
+    for (auto keyPath : keys) {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
+            wchar_t buf[256] = {0};
+            DWORD type = 0, size = sizeof(buf) - sizeof(wchar_t);
+            if (RegQueryValueExW(hKey, L"RdpAgentKey", nullptr, &type, (LPBYTE)buf, &size) == ERROR_SUCCESS &&
+                type == REG_SZ) {
+                RegCloseKey(hKey);
+                return buf;
+            }
+            RegCloseKey(hKey);
         }
     }
-    return out;
+    return std::wstring();
 }
 
-// hex(SHA256("ligament-cp:" + domain)) — CNG (BCrypt), НЕ WinCrypt
-// (deprecated). Повторяет cpSecret() ядра: тот же префикс, тот же вход,
-// hex в нижнем регистре (Go hex.EncodeToString).
-static std::string CpSecretHex(const std::string& domainUtf8) {
+// ---- LogonId: LUID логон-сессии контекста CP (LogonUI/winlogon) ----
+// У каждого входящего RDP-подключения своё логон-окно со своим LUID:
+// AuthenticationId токена CP уникален для этого окна входа и не совпадает
+// с окном другого подключения (сервер фиксирует его в rdp_assertions для
+// аудита; пустой logon_id ядро отвергает).
+static std::string CurrentLogonIdHex() {
+    HANDLE tok = GetCurrentThreadEffectiveToken();
+    DWORD need = 0;
+    GetTokenInformation(tok, TokenStatistics, nullptr, 0, &need);
+    if (need == 0 || need > 4096) return "";
+    std::vector<BYTE> buf(need, 0);
+    if (!GetTokenInformation(tok, TokenStatistics, buf.data(), need, &need)) return "";
+    const auto* ts = reinterpret_cast<const TOKEN_STATISTICS*>(buf.data());
+    char hex[17] = {0};
+    sprintf_s(hex, _countof(hex), "%08x%08x",
+        (unsigned)ts->AuthenticationId.HighPart,
+        (unsigned)ts->AuthenticationId.LowPart);
+    return hex;
+}
+
+// ---- nonce одноразового assertion у endpoint-службы (named pipe) ----
+// Служба (endpoint_service.cpp) получила кадр agent_assertion от ядра и
+// раздаёт nonce локальным клиентам. Протокол: подключиться и прочитать
+// один JSON {"nonce":"<hex>|"}; запрос не нужен. Чтение ограничено
+// поллингом PeekNamedPipe (~2 с) — блокировки потока без таймаута нет.
+static std::string QueryAssertionNonce() {
+    const wchar_t* kPipe = L"\\\\.\\pipe\\LigamentRdpGate";
+    if (!WaitNamedPipeW(kPipe, 2000)) return ""; // служба не подняла pipe
+    HANDLE h = CreateFileW(kPipe, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return "";
     std::string out;
-    BCRYPT_ALG_HANDLE hAlg = nullptr;
-    BCRYPT_HASH_HANDLE hHash = nullptr;
-
-    NTSTATUS st = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-    if (st != 0) return out;
-
-    do {
-        st = BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0);
-        if (st != 0) break;
-
-        std::string input = "ligament-cp:" + domainUtf8;
-        st = BCryptHashData(hHash, (PUCHAR)input.data(), (ULONG)input.size(), 0);
-        if (st != 0) break;
-
-        BYTE hash[32] = {0}; // SHA-256 = 32 байта
-        st = BCryptFinishHash(hHash, hash, sizeof(hash), 0);
-        if (st != 0) break;
-
-        static const char hex[] = "0123456789abcdef";
-        out.reserve(sizeof(hash) * 2);
-        for (BYTE b : hash) {
-            out += hex[b >> 4];
-            out += hex[b & 0x0F];
+    out.reserve(128);
+    for (int poll = 0; poll < 100 && out.size() < 512; ++poll) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) break; // сервер оборвал
+        if (avail == 0) {
+            if (poll == 99) break;
+            Sleep(20);
+            continue;
         }
-    } while (false);
-
-    if (hHash) BCryptDestroyHash(hHash);
-    BCryptCloseAlgorithmProvider(hAlg, 0);
-    return out;
+        char buf[256];
+        DWORD want = avail < sizeof(buf) ? avail : (DWORD)sizeof(buf);
+        DWORD readN = 0;
+        if (!ReadFile(h, buf, want, &readN, nullptr) || readN == 0) break;
+        out.append(buf, readN);
+        if (out.find('}') != std::string::npos) break; // JSON закрыт
+    }
+    CloseHandle(h);
+    return ExtractJsonString(out, "nonce");
 }
 
 RdpGateResult CheckRdpMfaSatisfied(
     const std::wstring& serverUrl,
-    const std::wstring& username,
     const std::wstring& computerName,
     bool allowSelfSigned,
     bool allowHttp)
 {
     RdpGateResult res;
 
-    const std::wstring domain = NormalizeDomain(serverUrl);
-    if (domain.empty() || username.empty() || computerName.empty()) {
+    if (serverUrl.empty() || computerName.empty()) {
         res.note = "not_configured";
+        return res;
+    }
+    const std::wstring agentKey = ReadAgentKeyFromRegistry();
+    if (agentKey.empty()) {
+        res.note = "no_agent_key"; // машина не endpoint RDP-шлюза
+        return res;
+    }
+    const std::string nonce = QueryAssertionNonce();
+    if (nonce.empty()) {
+        res.note = "no_assertion"; // нет живого окна (службы/claim/nonce)
+        return res;
+    }
+    const std::string logonId = CurrentLogonIdHex();
+    if (logonId.empty()) {
+        res.note = "logon_id_failed";
         return res;
     }
 
     // Схема — та же политика, что у HttpApiClient::ParseUrl (VULN-27):
     // только https; http — исключительно при явном AllowHttp (тестовые
-    // стенды). Гейт не несёт кредов, но политику канала не ослабляем.
+    // стенды). Гейт не несёт пароля, но несёт agent_key — не ослабляем.
     URL_COMPONENTS uc = {0};
     uc.dwStructSize = sizeof(uc);
     wchar_t host[512] = {0};
     uc.lpszHostName = host;
     uc.dwHostNameLength = _countof(host);
-    if (!WinHttpCrackUrl(domain.c_str(), (DWORD)domain.length(), 0, &uc)) {
+    if (!WinHttpCrackUrl(serverUrl.c_str(), (DWORD)serverUrl.length(), 0, &uc)) {
         res.note = "bad_url";
         return res;
     }
@@ -118,18 +135,11 @@ RdpGateResult CheckRdpMfaSatisfied(
         return res;
     }
 
-    // Секрет: hex(SHA256("ligament-cp:" + нормализованный домен)).
-    const std::string secret = CpSecretHex(WideToUtf8(domain));
-    if (secret.empty()) {
-        res.note = "sha256_failed";
-        return res;
-    }
-
-    // Путь после encoding — чистый ASCII, конвертация в wide безопасна.
-    const std::string path8 = "/api/v1/cp/rdp-mfa-satisfied?username="
-        + UrlEncodeUtf8(WideToUtf8(username))
-        + "&machine=" + UrlEncodeUtf8(WideToUtf8(computerName));
-    const std::wstring path = Utf8ToWide(path8);
+    // Тело/путь — чистый ASCII (machine через UTF-8+escape), wide безопасен.
+    const std::string body = std::string("{\"nonce\":\"") + EscapeJson(nonce) +
+        "\",\"logon_id\":\"" + logonId +
+        "\",\"machine\":\"" + EscapeJson(WideToUtf8(computerName)) + "\"}";
+    const std::wstring path = L"/api/v1/cp/rdp-assert";
 
     HINTERNET hSession = WinHttpOpen(
         L"Ligament-2FA-CredentialProvider/1.0",
@@ -142,8 +152,7 @@ RdpGateResult CheckRdpMfaSatisfied(
         return res;
     }
     // Короткие таймауты (~3 c): гейт — пре-фаза MFA-каскада и не имеет
-    // права держать вход. resolve/connect/send 2 c, receive 3 c: типовой
-    // отказ сети закрывается за connect-таймаут.
+    // права держать вход. resolve/connect/send 2 c, receive 3 c.
     WinHttpSetTimeouts(hSession, 2000, 2000, 2000, 3000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
@@ -155,7 +164,7 @@ RdpGateResult CheckRdpMfaSatisfied(
 
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
-        L"GET",
+        L"POST",
         path.c_str(),
         nullptr,
         WINHTTP_NO_REFERER,
@@ -176,19 +185,25 @@ RdpGateResult CheckRdpMfaSatisfied(
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
     }
 
-    const std::wstring headers = L"X-CP-Secret: " + Utf8ToWide(secret) + L"\r\n";
+    const std::wstring headers =
+        L"Authorization: Bearer " + agentKey + L"\r\n" \
+        L"Content-Type: application/json\r\n";
     BOOL ok = WinHttpSendRequest(
         hRequest,
         headers.c_str(),
         (DWORD)-1,   // -1 = WinHttp сам считает длину по нуль-терминатору
-        nullptr, 0, 0, 0);
+        (LPVOID)body.data(),
+        (DWORD)body.size(),
+        (DWORD)body.size(),
+        0);
     if (ok) {
         ok = WinHttpReceiveResponse(hRequest, nullptr);
     }
 
     if (!ok) {
         // Транспортный отказ (недоступен/DNS/TLS/таймаут) — fail-closed:
-        // обычный MFA-каскад, CP-флоу не меняется.
+        // обычный MFA-каскад, CP-флоу не меняется. Assertion на сервере
+        // НЕ погашен (ответа не было) — окно не сгорело впустую.
         res.note = "network_error";
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
@@ -206,7 +221,7 @@ RdpGateResult CheckRdpMfaSatisfied(
         &dwSize,
         WINHTTP_NO_HEADER_INDEX);
 
-    std::string body;
+    std::string respBody;
     DWORD dwDownloaded = 0;
     do {
         dwSize = 0;
@@ -214,7 +229,7 @@ RdpGateResult CheckRdpMfaSatisfied(
         if (dwSize == 0) break;
         std::vector<char> buffer(dwSize + 1, 0);
         if (WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) {
-            body.append(buffer.data(), dwDownloaded);
+            respBody.append(buffer.data(), dwDownloaded);
         }
     } while (dwSize > 0);
 
@@ -230,7 +245,7 @@ RdpGateResult CheckRdpMfaSatisfied(
     }
 
     res.responded = true;
-    res.satisfied = ExtractJsonBool(body, "satisfied");
+    res.satisfied = ExtractJsonBool(respBody, "satisfied");
     res.note = res.satisfied ? "satisfied" : "not_satisfied";
     return res;
 }

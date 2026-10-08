@@ -924,17 +924,18 @@ void LigamentCredential::RunAsyncJob() {
     std::wstring challengeId;
     bool needPolling = false;
 
-    // ---- Фаза 0: CP-гейт RDP MFA — ОТКЛЮЧЕН -------------------------------
-    // Сервер выключил rdp_cp-гейт (internal/api/rdp_cp.go): satisfied всегда
-    // false, а каждый удалённый вход продолжал бы гонять WinHTTP-запрос с
-    // 8-секундным receive-таймаутом. Вызов убран из рантайма; сам
-    // rdp_gate.cpp/h остаётся в сборке (см. CMakeLists) для будущего
-    // включения — достаточно вернуть вызов ниже.
-#if 0
+    // ---- Фаза 0: CP-гейт RDP MFA (logon-bound assertion) ------------------
+    // Пропуск MFA ровно один раз на claim гранта шлюза (закрытие P1 #2
+    // аудита 2026-10-08): endpoint-служба получила от ядра одноразовый
+    // nonce (agent_assertion), CP забирает его named pipe'ом, предъявляет
+    // ядру POST /api/v1/cp/rdp-assert с LogonId ЭТОГО логон-окна и
+    // agent_key endpoint'а (реестр). Любой отказ (нет службы/nonce/ключа,
+    // сеть, не-200) → обычный MFA-каскад ниже (fail-closed). Только
+    // воркер-поток: pipe+WinHTTP блокируют до ~5 с.
     if (m_isRemoteSession && m_cpus != CPUS_CREDUI &&
         (job == JobStartPush || job == JobWebAuthnBegin || job == JobVerifyOtp)) {
         RdpGateResult gate = CheckRdpMfaSatisfied(
-            cfg.serverUrl, user, ComputerNameSuffix(),
+            cfg.serverUrl, ComputerNameSuffix(),
             cfg.allowSelfSigned, cfg.allowHttp);
         LogDebug(L"rdp_mfa_gateway: satisfied=%d responded=%d note=%hs",
             gate.satisfied ? 1 : 0, gate.responded ? 1 : 0, gate.note.c_str());
@@ -964,7 +965,6 @@ void LigamentCredential::RunAsyncJob() {
         }
         // not satisfied / гейт недоступен → обычный MFA-каскад (фаза 1).
     }
-#endif
 
     // ---- Фаза 1: стартовый вызов сервера (без блокировки LogonUI) --------
     if (job == JobStartPush) {

@@ -15,6 +15,11 @@
 //   обе стороны:  бинарный кадр = сырые байты ↔ TCP 127.0.0.1:3389
 //   обе стороны:  {"type":"agent_close","stream_id":N,"reason":"..."}
 //   агент → ядро: {"type":"ping"} → {"type":"pong"} (поверх WS ping/pong)
+//   ядро → агент: {"type":"agent_assertion","nonce":"<hex>","expires_in":N,
+//                  "grant_id":...} — одноразовый assertion CP-гейта после
+//                  claim гранта (аудит P1 #2 2026-10-08): служба хранит
+//                  nonce в памяти и отдаёт его локальному Ligament-CP
+//                  через named pipe \\.\pipe\LigamentRdpGate (см. ниже).
 //
 // LOOPBACK ENFORCEMENT (план §4: «endpoint открывает ТОЛЬКО локальный RDP
 // и не является универсальным прокси»): host/port из agent_dial ИГНОРИРУЮТСЯ,
@@ -185,6 +190,115 @@ bool LoadConfig(Config& cfg) {
     while (!cfg.serverUrl.empty() && iswspace(cfg.serverUrl.back())) cfg.serverUrl.pop_back();
     while (!cfg.serverUrl.empty() && iswspace(cfg.serverUrl.front())) cfg.serverUrl.erase(0, 1);
     return cfg.Valid();
+}
+
+// ---------------- Assertion CP-гейта (nonce для Ligament-CP) ----------------
+// Ядро после claim гранта (WS-труба юзера) присылает контрольный кадр
+// agent_assertion с одноразовым nonce (сервер rdp_cp.go, миграция 0065:
+// TTL 5 минут, одноразовость used_at, привязка к endpoint). Состояние —
+// процесс-глобальное: переживает реконнект WSS-туннеля (служба жива,
+// окно подключения никуда не девается). Протухший nonce не отдаётся.
+
+const wchar_t* kRdpGatePipeName = L"\\\\.\\pipe\\LigamentRdpGate";
+
+struct RdpAssertionState {
+    std::mutex mu;
+    std::string nonce;
+    ULONGLONG expiresAtTick = 0; // GetTickCount64-дедлайн
+};
+
+RdpAssertionState g_assertion;
+
+void StoreAssertionNonce(const std::string& nonce, unsigned long long expiresInSec) {
+    std::lock_guard<std::mutex> lk(g_assertion.mu);
+    g_assertion.nonce = nonce;
+    g_assertion.expiresAtTick = GetTickCount64() + expiresInSec * 1000ULL;
+}
+
+// Текущий ответ CP: живой nonce или пустой (нет окна/истёк).
+std::string CurrentAssertionJson() {
+    std::string nonce;
+    {
+        std::lock_guard<std::mutex> lk(g_assertion.mu);
+        if (!g_assertion.nonce.empty() && GetTickCount64() < g_assertion.expiresAtTick) {
+            nonce = g_assertion.nonce;
+        } else {
+            g_assertion.nonce.clear(); // протухший не отдаём дважды
+        }
+    }
+    if (nonce.empty()) return "{\"nonce\":\"\"}";
+    return "{\"nonce\":\"" + nonce + "\"}";
+}
+
+// Цикл named pipe для CP (LigamentCredential, фаза 0). Протокол: CP
+// подключается и ЧИТАЕТ один JSON {"nonce":"<hex>|"}; запроса нет — байты
+// от клиента (если были) дропаются DisconnectNamedPipe. DACL: SYSTEM и
+// Администраторы (CP живёт в LogonUI/wlogon под SYSTEM; стандартный
+// пользователь процесс-хендл не получает). Overlapped-подключение ждёт
+// ИЛИ клиента, ИЛИ stop-события службы — shutdown не виснет на Accept.
+void RdpGatePipeLoop(HANDLE hStop) {
+    SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)", SDDL_REVISION_1,
+            &sa.lpSecurityDescriptor, nullptr)) {
+        sa.lpSecurityDescriptor = nullptr; // дефолтный DACL объекта тоже ок
+    }
+    for (;;) {
+        if (WaitForSingleObject(hStop, 0) != WAIT_TIMEOUT) return;
+        HANDLE hPipe = CreateNamedPipeW(kRdpGatePipeName,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            PIPE_UNLIMITED_INSTANCES, 256, 256, 2000,
+            sa.lpSecurityDescriptor ? &sa : nullptr);
+        if (hPipe == INVALID_HANDLE_VALUE) {
+            // Имя занято/временно недоступно — тихая пауза и повтор.
+            if (WaitForSingleObject(hStop, 5000) != WAIT_TIMEOUT) return;
+            continue;
+        }
+        OVERLAPPED ov = {};
+        ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ov.hEvent) {
+            CloseHandle(hPipe);
+            continue;
+        }
+        BOOL connected = ConnectNamedPipe(hPipe, &ov);
+        DWORD cerr = connected ? NO_ERROR : GetLastError();
+        bool haveClient = false;
+        bool stopped = false;
+        if (connected || cerr == ERROR_PIPE_CONNECTED) {
+            haveClient = true;
+        } else if (cerr == ERROR_IO_PENDING) {
+            HANDLE waits[2] = {ov.hEvent, hStop};
+            DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+            if (w == WAIT_OBJECT_0) {
+                DWORD dummy = 0;
+                haveClient = GetOverlappedResult(hPipe, &ov, &dummy, FALSE);
+            } else {
+                stopped = true;
+            }
+        } else {
+            stopped = (WaitForSingleObject(hStop, 0) != WAIT_TIMEOUT);
+        }
+        if (haveClient) {
+            const std::string resp = CurrentAssertionJson();
+            DWORD written = 0;
+            ResetEvent(ov.hEvent);
+            if (WriteFile(hPipe, resp.data(), (DWORD)resp.size(), &written, &ov) ||
+                GetLastError() == ERROR_IO_PENDING) {
+                if (WaitForSingleObject(ov.hEvent, 3000) == WAIT_OBJECT_0) {
+                    GetOverlappedResult(hPipe, &ov, &written, FALSE);
+                } else {
+                    CancelIo(hPipe);
+                }
+            }
+            FlushFileBuffers(hPipe);
+            DisconnectNamedPipe(hPipe);
+            Log(L"CP забрал assertion-гейт (длина ответа %zu)", resp.size());
+        }
+        CloseHandle(ov.hEvent);
+        CloseHandle(hPipe);
+        if (stopped) return;
+    }
 }
 
 // ---------------- Backoff (порт lib/services/ws_service.dart) ----------------
@@ -463,6 +577,17 @@ private:
         JsonExtractU64(json, "stream_id", sid);
         if (type == "agent_hello") {
             Log(L"ядро приветствовало: endpoint=%S", JsonExtractString(json, "endpoint_id").c_str());
+        } else if (type == "agent_assertion") {
+            // Одноразовое окно CP-гейта для этого claim гранта (P1 #2).
+            std::string nonce = JsonExtractString(json, "nonce");
+            unsigned long long ttl = 0;
+            JsonExtractU64(json, "expires_in", ttl);
+            if (nonce.empty() || ttl == 0) {
+                Log(L"agent_assertion без nonce/ttl — игнорирую");
+            } else {
+                StoreAssertionNonce(nonce, ttl);
+                Log(L"assertion CP-гейта получен (ttl=%llu c)", ttl);
+            }
         } else if (type == "agent_dial") {
             HandleDial(sid, json);
         } else if (type == "agent_close") {
@@ -653,6 +778,10 @@ void WorkerLoop() {
         return;
     }
 
+    // Named pipe CP-гейта живёт всю жизнь службы (не привязан к туннелю):
+    // assertion-окно переживает реконнекты WSS.
+    std::thread gatePipe(RdpGatePipeLoop, g_hStop);
+
     // 1с → 2с → … → капа 60с, джиттер ±20% (порт ws_service.ReconnectBackoff).
     ReconnectBackoff backoff(1000, 60000, 0.2);
     bool loggedNoConfig = false;
@@ -692,6 +821,7 @@ void WorkerLoop() {
         if (WaitForSingleObject(g_hStop, (DWORD)delay) != WAIT_TIMEOUT) break;
     }
 
+    gatePipe.join();
     WSACleanup();
     Log(L"служба остановлена");
 }

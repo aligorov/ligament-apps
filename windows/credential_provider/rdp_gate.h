@@ -1,7 +1,20 @@
-// rdp_gate.h — CP-гейт RDP MFA (сервер internal/api/rdp_cp.go, аудит #2,
-// план §4.4/§6): перед MFA-каскадом спрашиваем ядро, есть ли у юзера
-// активная RDP-сессия шлюза Ligament, ЦЕЛЬ которой — ЭТА машина.
-// satisfied=true → второй фактор уже засчитан шлюзом, каскад пропускаем.
+// rdp_gate.h — CP-гейт RDP MFA, контракт logon-bound assertion (сервер
+// internal/api/rdp_cp.go, закрытие аудита P1 #2 от 2026-10-08, миграция
+// 0065). Пропуск MFA возможен ровно ОДИН раз на claim гранта шлюза:
+//
+//   1) ядро после claim гранта выдаёт одноразовый nonce (TTL 5 мин) и
+//      доставляет его endpoint-службе кадром agent_assertion;
+//   2) CP забирает nonce у службы через named pipe \\.\pipe\LigamentRdpGate;
+//   3) CP предъявляет ядру POST /api/v1/cp/rdp-assert с nonce, LogonId
+//      СВОЕГО логон-окна (GetTokenInformation TokenStatistics) и именем
+//      машины, аутентифицируясь agent_key endpoint'а (реестр RdpAgentKey —
+//      тот же, что у endpoint-службы; в БД только sha256);
+//   4) ядро атомарно гасит assertion → {"satisfied":true} → MFA-каскад
+//      пропускается. Повторное предъявление = false (окно одно).
+//
+// Второе подключение того же юзера к той же машине получает НОВЫЙ грант
+// (со свежей MFA-попыткой) — прежний «активный грант = satisfied» больше
+// не работает.
 #pragma once
 
 #include "common.h"
@@ -9,32 +22,30 @@
 namespace ligament {
 
 struct RdpGateResult {
-    // true — шлюз подтвердил второй фактор для этого юзера на этой машине.
+    // true — шлюз подтвердил второй фактор для ЭТОГО окна подключения.
     bool satisfied = false;
     // true — гейт ответил по HTTP (код распознан, тело прочитано). false —
     // транспортный отказ/отклонение запроса: CP обязан работать как обычно.
     bool responded = false;
     // Несекретный диагноз для cp.log ("network_error", "status_403",
-    // "not_satisfied", "not_configured", ...). Никаких кредов/URL.
+    // "not_satisfied", "no_assertion", "no_agent_key", ...). Без кредов.
     std::string note;
 };
 
-// GET {serverUrl}/api/v1/cp/rdp-mfa-satisfied?username=..&machine=..
-// с заголовком X-CP-Secret = hex(SHA256("ligament-cp:" + serverUrl)).
+// POST {serverUrl}/api/v1/cp/rdp-assert {nonce, logon_id, machine}
+// с заголовком Authorization: Bearer <agent_key из реестра>.
 //
-// serverUrl — значение ServerURL из реестра; нормализуется как на сервере
-// (settings.go: TrimSpace + TrimRight "/")). ХЕШИРУЕТСЯ НОРМАЛИЗИРОВАННЫЙ
-// ДОМЕН, поэтому хвостовой слэш в реестре не ломает секрет.
-// computerName — NetBIOS-имя цели (GetComputerNameW): сервер сравнивает
-// его с hostname эндпоинта активного гранта (привязка к машине).
+// computerName — NetBIOS-имя цели (GetComputerNameW): сервер сверяет его
+// с hostname endpoint'а (привязка к машине). nonce берётся у endpoint-
+// службы (named pipe), LogonId — из контекста процесса CP.
 //
-// БЛОКИРУЮЩИЙ вызов (таймауты WinHTTP ~3 c): только с воркер-потока,
-// никогда с потока LogonUI (см. RunAsyncJob). Любая ошибка — сеть, плохой
-// URL/схема, не-200, битый JSON, сбой SHA256 → satisfied=false
-// (fail-closed: гейт недоступен → CP работает как обычно).
+// БЛОКИРУЮЩИЙ вызов (таймауты WinHTTP ~3 с + pipe ~2 с): только с
+// воркер-потока, никогда с потока LogonUI (см. RunAsyncJob). Любая
+// ошибка — нет службы/nonce/ключа, сеть, плохой URL/схема, не-200, битый
+// JSON → satisfied=false (fail-closed: гейт недоступен → CP работает как
+// обычно).
 RdpGateResult CheckRdpMfaSatisfied(
     const std::wstring& serverUrl,
-    const std::wstring& username,
     const std::wstring& computerName,
     bool allowSelfSigned = false,
     bool allowHttp = false);

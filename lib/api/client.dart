@@ -677,6 +677,36 @@ class ApiClient {
     throw ApiException(res.statusCode, code);
   }
 
+  /// Адрес одноразового bridge-порта для гранта (Connector-helper, P1 #3
+  /// аудита 2026-10-08): POST /api/v1/app/rdp/bridge-info.
+  ///
+  /// Ответ 200: {host, port} — TCP-порт моста на ядре; приложение
+  /// подключается к нему, ПЕРВЫМИ байтами шлёт hex-токен + "\n" (handshake
+  /// порта) и мостит локального mstsc (RdpConnectorService.connectBridge).
+  /// Токен идёт телом POST, не в query — секрет не должен оседать в
+  /// access-логах прокси (аудит P2). Серверные ошибки: 400 bad_token |
+  /// 403 forbidden | 409 bridge_already_open | 410 grant_expired |
+  /// 500 bridge_port_error — UI мапит их в человеческий текст.
+  Future<Map<String, dynamic>> rdpBridgeInfo({
+    required String grantId,
+    required String token,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/bridge-info'),
+      headers: _headers(),
+      body: jsonEncode({'grant_id': grantId, 'token': token}),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String code = 'bridge_info_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      code = errObj['error']?.toString() ?? code;
+    } catch (_) {}
+    throw ApiException(res.statusCode, code);
+  }
+
   /// Инициация подключения инженера к удаленной сессии из приложения
   Future<Map<String, dynamic>> connectToSupport({
     required String sessionId,

@@ -186,14 +186,143 @@ void main() {
       expect(svc.phase, RdpTunnelPhase.idle);
     });
   });
+
+  group('RdpConnectorService.connectBridge — Connector-helper (P1 #3)', () {
+    setUp(() {
+      // Guard «только Windows» обходим: фазы и мост не зависят от платформы
+      // (mstsc реально запустится только на Windows — см. тест «живой мост»).
+      RdpConnectorService.windowsOverride = true;
+    });
+    tearDown(() {
+      RdpConnectorService.windowsOverride = null;
+    });
+
+    test('guard платформы: не-Windows — понятный отказ', () async {
+      RdpConnectorService.windowsOverride = false;
+      final svc = RdpConnectorService();
+      await svc.connectBridge(
+          api: _FakeApi((_) async => {}), grantId: 'g', token: 't');
+      expect(svc.phase, RdpTunnelPhase.failed);
+      expect(svc.lastError, contains('Windows'));
+    });
+
+    test('ошибка bridge-info (409 bridge_already_open) → failed с текстом',
+        () async {
+      final api = _FakeApi((_) async => {},
+          bridgeInfo: (grantId, token) async =>
+              throw ApiException(409, 'bridge_already_open'));
+      final svc = RdpConnectorService();
+      await svc.connectBridge(api: api, grantId: 'g', token: 't', isRu: true);
+      expect(svc.phase, RdpTunnelPhase.failed);
+      expect(svc.lastError, contains('уже открыт'));
+    });
+
+    test('некорректный ответ bridge-info → failed «адрес моста»', () async {
+      final api = _FakeApi((_) async => {},
+          bridgeInfo: (grantId, token) async => {'host': '', 'port': 0});
+      final svc = RdpConnectorService();
+      await svc.connectBridge(api: api, grantId: 'g', token: 't', isRu: true);
+      expect(svc.phase, RdpTunnelPhase.failed);
+      expect(svc.lastError, contains('адрес моста'));
+    });
+
+    test('недоступный bridge-порт → транспортная ошибка', () async {
+      // Порт, который только что освободился: подключение → ECONNREFUSED.
+      final hold = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final deadPort = hold.port;
+      await hold.close();
+      final api = _FakeApi((_) async => {},
+          bridgeInfo: (grantId, token) async =>
+              {'host': '127.0.0.1', 'port': deadPort});
+      final svc = RdpConnectorService();
+      await svc.connectBridge(api: api, grantId: 'g', token: 't', isRu: true);
+      expect(svc.phase, RdpTunnelPhase.failed);
+      expect(svc.lastError, contains('Нет связи с сервером'));
+    });
+
+    test('bridge-порт разорвал соединение после токена → handshake отклонён',
+        () async {
+      // «Порт» с неверным токеном: принимает и сразу рвёт (как openBridgePort
+      // на неверный handshake) — connectBridge обязан увидеть EOF в окне
+      // подтверждения и отказаться БЕЗ запуска mstsc.
+      final ln = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final sub = ln.listen((s) => s.destroy());
+      addTearDown(() async {
+        await sub.cancel();
+        await ln.close();
+      });
+      final api = _FakeApi((_) async => {},
+          bridgeInfo: (grantId, token) async =>
+              {'host': '127.0.0.1', 'port': ln.port});
+      final svc = RdpConnectorService();
+      await svc.connectBridge(
+          api: api, grantId: 'g', token: 't', name: 'ws-002', isRu: true);
+      expect(svc.phase, RdpTunnelPhase.failed);
+      expect(svc.lastError, contains('отклонил подключение к мосту'));
+      expect(svc.targetName, 'ws-002');
+    });
+
+    test('живой мост: handshake принят, дальше отказ только на mstsc',
+        () async {
+      // «Порт» с верным поведением: принимает и держит соединение (токен
+      // принят). На не-Windows запуск mstsc невозможен — сессия обязана
+      // дожить до фазы launching и упасть именно на mstsc, а не на
+      // handshake-окне.
+      final ln = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final conns = <Socket>[];
+      final sub = ln.listen((s) {
+        conns.add(s);
+        s.listen((_) {}, onError: (_) {});
+      });
+      addTearDown(() async {
+        await sub.cancel();
+        for (final c in conns) {
+          c.destroy();
+        }
+        await ln.close();
+      });
+      final api = _FakeApi((_) async => {},
+          bridgeInfo: (grantId, token) async =>
+              {'host': '127.0.0.1', 'port': ln.port});
+      final svc = RdpConnectorService();
+      await svc.connectBridge(api: api, grantId: 'g', token: 't', isRu: true);
+      expect(svc.phase, RdpTunnelPhase.failed);
+      expect(svc.lastError, contains('mstsc'));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+  });
+
+  group('rdpBridgeEndpoint — разбор bridge-info', () {
+    test('валидный {host, port}', () {
+      final ep = rdpBridgeEndpoint({'host': 'core.corp.local', 'port': 40123});
+      expect(ep, isNotNull);
+      expect(ep!.$1, 'core.corp.local');
+      expect(ep.$2, 40123);
+    });
+
+    test('некорректные ответы → null', () {
+      expect(rdpBridgeEndpoint({}), isNull);
+      expect(rdpBridgeEndpoint({'host': '', 'port': 1234}), isNull);
+      expect(rdpBridgeEndpoint({'host': 'h', 'port': 0}), isNull);
+      expect(rdpBridgeEndpoint({'host': 'h', 'port': 65536}), isNull);
+      expect(rdpBridgeEndpoint({'host': 'h', 'port': 'nonsense'}), isNull);
+      expect(rdpBridgeEndpoint({'port': 1234}), isNull);
+      expect(rdpBridgeEndpoint({'host': 'h'}), isNull);
+    });
+  });
 }
 
 class _FakeApi extends ApiClient {
-  _FakeApi(Future<Map<String, dynamic>> Function(String targetId) behavior)
-      : _behavior = behavior,
+  _FakeApi(
+    Future<Map<String, dynamic>> Function(String targetId) behavior, {
+    Future<Map<String, dynamic>> Function(String grantId, String token)?
+        bridgeInfo,
+  })  : _behavior = behavior,
+        _bridgeInfo = bridgeInfo,
         super(baseUrl: 'https://core.corp.local');
 
   final Future<Map<String, dynamic>> Function(String targetId) _behavior;
+  final Future<Map<String, dynamic>> Function(String grantId, String token)?
+      _bridgeInfo;
 
   @override
   Future<Map<String, dynamic>> rdpGrant({
@@ -201,4 +330,12 @@ class _FakeApi extends ApiClient {
     String mode = 'rdp',
   }) =>
       _behavior(targetId);
+
+  @override
+  Future<Map<String, dynamic>> rdpBridgeInfo({
+    required String grantId,
+    required String token,
+  }) =>
+      _bridgeInfo?.call(grantId, token) ??
+      super.rdpBridgeInfo(grantId: grantId, token: token);
 }
