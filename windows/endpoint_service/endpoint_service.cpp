@@ -20,6 +20,8 @@
 //                  claim гранта (аудит P1 #2 2026-10-08): служба хранит
 //                  nonce в памяти и отдаёт его локальному Ligament-CP
 //                  через named pipe \\.\pipe\LigamentRdpGate (см. ниже).
+//                  RDP-02: nonce вяжется к logon_id запросившего окна —
+//                  чужое окно входа его не получит.
 //
 // LOOPBACK ENFORCEMENT (план §4: «endpoint открывает ТОЛЬКО локальный RDP
 // и не является универсальным прокси»): host/port из agent_dial ИГНОРИРУЮТСЯ,
@@ -49,6 +51,8 @@
 #include <cwctype>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -68,6 +72,10 @@ const char kAgentVersion[] = "1.0.0";
 const int kStableResetMs = 60000;   // сброс backoff после минуты стабильности
 const int kPingEveryMs = 25000;     // app-level ping (сердцебиение ниже WS-пингов WinHTTP)
 const int kDialTimeoutSec = 4;      // connect до 127.0.0.1:3389
+// Лимит очереди ядро→TCP на один стрим (RDP-14): перестоявший RDP-сервер не
+// имеет права заблокировать приём контрольных кадров (agent_close и пр.).
+// Переполнение — лог + закрытие стрима.
+const size_t kStreamQueueMaxBytes = 4 * 1024 * 1024;
 
 SERVICE_STATUS g_status = {};
 SERVICE_STATUS_HANDLE g_hStatus = nullptr;
@@ -198,44 +206,84 @@ bool LoadConfig(Config& cfg) {
 // TTL 5 минут, одноразовость used_at, привязка к endpoint). Состояние —
 // процесс-глобальное: переживает реконнект WSS-туннеля (служба жива,
 // окно подключения никуда не девается). Протухший nonce не отдаётся.
+//
+// RDP-02 (аудит): nonce привязывается к КОНКРЕТНОМУ логон-окну Windows.
+// Ядро logon_id знать не может, поэтому связка происходит при запросе CP:
+// первый запрос named-pipe с параметрами входа (logon_id/username/
+// user_sid) вяжет ожидающий nonce к этому logon_id; окно ДРУГОГО входа
+// тот же nonce не получит (пустой ответ). Повторный запрос того же окна
+// в пределах TTL получает тот же nonce — сетевой ретрай не жжёт окно.
 
 const wchar_t* kRdpGatePipeName = L"\\\\.\\pipe\\LigamentRdpGate";
 
-struct RdpAssertionState {
-    std::mutex mu;
+// Определение ниже (секция «Мини-JSON»); нужен уже в цикле pipe.
+std::string JsonExtractString(const std::string& json, const char* key);
+
+struct RdpAssertionEntry {
     std::string nonce;
     ULONGLONG expiresAtTick = 0; // GetTickCount64-дедлайн
+
+    bool Live(ULONGLONG now) const { return !nonce.empty() && now < expiresAtTick; }
+};
+
+struct RdpAssertionState {
+    std::mutex mu;
+    // Ожидающий nonce (последний agent_assertion от ядра, ещё не привязан).
+    RdpAssertionEntry pending;
+    // Привязанные: logon_id → nonce (RDP-02: один nonce — одно окно входа).
+    std::map<std::string, RdpAssertionEntry> bound;
 };
 
 RdpAssertionState g_assertion;
 
 void StoreAssertionNonce(const std::string& nonce, unsigned long long expiresInSec) {
     std::lock_guard<std::mutex> lk(g_assertion.mu);
-    g_assertion.nonce = nonce;
-    g_assertion.expiresAtTick = GetTickCount64() + expiresInSec * 1000ULL;
+    g_assertion.pending.nonce = nonce;
+    g_assertion.pending.expiresAtTick = GetTickCount64() + expiresInSec * 1000ULL;
+    // Заодно вычищаем протухшие привязки (карта не растёт бесконечно).
+    const ULONGLONG now = GetTickCount64();
+    for (auto it = g_assertion.bound.begin(); it != g_assertion.bound.end();) {
+        if (it->second.Live(now)) ++it;
+        else it = g_assertion.bound.erase(it);
+    }
 }
 
-// Текущий ответ CP: живой nonce или пустой (нет окна/истёк).
-std::string CurrentAssertionJson() {
+// Ответ CP для КОНКРЕТНОГО логон-окна: живой bound-nonce этого окна, либо
+// перевод ожидающего nonce в bound за этим окном, либо пустой nonce.
+std::string AssertionJsonForLogon(const std::string& logonId, const std::string& username,
+                                  const std::string& userSid) {
     std::string nonce;
-    {
+    if (!logonId.empty()) {
         std::lock_guard<std::mutex> lk(g_assertion.mu);
-        if (!g_assertion.nonce.empty() && GetTickCount64() < g_assertion.expiresAtTick) {
-            nonce = g_assertion.nonce;
-        } else {
-            g_assertion.nonce.clear(); // протухший не отдаём дважды
+        const ULONGLONG now = GetTickCount64();
+        for (auto it = g_assertion.bound.begin(); it != g_assertion.bound.end();) {
+            if (it->second.Live(now)) ++it;
+            else it = g_assertion.bound.erase(it);
+        }
+        auto it = g_assertion.bound.find(logonId);
+        if (it != g_assertion.bound.end() && it->second.Live(now)) {
+            nonce = it->second.nonce; // ретрай того же окна в пределах TTL
+        } else if (g_assertion.pending.Live(now)) {
+            g_assertion.bound[logonId] = g_assertion.pending;
+            nonce = g_assertion.pending.nonce;
+            g_assertion.pending.nonce.clear();
+            g_assertion.pending.expiresAtTick = 0;
+            Log(L"assertion привязан к логон-окну %S (user=%S sid=%S)",
+                logonId.c_str(), username.c_str(), userSid.c_str());
         }
     }
     if (nonce.empty()) return "{\"nonce\":\"\"}";
     return "{\"nonce\":\"" + nonce + "\"}";
 }
 
-// Цикл named pipe для CP (LigamentCredential, фаза 0). Протокол: CP
-// подключается и ЧИТАЕТ один JSON {"nonce":"<hex>|"}; запроса нет — байты
-// от клиента (если были) дропаются DisconnectNamedPipe. DACL: SYSTEM и
-// Администраторы (CP живёт в LogonUI/wlogon под SYSTEM; стандартный
-// пользователь процесс-хендл не получает). Overlapped-подключение ждёт
-// ИЛИ клиента, ИЛИ stop-события службы — shutdown не виснет на Accept.
+// Цикл named pipe для CP (LigamentCredential, фаза 0). Протокол (RDP-02):
+// CP подключается, ПИШЕТ один JSON-запрос с параметрами входа
+//   {"logon_id":"<hex>","username":"...","user_sid":"S-1-..."}
+// и ЧИТАЕТ ответ {"nonce":"<hex>|"} (пустой nonce — нет окна/чужое окно).
+// DACL: SYSTEM и Администраторы (CP живёт в LogonUI/wlogon под SYSTEM;
+// стандартный пользователь процесс-хендл не получает). Overlapped-подклю-
+// чение ждёт ИЛИ клиента, ИЛИ stop-события службы — shutdown не виснет
+// на Accept.
 void RdpGatePipeLoop(HANDLE hStop) {
     SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE};
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -280,20 +328,49 @@ void RdpGatePipeLoop(HANDLE hStop) {
             stopped = (WaitForSingleObject(hStop, 0) != WAIT_TIMEOUT);
         }
         if (haveClient) {
-            const std::string resp = CurrentAssertionJson();
+            // Запрос CP: параметры логон-окна (до 1 КиБ, таймаут 2 с).
+            // TRUE = операция завершилась синхронно (событие может не
+            // взводиться) — байты уже в буфере; иначе ждём событие.
+            std::string req;
+            char rbuf[1024];
+            DWORD readN = 0;
+            ResetEvent(ov.hEvent);
+            BOOL okRd = ReadFile(hPipe, rbuf, sizeof(rbuf), &readN, &ov);
+            if (okRd) {
+                req.assign(rbuf, readN);
+            } else if (GetLastError() == ERROR_IO_PENDING) {
+                if (WaitForSingleObject(ov.hEvent, 2000) == WAIT_OBJECT_0 &&
+                    GetOverlappedResult(hPipe, &ov, &readN, FALSE)) {
+                    req.assign(rbuf, readN);
+                } else {
+                    // CP не прислал запрос (старый протокол/завис) — ниже
+                    // уйдёт пустой nonce; отменить чтение и ДОЖДАТЬСЯ
+                    // отмены, чтобы не гонять два перекрывающихся I/O.
+                    CancelIo(hPipe);
+                    DWORD dummy = 0;
+                    GetOverlappedResult(hPipe, &ov, &dummy, TRUE);
+                }
+            }
+            const std::string resp = AssertionJsonForLogon(
+                JsonExtractString(req, "logon_id"),
+                JsonExtractString(req, "username"),
+                JsonExtractString(req, "user_sid"));
             DWORD written = 0;
             ResetEvent(ov.hEvent);
-            if (WriteFile(hPipe, resp.data(), (DWORD)resp.size(), &written, &ov) ||
-                GetLastError() == ERROR_IO_PENDING) {
+            BOOL okWr = WriteFile(hPipe, resp.data(), (DWORD)resp.size(), &written, &ov);
+            if (!okWr && GetLastError() == ERROR_IO_PENDING) {
                 if (WaitForSingleObject(ov.hEvent, 3000) == WAIT_OBJECT_0) {
                     GetOverlappedResult(hPipe, &ov, &written, FALSE);
                 } else {
                     CancelIo(hPipe);
+                    DWORD dummy = 0;
+                    GetOverlappedResult(hPipe, &ov, &dummy, TRUE);
                 }
             }
             FlushFileBuffers(hPipe);
             DisconnectNamedPipe(hPipe);
-            Log(L"CP забрал assertion-гейт (длина ответа %zu)", resp.size());
+            Log(L"CP забрал assertion-гейт (запрос %zu байт, ответ %zu байт)",
+                req.size(), resp.size());
         }
         CloseHandle(ov.hEvent);
         CloseHandle(hPipe);
@@ -387,17 +464,103 @@ std::wstring Utf8ToWide(const std::string& s) {
 
 // ---------------- Агентская сессия ----------------
 
+// Контекст одного стрима (пара TCP↔WS-кадры). Владение — shared_ptr
+// (RDP-09): карта стримов и reader/writer-потоки держат по копии, поэтому
+// удаление из карты не освобождает объект под ногами работающего потока.
 struct StreamCtx {
     unsigned long long id = 0;
+
+    // ЕДИНСТВЕННОЕ закрытие сокета (RDP-09): atomic compare_exchange не
+    // пускает второго closesocket, хэндл зануляется под тем же локом —
+    // двойного закрытия и попадания переиспользованного хэндла в send/recv
+    // нет. send/recv по снапшоту БЕЗ удержания lock'а — closesocket из
+    // другого потока разбивает блокированный вызов, не дедлочась на мьютексе.
+    std::mutex sockMu;
     SOCKET sock = INVALID_SOCKET;
-    std::atomic<bool> closedByUs{false};
+    std::atomic<bool> sockClosed{false};
+    // Стрим погашен (KillStream/ошибка/Teardown): данные больше не ходят.
+    std::atomic<bool> dead{false};
+
+    // Очередь ядро→TCP с лимитом (RDP-14): Run-поток только ставит в
+    // очередь и никогда не блокируется на send — контрольный канал
+    // (agent_close) не стоит за данными. Отправку выносит writer-поток.
+    std::mutex qMu;
+    std::condition_variable qCv;
+    std::deque<std::string> q;
+    size_t queuedBytes = 0;
+    bool qAbort = false; // writer: завершиться (сокет закрыт/стрим погашен)
+
+    SOCKET SockSnapshot() {
+        std::lock_guard<std::mutex> lk(sockMu);
+        return sock;
+    }
+
+    void WakeWriter() {
+        {
+            std::lock_guard<std::mutex> lk(qMu);
+            qAbort = true;
+        }
+        qCv.notify_all();
+    }
+
+    // Закрыть сокет РОВНО ОДИН РАЗ; последующие вызовы — no-op, но writer
+    // всё равно разбужены (идемпотентно).
+    void CloseSocketOnce() {
+        bool already = false;
+        if (!sockClosed.compare_exchange_strong(already, true)) {
+            WakeWriter();
+            return;
+        }
+        SOCKET s = INVALID_SOCKET;
+        {
+            std::lock_guard<std::mutex> lk(sockMu);
+            s = sock;
+            sock = INVALID_SOCKET; // зануляем тем же локом, что и закрываем
+        }
+        dead.store(true);
+        if (s != INVALID_SOCKET) closesocket(s);
+        WakeWriter();
+    }
+
+    // Поставить данные в очередь writer'а. false — переполнение лимита
+    // (RDP-14): вызывающий обязан погасить стрим. true при qAbort — дроп
+    // молча (стрим уже гасится).
+    bool Enqueue(std::string&& payload) {
+        {
+            std::lock_guard<std::mutex> lk(qMu);
+            if (qAbort) return true;
+            if (queuedBytes + payload.size() > kStreamQueueMaxBytes) return false;
+            queuedBytes += payload.size();
+            q.push_back(std::move(payload));
+        }
+        qCv.notify_one();
+        return true;
+    }
+
+    ~StreamCtx() {
+        // Страховка: если никто не позвал CloseSocketOnce — закрыть здесь.
+        if (!sockClosed.exchange(true)) {
+            std::lock_guard<std::mutex> lk(sockMu);
+            if (sock != INVALID_SOCKET) {
+                closesocket(sock);
+                sock = INVALID_SOCKET;
+            }
+        }
+    }
 };
 
 class AgentSession : public std::enable_shared_from_this<AgentSession> {
 public:
     explicit AgentSession(const Config& cfg) : m_cfg(cfg) {}
 
-    ~AgentSession() { Teardown(); }
+    ~AgentSession() {
+        Teardown();
+        // Родительские ручки — только здесь: все потоки сессии (watcher,
+        // ping, стримы через shared_from_this) уже завершились или держат
+        // лишь свои копии shared_ptr и не заходят в WinHTTP после Teardown.
+        if (m_hConnect) { WinHttpCloseHandle(m_hConnect); m_hConnect = nullptr; }
+        if (m_hSession) { WinHttpCloseHandle(m_hSession); m_hSession = nullptr; }
+    }
 
     // Устанавливает WSS-туннель до ядра. false — отказ (см. m_httpStatus).
     bool Connect() {
@@ -421,7 +584,10 @@ public:
         m_hSession = WinHttpOpen(L"Ligament-Endpoint/1.0",
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
         if (!m_hSession) return false;
-        WinHttpSetTimeouts(m_hSession, 5000, 10000, 15000, 0);
+        // resolve/connect/send — таймауты установления; receive ограничивает
+        // ожидание статуса 101 (сам WinHttpWebSocketReceive таймаутов не
+        // имеет — разрыв контролирует stop-watcher в Run, RDP-14).
+        WinHttpSetTimeouts(m_hSession, 5000, 10000, 15000, 20000);
 
         m_hConnect = WinHttpConnect(m_hSession, host, uc.nPort, 0);
         if (!m_hConnect) return false;
@@ -446,6 +612,13 @@ public:
             return false;
         }
 
+        // Редиректы запрещены (RDP-07): агентский WSS-эндпоинт не переезжает,
+        // автоматический переход сорвал бы апгрейд и молча унёс бы
+        // Authorization на чужой хост.
+        DWORD noRedirects = WINHTTP_DISABLE_REDIRECTS;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_DISABLE_FEATURE,
+            &noRedirects, sizeof(noRedirects));
+
         // WS-keepalive: WinHTTP сам шлёт ping-кадры раз в интервал и сам
         // отвечает pong на серверные ping (ядро пингует каждые 25с).
         DWORD keepaliveMs = 20000;
@@ -460,19 +633,55 @@ public:
             WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
         }
 
-        // Upgrade: CompleteUpgrade сам доводит handshake до 101; при отказе
-        // статус ответа доступен через QueryHeaders (401 invalid_agent_key
-        // и т.п. — не ретраим быстро).
-        HINTERNET hWs = WinHttpWebSocketCompleteUpgrade(hRequest, 0);
-        if (!hWs) {
-            m_httpStatus = QueryStatusCode(hRequest);
-            Log(L"WS upgrade не прошёл (http=%lu)", m_httpStatus);
+        // RDP-07: ручка ПОМЕЧАЕТСЯ на WebSocket-upgrade ДО отправки запроса
+        // (официальная последовательность nf-winhttp-winhttpwebsocketcomplete-
+        // upgrade; опция параметров не принимает — сэмпл Microsoft передаёт
+        // NULL/0). Раньше CompleteUpgrade звался сразу после AddHeaders —
+        // handshake при этом вообще не отправлялся.
+        if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
+            Log(L"WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET не принята (%lu)", GetLastError());
+            WinHttpCloseHandle(hRequest);
+            return false;
+        }
+
+        // Отправка handshake и приём ответа: Upgrade: websocket /
+        // Sec-WebSocket-Key WinHTTP добавляет сам; Authorization уже стоит
+        // на ручке (AddRequestHeaders выше, до отправки).
+        if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+            Log(L"WS handshake: WinHttpSendRequest не прошёл (%lu)", GetLastError());
+            WinHttpCloseHandle(hRequest);
+            return false;
+        }
+        if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+            Log(L"WS handshake: WinHttpReceiveResponse не прошёл (%lu)", GetLastError());
+            WinHttpCloseHandle(hRequest);
+            return false;
+        }
+
+        // 101 Switching Protocols — единственный статус, при котором доку-
+        // ментация разрешает CompleteUpgrade. 401 invalid_agent_key / 403
+        // endpoint_disabled и любые прочие коды — лог, разрыв, backoff выше
+        // (фатальные по auth — длинная пауза в WorkerLoop).
+        m_httpStatus = QueryStatusCode(hRequest);
+        if (m_httpStatus != 101) {
+            Log(L"WS upgrade отклонён ядром (http=%lu)", m_httpStatus);
             WinHttpCloseHandle(hRequest);
             m_lastFatalAuth = (m_httpStatus == 401 || m_httpStatus == 403);
             return false;
         }
+
+        HINTERNET hWs = WinHttpWebSocketCompleteUpgrade(hRequest, 0);
+        if (!hWs) {
+            Log(L"WinHttpWebSocketCompleteUpgrade не прошёл (%lu)", GetLastError());
+            WinHttpCloseHandle(hRequest);
+            return false;
+        }
         // CompleteUpgrade возвращает НОВУЮ WS-ручку; hRequest больше не нужен.
-        m_hWs = hWs;
+        {
+            std::lock_guard<std::mutex> lk(m_wsMu);
+            m_hWs = hWs;
+        }
         WinHttpCloseHandle(hRequest);
         m_connectedAt = GetTickCount64();
         Log(L"туннель до ядра установлен");
@@ -484,21 +693,42 @@ public:
 
     ULONGLONG UptimeMs() const { return GetTickCount64() - m_connectedAt; }
 
-    // Приём до разрыва (блокирующий WinHttpWebSocketReceive на sync-ручке;
-    // Teardown() из другого потока разблокирует закрытием ручки).
+    // Приём до разрыва. Синхронный WinHttpWebSocketReceive таймаутов не
+    // имеет: SCM STOP выставляет g_hStop, но Run об этом не узнал бы, пока
+    // жив туннель. Поэтому RDP-14: отдельный stop-watcher-поток ждёт
+    // g_hStop и рвёт WSS-ручку (Teardown) — закрытие хэндла выталкивает
+    // заблокированный Receive ошибкой, служба останавливается за секунды.
     void Run() {
+        HANDLE hDone = CreateEventW(nullptr, TRUE, FALSE, nullptr); // manual-reset
+        std::thread watcher;
+        if (hDone) {
+            watcher = std::thread([this, hDone] {
+                HANDLE waits[2] = { g_hStop, hDone };
+                DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                if (w == WAIT_OBJECT_0) Teardown(); // SCM STOP/SHUTDOWN
+            });
+        } else {
+            Log(L"CreateEvent(run-done) failed — без stop-watcher (%lu)", GetLastError());
+        }
         m_ping = std::thread([this] { PingLoop(); });
         std::vector<char> buf(kRecvBuf);
         std::string pending; // склейка фрагментов одного сообщения
         for (;;) {
-            if (m_stopped.load()) return;
+            if (m_stopped.load()) break;
+            HINTERNET hWs = nullptr;
+            {
+                std::lock_guard<std::mutex> lk(m_wsMu);
+                hWs = m_hWs;
+            }
+            if (!hWs) break; // ручка закрыта (Teardown из watcher'а)
             WINHTTP_WEB_SOCKET_BUFFER_TYPE type = (WINHTTP_WEB_SOCKET_BUFFER_TYPE)0;
             DWORD read = 0;
-            DWORD err = WinHttpWebSocketReceive(m_hWs, buf.data(), (DWORD)buf.size(), &read, &type);
+            DWORD err = WinHttpWebSocketReceive(hWs, buf.data(), (DWORD)buf.size(), &read, &type);
             if (err != NO_ERROR) {
                 if (!m_stopped.load()) Log(L"WS-туннель разорван (err=%lu)", err);
-                return;
+                break;
             }
+            bool stopLoop = false;
             switch (type) {
             case WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE:
                 pending.append(buf.data(), read);
@@ -518,21 +748,41 @@ public:
                 break;
             case WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE:
                 Log(L"ядро закрыло туннель (close-кадр)");
-                return;
+                stopLoop = true;
+                break;
             default:
                 pending.clear();
                 break;
             }
+            if (stopLoop) break;
+        }
+        // Будим watcher (естественный разрыв) и ждём его выхода: после
+        // join никто не троннет сессию/ручки параллельно с деструктором.
+        if (hDone) {
+            SetEvent(hDone);
+            if (watcher.joinable()) watcher.join();
+            CloseHandle(hDone);
         }
     }
 
+    // Разрыв туннеля. Идемпотентна и потокобезопасна: приходит из
+    // stop-watcher (RDP-14), из Run и из деструктора. Закрывает WSS-ручку
+    // и стримы; hConnect/hSession закрывает только деструктор — после
+    // смерти всех потоков сессии, чтобы родительские ручки не закрылись
+    // под работающим Receive.
     void Teardown() {
         m_stopped.store(true);
+        // Сначала рвём WSS-ручку: это разбивает и вечный Receive в Run, и
+        // застрявший send в PingLoop/стримах — join'ы ниже проходят быстро.
+        {
+            std::lock_guard<std::mutex> lk(m_wsMu);
+            if (m_hWs) {
+                WinHttpCloseHandle(m_hWs);
+                m_hWs = nullptr;
+            }
+        }
         if (m_ping.joinable()) m_ping.join();
         CloseAllStreams();
-        if (m_hWs) { WinHttpCloseHandle(m_hWs); m_hWs = nullptr; }
-        if (m_hConnect) { WinHttpCloseHandle(m_hConnect); m_hConnect = nullptr; }
-        if (m_hSession) { WinHttpCloseHandle(m_hSession); m_hSession = nullptr; }
     }
 
 private:
@@ -541,7 +791,8 @@ private:
     Config m_cfg;
     HINTERNET m_hSession = nullptr;
     HINTERNET m_hConnect = nullptr;
-    HINTERNET m_hWs = nullptr;
+    HINTERNET m_hWs = nullptr;              // доступ под m_wsMu (Teardown из watcher)
+    std::mutex m_wsMu;
     std::atomic<bool> m_stopped{false};
     std::thread m_ping;
     ULONGLONG m_connectedAt = 0;
@@ -550,7 +801,9 @@ private:
 
     std::mutex m_sendMu;                     // единый писатель WS (серилизует кадры стримов)
     std::mutex m_streamsMu;
-    std::map<unsigned long long, StreamCtx*> m_streams; // владелец ctx — его reader-поток
+    // Владение ctx — разделяемое (RDP-09): карта + захваты по значению в
+    // reader/writer-потоках; удаление из карты не освобождает ctx под ними.
+    std::map<unsigned long long, std::shared_ptr<StreamCtx>> m_streams;
 
     static DWORD QueryStatusCode(HINTERNET hRequest) {
         DWORD code = 0, size = sizeof(code);
@@ -561,8 +814,14 @@ private:
 
     bool WsSendRaw(WINHTTP_WEB_SOCKET_BUFFER_TYPE bufType, const void* p, DWORD n) {
         std::lock_guard<std::mutex> lk(m_sendMu);
-        if (!m_hWs || m_stopped.load()) return false;
-        return WinHttpWebSocketSend(m_hWs, bufType, (PVOID)p, n) == NO_ERROR;
+        if (m_stopped.load()) return false;
+        HINTERNET hWs = nullptr;
+        {
+            std::lock_guard<std::mutex> lk2(m_wsMu);
+            hWs = m_hWs;
+        }
+        if (!hWs) return false;
+        return WinHttpWebSocketSend(hWs, bufType, (PVOID)p, n) == NO_ERROR;
     }
 
     bool WsSendText(const std::string& s) {
@@ -614,7 +873,7 @@ private:
             Log(L"стрим %llu: 127.0.0.1:%d недоступен (WSA %d)", sid, m_cfg.targetPort, WSAGetLastError());
             return;
         }
-        auto* ctx = new StreamCtx();
+        auto ctx = std::make_shared<StreamCtx>();
         ctx->id = sid;
         ctx->sock = s;
         {
@@ -625,67 +884,103 @@ private:
             KillStream(sid);
             return;
         }
-        // reader-поток стрима: TCP → бинарные кадры [8B id][data].
-        // shared_ptr: сессия живёт, пока работает её последний reader —
-        // Teardown() не ждёт reader'ы (они догрызают асинхронно), поэтому
-        // владение разделяемое.
+        // Reader/writer стрима (RDP-09): shared_ptr по значению — ctx живёт,
+        // пока работает последний из потоков, независимо от карты стримов;
+        // сессия — через shared_from_this: Teardown/деструктор не раньше
+        // завершения всех захватов.
         std::thread([self = shared_from_this(), ctx] { self->StreamReader(ctx); }).detach();
+        std::thread([self = shared_from_this(), ctx] { self->StreamWriter(ctx); }).detach();
     }
 
-    // ---- бинарные кадры ядра → TCP ----
+    // ---- бинарные кадры ядра → очередь стрима (TCP отправляет writer) ----
 
     void HandleBinary(const std::string& frame) {
         if (frame.size() < 8) return; // мусорный кадр без заголовка stream_id
         unsigned long long sid = 0;
         for (int i = 0; i < 8; i++) sid = (sid << 8) | (unsigned char)frame[i];
-        StreamCtx* ctx = nullptr;
+        // RDP-09: локальная копия shared_ptr — после отпускания мьютекса ctx
+        // не может быть освобождён/закрыт параллельным KillStream.
+        std::shared_ptr<StreamCtx> ctx;
         {
             std::lock_guard<std::mutex> lk(m_streamsMu);
             auto it = m_streams.find(sid);
             if (it != m_streams.end()) ctx = it->second;
         }
-        if (!ctx || ctx->closedByUs.load()) {
-            // Неизвестный стрим: гасим сторону ядла без нового TCP (план §6).
+        if (!ctx) {
+            // Неизвестный стрим: гасим сторону ядра без нового TCP (план §6).
             WsSendText("{\"type\":\"agent_close\",\"stream_id\":" + std::to_string(sid) +
                        ",\"reason\":\"unknown_stream\"}");
             return;
         }
-        const char* data = frame.data() + 8;
-        size_t n = frame.size() - 8;
-        size_t off = 0;
-        while (off < n) {
-            int w = send(ctx->sock, data + off, (int)(n - off), 0);
-            if (w <= 0) {
-                KillStream(sid);
-                SendAgentClose(sid, "tcp_write_failed");
-                return;
-            }
-            off += (size_t)w;
+        if (ctx->dead.load()) return; // уже гасится — данные в никуда
+        std::string payload(frame.data() + 8, frame.size() - 8);
+        if (!ctx->Enqueue(std::move(payload))) {
+            // RDP-14: перестоявшая очередь = мёртвый стрим, а не блокировка
+            // контрольного канала.
+            Log(L"стрим %llu: очередь ядро→TCP переполнена (%zu байт) — гашу стрим",
+                sid, kStreamQueueMaxBytes);
+            KillStream(sid);
+            SendAgentClose(sid, "send_queue_overflow");
         }
     }
 
     // ---- стримы ----
 
-    void StreamReader(StreamCtx* ctx) {
+    // Reader: TCP → бинарные кадры [8B id][данные].
+    void StreamReader(std::shared_ptr<StreamCtx> ctx) {
         std::vector<char> buf(32 * 1024 + 8); // [8B id][данные] — как agentChunkSize ядра
         for (;;) {
-            int n = recv(ctx->sock, buf.data() + 8, 32 * 1024, 0);
+            SOCKET s = ctx->SockSnapshot();
+            if (s == INVALID_SOCKET || ctx->dead.load()) break;
+            int n = recv(s, buf.data() + 8, 32 * 1024, 0);
             if (n <= 0) break;
             for (int i = 0; i < 8; i++) buf[i] = (char)((ctx->id >> (56 - 8 * i)) & 0xFF);
             if (!WsSendRaw(WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE, buf.data(), (DWORD)(n + 8))) {
-                break; // туннель мёртв — TCP закроется CloseAllStreams
+                break; // туннель мёртв — TCP закроется CloseSocketOnce ниже
             }
         }
-        if (!ctx->closedByUs.load()) {
+        if (!ctx->dead.load()) {
             SendAgentClose(ctx->id, "tcp_eof");
+            KillStream(ctx->id);
         }
+        // Единственное закрытие сокета (no-op, если уже закрыт KillStream'ом)
+        // и вычистка из карты, если стрим ещё там.
+        ctx->CloseSocketOnce();
         {
             std::lock_guard<std::mutex> lk(m_streamsMu);
             auto it = m_streams.find(ctx->id);
             if (it != m_streams.end() && it->second == ctx) m_streams.erase(it);
         }
-        if (ctx->sock != INVALID_SOCKET) closesocket(ctx->sock);
-        delete ctx; // владелец — этот поток
+    }
+
+    // Writer (RDP-14): единственный, кто делает send() в TCP стрима —
+    // Run-поток (контрольный канал) от очереди не блокируется.
+    void StreamWriter(std::shared_ptr<StreamCtx> ctx) {
+        for (;;) {
+            std::string chunk;
+            {
+                std::unique_lock<std::mutex> lk(ctx->qMu);
+                ctx->qCv.wait(lk, [&ctx] { return ctx->qAbort || !ctx->q.empty(); });
+                if (ctx->qAbort) return;
+                chunk = std::move(ctx->q.front());
+                ctx->q.pop_front();
+                ctx->queuedBytes -= chunk.size();
+            }
+            size_t off = 0;
+            while (off < chunk.size()) {
+                SOCKET s = ctx->SockSnapshot();
+                if (s == INVALID_SOCKET || ctx->dead.load()) return; // стрим погашен
+                int w = send(s, chunk.data() + off, (int)(chunk.size() - off), 0);
+                if (w <= 0) {
+                    Log(L"стрим %llu: TCP-запись сломалась (WSA %d) — гашу стрим",
+                        ctx->id, WSAGetLastError());
+                    SendAgentClose(ctx->id, "tcp_write_failed");
+                    KillStream(ctx->id);
+                    return;
+                }
+                off += (size_t)w;
+            }
+        }
     }
 
     void SendAgentClose(unsigned long long sid, const char* reason) {
@@ -693,9 +988,11 @@ private:
                    ",\"reason\":\"" + std::string(reason) + "\"}");
     }
 
-    // Закрыть стрим со стороны агента (TCP рвётся, reader сам догрызёт).
+    // Закрыть стрим со стороны агента: пометить dead, ЕДИНОВРЕМЕННО закрыть
+    // TCP (compare_exchange внутри) — reader/writer проснутся закрытым
+    // сокетом и abort-флагом очереди и завершатся сами.
     void KillStream(unsigned long long sid) {
-        StreamCtx* ctx = nullptr;
+        std::shared_ptr<StreamCtx> ctx;
         {
             std::lock_guard<std::mutex> lk(m_streamsMu);
             auto it = m_streams.find(sid);
@@ -703,23 +1000,25 @@ private:
             ctx = it->second;
             m_streams.erase(it);
         }
-        ctx->closedByUs.store(true);
-        if (ctx->sock != INVALID_SOCKET) closesocket(ctx->sock);
-        // ctx освободит свой reader-поток
+        if (ctx) {
+            ctx->dead.store(true);
+            ctx->CloseSocketOnce();
+        }
     }
 
     void CloseAllStreams() {
-        std::vector<StreamCtx*> list;
+        std::vector<std::shared_ptr<StreamCtx>> list;
         {
             std::lock_guard<std::mutex> lk(m_streamsMu);
             for (auto& kv : m_streams) list.push_back(kv.second);
             m_streams.clear();
         }
-        for (auto* ctx : list) {
-            ctx->closedByUs.store(true);
-            if (ctx->sock != INVALID_SOCKET) closesocket(ctx->sock);
+        for (auto& ctx : list) {
+            ctx->dead.store(true);
+            ctx->CloseSocketOnce();
         }
-        // reader-потоки разбужаются закрытым сокетом и сами удалят ctx
+        // reader/writer-потоки разбужены закрытым сокетом и abort'ом —
+        // освободят свои shared_ptr-копии и завершат жизнь ctx.
     }
 
     // ---- сердцебиение app-level (поверх WS ping/pong WinHTTP) ----

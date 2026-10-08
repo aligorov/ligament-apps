@@ -4,10 +4,15 @@
 //
 //   1) ядро после claim гранта выдаёт одноразовый nonce (TTL 5 мин) и
 //      доставляет его endpoint-службе кадром agent_assertion;
-//   2) CP забирает nonce у службы через named pipe \\.\pipe\LigamentRdpGate;
+//   2) CP запрашивает nonce у службы через named pipe
+//      \\.\pipe\LigamentRdpGate, передавая параметры СВОЕГО окна входа
+//      (logon_id, username, user_sid — RDP-02): служба вяжет nonce к
+//      logon_id, окно другого входа nonce не получит;
 //   3) CP предъявляет ядру POST /api/v1/cp/rdp-assert с nonce, LogonId
-//      СВОЕГО логон-окна (GetTokenInformation TokenStatistics) и именем
-//      машины, аутентифицируясь agent_key endpoint'а (реестр RdpAgentKey —
+//      СВОЕГО логон-окна (GetTokenInformation TokenStatistics), именем
+//      машины, именем и SID пользователя (GetTokenInformation TokenUser →
+//      ConvertSidToStringSid — доказательство, КАКОЙ Windows-вход гасит
+//      nonce), аутентифицируясь agent_key endpoint'а (реестр RdpAgentKey —
 //      тот же, что у endpoint-службы; в БД только sha256);
 //   4) ядро атомарно гасит assertion → {"satisfied":true} → MFA-каскад
 //      пропускается. Повторное предъявление = false (окно одно).
@@ -32,12 +37,15 @@ struct RdpGateResult {
     std::string note;
 };
 
-// POST {serverUrl}/api/v1/cp/rdp-assert {nonce, logon_id, machine}
+// POST {serverUrl}/api/v1/cp/rdp-assert
+//   {nonce, machine, logon_id, username, user_sid}
 // с заголовком Authorization: Bearer <agent_key из реестра>.
 //
-// computerName — NetBIOS-имя цели (GetComputerNameW): сервер сверяет его
-// с hostname endpoint'а (привязка к машине). nonce берётся у endpoint-
-// службы (named pipe), LogonId — из контекста процесса CP.
+// username — учётка с тайла CP (как введена/выбрана), computerName —
+// NetBIOS-имя цели (GetComputerNameW): сервер сверяет его с hostname
+// endpoint'а (привязка к машине). nonce берётся у endpoint-службы (named
+// pipe, запрос с параметрами входа), LogonId и user_sid — из контекста
+// процесса CP.
 //
 // БЛОКИРУЮЩИЙ вызов (таймауты WinHTTP ~3 с + pipe ~2 с): только с
 // воркер-потока, никогда с потока LogonUI (см. RunAsyncJob). Любая
@@ -46,6 +54,7 @@ struct RdpGateResult {
 // обычно).
 RdpGateResult CheckRdpMfaSatisfied(
     const std::wstring& serverUrl,
+    const std::wstring& username,
     const std::wstring& computerName,
     bool allowSelfSigned = false,
     bool allowHttp = false);

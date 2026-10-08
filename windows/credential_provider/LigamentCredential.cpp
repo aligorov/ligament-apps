@@ -927,15 +927,17 @@ void LigamentCredential::RunAsyncJob() {
     // ---- Фаза 0: CP-гейт RDP MFA (logon-bound assertion) ------------------
     // Пропуск MFA ровно один раз на claim гранта шлюза (закрытие P1 #2
     // аудита 2026-10-08): endpoint-служба получила от ядра одноразовый
-    // nonce (agent_assertion), CP забирает его named pipe'ом, предъявляет
-    // ядру POST /api/v1/cp/rdp-assert с LogonId ЭТОГО логон-окна и
-    // agent_key endpoint'а (реестр). Любой отказ (нет службы/nonce/ключа,
-    // сеть, не-200) → обычный MFA-каскад ниже (fail-closed). Только
-    // воркер-поток: pipe+WinHTTP блокируют до ~5 с.
+    // nonce (agent_assertion), CP запрашивает его named pipe'ом с
+    // параметрами СВОЕГО окна входа (logon_id/username/user_sid — RDP-02:
+    // гейт доказывает, КАКОЙ Windows-вход гасит nonce), предъявляет ядру
+    // POST /api/v1/cp/rdp-assert с agent_key endpoint'а (реестр). Любой
+    // отказ (нет службы/nonce/ключа, сеть, не-200) → обычный MFA-каскад
+    // ниже (fail-closed). Только воркер-поток: pipe+WinHTTP блокируют
+    // до ~5 с.
     if (m_isRemoteSession && m_cpus != CPUS_CREDUI &&
         (job == JobStartPush || job == JobWebAuthnBegin || job == JobVerifyOtp)) {
         RdpGateResult gate = CheckRdpMfaSatisfied(
-            cfg.serverUrl, ComputerNameSuffix(),
+            cfg.serverUrl, user, ComputerNameSuffix(),
             cfg.allowSelfSigned, cfg.allowHttp);
         LogDebug(L"rdp_mfa_gateway: satisfied=%d responded=%d note=%hs",
             gate.satisfied ? 1 : 0, gate.responded ? 1 : 0, gate.note.c_str());

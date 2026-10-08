@@ -52,8 +52,11 @@
          службу читает его при старте. Не задан — пустая строка, служба
          стартует пассивной (RdpAgentEnabled по умолчанию 0 в коде службы),
          ключ можно задать позже политикой
-         HKLM\SOFTWARE\Policies\Ligament\2FA\RdpAgentKey. -->
-    <Property Id="RDPAGENTKEY" Secure="yes" />
+         HKLM\SOFTWARE\Policies\Ligament\2FA\RdpAgentKey.
+         Hidden=yes: ключ — секрет, msiexec /l*v и UI установки не должны
+         раскрывать его значение (Secure оставлен — свойство можно задать
+         из командной строки молча). -->
+    <Property Id="RDPAGENTKEY" Secure="yes" Hidden="yes" />
   </Product>
 
   <Fragment>

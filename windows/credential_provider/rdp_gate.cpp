@@ -1,12 +1,17 @@
 // rdp_gate.cpp — клиент CP-гейта RDP MFA: logon-bound assertion
-// (WinHTTP POST + named pipe + реестр; LogonId через GetTokenInformation).
+// (WinHTTP POST + named pipe + реестр; LogonId и SID пользователя через
+// GetTokenInformation).
 //
 // Контракт сервера (2fa internal/api/rdp_cp.go, миграция 0065):
-//   POST /api/v1/cp/rdp-assert  {"nonce":hex,"logon_id":hex,"machine":...}
+//   POST /api/v1/cp/rdp-assert
+//     {"nonce":hex,"logon_id":hex,"machine":...,"username":...,"user_sid":...}
 //   Authorization: Bearer <agent_key endpoint'а>            → {"satisfied": bool}
 // Аутентификация запроса — агентским ключом endpoint'а (sha256 в БД):
 // вычислить его из домена/имени машины нельзя, в отличие от прежнего
-// X-CP-Secret (аудит P1 #2).
+// X-CP-Secret (аудит P1 #2). username/user_sid (RDP-02) доказывают ядру,
+// КАКОЙ Windows-вход гасит nonce: SID берётся из эффективного токена
+// процесса CP (в LogonUI это SYSTEM — первый вход; в сессии пользователя
+// при RDP-переподключении — сам пользователь).
 #include "rdp_gate.h"
 
 namespace ligament {
@@ -58,39 +63,75 @@ static std::string CurrentLogonIdHex() {
     return hex;
 }
 
+// ---- SID пользователя контекста CP (RDP-02) ----
+// GetTokenInformation(TokenUser) по эффективному токену процесса +
+// ConvertSidToStringSid: доказательство того, ЧЬЁ окно гасит nonce.
+// Пустая строка = получить SID не удалось (гейт fallback'ит в обычный
+// MFA-каскад — fail-closed).
+static std::string CurrentUserSid() {
+    HANDLE tok = GetCurrentThreadEffectiveToken();
+    DWORD need = 0;
+    GetTokenInformation(tok, TokenUser, nullptr, 0, &need);
+    if (need == 0 || need > 4096) return "";
+    std::vector<BYTE> buf(need, 0);
+    if (!GetTokenInformation(tok, TokenUser, buf.data(), need, &need)) return "";
+    const auto* tu = reinterpret_cast<const TOKEN_USER*>(buf.data());
+    LPSTR sidStr = nullptr;
+    if (!ConvertSidToStringSidA(tu->User.Sid, &sidStr) || !sidStr) return "";
+    std::string out(sidStr);
+    LocalFree(sidStr);
+    return out;
+}
+
 // ---- nonce одноразового assertion у endpoint-службы (named pipe) ----
 // Служба (endpoint_service.cpp) получила кадр agent_assertion от ядра и
-// раздаёт nonce локальным клиентам. Протокол: подключиться и прочитать
-// один JSON {"nonce":"<hex>|"}; запрос не нужен. Чтение ограничено
-// поллингом PeekNamedPipe (~2 с) — блокировки потока без таймаута нет.
-static std::string QueryAssertionNonce() {
+// раздаёт nonce локальным клиентам. Протокол (RDP-02): подключиться
+// (дуплекс), ПИСАТЬ один JSON-запрос {"logon_id":...,"username":...,
+// "user_sid":...} — служба вяжет nonce к этому логон-окну — и ЧИТАТЬ
+// ответ {"nonce":"<hex>|"}. Чтение ограничено поллингом PeekNamedPipe
+// (~2 с) — блокировки потока без таймаута нет.
+static std::string QueryAssertionNonce(const std::string& logonId,
+                                       const std::string& usernameUtf8,
+                                       const std::string& userSid) {
     const wchar_t* kPipe = L"\\\\.\\pipe\\LigamentRdpGate";
     if (!WaitNamedPipeW(kPipe, 2000)) return ""; // служба не подняла pipe
-    HANDLE h = CreateFileW(kPipe, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    HANDLE h = CreateFileW(kPipe, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return "";
     std::string out;
-    out.reserve(128);
-    for (int poll = 0; poll < 100 && out.size() < 512; ++poll) {
-        DWORD avail = 0;
-        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) break; // сервер оборвал
-        if (avail == 0) {
-            if (poll == 99) break;
-            Sleep(20);
-            continue;
+    do {
+        const std::string req = std::string("{\"logon_id\":\"") + logonId +
+            "\",\"username\":\"" + EscapeJson(usernameUtf8) +
+            "\",\"user_sid\":\"" + EscapeJson(userSid) + "\"}";
+        DWORD written = 0;
+        if (!WriteFile(h, req.data(), (DWORD)req.size(), &written, nullptr) ||
+            written != (DWORD)req.size()) {
+            break; // служба оборвала соединение
         }
-        char buf[256];
-        DWORD want = avail < sizeof(buf) ? avail : (DWORD)sizeof(buf);
-        DWORD readN = 0;
-        if (!ReadFile(h, buf, want, &readN, nullptr) || readN == 0) break;
-        out.append(buf, readN);
-        if (out.find('}') != std::string::npos) break; // JSON закрыт
-    }
+        out.reserve(128);
+        for (int poll = 0; poll < 100 && out.size() < 512; ++poll) {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) break; // сервер оборвал
+            if (avail == 0) {
+                if (poll == 99) break;
+                Sleep(20);
+                continue;
+            }
+            char buf[256];
+            DWORD want = avail < sizeof(buf) ? avail : (DWORD)sizeof(buf);
+            DWORD readN = 0;
+            if (!ReadFile(h, buf, want, &readN, nullptr) || readN == 0) break;
+            out.append(buf, readN);
+            if (out.find('}') != std::string::npos) break; // JSON закрыт
+        }
+    } while (false);
     CloseHandle(h);
     return ExtractJsonString(out, "nonce");
 }
 
 RdpGateResult CheckRdpMfaSatisfied(
     const std::wstring& serverUrl,
+    const std::wstring& username,
     const std::wstring& computerName,
     bool allowSelfSigned,
     bool allowHttp)
@@ -106,14 +147,21 @@ RdpGateResult CheckRdpMfaSatisfied(
         res.note = "no_agent_key"; // машина не endpoint RDP-шлюза
         return res;
     }
-    const std::string nonce = QueryAssertionNonce();
-    if (nonce.empty()) {
-        res.note = "no_assertion"; // нет живого окна (службы/claim/nonce)
-        return res;
-    }
     const std::string logonId = CurrentLogonIdHex();
     if (logonId.empty()) {
         res.note = "logon_id_failed";
+        return res;
+    }
+    const std::string userSid = CurrentUserSid();
+    if (userSid.empty()) {
+        res.note = "user_sid_failed";
+        return res;
+    }
+    const std::string nonce = QueryAssertionNonce(
+        logonId, WideToUtf8(username), userSid);
+    if (nonce.empty()) {
+        res.note = "no_assertion"; // нет живого окна (службы/claim/nonce
+                                   // либо nonce привязан к чужому logon_id)
         return res;
     }
 
@@ -135,10 +183,14 @@ RdpGateResult CheckRdpMfaSatisfied(
         return res;
     }
 
-    // Тело/путь — чистый ASCII (machine через UTF-8+escape), wide безопасен.
+    // Тело/путь — machine/username через UTF-8+escape, остальное чистый
+    // ASCII (hex-строки), wide безопасен. username/user_sid (RDP-02):
+    // ядро сверяет, КАКОЙ Windows-вход гасит nonce.
     const std::string body = std::string("{\"nonce\":\"") + EscapeJson(nonce) +
-        "\",\"logon_id\":\"" + logonId +
-        "\",\"machine\":\"" + EscapeJson(WideToUtf8(computerName)) + "\"}";
+        "\",\"machine\":\"" + EscapeJson(WideToUtf8(computerName)) + "\"" +
+        ",\"logon_id\":\"" + logonId + "\"" +
+        ",\"username\":\"" + EscapeJson(WideToUtf8(username)) + "\"" +
+        ",\"user_sid\":\"" + EscapeJson(userSid) + "\"}";
     const std::wstring path = L"/api/v1/cp/rdp-assert";
 
     HINTERNET hSession = WinHttpOpen(
