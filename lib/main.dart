@@ -7,12 +7,19 @@ import 'package:window_manager/window_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import 'services/auth_state.dart';
+import 'services/deep_link_service.dart';
 import 'services/support_service.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Deep-link ligament://rdp/<grant_id> (аудит RDP-11), холодный старт:
+  // Windows передаёт URI схемы в argv (windows/runner/main.cpp пробрасывает
+  // командную строку в dart_entrypoint_arguments). Если юзер ещё не залогинен
+  // — AuthState сохранит ссылку и применит после успешного входа.
+  final deepLinkUri = ligamentUriFromArgs(args);
 
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
@@ -84,6 +91,13 @@ void main(List<String> args) async {
     await authState.init();
   } catch (e, st) {
     debugPrint('auth_state: ошибка инициализации: $e\n$st');
+  }
+
+  // Применяем deep-link ПОСЛЕ init(): при живом сохранённом токене ссылка
+  // уйдёт в RDP-флоу сразу (HomeScreen подхватит pending), иначе — ждёт
+  // логина. Некорректные ссылки игнорируются внутри handleDeepLink.
+  if (deepLinkUri != null) {
+    authState.handleDeepLink(deepLinkUri);
   }
 
   runApp(

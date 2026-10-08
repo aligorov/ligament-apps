@@ -448,6 +448,20 @@ class AppStrings {
   String get rdpEndSessionBtn => isRu ? 'Завершить' : 'End';
   String get rdpClosedBanner => isRu ? 'RDP-сессия завершена' : 'RDP session ended';
 
+  // --- Deep-link ligament://rdp/<grant_id> (аудит RDP-11) ---
+  String get rdpDeepLinkNoTokenTitle => isRu
+      ? 'Ссылка без токена гранта'
+      : 'Link without grant token';
+  String get rdpDeepLinkNoTokenBody => isRu
+      ? 'Ссылка «Открыть в приложении» неполная (нет одноразового токена гранта). Откройте страницу подключения в веб-кабинете заново и повторите.'
+      : 'The "Open in app" link is incomplete (no one-time grant token). Reopen the connection page in the web portal and try again.';
+  String get rdpDeepLinkBusy => isRu
+      ? 'Уже идёт RDP-подключение — завершите текущую сессию и повторите ссылку'
+      : 'An RDP connection is already in progress — end the current session and retry the link';
+  String get rdpDeepLinkTargetName => isRu
+      ? 'Рабочий стол (веб-кабинет)'
+      : 'Remote Desktop (web portal)';
+
   // --- «Экран моего ПК» owner-режим (этап 2.4, план §5.2) ---
   String get ownerScreenTitle => isRu ? 'Экран моего ПК' : 'My PC Screen';
   String get ownerScreenBadge => isRu ? 'Мой ПК' : 'My PC';

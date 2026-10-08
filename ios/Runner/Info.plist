@@ -20,8 +20,21 @@
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
-	<key>CFBundleVersion</key>
-	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<!-- Deep-link ligament://rdp/<grant_id> (аудит RDP-11): кнопка
+		     «Открыть в приложении» в веб-кабинете. Регистрация схемы;
+		     доставка URI в Dart (cold/warm start) — events-плагин
+		     uni_links/app_links, следующий этап. -->
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.ligament.twofa.authenticator.deeplink</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ligament</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSFaceIDUsageDescription</key>

@@ -11,6 +11,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import '../api/client.dart';
 import '../app_version.dart';
 import 'alert_service.dart';
+import 'deep_link_service.dart';
 import 'gpo_service.dart';
 import 'local_detect_service.dart';
 import 'rdp_service.dart';
@@ -87,7 +88,11 @@ class AuthState extends ChangeNotifier {
 
   final GPOService gpo = GPOService();
   final AlertService alert = AlertService();
-  final TelemetryService telemetry = TelemetryService();
+
+  /// Телеметрия — НЕ final: подменяется тестом login-крэша
+  /// (test/login_crash_test.dart) на бросающую реализацию. Продакшн-код
+  /// поле не переназначает.
+  TelemetryService telemetry = TelemetryService();
   final WebSocketService ws = WebSocketService();
   final LocalAuthentication localAuth = LocalAuthentication();
   final SupportService support = SupportService();
@@ -151,6 +156,34 @@ class AuthState extends ChangeNotifier {
   /// экраном должно только устройство-цель (инициатор — viewer).
   String? _ownDeviceId;
   String? get ownDeviceId => _ownDeviceId;
+
+  // --- Deep-link ligament:// (аудит RDP-11) ---
+  /// Ссылка ligament://rdp/<grant_id>, ожидающая применения. Ставится:
+  /// - холодным стартом (argv в main.dart) до логина — применится ПОСЛЕ
+  ///   успешного входа, когда HomeScreen построится;
+  /// - горячим стартом/повторной доставкой при живой сессии — HomeScreen
+  ///   подхватит по notifyListeners (didChangeDependencies).
+  /// Потребляет HomeScreen: запускает RDP-connect флоу по гранту
+  /// (rdp.connectBridge) и показывает RdpConnectDialog. null — ссылки нет.
+  LigamentDeepLink? _pendingRdpDeepLink;
+  LigamentDeepLink? get pendingRdpDeepLink => _pendingRdpDeepLink;
+
+  /// Разобрать и поставить ссылку в очередь применения. Некорректные/
+  /// чужие ссылки молочно игнорируются (см. parseLigamentDeepLink).
+  void handleDeepLink(String raw) {
+    final link = parseLigamentDeepLink(raw);
+    debugLogDeepLink(raw, link);
+    if (link == null) return;
+    _pendingRdpDeepLink = link;
+    notifyListeners();
+  }
+
+  /// Снять ожидающую ссылку (вызывает HomeScreen при запуске флоу).
+  LigamentDeepLink? consumePendingRdpDeepLink() {
+    final link = _pendingRdpDeepLink;
+    _pendingRdpDeepLink = null;
+    return link;
+  }
 
   /// ICE-серверы (STUN/TURN) из /api/v1/app/config для WebRTC-сессий
   /// удаленной помощи (агент + операторский экран в приложении).
@@ -537,7 +570,12 @@ class AuthState extends ChangeNotifier {
   }
 
   void _setupServices() {
-    if (api == null || token == null || serverUrl == null) return;
+    // Локальные биндинги вместо `!`: между присвоениями и вызовами ниже
+    // есть await'ы (logout может сбросить поля параллельно).
+    final client = api;
+    final base = serverUrl;
+    final tok = token;
+    if (client == null || tok == null || base == null) return;
 
     // 1. WebSocket для мгновенных push-оповещений
     ws.onPrompt = (prompt) {
@@ -602,9 +640,7 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     };
 
-    if (api != null) {
-      support.setApi(api!);
-    }
+    support.setApi(client);
     support.removeListener(notifyListeners);
     support.addListener(notifyListeners);
 
@@ -708,13 +744,13 @@ class AuthState extends ChangeNotifier {
     }
 
     ws.connect(
-      baseUrl: serverUrl!,
-      token: token!,
+      baseUrl: base,
+      token: tok,
       fallbackUrls: fallbackRelayUrls,
     );
 
     // 2. Телеметрия и контроль комплаенса
-    telemetry.startReporting(api!);
+    telemetry.startReporting(client);
 
     // 3. Периодический опрос pending-запросов и сессий поддержки (fallback при временном обрыве WS)
     _pollingTimer?.cancel();
@@ -760,8 +796,19 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> login(String username, String password, [String? code]) async {
-    if (serverUrl == null || serverUrl!.isEmpty) {
+    final base = serverUrl;
+    if (base == null || base.isEmpty) {
       throw Exception(isRu ? 'Не указан адрес сервера' : 'Server address is required');
+    }
+    // Раньше здесь было `api!.login(...)`: logout() обнуляет api, а экран
+    // входа этого момента не переживает — получали «Null check operator
+    // used on a null value» прямо в диалоге входа. Теперь явная понятная
+    // ошибка вместо краша.
+    final client = api;
+    if (client == null) {
+      throw Exception(isRu
+          ? 'Клиент API не инициализирован — укажите адрес сервера заново'
+          : 'API client is not initialized — re-enter the server address');
     }
 
     final deviceInfo = DeviceInfoPlugin();
@@ -800,9 +847,17 @@ class AuthState extends ChangeNotifier {
       } catch (_) {}
     }
 
-    final initialPosture = await telemetry.collectPosture();
+    // Телеметрия НИКОГДА не должна ронять вход (краш-репорт v0.8.133):
+    // любой сбой сбора — FFI kernel32, дочерние процессы, таймауты —
+    // продолжаем вход с пустым posture, сервер досчитает дефолты сам.
+    Map<String, dynamic> initialPosture = const {};
+    try {
+      initialPosture = await telemetry.collectPosture();
+    } catch (e) {
+      debugPrint('auth_state: телеметрия при входе не собрана, продолжаем без неё: $e');
+    }
 
-    final resp = await api!.login(
+    final resp = await client.login(
       username: username,
       password: password,
       code: code,
@@ -814,14 +869,26 @@ class AuthState extends ChangeNotifier {
       windowsIdentity: WindowsIdentity.snapshot(),
     );
 
-    token = resp['token'] as String;
-    currentUser = resp['user'] as Map<String, dynamic>;
-    currentPosture = resp['security_posture'] as Map<String, dynamic>?;
+    // Разбор ответа сервера — безопасно: отсутствие токена/профиля даёт
+    // понятную ошибку вместо TypeError/null-краша, отсутствующий
+    // security_posture — просто null (сервер досчитает комплаенс сам).
+    final respToken = resp['token']?.toString() ?? '';
+    final respUser = resp['user'];
+    if (respToken.isEmpty || respUser is! Map) {
+      throw Exception(isRu
+          ? 'Сервер вернул некорректный ответ входа'
+          : 'Malformed login response from server');
+    }
+    token = respToken;
+    currentUser = Map<String, dynamic>.from(respUser);
+    currentPosture = (resp['security_posture'] is Map)
+        ? Map<String, dynamic>.from(resp['security_posture'] as Map)
+        : null;
     isCompliant = currentPosture?['is_compliant'] == true;
 
     final prefs = await SharedPreferences.getInstance();
-    await _secureStorage.write(key: _tokenKey, value: token!);
-    await prefs.setString('server_url', serverUrl!);
+    await _secureStorage.write(key: _tokenKey, value: respToken);
+    await prefs.setString('server_url', base);
 
     // Этап D «умный 2FA»: сервер выдаёт сессии устройства device_id
     // (appLoginResponse.DeviceID) — по нему он отличает вход, начатый с
@@ -897,6 +964,9 @@ class AuthState extends ChangeNotifier {
     await prefs.remove('auth_token');
     await prefs.remove(LocalDetectService.kDeviceIdPrefKey);
     _ownDeviceId = null;
+    // Deep-link грант одноразовый и короткоживущий — разлогин обнуляет
+    // ожидание (ссылка устареет раньше следующего входа).
+    _pendingRdpDeepLink = null;
     try {
       await _secureStorage.delete(key: _tokenKey);
     } catch (e) {

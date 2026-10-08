@@ -8,6 +8,30 @@ import 'gpo_service.dart';
 import 'windows_identity.dart';
 import '../api/client.dart';
 
+/// Сигнатура kernel32!GetDiskFreeSpaceExW (public — для тестов Windows-веток).
+typedef WinGetDiskFreeSpaceExWFn = int Function(
+  ffi.Pointer<Utf16> lpDirectoryName,
+  ffi.Pointer<ffi.Uint64> lpFreeBytesAvailableToCaller,
+  ffi.Pointer<ffi.Uint64> lpTotalNumberOfBytes,
+  ffi.Pointer<ffi.Uint64> lpTotalNumberOfFreeBytes,
+);
+
+/// Сигнатура kernel32!GetSystemTimes (public — для тестов Windows-веток).
+typedef WinGetSystemTimesFn = int Function(
+  ffi.Pointer<ffi.Uint64> lpIdleTime,
+  ffi.Pointer<ffi.Uint64> lpKernelTime,
+  ffi.Pointer<ffi.Uint64> lpUserTime,
+);
+
+/// Снимок счётчиков GetSystemTimes — база дельта-расчёта загрузки CPU.
+@visibleForTesting
+class WinCpuCounters {
+  final int idle;
+  final int kernel;
+  final int user;
+  const WinCpuCounters(this.idle, this.kernel, this.user);
+}
+
 /// Сервис сбора телеметрии устройства и контроля соответствия политикам (GPO).
 class TelemetryService {
   final GPOService _gpo = GPOService();
@@ -20,24 +44,16 @@ class TelemetryService {
   Map<String, dynamic>? _cachedPosture;
   DateTime? _lastPostureCheck;
 
-  // Windows Kernel32 FFI дескрипторы для мгновенного сбора метрик без запуска процессов
-  ffi.DynamicLibrary? _kernel32Lib;
-  int Function(
-    ffi.Pointer<Utf16> lpDirectoryName,
-    ffi.Pointer<ffi.Uint64> lpFreeBytesAvailableToCaller,
-    ffi.Pointer<ffi.Uint64> lpTotalNumberOfBytes,
-    ffi.Pointer<ffi.Uint64> lpTotalNumberOfFreeBytes,
-  )? _winGetDiskFreeSpaceExW;
+  // Windows Kernel32 FFI дескрипторы для мгновенного сбора метрик без запуска
+  // процессов. Могут ОСТАТЬСЯ NULL (не-Windows платформа или kernel32.dll
+  // не открылась — catch в _initWinKernel32): все обращения идут через
+  // nullable-параметры чистых функций ниже, БЕЗ `!`-разыменований —
+  // краш-репорт входа v0.8.133 («Null check operator used on a null value»)
+  // был именно на этих указателях.
+  WinGetDiskFreeSpaceExWFn? _winGetDiskFreeSpaceExW;
+  WinGetSystemTimesFn? _winGetSystemTimes;
 
-  int Function(
-    ffi.Pointer<ffi.Uint64> lpIdleTime,
-    ffi.Pointer<ffi.Uint64> lpKernelTime,
-    ffi.Pointer<ffi.Uint64> lpUserTime,
-  )? _winGetSystemTimes;
-
-  int _winPrevIdleTime = 0;
-  int _winPrevKernelTime = 0;
-  int _winPrevUserTime = 0;
+  WinCpuCounters? _winPrevCpuCounters;
 
   TelemetryService() {
     _initWinKernel32();
@@ -46,33 +62,26 @@ class TelemetryService {
   void _initWinKernel32() {
     if (kIsWeb || !Platform.isWindows) return;
     try {
-      _kernel32Lib = ffi.DynamicLibrary.open('kernel32.dll');
-      _winGetDiskFreeSpaceExW = _kernel32Lib!.lookupFunction<
+      final lib = ffi.DynamicLibrary.open('kernel32.dll');
+      _winGetDiskFreeSpaceExW = lib.lookupFunction<
           ffi.Int32 Function(
             ffi.Pointer<Utf16>,
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
           ),
-          int Function(
-            ffi.Pointer<Utf16>,
-            ffi.Pointer<ffi.Uint64>,
-            ffi.Pointer<ffi.Uint64>,
-            ffi.Pointer<ffi.Uint64>,
-          )>('GetDiskFreeSpaceExW');
+          WinGetDiskFreeSpaceExWFn>('GetDiskFreeSpaceExW');
 
-      _winGetSystemTimes = _kernel32Lib!.lookupFunction<
+      _winGetSystemTimes = lib.lookupFunction<
           ffi.Int32 Function(
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
           ),
-          int Function(
-            ffi.Pointer<ffi.Uint64>,
-            ffi.Pointer<ffi.Uint64>,
-            ffi.Pointer<ffi.Uint64>,
-          )>('GetSystemTimes');
+          WinGetSystemTimesFn>('GetSystemTimes');
     } catch (e) {
+      // Загрузка сорвалась (экзотическое окружение) — указатели остаются
+      // null, метрики деградируют до дефолтов; телеметрия НЕ роняет вход.
       debugPrint('telemetry_service: ошибка загрузки kernel32.dll: $e');
     }
   }
@@ -96,11 +105,11 @@ class TelemetryService {
   Future<Map<String, dynamic>> collectPosture({bool forceRefresh = false}) async {
     final now = DateTime.now();
     // Кешируем тяжелые системные проверки безопасности (BitLocker, Defender, Firewall) на 5 минут
-    if (!forceRefresh &&
-        _cachedPosture != null &&
-        _lastPostureCheck != null &&
-        now.difference(_lastPostureCheck!).inMinutes < 5) {
-      final posture = Map<String, dynamic>.from(_cachedPosture!);
+    final cached = _cachedPosture;
+    final lastCheck = _lastPostureCheck;
+    if (!forceRefresh && cached != null && lastCheck != null &&
+        now.difference(lastCheck).inMinutes < 5) {
+      final posture = Map<String, dynamic>.from(cached);
       posture['timestamp'] = now.toUtc().toIso8601String();
       if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
         final disk = await collectDiskMetrics();
@@ -261,41 +270,62 @@ class TelemetryService {
           }
         }
       } else if (Platform.isWindows) {
-        if (_winGetDiskFreeSpaceExW != null) {
-          final dirPtr = 'C:\\'.toNativeUtf16();
-          final freeCallerPtr = calloc<ffi.Uint64>();
-          final totalBytesPtr = calloc<ffi.Uint64>();
-          final totalFreeBytesPtr = calloc<ffi.Uint64>();
-          try {
-            final ok = _winGetDiskFreeSpaceExW!(dirPtr, freeCallerPtr, totalBytesPtr, totalFreeBytesPtr);
-            if (ok != 0) {
-              final total = totalBytesPtr.value;
-              final free = freeCallerPtr.value;
-              if (total > 0) {
-                final totalGb = (total / (1024 * 1024 * 1024)).round();
-                final freeGb = (free / (1024 * 1024 * 1024)).round();
-                final usedGb = totalGb - freeGb;
-                final usedPercent = (usedGb / totalGb * 100).round();
-
-                metrics['disk_percent'] = usedPercent;
-                metrics['disk_free_gb'] = freeGb;
-                metrics['disk_total_gb'] = totalGb;
-                metrics['disk_details'] = '$freeGb ГБ свободно из $totalGb ГБ ($usedPercent% занято)';
-                metrics['disk_warning'] = usedPercent >= 90 || freeGb < 10;
-              }
-            }
-          } finally {
-            calloc.free(dirPtr);
-            calloc.free(freeCallerPtr);
-            calloc.free(totalBytesPtr);
-            calloc.free(totalFreeBytesPtr);
-          }
-        }
+        // FFI-указатель может быть null (kernel32 не загрузился) — чистая
+        // функция сама вернёт дефолтные метрики, без `!`-разыменований.
+        return windowsDiskMetrics(_winGetDiskFreeSpaceExW);
       }
     } catch (e) {
       debugPrint('telemetry_service: ошибка сбора диска: $e');
     }
 
+    return metrics;
+  }
+
+  /// Windows-метрики диска через GetDiskFreeSpaceExW — чистая функция от
+  /// nullable FFI-указателя (тестируется без Windows: null → дефолт).
+  @visibleForTesting
+  static Map<String, dynamic> windowsDiskMetrics(
+      WinGetDiskFreeSpaceExWFn? getDiskFreeSpaceExW) {
+    final metrics = <String, dynamic>{
+      'disk_percent': 0,
+      'disk_free_gb': 0,
+      'disk_total_gb': 0,
+      'disk_warning': false,
+      'disk_details': '',
+    };
+    final fn = getDiskFreeSpaceExW;
+    if (fn == null) return metrics; // ранний return с дефолтными метриками
+
+    final dirPtr = 'C:\\'.toNativeUtf16();
+    final freeCallerPtr = calloc<ffi.Uint64>();
+    final totalBytesPtr = calloc<ffi.Uint64>();
+    final totalFreeBytesPtr = calloc<ffi.Uint64>();
+    try {
+      final ok = fn(dirPtr, freeCallerPtr, totalBytesPtr, totalFreeBytesPtr);
+      if (ok != 0) {
+        final total = totalBytesPtr.value;
+        final free = freeCallerPtr.value;
+        if (total > 0) {
+          final totalGb = (total / (1024 * 1024 * 1024)).round();
+          final freeGb = (free / (1024 * 1024 * 1024)).round();
+          final usedGb = totalGb - freeGb;
+          final usedPercent = (usedGb / totalGb * 100).round();
+
+          metrics['disk_percent'] = usedPercent;
+          metrics['disk_free_gb'] = freeGb;
+          metrics['disk_total_gb'] = totalGb;
+          metrics['disk_details'] = '$freeGb ГБ свободно из $totalGb ГБ ($usedPercent% занято)';
+          metrics['disk_warning'] = usedPercent >= 90 || freeGb < 10;
+        }
+      }
+    } catch (e) {
+      debugPrint('telemetry_service: ошибка сбора диска (FFI): $e');
+    } finally {
+      calloc.free(dirPtr);
+      calloc.free(freeCallerPtr);
+      calloc.free(totalBytesPtr);
+      calloc.free(totalFreeBytesPtr);
+    }
     return metrics;
   }
 
@@ -323,39 +353,13 @@ class TelemetryService {
           }
         }
       } else if (Platform.isWindows) {
-        if (_winGetSystemTimes != null) {
-          final idleTimePtr = calloc<ffi.Uint64>();
-          final kernelTimePtr = calloc<ffi.Uint64>();
-          final userTimePtr = calloc<ffi.Uint64>();
-          try {
-            final ok = _winGetSystemTimes!(idleTimePtr, kernelTimePtr, userTimePtr);
-            if (ok != 0) {
-              final idle = idleTimePtr.value;
-              final kernel = kernelTimePtr.value;
-              final user = userTimePtr.value;
-
-              if (_winPrevIdleTime != 0 && _winPrevKernelTime != 0 && _winPrevUserTime != 0) {
-                final idleDelta = idle - _winPrevIdleTime;
-                final kernelDelta = kernel - _winPrevKernelTime;
-                final userDelta = user - _winPrevUserTime;
-
-                // В Windows GetSystemTimes kernelTime уже включает в себя idleTime
-                final totalSys = kernelDelta + userDelta;
-                if (totalSys > 0) {
-                  final idleFraction = (idleDelta / totalSys).clamp(0.0, 1.0);
-                  final usage = ((1.0 - idleFraction) * 100).clamp(0.0, 100.0).round();
-                  metrics['cpu_percent'] = usage;
-                }
-              }
-              _winPrevIdleTime = idle;
-              _winPrevKernelTime = kernel;
-              _winPrevUserTime = user;
-            }
-          } finally {
-            calloc.free(idleTimePtr);
-            calloc.free(kernelTimePtr);
-            calloc.free(userTimePtr);
-          }
+        // FFI-указатель может быть null — чистая функция вернёт (null, null),
+        // метрики остаются дефолтными; `!`-разыменований нет вовсе.
+        final (usage, counters) =
+            windowsCpuUsage(_winGetSystemTimes, _winPrevCpuCounters);
+        _winPrevCpuCounters = counters ?? _winPrevCpuCounters;
+        if (usage != null) {
+          metrics['cpu_percent'] = usage;
         }
       } else if (Platform.isLinux) {
         final usage = await _readLinuxCpuPercent();
@@ -384,6 +388,48 @@ class TelemetryService {
     }
 
     return metrics;
+  }
+
+  /// Дельта-расчёт загрузки CPU по GetSystemTimes — чистая функция от
+  /// nullable FFI-указателя (тестируется без Windows). Возвращает
+  /// (usage, свежие счётчики): usage null — базы для дельты ещё нет либо
+  /// вызов сорвался; счётчики null — указатель null или вызов не прошёл
+  /// (предыдущую базу не трогаем).
+  @visibleForTesting
+  static (int?, WinCpuCounters?) windowsCpuUsage(
+      WinGetSystemTimesFn? getSystemTimes, WinCpuCounters? prev) {
+    final fn = getSystemTimes;
+    if (fn == null) return (null, null); // ранний return — дефолтные метрики
+
+    final idleTimePtr = calloc<ffi.Uint64>();
+    final kernelTimePtr = calloc<ffi.Uint64>();
+    final userTimePtr = calloc<ffi.Uint64>();
+    try {
+      final ok = fn(idleTimePtr, kernelTimePtr, userTimePtr);
+      if (ok == 0) return (null, null);
+      final cur = WinCpuCounters(idleTimePtr.value, kernelTimePtr.value, userTimePtr.value);
+      final base = prev;
+      if (base == null || base.idle == 0 || base.kernel == 0 || base.user == 0) {
+        return (null, cur); // первый замер — только запоминаем базу
+      }
+      final idleDelta = cur.idle - base.idle;
+      final kernelDelta = cur.kernel - base.kernel;
+      final userDelta = cur.user - base.user;
+
+      // В Windows GetSystemTimes kernelTime уже включает в себя idleTime
+      final totalSys = kernelDelta + userDelta;
+      if (totalSys <= 0) return (null, cur);
+      final idleFraction = (idleDelta / totalSys).clamp(0.0, 1.0);
+      final usage = ((1.0 - idleFraction) * 100).clamp(0.0, 100.0).round();
+      return (usage, cur);
+    } catch (e) {
+      debugPrint('telemetry_service: ошибка сбора CPU (FFI): $e');
+      return (null, null);
+    } finally {
+      calloc.free(idleTimePtr);
+      calloc.free(kernelTimePtr);
+      calloc.free(userTimePtr);
+    }
   }
 
   /// Два замера агрегированной cpu-строки /proc/stat с интервалом 250 мс:

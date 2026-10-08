@@ -38,6 +38,17 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Deep-link ligament://rdp/<grant_id> (аудит RDP-11): кнопка
+                 «Открыть в приложении» в веб-кабинете. Cold start: Android
+                 передаёт URI во intent (доставка в Dart — events-плагин
+                 uni_links/app_links, следующий этап); регистрация схемы
+                 обязательна уже сейчас, иначе кнопка не находит приложение. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="ligament" android:host="rdp"/>
+            </intent-filter>
         </activity>
         <meta-data
             android:name="flutterEmbedding"

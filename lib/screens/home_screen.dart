@@ -75,6 +75,75 @@ class _HomeScreenState extends State<HomeScreen> {
     final auth = context.read<AuthState>();
     _checkPrompts(auth);
     _checkBrowserSsoPrompt(auth);
+    _checkPendingRdpDeepLink(auth);
+  }
+
+  /// Deep-link ligament://rdp/<grant_id> (аудит RDP-11): применяем ожидающую
+  /// ссылку — RDP-connect флоу по гранту (rdp.connectBridge) с диалогом
+  /// статуса RdpConnectDialog, как у плитки «Подключиться». Ссылка могла
+  /// приехать холодным стартом ДО логина (pending в AuthState) или в живой
+  /// сессии (notifyListeners перезапускает didChangeDependencies).
+  void _checkPendingRdpDeepLink(AuthState auth) {
+    final link = auth.pendingRdpDeepLink;
+    if (link == null) return;
+    // Снимаем сразу: одна ссылка — один запуск флоу, повторные rebuild
+    // didChangeDependencies не должны ретриггерить подключение.
+    auth.consumePendingRdpDeepLink();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final s = context.stringsRead;
+      final api = auth.api;
+      final baseUrl = auth.serverUrl;
+
+      // Живая/занятая RDP-сессия не срывается ради ссылки.
+      if (auth.rdp.isBusy || auth.rdp.isActive) {
+        debugPrint('deep_link: rdp занят — ссылка отброшена');
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text(s.rdpDeepLinkBusy)),
+        );
+        return;
+      }
+      final token = link.grantToken;
+      if (api == null || baseUrl == null || token == null) {
+        // Без токена гранта bridge-подключение невозможно (дизайн §5 —
+        // токен не в URL не значит, что его можно достать из воздуха:
+        // grant создан web-сессией, у приложения секрета нет).
+        showDialog<void>(
+          context: context,
+          builder: (dialogCtx) => AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            title: Text(s.rdpDeepLinkNoTokenTitle,
+                style: const TextStyle(color: Colors.white, fontSize: 16)),
+            content: Text(s.rdpDeepLinkNoTokenBody,
+                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogCtx).pop(),
+                child: Text(s.close),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      final name = s.rdpDeepLinkTargetName;
+      unawaited(
+        auth.rdp.connectBridge(
+          api: api,
+          grantId: link.grantId,
+          token: token,
+          name: name,
+          isRu: s.isRu,
+        ),
+      );
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => RdpConnectDialog(connector: auth.rdp, targetName: name),
+      );
+    });
   }
 
   void _checkBrowserSsoPrompt(AuthState auth) {

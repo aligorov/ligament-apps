@@ -110,9 +110,13 @@ class WebSocketService {
   }
 
   void _connectCandidate() {
-    if (_disposed || _authFailed || _primaryBaseUrl == null || _token == null) return;
+    // Локальный биндинг вместо `_primaryBaseUrl!`/`_token!`: между проверкой
+    // и использованием объект мог быть разобран параллельным disconnect().
+    final primary = _primaryBaseUrl;
+    final tok = _token;
+    if (_disposed || _authFailed || primary == null || tok == null) return;
 
-    final candidates = [_primaryBaseUrl!, ..._fallbackUrls];
+    final candidates = [primary, ..._fallbackUrls];
     if (candidates.isEmpty) return;
 
     final targetUrl = candidates[_attemptIndex % candidates.length];
@@ -141,7 +145,7 @@ class WebSocketService {
         return;
       }
       final headers = <String, String>{
-        if (_token != null && _token!.isNotEmpty) 'Authorization': 'Bearer $_token',
+        if (tok.isNotEmpty) 'Authorization': 'Bearer $tok',
       };
 
       _wasReady = false;
@@ -259,8 +263,11 @@ class WebSocketService {
       _attemptIndex++;
     }
     final delay = _backoff.nextDelay();
+    // Считаем кандидатов без `!`: primary мог быть разобран disconnect'ом.
+    final totalCandidates =
+        (_primaryBaseUrl != null ? 1 : 0) + _fallbackUrls.length;
     debugPrint('ws_service: повтор через ${delay.inMilliseconds}мс '
-        '(кандидат ${_attemptIndex % ([_primaryBaseUrl!, ..._fallbackUrls].length)})');
+        '(кандидат ${totalCandidates == 0 ? 0 : _attemptIndex % totalCandidates})');
     _reconnectTimer = Timer(delay, () {
       if (!_disposed && !_authFailed) {
         _connectCandidate();
