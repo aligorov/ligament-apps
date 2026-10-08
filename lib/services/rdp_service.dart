@@ -57,27 +57,20 @@ class RdpConnectorService extends ChangeNotifier {
   /// mfa_required (или 401 invalid_code при повторе) запрашивает подтверждение через
   /// mfaPrompt (или mfaCodePrompt) и повторяет запрос. Пустая карта = отмена.
   static Future<Map<String, dynamic>> _grantWithInlineMfa(
-    Future<Map<String, dynamic>> Function({String? code, bool passkey}) grant,
+    Future<Map<String, dynamic>> Function({String? code}) grant,
     Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
   ) async {
     String? code;
-    bool passkey = false;
     while (true) {
       try {
-        return await grant(code: code, passkey: passkey);
+        return await grant(code: code);
       } on ApiException catch (e) {
         if (mfaPrompt == null) rethrow;
         if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
         final res = await mfaPrompt(e.code == 'invalid_code');
         if (res == null) return const {};
-        if (res.passkey) {
-          passkey = true;
-          code = null;
-        } else {
-          passkey = false;
-          code = res.code;
-          if (code == null || code.isEmpty) return const {};
-        }
+        code = res.code;
+        if (code == null || code.isEmpty) return const {};
       }
     }
   }
@@ -96,6 +89,8 @@ class RdpConnectorService extends ChangeNotifier {
     required String targetId,
     required String name,
     bool isRu = true,
+    String? actionId,
+    String? sourceInstanceId,
     Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
     Future<String?> Function(bool wrongCode)? mfaCodePrompt,
   }) async {
@@ -110,9 +105,8 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.grant);
 
     // 1. Грант (ошибки 403/409/428 мапятся ниже в человеческий текст).
-    // 428 mfa_required — инлайн-подтверждение Passkey или кодом
-    // (фикс 10-08-3): без требования выходить из приложения; неверный
-    // код переспрашивается, отмена тихо останавливает подключение.
+    // 428 mfa_required — инлайн-подтверждение кодом TOTP.
+    // неверный код переспрашивается, отмена тихо останавливает подключение.
     final Map<String, dynamic> grant;
     final promptFn = mfaPrompt ??
         (mfaCodePrompt != null
@@ -123,7 +117,13 @@ class RdpConnectorService extends ChangeNotifier {
             : null);
     try {
       grant = await _grantWithInlineMfa(
-        ({code, passkey = false}) => api.rdpGrant(targetId: targetId, mode: 'rdp', code: code, passkey: passkey),
+        ({code}) => api.rdpGrant(
+          targetId: targetId,
+          mode: 'rdp',
+          code: code,
+          actionId: actionId,
+          sourceInstanceId: sourceInstanceId,
+        ),
         promptFn,
       );
     } on ApiException catch (e) {

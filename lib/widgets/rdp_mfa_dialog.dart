@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:local_auth/local_auth.dart';
 
-/// Результат подтверждения доступа: Passkey или введённый код
+/// Результат подтверждения доступа: проверенный 6-значный TOTP код
 class RdpMfaResult {
   final bool passkey;
   final String? code;
@@ -10,45 +9,14 @@ class RdpMfaResult {
 }
 
 /// Диалог инлайн-подтверждения RDP-действия (MFA):
-/// сервер ответил 428 mfa_required — предлагаем подтверждение через
-/// системный Passkey (Touch ID / Windows Hello) или ввод 6-значного кода TOTP.
+/// сервер ответил 428 mfa_required — запрашиваем 6-значный TOTP код.
 Future<RdpMfaResult?> showRdpMfaDialog(
   BuildContext context, {
   required bool isRu,
   bool wrongCode = false,
-  LocalAuthentication? localAuth,
+  dynamic localAuth,
 }) async {
   final controller = TextEditingController();
-  final auth = localAuth ?? LocalAuthentication();
-
-  Future<void> tryPasskey(BuildContext dialogCtx) async {
-    try {
-      final isSupported = await auth.isDeviceSupported();
-      if (!isSupported) {
-        if (dialogCtx.mounted) {
-          ScaffoldMessenger.of(dialogCtx).showSnackBar(
-            SnackBar(
-              content: Text(
-                isRu
-                    ? 'Биометрия / Passkey недоступны на этом устройстве'
-                    : 'Biometrics / Passkey not available on this device',
-              ),
-            ),
-          );
-        }
-        return;
-      }
-      final didAuth = await auth.authenticate(
-        localizedReason: isRu
-            ? 'Подтвердите доступ к рабочему столу (Touch ID / Windows Hello)'
-            : 'Confirm workstation access (Touch ID / Windows Hello)',
-        options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
-      );
-      if (didAuth && dialogCtx.mounted) {
-        Navigator.of(dialogCtx).pop(const RdpMfaResult(passkey: true));
-      }
-    } catch (_) {}
-  }
 
   final result = await showDialog<RdpMfaResult>(
     context: context,
@@ -62,7 +30,7 @@ Future<RdpMfaResult?> showRdpMfaDialog(
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              isRu ? 'Подтверждение доступа' : 'Access confirmation',
+              isRu ? 'Подтверждение доступа (2FA)' : 'Access confirmation (2FA)',
               style: const TextStyle(color: Colors.white, fontSize: 16),
             ),
           ),
@@ -76,46 +44,17 @@ Future<RdpMfaResult?> showRdpMfaDialog(
             Text(
               wrongCode
                   ? (isRu
-                      ? 'Код не принят — введите код заново или используйте Passkey.'
-                      : 'The code was rejected — try again or use Passkey.')
+                      ? 'Код не принят — введите 6-значный TOTP код заново.'
+                      : 'The code was rejected — check and try again.')
                   : (isRu
-                      ? 'Рабочему месту требуется свежее подтверждение личности.'
-                      : 'The workstation requires a recent identity confirmation.'),
+                      ? 'Рабочему месту требуется свежее подтверждение личности. Введите 6-значный код из аутентификатора.'
+                      : 'The workstation requires a recent identity confirmation. Enter your 6-digit authenticator code.'),
               style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
             ),
             const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => tryPasskey(dialogCtx),
-              icon: const Icon(Icons.fingerprint, color: Colors.white, size: 20),
-              label: Text(
-                isRu ? '🔑 Подтвердить через Passkey' : '🔑 Confirm with Passkey',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF0284C7),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                const Expanded(child: Divider(color: Color(0xFF334155))),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Text(
-                    isRu ? 'или введите код' : 'or enter code',
-                    style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
-                  ),
-                ),
-                const Expanded(child: Divider(color: Color(0xFF334155))),
-              ],
-            ),
-            const SizedBox(height: 12),
             TextField(
               controller: controller,
-              autofocus: wrongCode,
+              autofocus: true,
               keyboardType: TextInputType.number,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               maxLength: 8,
@@ -162,7 +101,7 @@ Future<RdpMfaResult?> showRdpMfaDialog(
             }
           },
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF334155),
+            backgroundColor: const Color(0xFF0284C7),
             foregroundColor: Colors.white,
           ),
           child: Text(isRu ? 'Подтвердить кодом' : 'Confirm with code'),
@@ -183,4 +122,3 @@ Future<String?> showRdpMfaCodeDialog(
   final res = await showRdpMfaDialog(context, isRu: isRu, wrongCode: wrongCode);
   return res?.code;
 }
-

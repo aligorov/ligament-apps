@@ -329,7 +329,10 @@ class _FakeApi extends ApiClient {
     required String targetId,
     String mode = 'rdp',
     String? code,
-    bool passkey = false,
+    String? actionId,
+    String? sourceInstanceId,
+    String? attemptId,
+    List<String>? clientLocalIps,
   }) =>
       _behavior(targetId);
 

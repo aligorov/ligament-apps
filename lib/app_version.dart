@@ -1,3 +1,3 @@
 /// Единая точка правды о версии приложения.
 /// Держится синхронной с `version:` в pubspec.yaml — менять только вместе.
-const String kAppVersion = '1.1.4+30';
+const String kAppVersion = '1.1.6+32';

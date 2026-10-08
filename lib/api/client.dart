@@ -669,28 +669,91 @@ class ApiClient {
   /// Серверные ошибки пробрасываются как ApiException с точным кодом:
   /// 403 target_not_assigned | 403 passkey_required | 428 mfa_required |
   /// 409 target_busy | 500 db_error — UI мапит их в человеческий текст.
+  /// Выдача одноразового гранта доступа RDP/Экран: POST /api/v1/app/rdp/grant.
+  /// 403 target_not_assigned | 403 passkey_required | 428 mfa_required |
+  /// 409 target_busy | 500 db_error — UI мапит их в человеческий текст.
   Future<Map<String, dynamic>> rdpGrant({
     required String targetId,
     String mode = 'rdp',
     String? code,
-    bool passkey = false,
+    String? actionId,
+    String? sourceInstanceId,
+    String? attemptId,
+    List<String>? clientLocalIps,
   }) async {
+    final payload = <String, dynamic>{
+      'target_id': targetId,
+      'mode': mode,
+      if (code != null && code.isNotEmpty) 'code': code,
+      if (actionId != null && actionId.isNotEmpty) 'action_id': actionId,
+      if (sourceInstanceId != null && sourceInstanceId.isNotEmpty) 'source_instance_id': sourceInstanceId,
+      if (attemptId != null && attemptId.isNotEmpty) 'attempt_id': attemptId,
+      if (clientLocalIps != null && clientLocalIps.isNotEmpty) 'client_local_ips': clientLocalIps,
+    };
     final res = await _post(
       _cleanUrl('/api/v1/app/rdp/grant'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200 || res.statusCode == 201) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String errCode = 'grant_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
+
+  /// Начало церемонии подтверждения доступа через WebAuthn / Passkey.
+  Future<Map<String, dynamic>> rdpMfaPasskeyBegin({
+    required String targetId,
+    required String mode,
+    required String actionId,
+    required String sourceInstanceId,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/mfa/passkey-begin'),
       headers: _headers(),
       body: jsonEncode({
         'target_id': targetId,
         'mode': mode,
-        // Инлайн-подтверждение при 428 mfa_required (фикс 10-08-3):
-        // верный код или passkey чеканит свежую completed-попытку на сервере.
-        if (code != null && code.isNotEmpty) 'code': code,
-        if (passkey) 'passkey': true,
+        'action_id': actionId,
+        'source_instance_id': sourceInstanceId,
       }),
     );
-    if (res.statusCode == 201) {
+    if (res.statusCode == 200) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
-    String errCode = 'grant_failed';
+    String errCode = 'passkey_begin_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
+
+  /// Завершение церемонии подтверждения доступа через WebAuthn / Passkey.
+  Future<Map<String, dynamic>> rdpMfaPasskeyFinish({
+    required String handle,
+    required String attemptId,
+    required Map<String, dynamic> assertion,
+  }) async {
+    final body = <String, dynamic>{
+      'handle': handle,
+      'attempt_id': attemptId,
+      ...assertion,
+    };
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/mfa/passkey-finish'),
+      headers: _headers(),
+      body: jsonEncode(body),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String errCode = 'passkey_finish_failed';
     try {
       final errObj = jsonDecode(utf8.decode(res.bodyBytes));
       errCode = errObj['error']?.toString() ?? errCode;

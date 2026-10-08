@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -67,6 +68,16 @@ bool ownerScreenPromptTargetsThisDevice(
     return false;
   }
   return true;
+}
+
+/// Генерация RFC 4122 v4 UUID с использованием криптостойкого ГСЧ
+String generateUuidV4() {
+  final rnd = math.Random.secure();
+  final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // v4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20, 32)}';
 }
 
 class AuthState extends ChangeNotifier {
@@ -157,6 +168,16 @@ class AuthState extends ChangeNotifier {
   /// экраном должно только устройство-цель (инициатор — viewer).
   String? _ownDeviceId;
   String? get ownDeviceId => _ownDeviceId;
+
+  /// Идентификатор текущего экземпляра запущенного процесса (instance_id, Tier 3).
+  final String instanceId = generateUuidV4();
+
+  /// Идентификатор установки приложения на данном устройстве (installation_id, Tier 2).
+  String? _installationId;
+  String get installationId => _installationId ?? instanceId;
+
+  /// Генерация уникального action_id для операций доступа RDP / Screen
+  String generateActionId() => generateUuidV4();
 
   // --- Deep-link ligament:// (аудит RDP-11; контракт T6) ---
   /// Ссылка ligament://rdp/<target_uuid> (T6) либо легаси
@@ -426,6 +447,14 @@ class AuthState extends ChangeNotifier {
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
+
+    final savedInst = prefs.getString('installation_id');
+    if (savedInst != null && savedInst.isNotEmpty) {
+      _installationId = savedInst;
+    } else {
+      _installationId = generateUuidV4();
+      await prefs.setString('installation_id', _installationId!);
+    }
 
     final savedLocale = prefs.getString(_localeKey);
     if (savedLocale != null && savedLocale.isNotEmpty) {

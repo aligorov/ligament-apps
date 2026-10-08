@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:local_auth/local_auth.dart';
 
 import '../api/client.dart';
 import '../i18n/app_strings.dart';
@@ -28,6 +27,7 @@ class RdpActions {
     if (api == null || baseUrl == null || id.isEmpty) return;
     if (auth.rdp.isBusy || auth.rdp.isActive) return;
     final name = target['name']?.toString() ?? '';
+    final actionId = auth.generateActionId();
 
     unawaited(
       auth.rdp.connect(
@@ -36,8 +36,10 @@ class RdpActions {
         targetId: id,
         name: name,
         isRu: auth.isRu,
+        actionId: actionId,
+        sourceInstanceId: auth.instanceId,
         mfaPrompt: (wrong) =>
-            showRdpMfaDialog(context, isRu: auth.isRu, wrongCode: wrong, localAuth: auth.localAuth),
+            showRdpMfaDialog(context, isRu: auth.isRu, wrongCode: wrong),
       ),
     );
     await showDialog(
@@ -63,6 +65,7 @@ class RdpActions {
     onBusyChanged?.call(true);
     final s = context.stringsRead;
     unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));
+    final actionId = auth.generateActionId();
     try {
       String? beforeId;
       try {
@@ -72,15 +75,14 @@ class RdpActions {
       Map<String, dynamic>? grant;
       {
         String? code;
-        bool passkey = false;
-        bool autoPasskeyAttempted = false;
         while (true) {
           try {
             grant = await api.rdpGrant(
               targetId: targetId,
               mode: 'screen',
               code: code,
-              passkey: passkey,
+              actionId: actionId,
+              sourceInstanceId: auth.instanceId,
             );
             break;
           } on ApiException catch (e) {
@@ -88,45 +90,15 @@ class RdpActions {
             if (!context.mounted) return;
             _popOwnerScreenProgress(context);
 
-            // 1. Автоматический вызов Passkey (Touch ID / Windows Hello) при первом запросе
-            if (e.statusCode == 428 && !autoPasskeyAttempted) {
-              autoPasskeyAttempted = true;
-              try {
-                if (await auth.localAuth.isDeviceSupported()) {
-                  final didAuth = await auth.localAuth.authenticate(
-                    localizedReason: s.isRu
-                        ? 'Подтвердите доступ к экрану рабочего стола (Touch ID / Windows Hello)'
-                        : 'Confirm desktop screen access (Touch ID / Windows Hello)',
-                    options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
-                  );
-                  if (didAuth) {
-                    passkey = true;
-                    code = null;
-                    if (context.mounted) {
-                      unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));
-                    }
-                    continue;
-                  }
-                }
-              } catch (_) {}
-            }
-
-            if (!context.mounted) break;
-            // 2. Если Passkey не сработал или отменён — диалог с выбором (Passkey или TOTP)
             final res = await showRdpMfaDialog(
               context,
               isRu: s.isRu,
               wrongCode: e.code == 'invalid_code',
-              localAuth: auth.localAuth,
             );
             if (res == null) break;
-            if (res.passkey) {
-              passkey = true;
-              code = null;
-            } else {
-              passkey = false;
-              code = res.code;
-            }
+            code = res.code;
+            if (code == null || code.isEmpty) break;
+
             if (!context.mounted) return;
             unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));
           }
