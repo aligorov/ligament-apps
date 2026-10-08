@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:local_auth/local_auth.dart';
 
 import '../api/client.dart';
 import '../i18n/app_strings.dart';
@@ -35,8 +36,8 @@ class RdpActions {
         targetId: id,
         name: name,
         isRu: auth.isRu,
-        mfaCodePrompt: (wrong) =>
-            showRdpMfaCodeDialog(context, isRu: auth.isRu, wrongCode: wrong),
+        mfaPrompt: (wrong) =>
+            showRdpMfaDialog(context, isRu: auth.isRu, wrongCode: wrong, localAuth: auth.localAuth),
       ),
     );
     await showDialog(
@@ -71,24 +72,61 @@ class RdpActions {
       Map<String, dynamic>? grant;
       {
         String? code;
+        bool passkey = false;
+        bool autoPasskeyAttempted = false;
         while (true) {
           try {
             grant = await api.rdpGrant(
               targetId: targetId,
               mode: 'screen',
               code: code,
+              passkey: passkey,
             );
             break;
           } on ApiException catch (e) {
             if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
             if (!context.mounted) return;
             _popOwnerScreenProgress(context);
-            code = await showRdpMfaCodeDialog(
+
+            // 1. Автоматический вызов Passkey (Touch ID / Windows Hello) при первом запросе
+            if (e.statusCode == 428 && !autoPasskeyAttempted) {
+              autoPasskeyAttempted = true;
+              try {
+                if (await auth.localAuth.isDeviceSupported()) {
+                  final didAuth = await auth.localAuth.authenticate(
+                    localizedReason: s.isRu
+                        ? 'Подтвердите доступ к экрану рабочего стола (Touch ID / Windows Hello)'
+                        : 'Confirm desktop screen access (Touch ID / Windows Hello)',
+                    options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+                  );
+                  if (didAuth) {
+                    passkey = true;
+                    code = null;
+                    if (context.mounted) {
+                      unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));
+                    }
+                    continue;
+                  }
+                }
+              } catch (_) {}
+            }
+
+            if (!context.mounted) break;
+            // 2. Если Passkey не сработал или отменён — диалог с выбором (Passkey или TOTP)
+            final res = await showRdpMfaDialog(
               context,
               isRu: s.isRu,
               wrongCode: e.code == 'invalid_code',
+              localAuth: auth.localAuth,
             );
-            if (code == null) break;
+            if (res == null) break;
+            if (res.passkey) {
+              passkey = true;
+              code = null;
+            } else {
+              passkey = false;
+              code = res.code;
+            }
             if (!context.mounted) return;
             unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));
           }

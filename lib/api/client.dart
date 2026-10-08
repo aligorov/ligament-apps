@@ -673,6 +673,7 @@ class ApiClient {
     required String targetId,
     String mode = 'rdp',
     String? code,
+    bool passkey = false,
   }) async {
     final res = await _post(
       _cleanUrl('/api/v1/app/rdp/grant'),
@@ -681,8 +682,9 @@ class ApiClient {
         'target_id': targetId,
         'mode': mode,
         // Инлайн-подтверждение при 428 mfa_required (фикс 10-08-3):
-        // верный код чеканит свежую completed-попытку на сервере.
+        // верный код или passkey чеканит свежую completed-попытку на сервере.
         if (code != null && code.isNotEmpty) 'code': code,
+        if (passkey) 'passkey': true,
       }),
     );
     if (res.statusCode == 201) {

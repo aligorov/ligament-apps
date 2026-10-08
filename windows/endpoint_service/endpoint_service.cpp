@@ -133,6 +133,7 @@ void Log(const wchar_t* fmt, ...) {
 struct Config {
     std::wstring serverUrl;
     std::wstring agentKey;
+    std::wstring deviceId;
     bool enabled = false;
     bool allowSelfSigned = false;
     bool allowHttp = false;
@@ -189,6 +190,8 @@ bool ReadRegString(const wchar_t* name, std::wstring& out) {
 bool LoadConfig(Config& cfg) {
     ReadRegString(L"ServerURL", cfg.serverUrl);
     ReadRegString(L"RdpAgentKey", cfg.agentKey);
+    ReadRegString(L"RdpDeviceId", cfg.deviceId);
+    if (cfg.deviceId.empty()) ReadRegString(L"DeviceId", cfg.deviceId);
     DWORD v = 0;
     if (ReadRegDword(L"RdpAgentEnabled", v)) cfg.enabled = (v != 0);
     if (ReadRegDword(L"AllowSelfSigned", v)) cfg.allowSelfSigned = (v != 0);
@@ -197,6 +200,8 @@ bool LoadConfig(Config& cfg) {
     // Trim
     while (!cfg.serverUrl.empty() && iswspace(cfg.serverUrl.back())) cfg.serverUrl.pop_back();
     while (!cfg.serverUrl.empty() && iswspace(cfg.serverUrl.front())) cfg.serverUrl.erase(0, 1);
+    while (!cfg.deviceId.empty() && iswspace(cfg.deviceId.back())) cfg.deviceId.pop_back();
+    while (!cfg.deviceId.empty() && iswspace(cfg.deviceId.front())) cfg.deviceId.erase(0, 1);
     return cfg.Valid();
 }
 
@@ -598,6 +603,9 @@ public:
         // access-логах прокси и трассировке ядра).
         std::wstring path = L"/api/v1/rdp/agent/connect?version=" +
             Utf8ToWide(kAgentVersion);
+        if (!m_cfg.deviceId.empty()) {
+            path += L"&device_id=" + m_cfg.deviceId;
+        }
         HINTERNET hRequest = WinHttpOpenRequest(m_hConnect, L"GET", path.c_str(), nullptr,
             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
             isHttps ? WINHTTP_FLAG_SECURE : 0);

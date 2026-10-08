@@ -58,13 +58,19 @@ class _ApprovalModalState extends State<ApprovalModal> {
       if (TelemetryService.cachedInternalIPs.contains(clientIp)) return true;
       if (TelemetryService.cachedExternalIP != null && TelemetryService.cachedExternalIP == clientIp) return true;
     }
+    final localIps = _prompt['local_ips'];
+    if (localIps is List) {
+      for (final lip in localIps) {
+        if (TelemetryService.cachedInternalIPs.contains(lip.toString())) return true;
+      }
+    }
     return false;
   }
 
   void _generateOptions(String? expectedMatch) {
     _numberMatchOptions.clear();
     if (expectedMatch != null && expectedMatch.isNotEmpty) {
-      if (_isDesktop) {
+      if (_isDesktop || _isSameMachine) {
         _selectedMatch = expectedMatch;
       }
       final set = <String>{expectedMatch};
@@ -371,7 +377,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
               // Number Matching (Защита от push-fatigue)
               if (expectedMatch != null && expectedMatch.isNotEmpty) ...[
                 const SizedBox(height: 16),
-                if (_isSameMachine) ...[
+                if (_isSameMachine || _isDesktop) ...[
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
@@ -389,8 +395,12 @@ class _ApprovalModalState extends State<ApprovalModal> {
                             children: [
                               Text(
                                 strings.isRu
-                                    ? 'Вход на этом компьютере (код: $expectedMatch)'
-                                    : 'Sign-in on this PC (code: $expectedMatch)',
+                                    ? (_isSameMachine
+                                        ? 'Вход на этом компьютере (код: $expectedMatch)'
+                                        : 'Вход на рабочей станции (код: $expectedMatch)')
+                                    : (_isSameMachine
+                                        ? 'Sign-in on this PC (code: $expectedMatch)'
+                                        : 'Workstation sign-in (code: $expectedMatch)'),
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
                               ),
                               const SizedBox(height: 2),

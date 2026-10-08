@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/io.dart';
 
 import '../api/client.dart';
+import '../widgets/rdp_mfa_dialog.dart';
 
 /// RDP-коннектор (этап 2.2 плана docs/rdp-client-stage2-plan.md §3):
 /// grant → локальный loopback-слушатель → WS-мост до ядра → mstsc.
@@ -52,22 +53,31 @@ class RdpConnectorService extends ChangeNotifier {
   }
 
   /// Тестируемый шов платформенного guard'а (flutter test на macOS/Linux).
-  /// _grantWithInlineMfa — grant с инлайн-подтверждением кода: 428
-  /// mfa_required (или 401 invalid_code при повторе) спрашивает код через
-  /// mfaCodePrompt и повторяет запрос с ним. Пустая карта = отмена.
+  /// _grantWithInlineMfa — grant с инлайн-подтверждением кода или Passkey: 428
+  /// mfa_required (или 401 invalid_code при повторе) запрашивает подтверждение через
+  /// mfaPrompt (или mfaCodePrompt) и повторяет запрос. Пустая карта = отмена.
   static Future<Map<String, dynamic>> _grantWithInlineMfa(
-    Future<Map<String, dynamic>> Function(String? code) grant,
-    Future<String?> Function(bool wrongCode)? mfaCodePrompt,
+    Future<Map<String, dynamic>> Function({String? code, bool passkey}) grant,
+    Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
   ) async {
     String? code;
+    bool passkey = false;
     while (true) {
       try {
-        return await grant(code);
+        return await grant(code: code, passkey: passkey);
       } on ApiException catch (e) {
-        if (mfaCodePrompt == null) rethrow;
+        if (mfaPrompt == null) rethrow;
         if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
-        code = await mfaCodePrompt(e.code == 'invalid_code');
-        if (code == null || code.isEmpty) return const {};
+        final res = await mfaPrompt(e.code == 'invalid_code');
+        if (res == null) return const {};
+        if (res.passkey) {
+          passkey = true;
+          code = null;
+        } else {
+          passkey = false;
+          code = res.code;
+          if (code == null || code.isEmpty) return const {};
+        }
       }
     }
   }
@@ -86,6 +96,7 @@ class RdpConnectorService extends ChangeNotifier {
     required String targetId,
     required String name,
     bool isRu = true,
+    Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
     Future<String?> Function(bool wrongCode)? mfaCodePrompt,
   }) async {
     if (isBusy || isActive) return;
@@ -99,14 +110,21 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.grant);
 
     // 1. Грант (ошибки 403/409/428 мапятся ниже в человеческий текст).
-    // 428 mfa_required с mfaCodePrompt — инлайн-подтверждение кодом
+    // 428 mfa_required — инлайн-подтверждение Passkey или кодом
     // (фикс 10-08-3): без требования выходить из приложения; неверный
     // код переспрашивается, отмена тихо останавливает подключение.
     final Map<String, dynamic> grant;
+    final promptFn = mfaPrompt ??
+        (mfaCodePrompt != null
+            ? (wrong) async {
+                final c = await mfaCodePrompt(wrong);
+                return c != null ? RdpMfaResult(code: c) : null;
+              }
+            : null);
     try {
       grant = await _grantWithInlineMfa(
-        (code) => api.rdpGrant(targetId: targetId, mode: 'rdp', code: code),
-        mfaCodePrompt,
+        ({code, passkey = false}) => api.rdpGrant(targetId: targetId, mode: 'rdp', code: code, passkey: passkey),
+        promptFn,
       );
     } on ApiException catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
@@ -722,6 +740,10 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
       return isRu
           ? 'Мост для этой сессии уже открыт — завершите текущее подключение и повторите'
           : 'A bridge for this session is already open — finish the current connection and try again';
+    case 'screen_device_unbound':
+      return isRu
+          ? 'Целевой ПК не привязан к устройству. Обратитесь к администратору'
+          : 'Target PC is not linked to a device. Please contact administrator';
   }
   switch (status) {
     case 410:
