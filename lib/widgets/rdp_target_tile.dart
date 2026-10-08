@@ -130,12 +130,19 @@ class RdpTargetTile extends StatelessWidget {
                         ],
                         if (route.isNotEmpty) ...[
                           const SizedBox(width: 6),
-                          Text(
-                            '· $route',
-                            style: const TextStyle(
-                              color: Color(0xFF64748B),
-                              fontSize: 10,
-                              fontStyle: FontStyle.italic,
+                          // Мобильная адаптация (390px): маршрут — гибкий,
+                          // длинный relay-маршрут обрезается многоточием,
+                          // а не переполняет строку чипов.
+                          Flexible(
+                            child: Text(
+                              '· $route',
+                              maxLines: 1,
+                              style: const TextStyle(
+                                color: Color(0xFF64748B),
+                                fontSize: 10,
+                                fontStyle: FontStyle.italic,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
@@ -155,6 +162,9 @@ class RdpTargetTile extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 12),
+          // Мобильная адаптация (390px): две кнопки на всю ширину плитки,
+          // подписи — в одну строку с многоточием, компактный горизонтальный
+          // padding кнопок (умещаются «Подключиться» + «Экран» рядом).
           Row(
             children: [
               Expanded(
@@ -165,12 +175,16 @@ class RdpTargetTile extends StatelessWidget {
                 child: OutlinedButton.icon(
                   onPressed: onScreen,
                   icon: const Icon(Icons.monitor_outlined, size: 16),
-                  label: Text(s.rdpScreenBtn,
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  label: Text(
+                    s.rdpScreenBtn,
+                    maxLines: 1,
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: const Color(0xFF38BDF8),
                     side: const BorderSide(color: Color(0xFF0284C7)),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                 ),
@@ -184,7 +198,8 @@ class RdpTargetTile extends StatelessWidget {
 
   /// Кнопка подключения: Windows+online → «Подключиться»; offline →
   /// неактивная «Служба Ligament offline»; прочие платформы → подсказка
-  /// этапа 2b (кнопка «Экран» справа остаётся главной).
+  /// этапа 2b (кнопка «Экран» справа остаётся главной). Все варианты —
+  /// в одну строку с многоточием: ширина ячейки на 390px ≈ 160px.
   Widget _connectControl(AppStrings s, bool online) {
     if (!canLaunchRdp) {
       return Container(
@@ -192,7 +207,9 @@ class RdpTargetTile extends StatelessWidget {
         alignment: Alignment.center,
         child: Text(
           isRu ? 'RDP — только Windows' : 'RDP — Windows only',
+          maxLines: 1,
           style: const TextStyle(color: Color(0xFF64748B), fontSize: 10),
+          overflow: TextOverflow.ellipsis,
         ),
       );
     }
@@ -209,7 +226,9 @@ class RdpTargetTile extends StatelessWidget {
           ),
           child: Text(
             s.rdpServiceOffline,
+            maxLines: 1,
             style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       );
@@ -225,13 +244,15 @@ class RdpTargetTile extends StatelessWidget {
           : const Icon(Icons.terminal_outlined, size: 16),
       label: Text(
         s.rdpConnectBtn,
+        maxLines: 1,
         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+        overflow: TextOverflow.ellipsis,
       ),
       style: ElevatedButton.styleFrom(
         backgroundColor: const Color(0xFF10B981),
         foregroundColor: Colors.white,
         disabledBackgroundColor: const Color(0xFF065F46),
-        padding: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );

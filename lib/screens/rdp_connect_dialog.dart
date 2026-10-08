@@ -34,8 +34,13 @@ class RdpConnectDialog extends StatelessWidget {
           });
         }
 
+        // Мобильная адаптация (390px): дефолтные 40px inset с каждой стороны
+        // съедали четверть ширины — тексты шагов переносились раньше времени;
+        // контент — прокручиваемый: длинная ошибка сервера не переполняет
+        // экран по вертикали.
         return AlertDialog(
           backgroundColor: const Color(0xFF0F172A),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
             side: const BorderSide(color: Color(0xFF334155)),
@@ -56,45 +61,49 @@ class RdpConnectDialog extends StatelessWidget {
               ),
             ],
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                targetName,
-                style: const TextStyle(
-                  color: Color(0xFF94A3B8),
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(height: 16),
-              if (failed)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 20),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        connector.lastError ?? '',
-                        style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 13),
-                      ),
-                    ),
-                  ],
-                )
-              else ...[
-                const SizedBox(
-                  width: 28,
-                  height: 28,
-                  child: CircularProgressIndicator(strokeWidth: 3, color: Color(0xFF38BDF8)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  targetName,
+                  maxLines: 1,
+                  style: const TextStyle(
+                    color: Color(0xFF94A3B8),
+                    fontSize: 12,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 16),
-                Text(
-                  _stepText(s, phase, connector.phaseDetail),
-                  style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 13),
-                ),
+                if (failed)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          connector.lastError ?? '',
+                          style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  )
+                else ...[
+                  const SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: CircularProgressIndicator(strokeWidth: 3, color: Color(0xFF38BDF8)),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _stepText(s, phase, connector.phaseDetail),
+                    style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 13),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
           actions: [
             if (failed)

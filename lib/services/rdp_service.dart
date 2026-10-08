@@ -13,9 +13,10 @@ import '../api/client.dart';
 ///   POST /api/v1/app/rdp/grant {target_id, mode:"rdp"}
 ///     201 {grant_id, token, route, expires_in:60}
 ///   ServerSocket.bind(127.0.0.2, 0)              — случайный порт
-///   IOWebSocketChannel wss://…/rdp/connect?grant=&grant_token=
-///     (Authorization: Bearer <device-токен>; грант — в grant_token,
-///      ?token= на сервере занят device bearer'ом)  (бинарные кадры)
+///   IOWebSocketChannel wss://…/rdp/connect?grant=<grant_id>
+///     (Authorization: Bearer <device-токен>; грант-токен — подпротоколом
+///      Sec-WebSocket-Protocol: grant, <hex> — не в query, чтобы секрет
+///      не оседал в логах/прокси)                      (бинарные кадры)
 ///   Process.start mstsc /v:127.0.0.2:<port>       — Windows only
 ///   слушатель принимает РОВНО одно соединение (грант одноразовый, R2)
 ///   байты: mstsc ↔ listener ↔ WS ↔ ядро ↔ цель
@@ -120,15 +121,17 @@ class RdpConnectorService extends ChangeNotifier {
     });
 
     // 3. WS-труба до ядра (claim на сервере: grant→active, session создана).
-    //    Device-токен — заголовком Authorization: authMiddleware принимает
-    //    ?token= только как device bearer, а query-параметр гранта теперь
-    //    называется grant_token (конфликт имён на сервере исключён).
+    //    Device-токен — заголовком Authorization. Грант-токен — подпротоколом
+    //    Sec-WebSocket-Protocol: grant, <hex> (формат согласован с сервером;
+    //    поддержан и браузерным WebSocket API, и dart IOWebSocketChannel) —
+    //    в query секрет не кладём: URL пишут в логи прокси/балансировщика.
     _setPhase(RdpTunnelPhase.tunnel);
-    final wsUrl = rdpWsConnectUrl(baseUrl, grantId, token);
+    final wsUrl = rdpWsConnectUrl(baseUrl, grantId);
     IOWebSocketChannel ws;
     try {
       ws = IOWebSocketChannel.connect(
         wsUrl,
+        protocols: rdpWsSubprotocols(token),
         headers: {
           if (api.token != null && api.token!.isNotEmpty)
             'Authorization': 'Bearer ${api.token}',
@@ -376,11 +379,12 @@ Future<ServerSocket> _bindLoopback() async {
   }
 }
 
-/// URL WS-трубы: https-база → wss + /api/v1/app/rdp/connect?grant&grant_token.
-/// Грант-токен — в параметре grant_token (НЕ token: серверный authMiddleware
-/// читает ?token= как device bearer для WS/SSE — конфликт; device-токен
-/// клиент предъявляет заголовком Authorization, см. connect()).
-Uri rdpWsConnectUrl(String baseUrl, String grantId, String grantToken) {
+/// URL WS-трубы: https-база → wss + /api/v1/app/rdp/connect?grant=<id>.
+/// Грант-токен в URL НЕ передаётся (секрет в query оседает в логах
+/// прокси/балансировщика) — он идёт подпротоколом handshake'а, см.
+/// [rdpWsSubprotocols]. Device-токен клиент предъявляет заголовком
+/// Authorization (см. connect()).
+Uri rdpWsConnectUrl(String baseUrl, String grantId) {
   var base = baseUrl.trim();
   if (base.startsWith('https://')) {
     base = 'wss://${base.substring(8)}';
@@ -392,8 +396,16 @@ Uri rdpWsConnectUrl(String baseUrl, String grantId, String grantToken) {
   }
   return Uri.parse(
     '$base/api/v1/app/rdp/connect',
-  ).replace(queryParameters: {'grant': grantId, 'grant_token': grantToken});
+  ).replace(queryParameters: {'grant': grantId});
 }
+
+/// Подпротоколы WS-handshake RDP-трубы: сервер ждёт грант-токен в
+/// `Sec-WebSocket-Protocol: grant, <hex>` — браузерный WebSocket API не
+/// умеет кастомные заголовки, а список подпротоколов склеивается в один
+/// заголовок через запятую и в браузере, и в dart IOWebSocketChannel
+/// (аргумент protocols). Идентификатор 'grant' отмечает назначение
+/// второго значения — сам одноразовый токен гранта.
+List<String> rdpWsSubprotocols(String grantToken) => ['grant', grantToken];
 
 /// HTTP-статус из ошибки WS-handshake (best effort — dart:io не даёт
 /// типизированного статуса; паттерн ws_service._isUnauthorized).

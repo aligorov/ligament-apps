@@ -924,15 +924,13 @@ void LigamentCredential::RunAsyncJob() {
     std::wstring challengeId;
     bool needPolling = false;
 
-    // ---- Фаза 0: CP-гейт RDP MFA (сервер internal/api/rdp_cp.go) ---------
-    // Удалённый вход (LOGON/UNLOCK, RDP-сессия): перед MFA-каскадом спрашиваем
-    // ядро, подтверждён ли второй фактор ШЛЮЗОМ Ligament для ЭТОЙ машины
-    // (активная RDP-сессия шлюза, hostname эндпоинта == имя этого ПК).
-    // satisfied → пропускаем каскад (результат = успешный второй фактор);
-    // любой отказ гейта (сеть/секрет/не-200) → обычный каскад (fail-closed),
-    // существующий CP-флоу не меняется. Локальная консоль и UAC-элевация
-    // (CREDUI) гейт не спрашивают. Вызов идёт с воркер-потока: блокирующий
-    // WinHTTP на потоке LogonUI замораживал экран входа (см. шапку класса).
+    // ---- Фаза 0: CP-гейт RDP MFA — ОТКЛЮЧЕН -------------------------------
+    // Сервер выключил rdp_cp-гейт (internal/api/rdp_cp.go): satisfied всегда
+    // false, а каждый удалённый вход продолжал бы гонять WinHTTP-запрос с
+    // 8-секундным receive-таймаутом. Вызов убран из рантайма; сам
+    // rdp_gate.cpp/h остаётся в сборке (см. CMakeLists) для будущего
+    // включения — достаточно вернуть вызов ниже.
+#if 0
     if (m_isRemoteSession && m_cpus != CPUS_CREDUI &&
         (job == JobStartPush || job == JobWebAuthnBegin || job == JobVerifyOtp)) {
         RdpGateResult gate = CheckRdpMfaSatisfied(
@@ -966,6 +964,7 @@ void LigamentCredential::RunAsyncJob() {
         }
         // not satisfied / гейт недоступен → обычный MFA-каскад (фаза 1).
     }
+#endif
 
     // ---- Фаза 1: стартовый вызов сервера (без блокировки LogonUI) --------
     if (job == JobStartPush) {

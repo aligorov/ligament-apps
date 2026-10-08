@@ -102,27 +102,32 @@ void main() {
   });
 
   group('rdpWsConnectUrl', () {
-    test('https-база → wss + путь + query', () {
+    test('https-база → wss + путь + ?grant (токен НЕ в query)', () {
       final uri = rdpWsConnectUrl(
         'https://core.corp.local/',
         '11111111-2222-3333-4444-555555555555',
-        'aabbccdd',
       );
       expect(uri.scheme, 'wss');
       expect(uri.host, 'core.corp.local');
       expect(uri.path, '/api/v1/app/rdp/connect');
       expect(
           uri.queryParameters['grant'], '11111111-2222-3333-4444-555555555555');
-      expect(uri.queryParameters['grant_token'], 'aabbccdd');
-      // ?token= на сервере занят device bearer'ом (authMiddleware) —
-      // грант-токен обязан идти только как grant_token.
+      // Грант-токен уходит подпротоколом Sec-WebSocket-Protocol, а не в
+      // query: секрет в URL оседает в логах прокси/балансировщика.
+      expect(uri.queryParameters.containsKey('grant_token'), isFalse);
       expect(uri.queryParameters.containsKey('token'), isFalse);
     });
 
     test('хвостовой слэш базы не удваивается', () {
-      final uri = rdpWsConnectUrl('https://core.corp.local///', 'g', 't');
+      final uri = rdpWsConnectUrl('https://core.corp.local///', 'g');
       expect(uri.toString(),
-          'wss://core.corp.local/api/v1/app/rdp/connect?grant=g&grant_token=t');
+          'wss://core.corp.local/api/v1/app/rdp/connect?grant=g');
+    });
+  });
+
+  group('rdpWsSubprotocols — грант-токен в Sec-WebSocket-Protocol', () {
+    test('сервер ожидает список «grant, <hex>» (браузерный паттерн)', () {
+      expect(rdpWsSubprotocols('aabbccdd'), ['grant', 'aabbccdd']);
     });
   });
 

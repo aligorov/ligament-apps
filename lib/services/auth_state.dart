@@ -44,6 +44,29 @@ Map<String, dynamic> normalizeBrowserSsoPrompt(Map<String, dynamic> raw) {
   };
 }
 
+/// Гейт адресации owner-«Экрана» (этап 2.4): должен ли ЭТОТ клиент начать
+/// трансляцию по support_prompt с owner:true. Prompt рассылается ВСЕМ
+/// устройствам владельца, поэтому каждый получатель решает локально.
+/// Чистая функция — тестируется без WS/сервера (owner_screen_test.dart).
+///
+/// false (prompt игнорируется), когда:
+/// - инициатор — мы сами (initiator_device_id == наш device_id): это
+///   устройство — viewer, экран оно не транслирует;
+/// - сервер адресовал трансляцию конкретной agent-цели
+///   (target_device_id непуст и != наш device_id): это не моя машина.
+bool ownerScreenPromptTargetsThisDevice(
+    Map<String, dynamic> prompt, String? ownDeviceId) {
+  final initiator = prompt['initiator_device_id']?.toString();
+  if (initiator != null && initiator.isNotEmpty && initiator == ownDeviceId) {
+    return false;
+  }
+  final target = prompt['target_device_id']?.toString();
+  if (target != null && target.isNotEmpty && target != ownDeviceId) {
+    return false;
+  }
+  return true;
+}
+
 class AuthState extends ChangeNotifier {
   static const String _tokenKey = 'auth_token';
   static const String _localeKey = 'app_locale';
@@ -1246,6 +1269,8 @@ class AuthState extends ChangeNotifier {
   /// Гейты:
   /// - инициатор (initiator_device_id == наш device_id) — это viewer, он
   ///   экран НЕ транслирует;
+  /// - точечная адресация agent-цели (target_device_id непуст и не наш
+  ///   device_id) — это не моя машина, prompt адресован другому агенту;
   /// - мобильные/web цели не поддержаны (getDisplayMedia нет) — «Экран»
   ///   открывают только НА десктоп, с телефона — только просмотр;
   /// - занятость: уже идёт другая трансляция (например, живой SOS к
@@ -1255,9 +1280,9 @@ class AuthState extends ChangeNotifier {
     final sessionId = prompt['session_id']?.toString() ?? '';
     if (sessionId.isEmpty || api == null) return;
 
-    final initiator = prompt['initiator_device_id']?.toString();
-    if (initiator != null && initiator.isNotEmpty && initiator == _ownDeviceId) {
-      debugPrint('auth_state: owner-экран инициирован этим устройством — оно viewer, не цель');
+    if (!ownerScreenPromptTargetsThisDevice(prompt, _ownDeviceId)) {
+      debugPrint(
+          'auth_state: owner-экран адресован другому устройству — игнорируем');
       return;
     }
 

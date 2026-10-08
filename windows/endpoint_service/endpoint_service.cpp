@@ -255,21 +255,6 @@ bool JsonExtractU64(const std::string& json, const char* key, unsigned long long
     return true;
 }
 
-std::string UrlEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            out += (char)c;
-        } else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 0xF];
-        }
-    }
-    return out;
-}
-
 std::string WideToUtf8(const std::wstring& w) {
     if (w.empty()) return {};
     int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
@@ -327,15 +312,25 @@ public:
         m_hConnect = WinHttpConnect(m_hSession, host, uc.nPort, 0);
         if (!m_hConnect) return false;
 
-        // agent_key — в query (контракт rdp_agent_hub.HandleConnect читает
-        // query; ключ длинный, но URL-путь короткий — лимита не превышаем).
-        std::wstring path = L"/api/v1/rdp/agent/connect?agent_key=" +
-            Utf8ToWide(UrlEncode(WideToUtf8(m_cfg.agentKey))) +
-            L"&version=" + Utf8ToWide(kAgentVersion);
+        // В query — только version (не секрет). agent_key — заголовком
+        // Authorization Bearer: контракт rdp_agent_hub.HandleConnect читает
+        // ключ из заголовка (аудит P2 2026-10-08 — креды в query оседают в
+        // access-логах прокси и трассировке ядра).
+        std::wstring path = L"/api/v1/rdp/agent/connect?version=" +
+            Utf8ToWide(kAgentVersion);
         HINTERNET hRequest = WinHttpOpenRequest(m_hConnect, L"GET", path.c_str(), nullptr,
             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
             isHttps ? WINHTTP_FLAG_SECURE : 0);
         if (!hRequest) return false;
+
+        // agent_key — uuid, экранирование заголовка не требуется.
+        std::wstring authHeader = L"Authorization: Bearer " + m_cfg.agentKey;
+        if (!WinHttpAddRequestHeaders(hRequest, authHeader.c_str(), (DWORD)-1,
+                                      WINHTTP_ADDREQ_FLAG_ADD)) {
+            Log(L"Authorization-заголовок не добавлен (%lu)", GetLastError());
+            WinHttpCloseHandle(hRequest);
+            return false;
+        }
 
         // WS-keepalive: WinHTTP сам шлёт ping-кадры раз в интервал и сам
         // отвечает pong на серверные ping (ядро пингует каждые 25с).
