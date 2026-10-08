@@ -32,6 +32,7 @@
       <ComponentRef Id="CredentialProviderComponent" />
       <ComponentRef Id="RdpWebAuthnPolicyComponent" />
       <ComponentRef Id="LigamentServiceComponent" />
+      <ComponentRef Id="EndpointServiceComponent" />
     </Feature>
 
     <Icon Id="AppIcon.ico" SourceFile="windows/runner/resources/app_icon.ico" />
@@ -43,7 +44,17 @@
          через HKLM\SOFTWARE\Policies\Ligament\2FA\ServerURL или
          ligament-cp-settings.reg из RDP-ZIP. -->
     <Property Id="SERVERURL" Secure="yes" />
-</Product>
+    <!-- RDPAGENTKEY: ключ endpoint-службы RDP Access Gateway (формат
+         «<endpoint_uuid>:<agent_key_hex>», выдаётся админом при создании
+         agent-endpoint в 2fa). msiexec /i Ligament-2FA-Windows-x64.msi
+         RDPAGENTKEY=<uuid>:<hex> — значение уходит в
+         HKLM\SOFTWARE\Ligament\2FA\RdpAgentKey (EndpointServiceComponent),
+         службу читает его при старте. Не задан — пустая строка, служба
+         стартует пассивной (RdpAgentEnabled по умолчанию 0 в коде службы),
+         ключ можно задать позже политикой
+         HKLM\SOFTWARE\Policies\Ligament\2FA\RdpAgentKey. -->
+    <Property Id="RDPAGENTKEY" Secure="yes" />
+  </Product>
 
   <Fragment>
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -174,6 +185,41 @@
                         Start="install"
                         Stop="both"
                         Remove="uninstall" />
+      </Component>
+
+      <!-- Ligament Endpoint Service (RDP Access Gateway, этап 2.3):
+           endpoint_service.cpp → ligament_endpoint.exe, ставится как
+           endpoint_service.exe рядом с приложением. Служба сама инициирует
+           исходящий WSS к ядру 2fa (входящих портов нет), регистрируется
+           по agent_key и по команде ядра открывает TCP только на
+           127.0.0.1:3389 (loopback-allowlist в коде службы). Auto-start,
+           LocalSystem (Account не указан — WiX по умолчанию ставит службу
+           от LocalSystem), пассивна без RdpAgentKey/RdpAgentEnabled=1.
+           RDPAGENTKEY передаётся при установке и уходит в реестр. -->
+      <Component Id="EndpointServiceComponent" Guid="5733C8DD-453E-4EEE-ADBB-609D7EA8E0D8" Win64="yes">
+        <File Id="LigamentEndpointServiceExe"
+              Name="endpoint_service.exe"
+              Source="windows/endpoint_service/build/Release/ligament_endpoint.exe"
+              KeyPath="yes" />
+        <ServiceInstall Name="LigamentEndpointService"
+                        DisplayName="Ligament Endpoint Service"
+                        Description="Ligament RDP Access Gateway endpoint service: outbound WSS tunnel to the 2FA core, dials loopback RDP (127.0.0.1:3389) on demand"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="ignore" />
+        <ServiceControl Id="LigamentEndpointServiceControl"
+                        Name="LigamentEndpointService"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall" />
+        <!-- Ключ endpoint-службы из MSI-свойства RDPAGENTKEY (см. Product).
+             KeyPath — File выше (обязателен для ServiceInstall), реестр —
+             сопутствующий ресурс компонента. -->
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\Ligament\2FA"
+                       Name="RdpAgentKey"
+                       Type="string"
+                       Value="[RDPAGENTKEY]" />
       </Component>
     </DirectoryRef>
   </Fragment>

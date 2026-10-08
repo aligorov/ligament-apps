@@ -13,7 +13,9 @@ import '../api/client.dart';
 ///   POST /api/v1/app/rdp/grant {target_id, mode:"rdp"}
 ///     201 {grant_id, token, route, expires_in:60}
 ///   ServerSocket.bind(127.0.0.2, 0)              — случайный порт
-///   IOWebSocketChannel wss://…/rdp/connect?grant=&token= (бинарные кадры)
+///   IOWebSocketChannel wss://…/rdp/connect?grant=&grant_token=
+///     (Authorization: Bearer <device-токен>; грант — в grant_token,
+///      ?token= на сервере занят device bearer'ом)  (бинарные кадры)
 ///   Process.start mstsc /v:127.0.0.2:<port>       — Windows only
 ///   слушатель принимает РОВНО одно соединение (грант одноразовый, R2)
 ///   байты: mstsc ↔ listener ↔ WS ↔ ядро ↔ цель
@@ -118,12 +120,19 @@ class RdpConnectorService extends ChangeNotifier {
     });
 
     // 3. WS-труба до ядра (claim на сервере: grant→active, session создана).
+    //    Device-токен — заголовком Authorization: authMiddleware принимает
+    //    ?token= только как device bearer, а query-параметр гранта теперь
+    //    называется grant_token (конфликт имён на сервере исключён).
     _setPhase(RdpTunnelPhase.tunnel);
     final wsUrl = rdpWsConnectUrl(baseUrl, grantId, token);
     IOWebSocketChannel ws;
     try {
       ws = IOWebSocketChannel.connect(
         wsUrl,
+        headers: {
+          if (api.token != null && api.token!.isNotEmpty)
+            'Authorization': 'Bearer ${api.token}',
+        },
         connectTimeout: const Duration(seconds: 10),
         pingInterval: const Duration(seconds: 20),
       );
@@ -367,10 +376,11 @@ Future<ServerSocket> _bindLoopback() async {
   }
 }
 
-/// URL WS-трубы: https-база → wss + /api/v1/app/rdp/connect?grant&token.
-/// Токен в query — единственный реализованный сервером способ предъявления
-/// (расхождение с дизайн-доком §5 зафиксировано в плане §1.1).
-Uri rdpWsConnectUrl(String baseUrl, String grantId, String token) {
+/// URL WS-трубы: https-база → wss + /api/v1/app/rdp/connect?grant&grant_token.
+/// Грант-токен — в параметре grant_token (НЕ token: серверный authMiddleware
+/// читает ?token= как device bearer для WS/SSE — конфликт; device-токен
+/// клиент предъявляет заголовком Authorization, см. connect()).
+Uri rdpWsConnectUrl(String baseUrl, String grantId, String grantToken) {
   var base = baseUrl.trim();
   if (base.startsWith('https://')) {
     base = 'wss://${base.substring(8)}';
@@ -382,7 +392,7 @@ Uri rdpWsConnectUrl(String baseUrl, String grantId, String token) {
   }
   return Uri.parse(
     '$base/api/v1/app/rdp/connect',
-  ).replace(queryParameters: {'grant': grantId, 'token': token});
+  ).replace(queryParameters: {'grant': grantId, 'grant_token': grantToken});
 }
 
 /// HTTP-статус из ошибки WS-handshake (best effort — dart:io не даёт

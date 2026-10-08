@@ -56,6 +56,20 @@ if (Test-Path "$SvcDir\CMakeLists.txt") {
     }
 }
 
+# 3b. Сборка Ligament Endpoint Service (RDP Access Gateway; входит в MSI
+#     как endpoint_service.exe — компонент EndpointServiceComponent)
+$EpDir = "$ClientDir\windows\endpoint_service"
+if (Test-Path "$EpDir\CMakeLists.txt") {
+    Write-Host "`n[2c/5] Компиляция Ligament Endpoint Service (ligament_endpoint.exe)..." -ForegroundColor Yellow
+    cmake -B "$EpDir\build" -S "$EpDir" -A x64
+    cmake --build "$EpDir\build" --config Release
+    if (Test-Path "$EpDir\build\Release\ligament_endpoint.exe") {
+        Write-Host " Успешно скомпилирована служба: ligament_endpoint.exe" -ForegroundColor Green
+    } else {
+        Write-Error "Ошибка: ligament_endpoint.exe не скомпилировалась!"
+    }
+}
+
 # 4. Каталог дистрибутивов (отдельный RDP-ZIP больше не создаётся:
 #    единый MSI = приложение + CP + служба)
 if (-not (Test-Path $DistDir)) {
