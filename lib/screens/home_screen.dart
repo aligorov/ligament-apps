@@ -26,7 +26,6 @@ import 'settings_screen.dart';
 import 'support_approval_modal.dart';
 import 'support_dialog.dart';
 import 'support_operator_screen.dart';
-import '../widgets/rdp_target_tile.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -42,7 +41,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _notificationModalShown = false;
   bool _browserSsoModalShown = false;
   bool _connectingToSession = false;
-  bool _ownerScreenBusy = false;
   Timer? _rdpTargetsTimer;
 
   /// Сворачивание в трей имеет смысл только на десктопе (Windows/macOS/Linux):
@@ -386,233 +384,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Этап 2.2: запуск RDP-туннеля по плитке «Подключиться» — грант,
-  /// loopback-слушатель, WS-мост и mstsc ведёт RdpConnectorService; диалог
-  /// статуса показывает шаги и «Отменить» (план §3.1).
-  Future<void> _connectRdp(AuthState auth, Map<String, dynamic> target) async {
-    final api = auth.api;
-    final baseUrl = auth.serverUrl;
-    final id = target['id']?.toString() ?? '';
-    if (api == null || baseUrl == null || id.isEmpty) return;
-    if (auth.rdp.isBusy || auth.rdp.isActive) return;
-    final name = target['name']?.toString() ?? '';
 
-    unawaited(
-      auth.rdp.connect(
-        api: api,
-        baseUrl: baseUrl,
-        targetId: id,
-        name: name,
-        isRu: auth.isRu,
-        // Инлайн-подтверждение 428 кодом (фикс 10-08-3).
-        mfaCodePrompt: (wrong) =>
-            showRdpMfaCodeDialog(context, isRu: auth.isRu, wrongCode: wrong),
-      ),
-    );
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => RdpConnectDialog(connector: auth.rdp, targetName: name),
-    );
-  }
-
-  /// Этап 2.4 «Экран» (план §5.2), сторона ИНИЦИАТОРА (viewer):
-  ///
-  ///   POST /rdp/grant {mode:"screen"} → сервер (S3) создаёт support-сессию
-  ///   с owner=grant.user_id и пушит на ЦЕЛЬ support_prompt(owner:true);
-  ///   цель стартует трансляцию БЕЗ accept-диалога → здесь открывается
-  ///   SupportOperatorScreen(ownerMode) — нативное окно приложения, не
-  ///   модалка внутри главной.
-  ///
-  /// Идентификатор созданной сессии приходит либо в ответе гранта
-  /// (S3-контракт), либо находится опросом /support/current (снимок ДО
-  /// гранта отличает новую owner-сессию от уже висящего SOS-обращения).
-  Future<void> _openOwnerScreen(AuthState auth, Map<String, dynamic> target) async {
-    final api = auth.api;
-    final targetId = target['id']?.toString() ?? '';
-    final targetName = target['name']?.toString() ?? '';
-    if (api == null || targetId.isEmpty || _ownerScreenBusy) return;
-
-    setState(() => _ownerScreenBusy = true);
-    final s = context.stringsRead;
-    unawaited(_showOwnerScreenProgress(s.ownerScreenProgress(targetName)));
-    try {
-      // Снимок активной сессии ДО гранта.
-      String? beforeId;
-      try {
-        beforeId = (await api.getCurrentSupportSession())?['id']?.toString();
-      } catch (_) {}
-
-      Map<String, dynamic>? grant;
-      {
-        // Инлайн-подтверждение 428 кодом (фикс 10-08-3): без требования
-        // выходить из приложения; отмена = тихий отказ от «Экрана».
-        String? code;
-        while (true) {
-          try {
-            grant = await api.rdpGrant(
-                targetId: targetId, mode: 'screen', code: code);
-            break;
-          } on ApiException catch (e) {
-            if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
-            if (!mounted) return;
-            _popOwnerScreenProgress();
-            code = await showRdpMfaCodeDialog(context,
-                isRu: s.isRu, wrongCode: e.code == 'invalid_code');
-            if (code == null) break;
-            unawaited(_showOwnerScreenProgress(s.ownerScreenProgress(targetName)));
-          }
-        }
-      }
-      if (grant == null) {
-        _popOwnerScreenProgress();
-        return;
-      }
-
-      // Быстрый путь: S3 вложил сессию в ответ гранта.
-      String grantSessionId = grant['session_id']?.toString() ??
-          grant['support_session_id']?.toString() ??
-          '';
-      final sessObj = grant['session'];
-      if (grantSessionId.isEmpty && sessObj is Map) {
-        grantSessionId = sessObj['id']?.toString() ?? '';
-      }
-      Map<String, dynamic>? session;
-      if (grantSessionId.isNotEmpty) {
-        session = <String, dynamic>{
-          if (sessObj is Map) ...Map<String, dynamic>.from(sessObj),
-          'id': grantSessionId,
-        };
-      } else {
-        session = await _waitOwnerScreenSession(api, beforeId);
-      }
-
-      if (!mounted) return;
-      _popOwnerScreenProgress();
-
-      if (session == null) {
-        // Сервер без S3-склейки: грант не породил support-сессию — закрываем
-        // грант и объясняем, что требуется обновлённое ядро.
-        final grantId = grant['grant_id']?.toString() ?? '';
-        if (grantId.isNotEmpty) {
-          unawaited(api.rdpClose(grantId).catchError((_) {}));
-        }
-        await _showOwnerScreenError(s, s.ownerScreenUnsupportedTitle, s.ownerScreenUnsupportedBody);
-        return;
-      }
-
-      final sessionId = session['id']?.toString() ?? grantSessionId;
-      if (sessionId.isEmpty) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          fullscreenDialog: true,
-          builder: (_) => SupportOperatorScreen(
-            sessionId: sessionId,
-            sessionData: <String, dynamic>{
-              ...target,
-              ...session!,
-              'access_mode': 'full_control', // свой ПК — всегда полный доступ
-              'owner': true,
-            },
-            ownerMode: true,
-          ),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _popOwnerScreenProgress();
-      await _showOwnerScreenError(s, s.error, rdpConnectErrorText(e, isRu: s.isRu));
-    } finally {
-      if (mounted) setState(() => _ownerScreenBusy = false);
-    }
-  }
-
-  /// Ожидание появления owner-сессии в /support/current (S3 создаёт её из
-  /// гранта). Принимаем сессию с owner/mode=screen ЛИБО новую (id отличен
-  /// от снимка до гранта). null — таймаут ~12 с.
-  Future<Map<String, dynamic>?> _waitOwnerScreenSession(
-    ApiClient api,
-    String? beforeId, {
-    Duration timeout = const Duration(seconds: 12),
-  }) async {
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      try {
-        final sess = await api.getCurrentSupportSession();
-        if (sess != null) {
-          final id = sess['id']?.toString() ?? '';
-          final isOwner = sess['owner'] == true || sess['mode']?.toString() == 'screen';
-          final isNew = beforeId == null || beforeId.isEmpty || id != beforeId;
-          if (id.isNotEmpty && (isOwner || isNew)) {
-            return sess;
-          }
-        }
-      } catch (_) {}
-      await Future<void>.delayed(const Duration(milliseconds: 1200));
-    }
-    return null;
-  }
-
-  void _popOwnerScreenProgress() {
-    final nav = Navigator.of(context, rootNavigator: true);
-    if (nav.canPop()) {
-      nav.pop();
-    }
-  }
-
-  Future<void> _showOwnerScreenProgress(String text) async {
-    if (!mounted) return;
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => PopScope(
-        canPop: false,
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF0F172A),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: Color(0xFF334155)),
-          ),
-          content: Row(
-            children: [
-              const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2.4, color: Color(0xFF38BDF8)),
-              ),
-              const SizedBox(width: 16),
-              Expanded(child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 14))),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showOwnerScreenError(AppStrings s, String title, String body) async {
-    if (!mounted) return;
-    await showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0F172A),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Color(0xFF334155)),
-        ),
-        title: Row(
-          children: [
-            const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 20),
-            const SizedBox(width: 8),
-            Expanded(child: Text(title, style: const TextStyle(color: Colors.white, fontSize: 15))),
-          ],
-        ),
-        content: Text(body, style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4)),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: Text(s.close)),
-        ],
-      ),
-    );
-  }
 
   /// Баннер активного RDP-туннеля (этап 2.2): «Завершить» рвёт сессию и
   /// закрывает грант на сервере (POST /rdp/close).
@@ -790,7 +562,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           BottomNavigationBarItem(
             icon: const Icon(Icons.apps_outlined),
-            label: isRu ? 'SSO Сервисы' : 'SSO Apps',
+            label: isRu ? 'Сервисы' : 'Services',
           ),
           BottomNavigationBarItem(
             icon: const Icon(Icons.history_outlined),
@@ -998,40 +770,7 @@ class _HomeScreenState extends State<HomeScreen> {
             // пользователь видит живую сессию и может завершить её (§8 R6).
             if (auth.rdp.isBusy || auth.rdp.isActive) _buildRdpTunnelBanner(auth),
 
-            // Этап 2.1: секция «Мои рабочие места» — под identity-баннерами,
-            // над блоком 2FA-запросов (план §2.4). Скрывается, когда целей
-            // нет или фича не смонтирована на сервере (free-лицензия).
-            if (auth.rdpFeatureAvailable && auth.rdpTargets.isNotEmpty) ...[
-              Row(
-                children: [
-                  const Icon(Icons.desktop_windows_outlined, color: Color(0xFF38BDF8), size: 20),
-                  const SizedBox(width: 8),
-                  Text(
-                    isRu ? 'Мои рабочие места' : 'My Workstations',
-                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF94A3B8)),
-                    tooltip: isRu ? 'Обновить статус целей' : 'Refresh target status',
-                    onPressed: () => auth.loadRdpTargets(),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              ...auth.rdpTargets.map(
-                (t) => RdpTargetTile(
-                  target: t,
-                  isRu: isRu,
-                  connecting: auth.rdp.isBusy,
-                  onConnect: () => _connectRdp(auth, t),
-                  // Этап 2.4 «Экран» (план §5.2): SOS-механика с флагом
-                  // owner — просмотр экрана своего ПК без accept-диалога.
-                  onScreen: _ownerScreenBusy ? null : () => _openOwnerScreen(auth, t),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
+
 
             // РАЗДЕЛ ДЛЯ ИНЖЕНЕРОВ: Входящие заявки на удаленную помощь
             if (isEngineer) ...[

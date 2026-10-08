@@ -22,6 +22,7 @@ class RdpTargetTile extends StatelessWidget {
     this.onConnect,
     this.onScreen,
     this.connecting = false,
+    this.margin,
   });
 
   final Map<String, dynamic> target;
@@ -29,6 +30,7 @@ class RdpTargetTile extends StatelessWidget {
   final VoidCallback? onConnect;
   final VoidCallback? onScreen;
   final bool connecting;
+  final EdgeInsetsGeometry? margin;
 
   static bool get canLaunchRdp => !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
@@ -44,7 +46,7 @@ class RdpTargetTile extends StatelessWidget {
     final route = target['route']?.toString() ?? '';
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: margin ?? const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),

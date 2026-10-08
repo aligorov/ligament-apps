@@ -34,6 +34,8 @@ class _ApprovalModalState extends State<ApprovalModal> {
   bool _isProcessing = false;
   bool _closing = false;
   String? _error;
+  final _totpController = TextEditingController();
+  bool _showTotpInput = false;
 
   void _generateOptions(String? expectedMatch) {
     _numberMatchOptions.clear();
@@ -69,6 +71,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
   @override
   void dispose() {
+    _totpController.dispose();
     _auth?.removeListener(_onAuthStateChanged);
     _timer?.cancel();
     super.dispose();
@@ -146,9 +149,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
     return '${strings.error}: $e';
   }
 
-  Future<void> _handleDecision(bool approve) async {
+  Future<void> _handleDecision(bool approve, {bool passkey = false, String? code}) async {
     final expectedMatch = _prompt['number_match']?.toString();
-    if (approve && expectedMatch != null && expectedMatch.isNotEmpty) {
+    if (approve && code == null && !passkey && expectedMatch != null && expectedMatch.isNotEmpty) {
       if (_selectedMatch == null || _selectedMatch != expectedMatch) {
         setState(() => _error = context.stringsRead.errSelectMatch);
         return;
@@ -168,6 +171,8 @@ class _ApprovalModalState extends State<ApprovalModal> {
         challengeId: challengeId,
         approve: approve,
         selectedNumberMatch: _selectedMatch,
+        code: code,
+        passkey: passkey,
       );
       _close();
     } catch (e) {
@@ -175,6 +180,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
         setState(() {
           _error = _translateError(context, e);
           _isProcessing = false;
+          if (e.toString().contains('desktop_confirm_forbidden')) {
+            _showTotpInput = true;
+          }
         });
       }
     }
@@ -201,12 +209,13 @@ class _ApprovalModalState extends State<ApprovalModal> {
       insetPadding: const EdgeInsets.all(16),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 440),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
+        child: SingleChildScrollView(
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
               // Заголовок, таймер и кнопка закрытия
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -380,7 +389,102 @@ class _ApprovalModalState extends State<ApprovalModal> {
                 Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
               ],
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+
+              // Кнопка подтверждения через Passkey / Touch ID / Windows Hello
+              OutlinedButton.icon(
+                onPressed: _isProcessing ? null : () => _handleDecision(true, passkey: true),
+                icon: const Icon(Icons.fingerprint, color: Color(0xFF38BDF8), size: 20),
+                label: Text(
+                  strings.isRu ? '🔑 Подтвердить через Passkey' : '🔑 Confirm with Passkey',
+                  style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF0284C7)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+
+              const SizedBox(height: 10),
+
+              // Окошко для ввода TOTP
+              if (_showTotpInput) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F172A),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFF334155)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        strings.isRu
+                            ? 'Введите 6-значный TOTP код из приложения:'
+                            : 'Enter 6-digit TOTP code from app:',
+                        style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _totpController,
+                              keyboardType: TextInputType.number,
+                              maxLength: 6,
+                              style: const TextStyle(color: Colors.white, letterSpacing: 4, fontWeight: FontWeight.bold),
+                              decoration: InputDecoration(
+                                counterText: '',
+                                hintText: '000000',
+                                hintStyle: const TextStyle(color: Color(0xFF64748B), letterSpacing: 4),
+                                isDense: true,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                filled: true,
+                                fillColor: const Color(0xFF1E293B),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                              ),
+                              onSubmitted: (v) {
+                                if (v.trim().isNotEmpty) {
+                                  _handleDecision(true, code: v.trim());
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            onPressed: _isProcessing
+                                ? null
+                                : () {
+                                    if (_totpController.text.trim().isNotEmpty) {
+                                      _handleDecision(true, code: _totpController.text.trim());
+                                    }
+                                  },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF0284C7),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            child: Text(strings.isRu ? 'Ввод' : 'OK', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ] else ...[
+                TextButton.icon(
+                  onPressed: () => setState(() => _showTotpInput = true),
+                  icon: const Icon(Icons.pin_outlined, size: 16, color: Color(0xFF94A3B8)),
+                  label: Text(
+                    strings.isRu ? 'Или подтвердить кодом TOTP' : 'Or confirm with TOTP code',
+                    style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
 
               // Кнопки решений
               Row(
@@ -418,7 +522,8 @@ class _ApprovalModalState extends State<ApprovalModal> {
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 
   Widget _metaRow(IconData icon, String label, String value) {

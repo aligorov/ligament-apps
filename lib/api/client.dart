@@ -189,12 +189,20 @@ class ApiClient {
     required String challengeId,
     required String decision,
     String? numberMatch,
+    String? code,
+    bool? passkey,
   }) async {
     final payload = <String, dynamic>{
       'decision': decision,
     };
     if (numberMatch != null && numberMatch.isNotEmpty) {
       payload['number_match'] = numberMatch;
+    }
+    if (code != null && code.trim().isNotEmpty) {
+      payload['code'] = code.trim();
+    }
+    if (passkey == true) {
+      payload['passkey'] = true;
     }
 
     final res = await _post(

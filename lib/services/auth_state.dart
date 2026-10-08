@@ -1251,6 +1251,8 @@ class AuthState extends ChangeNotifier {
     required String challengeId,
     required bool approve,
     String? selectedNumberMatch,
+    String? code,
+    bool? passkey,
   }) async {
     if (api == null) return;
 
@@ -1264,20 +1266,21 @@ class AuthState extends ChangeNotifier {
     await alert.resetWindowPriority();
 
     if (approve) {
-      // 1. Если включена GPO политика Windows Hello (desktop) или на мобильном
-      // устройстве зарегистрирована системная биометрия (отпечаток / Face ID)
-      if (gpo.requireWindowsHello) {
+      bool passkeyVerified = passkey ?? false;
+      // 1. Если передана явная просьба passkey, или включена GPO политика Windows Hello
+      if (passkey == true || gpo.requireWindowsHello) {
         final didAuth = await localAuth.authenticate(
           localizedReason: isRu
-              ? 'Подтвердите вход в корпоративную систему с помощью Windows Hello'
-              : 'Confirm login with Windows Hello / biometrics',
+              ? 'Подтвердите вход в корпоративную систему с помощью Passkey / биометрии'
+              : 'Confirm sign-in with Passkey / biometrics',
           options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
         );
         if (!didAuth) {
           throw Exception(isRu
-              ? 'Подтверждение Windows Hello отклонено'
-              : 'Windows Hello authentication rejected');
+              ? 'Подтверждение Passkey отклонено'
+              : 'Passkey authentication rejected');
         }
+        passkeyVerified = true;
       } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
         // Мобильная биометрия: гейт только если биометрии ЗАРЕГИСТРИРОВАНЫ
         var mobileBiometricsEnrolled = false;
@@ -1300,7 +1303,25 @@ class AuthState extends ChangeNotifier {
                 ? 'Биометрическое подтверждение отклонено'
                 : 'Biometric confirmation rejected');
           }
+          passkeyVerified = true;
         }
+      } else if (!kIsWeb && (Platform.isMacOS || Platform.isWindows) && (code == null || code.isEmpty)) {
+        // Десктоп-аутентификация при подтверждении без TOTP-кода:
+        // пробуем вызвать системный Passkey (Touch ID / Windows Hello)
+        try {
+          final isSupported = await localAuth.isDeviceSupported();
+          if (isSupported) {
+            final didAuth = await localAuth.authenticate(
+              localizedReason: isRu
+                  ? 'Подтвердите вход в корпоративную систему (Touch ID / Windows Hello)'
+                  : 'Confirm sign-in with Touch ID / Windows Hello',
+              options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+            );
+            if (didAuth) {
+              passkeyVerified = true;
+            }
+          }
+        } catch (_) {}
       }
 
       // 2. Отправка подтверждения
@@ -1309,6 +1330,8 @@ class AuthState extends ChangeNotifier {
           challengeId: challengeId,
           decision: 'approve',
           numberMatch: selectedNumberMatch,
+          code: code,
+          passkey: passkeyVerified,
         );
       } on ApiException catch (e) {
         if (e.statusCode == 403 && e.code == 'desktop_confirm_forbidden') {
