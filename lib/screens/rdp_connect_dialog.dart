@@ -21,7 +21,7 @@ class RdpConnectDialog extends StatelessWidget {
       listenable: connector,
       builder: (context, _) {
         final phase = connector.phase;
-        final done = phase == RdpTunnelPhase.active || phase == RdpTunnelPhase.closed;
+        final done = phase == RdpTunnelPhase.active || phase == RdpTunnelPhase.closed || phase == RdpTunnelPhase.idle;
         final failed = phase == RdpTunnelPhase.failed;
 
         // Сессия установлена — закрываем диалог (туннель живёт в фоне,
