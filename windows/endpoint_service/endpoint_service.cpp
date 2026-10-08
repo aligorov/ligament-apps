@@ -349,16 +349,17 @@ public:
         // Upgrade: CompleteUpgrade сам доводит handshake до 101; при отказе
         // статус ответа доступен через QueryHeaders (401 invalid_agent_key
         // и т.п. — не ретраим быстро).
-        DWORD err = WinHttpWebSocketCompleteUpgrade(hRequest, 0);
-        if (err != NO_ERROR) {
+        HINTERNET hWs = WinHttpWebSocketCompleteUpgrade(hRequest, 0);
+        if (!hWs) {
             m_httpStatus = QueryStatusCode(hRequest);
-            Log(L"WS upgrade не прошёл (err=%lu, http=%lu)", err, m_httpStatus);
+            Log(L"WS upgrade не прошёл (http=%lu)", m_httpStatus);
             WinHttpCloseHandle(hRequest);
             m_lastFatalAuth = (m_httpStatus == 401 || m_httpStatus == 403);
             return false;
         }
-        // После успешного upgrade hRequest — WS-ручка.
-        m_hWs = hRequest;
+        // CompleteUpgrade возвращает НОВУЮ WS-ручку; hRequest больше не нужен.
+        m_hWs = hWs;
+        WinHttpCloseHandle(hRequest);
         m_connectedAt = GetTickCount64();
         Log(L"туннель до ядра установлен");
         return true;
@@ -377,7 +378,7 @@ public:
         std::string pending; // склейка фрагментов одного сообщения
         for (;;) {
             if (m_stopped.load()) return;
-            WINHTTP_WEB_SOCKET_BUFFER_TYPE type = WINHTTP_WEB_SOCKET_BUFFER_TYPE_CLOSE;
+            WINHTTP_WEB_SOCKET_BUFFER_TYPE type = (WINHTTP_WEB_SOCKET_BUFFER_TYPE)0;
             DWORD read = 0;
             DWORD err = WinHttpWebSocketReceive(m_hWs, buf.data(), (DWORD)buf.size(), &read, &type);
             if (err != NO_ERROR) {
@@ -444,7 +445,7 @@ private:
         return code;
     }
 
-    bool WsSendRaw(DWORD bufType, const void* p, DWORD n) {
+    bool WsSendRaw(WINHTTP_WEB_SOCKET_BUFFER_TYPE bufType, const void* p, DWORD n) {
         std::lock_guard<std::mutex> lk(m_sendMu);
         if (!m_hWs || m_stopped.load()) return false;
         return WinHttpWebSocketSend(m_hWs, bufType, (PVOID)p, n) == NO_ERROR;
