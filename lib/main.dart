@@ -15,10 +15,12 @@ import 'screens/home_screen.dart';
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Deep-link ligament://rdp/<grant_id> (аудит RDP-11), холодный старт:
-  // Windows передаёт URI схемы в argv (windows/runner/main.cpp пробрасывает
-  // командную строку в dart_entrypoint_arguments). Если юзер ещё не залогинен
-  // — AuthState сохранит ссылку и применит после успешного входа.
+  // Deep-link ligament://rdp/<uuid> (аудит RDP-11, контракт T6), холодный
+  // старт: Windows передаёт URI схемы в argv (windows/runner/main.cpp
+  // пробрасывает командную строку в dart_entrypoint_arguments). Без токена
+  // в query UUID трактуется как target — приложение само получит грант;
+  // легаси-токен в query означает grant веб-кабинета. Если юзер ещё не
+  // залогинен — AuthState сохранит ссылку и применит после успешного входа.
   final deepLinkUri = ligamentUriFromArgs(args);
 
   FlutterError.onError = (FlutterErrorDetails details) {

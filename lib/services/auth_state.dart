@@ -158,14 +158,15 @@ class AuthState extends ChangeNotifier {
   String? _ownDeviceId;
   String? get ownDeviceId => _ownDeviceId;
 
-  // --- Deep-link ligament:// (аудит RDP-11) ---
-  /// Ссылка ligament://rdp/<grant_id>, ожидающая применения. Ставится:
+  // --- Deep-link ligament:// (аудит RDP-11; контракт T6) ---
+  /// Ссылка ligament://rdp/<target_uuid> (T6) либо легаси
+  /// ligament://rdp/<grant_id>?t=…, ожидающая применения. Ставится:
   /// - холодным стартом (argv в main.dart) до логина — применится ПОСЛЕ
   ///   успешного входа, когда HomeScreen построится;
   /// - горячим стартом/повторной доставкой при живой сессии — HomeScreen
   ///   подхватит по notifyListeners (didChangeDependencies).
-  /// Потребляет HomeScreen: запускает RDP-connect флоу по гранту
-  /// (rdp.connectBridge) и показывает RdpConnectDialog. null — ссылки нет.
+  /// Потребляет HomeScreen: запускает RDP-connect флоу (rdp.connectBridge)
+  /// и показывает RdpConnectDialog. null — ссылки нет.
   LigamentDeepLink? _pendingRdpDeepLink;
   LigamentDeepLink? get pendingRdpDeepLink => _pendingRdpDeepLink;
 
@@ -184,6 +185,26 @@ class AuthState extends ChangeNotifier {
     final link = _pendingRdpDeepLink;
     _pendingRdpDeepLink = null;
     return link;
+  }
+
+  /// Deep-link target-режим (T6): «намерение подключиться к цели» из
+  /// ссылки ligament://rdp/<target_uuid>. Приложение САМО получает
+  /// bridge-грант — POST /api/v1/app/rdp/grant {target_id, mode:"bridge"}
+  /// — от device-токена из защищённого хранилища; ссылка не несёт НИКАКИХ
+  /// токенов/секретов (командная строка холодного старта читается любым
+  /// процессом — урок аудита). Ответ {grant_id, token} уходит вызывающей
+  /// стороне в память для connectBridge: грант-токен существует только
+  /// внутри процесса и в URI не возвращается никогда.
+  ///
+  /// Отказы сервера пробрасываются как ApiException (в т.ч. 428
+  /// mfa_required — HomeScreen показывает диалог «войти заново /
+  /// подтвердить»); не залогинен — ApiException(401, not_authenticated).
+  Future<Map<String, dynamic>> grantRdpTargetBridge(String targetId) async {
+    final client = api;
+    if (client == null) {
+      throw ApiException(401, 'not_authenticated');
+    }
+    return client.rdpGrant(targetId: targetId, mode: 'bridge');
   }
 
   /// ICE-серверы (STUN/TURN) из /api/v1/app/config для WebRTC-сессий

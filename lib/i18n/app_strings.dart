@@ -462,6 +462,27 @@ class AppStrings {
       ? 'Рабочий стол (веб-кабинет)'
       : 'Remote Desktop (web portal)';
 
+  // --- Deep-link ligament://rdp/<target_uuid> (T6, целевой контракт) ---
+  String get rdpDeepLinkMfaTitle => isRu
+      ? 'Нужно подтверждение входа'
+      : 'Sign-in confirmation required';
+  String get rdpDeepLinkMfaBody => isRu
+      ? 'Подключение к рабочему месту требует свежего подтверждения входа (MFA). Войдите в приложение заново с кодом второго фактора или подтвердите вход в веб-кабинете — подтверждение действует 10 минут.'
+      : 'Connecting to the workstation requires a recent sign-in confirmation (MFA). Re-login with a second-factor code or confirm the sign-in in the web portal — the confirmation is valid for 10 minutes.';
+  String get rdpDeepLinkMfaRelogin => isRu ? 'Войти заново' : 'Re-login';
+  String get rdpDeepLinkMfaRetry => isRu
+      ? 'Подтвердил — повторить'
+      : 'Confirmed — retry';
+  String get rdpDeepLinkNeedLoginTitle => isRu
+      ? 'Требуется вход в приложение'
+      : 'Sign-in required';
+  String get rdpDeepLinkNeedLoginBody => isRu
+      ? 'Ссылка открывает рабочее место, но сессия приложения истекла. Войдите заново и повторите ссылку из веб-кабинета.'
+      : 'The link opens a workstation, but the app session has expired. Sign in again and retry the link from the web portal.';
+  String get rdpDeepLinkGrantErrorTitle => isRu
+      ? 'Не удалось открыть ссылку'
+      : 'Could not open the link';
+
   // --- «Экран моего ПК» owner-режим (этап 2.4, план §5.2) ---
   String get ownerScreenTitle => isRu ? 'Экран моего ПК' : 'My PC Screen';
   String get ownerScreenBadge => isRu ? 'Мой ПК' : 'My PC';

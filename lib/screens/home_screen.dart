@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
 import '../services/auth_state.dart';
+import '../services/deep_link_service.dart';
 import '../services/input_injector.dart';
 import '../services/rdp_service.dart' show rdpConnectErrorText;
 import '../services/support_service.dart';
@@ -78,9 +79,14 @@ class _HomeScreenState extends State<HomeScreen> {
     _checkPendingRdpDeepLink(auth);
   }
 
-  /// Deep-link ligament://rdp/<grant_id> (аудит RDP-11): применяем ожидающую
-  /// ссылку — RDP-connect флоу по гранту (rdp.connectBridge) с диалогом
-  /// статуса RdpConnectDialog, как у плитки «Подключиться». Ссылка могла
+  /// Deep-link ligament://rdp/<uuid> (аудит RDP-11 + контракт T6): применяем
+  /// ожидающую ссылку. Target-режим (без токена в query): приложение САМО
+  /// берёт bridge-грант у сервера — POST /api/v1/app/rdp/grant {target_id}
+  /// от device-токена из защищённого хранилища (auth.grantRdpTargetBridge);
+  /// 428 mfa_required → диалог «войти заново / подтвердил — повторить»,
+  /// прочие отказы гранта → человеческий текст rdpConnectErrorText, успех →
+  /// connectBridge + RdpConnectDialog (обычный connect-флоу). Легаси-формат
+  /// <grant_id>?t=<token> остаётся рабочим без изменений. Ссылка могла
   /// приехать холодным стартом ДО логина (pending в AuthState) или в живой
   /// сессии (notifyListeners перезапускает didChangeDependencies).
   void _checkPendingRdpDeepLink(AuthState auth) {
@@ -92,58 +98,171 @@ class _HomeScreenState extends State<HomeScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final s = context.stringsRead;
-      final api = auth.api;
-      final baseUrl = auth.serverUrl;
-
-      // Живая/занятая RDP-сессия не срывается ради ссылки.
-      if (auth.rdp.isBusy || auth.rdp.isActive) {
-        debugPrint('deep_link: rdp занят — ссылка отброшена');
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text(s.rdpDeepLinkBusy)),
-        );
-        return;
-      }
-      final token = link.grantToken;
-      if (api == null || baseUrl == null || token == null) {
-        // Без токена гранта bridge-подключение невозможно (дизайн §5 —
-        // токен не в URL не значит, что его можно достать из воздуха:
-        // grant создан web-сессией, у приложения секрета нет).
-        showDialog<void>(
-          context: context,
-          builder: (dialogCtx) => AlertDialog(
-            backgroundColor: const Color(0xFF1E293B),
-            title: Text(s.rdpDeepLinkNoTokenTitle,
-                style: const TextStyle(color: Colors.white, fontSize: 16)),
-            content: Text(s.rdpDeepLinkNoTokenBody,
-                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogCtx).pop(),
-                child: Text(s.close),
-              ),
-            ],
-          ),
-        );
-        return;
-      }
-
-      final name = s.rdpDeepLinkTargetName;
-      unawaited(
-        auth.rdp.connectBridge(
-          api: api,
-          grantId: link.grantId,
-          token: token,
-          name: name,
-          isRu: s.isRu,
-        ),
-      );
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => RdpConnectDialog(connector: auth.rdp, targetName: name),
-      );
+      unawaited(_applyRdpDeepLink(auth, link));
     });
+  }
+
+  /// Применение разобранной ссылки: ветвление по контракту (T6 target /
+  /// легаси grant) + общий гейт занятости туннеля.
+  Future<void> _applyRdpDeepLink(AuthState auth, LigamentDeepLink link) async {
+    if (!mounted) return;
+    final s = context.stringsRead;
+    final api = auth.api;
+    final baseUrl = auth.serverUrl;
+
+    // Живая/занятая RDP-сессия не срывается ради ссылки.
+    if (auth.rdp.isBusy || auth.rdp.isActive) {
+      debugPrint('deep_link: rdp занят — ссылка отброшена');
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(s.rdpDeepLinkBusy)),
+      );
+      return;
+    }
+
+    final name = s.rdpDeepLinkTargetName;
+
+    // Контракт T6: ligament://rdp/<target_uuid> — намерение подключиться.
+    // Ссылка несёт ТОЛЬКО UUID: грант и токен приложение получает у сервера
+    // само (в URI их не передаём никогда — cmdline читается любым процессом).
+    if (link.kind == LigamentDeepLinkKind.target) {
+      if (api == null || baseUrl == null) {
+        // Сессии нет — грант нечем авторизовать: понятный диалог входа.
+        await _showDeepLinkInfoDialog(
+            s.rdpDeepLinkNeedLoginTitle, s.rdpDeepLinkNeedLoginBody, s.close);
+        return;
+      }
+      final grant = await _grantDeepLinkTarget(auth, link.targetId!, s);
+      if (grant == null) return; // диалог уже показан (mfa/отказ гранта)
+      if (!mounted) return;
+      _startBridgeConnect(auth, api,
+          grantId: grant['grant_id']?.toString() ?? '',
+          token: grant['token']?.toString() ?? '',
+          name: name,
+          isRu: s.isRu);
+      return;
+    }
+
+    // Легаси: <grant_id>?t=<token> — bridge-грант веб-кабинета.
+    final token = link.grantToken;
+    if (api == null || baseUrl == null || token == null || link.grantId == null) {
+      // Без токена гранта bridge-подключение невозможно (дизайн §5 —
+      // токен не в URL не значит, что его можно достать из воздуха:
+      // grant создан web-сессией, у приложения секрета нет).
+      await _showDeepLinkInfoDialog(
+          s.rdpDeepLinkNoTokenTitle, s.rdpDeepLinkNoTokenBody, s.close);
+      return;
+    }
+    _startBridgeConnect(auth, api,
+        grantId: link.grantId!, token: token, name: name, isRu: s.isRu);
+  }
+
+  /// Грант для target-ссылки (T6): POST /rdp/grant mode=bridge. null —
+  /// сервер отказал и диалог уже показан (428 mfa_required → «войти
+  /// заново / подтвердил — повторить», прочие коды → rdpConnectErrorText).
+  Future<Map<String, dynamic>?> _grantDeepLinkTarget(
+      AuthState auth, String targetId, AppStrings s) async {
+    try {
+      return await auth.grantRdpTargetBridge(targetId);
+    } on ApiException catch (e) {
+      if (e.statusCode == 428 || e.code == 'mfa_required') {
+        if (!mounted) return null;
+        final retry = await _showDeepLinkMfaDialog(s);
+        if (retry == true) {
+          return _grantDeepLinkTarget(auth, targetId, s);
+        }
+      } else if (mounted) {
+        await _showDeepLinkInfoDialog(s.rdpDeepLinkGrantErrorTitle,
+            rdpConnectErrorText(e, isRu: s.isRu), s.close);
+      }
+      return null;
+    }
+  }
+
+  /// Диалог 428 mfa_required: «Подтвердил — повторить» (повтор гранта) /
+  /// «Войти заново» (разлогин) / «Закрыть». true — повторить попытку.
+  Future<bool?> _showDeepLinkMfaDialog(AppStrings s) async {
+    final auth = context.read<AuthState>();
+    var relogin = false;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Text(s.rdpDeepLinkMfaTitle,
+            style: const TextStyle(color: Colors.white, fontSize: 16)),
+        content: Text(s.rdpDeepLinkMfaBody,
+            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: Text(s.close),
+          ),
+          TextButton(
+            onPressed: () {
+              relogin = true;
+              Navigator.of(dialogCtx).pop(false);
+            },
+            child: Text(s.rdpDeepLinkMfaRelogin),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2563EB),
+              foregroundColor: Colors.white,
+            ),
+            child: Text(s.rdpDeepLinkMfaRetry),
+          ),
+        ],
+      ),
+    );
+    if (relogin) {
+      await auth.logout();
+    }
+    return result;
+  }
+
+  /// Информационный диалог deep-link (единый тёмный стиль).
+  Future<void> _showDeepLinkInfoDialog(
+      String title, String body, String action) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Text(title,
+            style: const TextStyle(color: Colors.white, fontSize: 16)),
+        content: Text(body,
+            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Запуск bridge-подключения по гранту + диалог статуса (как у плитки
+  /// «Подключиться»): connectBridge идёт без await, RdpConnectDialog
+  /// слушает фазы коннектора до active/failed.
+  void _startBridgeConnect(AuthState auth, ApiClient api,
+      {required String grantId,
+      required String token,
+      required String name,
+      required bool isRu}) {
+    unawaited(
+      auth.rdp.connectBridge(
+        api: api,
+        grantId: grantId,
+        token: token,
+        name: name,
+        isRu: isRu,
+      ),
+    );
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => RdpConnectDialog(connector: auth.rdp, targetName: name),
+    );
   }
 
   void _checkBrowserSsoPrompt(AuthState auth) {
