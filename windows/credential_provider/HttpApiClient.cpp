@@ -418,7 +418,7 @@ bool HttpApiClient::StartPush(
                        "\",\"client_ip\":\"" + EscapeJson(ep.clientIp) +
                        "\",\"host_ip\":\"" + EscapeJson(ep.hostIp) +
                        "\",\"client_name\":\"" + EscapeJson(ep.clientName) +
-                       ",\"computer_name\":\"" + EscapeJson(ep.hostName) + "\"}";
+                       "\",\"computer_name\":\"" + EscapeJson(ep.hostName) + "\"}";
 
     m_lastRetryAfterSec = 0;
     int statusCode = 0;
@@ -503,7 +503,7 @@ bool HttpApiClient::VerifyCombined(
                        "\",\"client_ip\":\"" + EscapeJson(ep.clientIp) +
                        "\",\"host_ip\":\"" + EscapeJson(ep.hostIp) +
                        "\",\"client_name\":\"" + EscapeJson(ep.clientName) +
-                       ",\"computer_name\":\"" + EscapeJson(ep.hostName) + "\"}";
+                       "\",\"computer_name\":\"" + EscapeJson(ep.hostName) + "\"}";
 
     m_lastRetryAfterSec = 0;
     int statusCode = 0;
@@ -572,7 +572,7 @@ WebAuthnBeginResult HttpApiClient::WebAuthnBegin(
                        "\",\"client_ip\":\"" + EscapeJson(ep.clientIp) +
                        "\",\"host_ip\":\"" + EscapeJson(ep.hostIp) +
                        "\",\"client_name\":\"" + EscapeJson(ep.clientName) +
-                       ",\"computer_name\":\"" + EscapeJson(ep.hostName) + "\"}";
+                       "\",\"computer_name\":\"" + EscapeJson(ep.hostName) + "\"}";
 
     m_lastRetryAfterSec = 0;
     int statusCode = 0;
