@@ -15,6 +15,7 @@ import 'deep_link_service.dart';
 import 'gpo_service.dart';
 import 'local_detect_service.dart';
 import 'rdp_service.dart';
+import 'web_platform.dart';
 import 'server_url_validator.dart';
 import 'support_service.dart';
 import 'telemetry_service.dart';
@@ -816,7 +817,11 @@ class AuthState extends ChangeNotifier {
     String osVersion = '';
     String platform = 'unknown';
 
-    if (!kIsWeb) {
+    if (kIsWeb) {
+      // PWA: честная платформа по UA (web-ios/web-android/web) — строка
+      // устройства рождается правильной, без ожидания телеметрии-лечения.
+      platform = detectWebPlatform(webUserAgent(), maxTouchPoints: webMaxTouchPoints());
+    } else {
       try {
         if (Platform.isWindows) {
           platform = 'windows';

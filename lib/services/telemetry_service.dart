@@ -5,6 +5,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
 import 'gpo_service.dart';
+import 'web_platform.dart';
 import 'windows_identity.dart';
 import '../api/client.dart';
 
@@ -474,7 +475,11 @@ class TelemetryService {
   }
 
   String _platformName() {
-    if (kIsWeb) return 'web';
+    // Инцидент 2026-10-08: плоский 'web' прятал PWA-телефон от пуш-ступени
+    // каскада — детектим честный web-ios/web-android по UA.
+    if (kIsWeb) {
+      return detectWebPlatform(webUserAgent(), maxTouchPoints: webMaxTouchPoints());
+    }
     if (Platform.isWindows) return 'windows';
     if (Platform.isAndroid) return 'android';
     if (Platform.isIOS) return 'ios';
