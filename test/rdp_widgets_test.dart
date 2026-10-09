@@ -20,7 +20,7 @@ void main() {
   /// Наихудший по ширине контент плитки.
   final heavyTarget = {
     'name': 'WORKSTATION-MOSCOW-ACCOUNTING-DEPT-01',
-    'kind': 'terminal_server',
+    'kind': 'pc',
     'max_sessions': 4,
     'online': true,
     'endpoint': 'ws-accounting-01.corp.local:3389 (agent relay via moscow-gw-1)',
@@ -186,6 +186,33 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.text('Сервер недоступен'), findsOneWidget);
+      expect(find.text('Экран'), findsNothing);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('Windows + terminal_server online: только «Подключиться», «Экран» скрыт', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(harness(RdpTargetTile(
+        target: {
+          'name': 'TS-CLUSTER-01',
+          'kind': 'terminal_server',
+          'max_sessions': 16,
+          'online': true,
+          'endpoint': '10.10.20.103:3389 (direct)',
+          'route': 'direct',
+        },
+        isRu: true,
+      )));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Подключиться'), findsOneWidget);
+      expect(find.text('Экран'), findsNothing);
       debugDefaultTargetPlatformOverride = null;
     });
   });

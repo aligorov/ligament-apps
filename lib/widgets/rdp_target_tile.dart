@@ -42,7 +42,7 @@ class RdpTargetTile extends StatelessWidget {
     final s = context.stringsRead;
     final name = target['name']?.toString() ?? '';
     final kind = target['kind']?.toString() ?? 'pc';
-    final isTs = kind == 'terminal_server';
+    final isTs = kind == 'terminal_server' || kind == 'ts';
     final maxSessions = int.tryParse(target['max_sessions']?.toString() ?? '') ?? 1;
     final online = target['online'] == true;
     final endpoint = target['endpoint']?.toString() ?? '';
@@ -180,20 +180,24 @@ class RdpTargetTile extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 12),
-          // Мобильная адаптация (390px): две кнопки на всю ширину плитки,
-          // подписи — в одну строку с многоточием, компактный горизонтальный
-          // padding кнопок (умещаются «Подключиться» + «Экран» рядом).
-          Row(
-            children: [
-              Expanded(
-                child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _screenControl(s, screenAvailable, screenReason),
-              ),
-            ],
-          ),
+          if (isTs) ...[
+            SizedBox(
+              width: double.infinity,
+              child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
+            ),
+          ] else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _screenControl(s, screenAvailable, screenReason),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
