@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
+import '../widgets/rdp_service_settings_card.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -541,7 +542,10 @@ class SettingsScreen extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          if (isWin) ...[
+            const RdpServiceSettingsCard(),
+            const SizedBox(height: 16),
+          ],
 
           // Карточка телеметрии устройства
           Container(

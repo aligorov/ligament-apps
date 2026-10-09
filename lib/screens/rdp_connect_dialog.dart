@@ -138,8 +138,11 @@ class RdpConnectDialog extends StatelessWidget {
       case RdpTunnelPhase.tunnel:
         return s.rdpStepTunnel;
       case RdpTunnelPhase.launching:
-      case RdpTunnelPhase.active:
         return s.rdpStepLaunch;
+      case RdpTunnelPhase.waitingClient:
+        return s.rdpStepWaitingClient;
+      case RdpTunnelPhase.active:
+        return s.rdpStepActive;
       default:
         return s.rdpStepGrant;
     }

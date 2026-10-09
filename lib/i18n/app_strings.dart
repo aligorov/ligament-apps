@@ -447,6 +447,35 @@ class AppStrings {
       : 'RDP session: $name';
   String get rdpEndSessionBtn => isRu ? 'Завершить' : 'End';
   String get rdpClosedBanner => isRu ? 'RDP-сессия завершена' : 'RDP session ended';
+  String get rdpSelfBadge => isRu ? 'Текущий ПК' : 'Current PC';
+  String get rdpSelfBtn => isRu ? 'Текущий компьютер' : 'Current Computer';
+  String get rdpSelfProhibited => isRu
+      ? 'Это ваш текущий компьютер. Подключение RDP к себе запрещено.'
+      : 'This is your current PC. Self-connection is not allowed.';
+  String get rdpStepWaitingClient => isRu
+      ? 'Ожидание клиента RDP…'
+      : 'Waiting for RDP client…';
+
+  // --- Настройки: RDP-служба (Хост удалённого доступа, §8) ---
+  String get rdpServiceSettingsTitle => isRu ? 'RDP-служба (хост доступа)' : 'RDP Host Service';
+  String get rdpServiceSettingsDesc => isRu
+      ? 'Позволяет подключаться к этому компьютеру удалённо через Ligament.'
+      : 'Allows connecting to this computer remotely via Ligament.';
+  String get rdpServiceStatusLabel => isRu ? 'Состояние службы' : 'Service Status';
+  String get rdpServiceStatusRunning => isRu ? 'Работает (в сети)' : 'Running (Online)';
+  String get rdpServiceStatusStopped => isRu ? 'Остановлена' : 'Stopped';
+  String get rdpServiceStatusNotInstalled => isRu ? 'Не установлена' : 'Not installed';
+  String get rdpServiceStatusUnknown => isRu ? 'Не определено' : 'Unknown';
+  String get rdpServiceAgentKeyLabel => isRu ? 'Ключ подключения (agent_key)' : 'Connection key (agent_key)';
+  String get rdpServiceAgentKeyHint => isRu ? 'Вставьте выданный ключ' : 'Enter provided agent key';
+  String get rdpServiceConnectThisPcBtn => isRu ? 'Подключить этот ПК' : 'Connect this PC';
+  String get rdpServiceConfigSuccess => isRu ? 'Служба успешно настроена' : 'Service configured successfully';
+  String get rdpServiceConfigError => isRu ? 'Ошибка настройки (требуются права администратора)' : 'Configuration failed (admin rights required)';
+  String get rdpServiceEmptyKey => isRu ? 'Введите ключ подключения' : 'Enter connection key';
+  String get rdpServiceComputerName => isRu ? 'Имя компьютера' : 'Computer Name';
+  String get rdpServiceAdminNotice => isRu
+      ? 'Требуются права администратора (UAC) для сохранения настроек службы'
+      : 'Administrator privileges (UAC) required to save service settings';
 
   // --- Deep-link ligament://rdp/<grant_id> (аудит RDP-11) ---
   String get rdpDeepLinkNoTokenTitle => isRu

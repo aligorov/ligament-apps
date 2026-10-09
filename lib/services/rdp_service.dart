@@ -38,12 +38,14 @@ class RdpConnectorService extends ChangeNotifier {
   String? targetName;
 
   _RdpTunnelSession? _session;
+  int _connectGeneration = 0;
 
   bool get isBusy =>
       _phase == RdpTunnelPhase.grant ||
       _phase == RdpTunnelPhase.listener ||
       _phase == RdpTunnelPhase.tunnel ||
-      _phase == RdpTunnelPhase.launching;
+      _phase == RdpTunnelPhase.launching ||
+      _phase == RdpTunnelPhase.waitingClient;
   bool get isActive => _phase == RdpTunnelPhase.active;
 
   void _setPhase(RdpTunnelPhase p, {String? detail}) {
@@ -104,6 +106,7 @@ class RdpConnectorService extends ChangeNotifier {
           : 'RDP connection is available on Windows only');
       return;
     }
+    final generation = ++_connectGeneration;
     targetName = name;
     _setPhase(RdpTunnelPhase.grant);
 
@@ -139,6 +142,7 @@ class RdpConnectorService extends ChangeNotifier {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
+    if (_connectGeneration != generation) return;
     if (grant.isEmpty) {
       // Пользователь отменил ввод кода — тихий отказ, без «ошибки».
       _setPhase(RdpTunnelPhase.idle);
@@ -147,6 +151,7 @@ class RdpConnectorService extends ChangeNotifier {
     final grantId = grant['grant_id']?.toString() ?? '';
     final token = grant['token']?.toString() ?? '';
     final expiresIn = int.tryParse(grant['expires_in']?.toString() ?? '') ?? 60;
+    final targetHost = grant['target_host']?.toString();
     if (grantId.isEmpty || token.isEmpty) {
       _fail(isRu ? 'Сервер вернул некорректный грант' : 'Server returned a malformed grant');
       return;
@@ -164,6 +169,10 @@ class RdpConnectorService extends ChangeNotifier {
       listener = await _bindLoopback();
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
+      return;
+    }
+    if (_connectGeneration != generation || _session != session) {
+      try { await listener.close(); } catch (_) {}
       return;
     }
     session.listener = listener;
@@ -202,7 +211,7 @@ class RdpConnectorService extends ChangeNotifier {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
-    if (_session != session) {
+    if (_connectGeneration != generation || _session != session) {
       // close() успел отработать между await'ами — тихо выходим.
       await _quietTeardown(session, ws);
       return;
@@ -211,9 +220,16 @@ class RdpConnectorService extends ChangeNotifier {
 
     // 4. mstsc (только Windows: на остальных платформах этапа 2 — «Экран»).
     _setPhase(RdpTunnelPhase.launching);
+    final tempRdp = _createTempRdpFile(
+      grantId: grantId,
+      host: host,
+      port: port,
+      targetHost: targetHost,
+    );
+    session.tempRdpFile = tempRdp;
     Process? mstsc;
     try {
-      mstsc = await _startMstsc(host, port);
+      mstsc = await _startMstsc(host: host, port: port, tempRdpFile: tempRdp);
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardown(session, ws);
@@ -238,10 +254,8 @@ class RdpConnectorService extends ChangeNotifier {
       },
     ));
 
-    // 5. Одно TCP-соединение на грант: слушатель умирает вместе с ним (R2 —
-    // автопереподключение mstsc после микроразрыва отвергается, новый
-    // запуск = новая плитка/новый грант).
-    _setPhase(RdpTunnelPhase.active, detail: '$host:$port');
+    // 5. Ожидание клиента (mstsc): слушатель принимает РОВНО одно loopback-соединение.
+    _setPhase(RdpTunnelPhase.waitingClient, detail: '$host:$port');
     final Socket socket;
     try {
       socket = await listener.first.timeout(
@@ -249,27 +263,29 @@ class RdpConnectorService extends ChangeNotifier {
         onTimeout: () => throw TimeoutException('mstsc connect timeout'),
       );
     } catch (e) {
-      if (_session != session) return; // уже закрыто параллельным путём
+      if (_session != session || _connectGeneration != generation) return; // уже закрыто
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardown(session, ws);
       return;
     }
-    if (_session != session) {
+    if (_session != session || _connectGeneration != generation) {
       // Закрыли, пока ждали соединение.
       try {
         socket.destroy();
       } catch (_) {}
       return;
     }
+    final clientIp = socket.remoteAddress.address;
+    if (clientIp != '127.0.0.1' && clientIp != '127.0.0.2' && !clientIp.startsWith('127.')) {
+      try { socket.destroy(); } catch (_) {}
+      _fail(isRu ? 'Отвергнуто внешнее подключение к порту RDP' : 'Rejected non-loopback connection to RDP port');
+      await _quietTeardown(session, ws);
+      return;
+    }
     session.socket = socket;
     session.grantTtl?.cancel();
 
-    // 6. Мост: TCP ↔ WS бинарными кадрами. addStream в обе стороны —
-    // backpressure без ручной буферизации (§3.3); завершение любой стороны
-    // завершает сессию:
-    //   - ws.sink.addStream(socket) завершится, когда mstsc закроет сокет;
-    //   - socket.addStream(ws.stream) завершится, когда ядро разорвёт WS
-    //     (kill-switch, ревок, сеть) — это и есть детектор обрыва трубы.
+    // 6. Мост: TCP ↔ WS бинарными кадрами.
     unawaited(
       ws.sink.addStream(socket.cast<Uint8List>()).then(
             (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
@@ -284,6 +300,7 @@ class RdpConnectorService extends ChangeNotifier {
                 _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu),
           ),
     );
+    _setPhase(RdpTunnelPhase.active, detail: '$host:$port');
   }
 
   /// Bridge Connector-helper (закрытие P1 #3 аудита 2026-10-08, план §4.3):
@@ -324,6 +341,7 @@ class RdpConnectorService extends ChangeNotifier {
           : 'Malformed session grant');
       return;
     }
+    final generation = ++_connectGeneration;
     if (name != null && name.isNotEmpty) {
       targetName = name;
     }
@@ -337,6 +355,7 @@ class RdpConnectorService extends ChangeNotifier {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
+    if (_connectGeneration != generation) return;
     final endpoint = rdpBridgeEndpoint(info);
     if (endpoint == null) {
       _fail(isRu
@@ -362,6 +381,10 @@ class RdpConnectorService extends ChangeNotifier {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
+    if (_connectGeneration != generation || _session != session) {
+      try { bridge.destroy(); } catch (_) {}
+      return;
+    }
     session.remote = bridge;
 
     // 3. Handshake: hex-токен + "\n" первыми байтами (формат openBridgePort).
@@ -380,7 +403,7 @@ class RdpConnectorService extends ChangeNotifier {
     } catch (_) {
       rejected = true;
     }
-    if (_session != session) {
+    if (_session != session || _connectGeneration != generation) {
       // close() успел отработать между await'ами — тихо выходим.
       await _quietTeardownBridge(session);
       return;
@@ -403,6 +426,10 @@ class RdpConnectorService extends ChangeNotifier {
       await _quietTeardownBridge(session);
       return;
     }
+    if (_session != session || _connectGeneration != generation) {
+      try { await listener.close(); } catch (_) {}
+      return;
+    }
     session.listener = listener;
     final port = listener.port;
     final host = listener.address.address;
@@ -411,7 +438,7 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.launching);
     Process? mstsc;
     try {
-      mstsc = await _startMstsc(host, port);
+      mstsc = await _startMstsc(host: host, port: port);
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardownBridge(session);
@@ -434,8 +461,8 @@ class RdpConnectorService extends ChangeNotifier {
       },
     ));
 
-    // 6. Одно TCP-соединение на грант: слушатель умирает вместе с ним.
-    _setPhase(RdpTunnelPhase.active, detail: '$host:$port');
+    // 6. Ожидание клиента (mstsc): слушатель принимает РОВНО одно соединение.
+    _setPhase(RdpTunnelPhase.waitingClient, detail: '$host:$port');
     final Socket socket;
     try {
       socket = await listener.first.timeout(
@@ -443,23 +470,27 @@ class RdpConnectorService extends ChangeNotifier {
         onTimeout: () => throw TimeoutException('mstsc connect timeout'),
       );
     } catch (e) {
-      if (_session != session) return; // уже закрыто параллельным путём
+      if (_session != session || _connectGeneration != generation) return; // уже закрыто
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardownBridge(session);
       return;
     }
-    if (_session != session) {
+    if (_session != session || _connectGeneration != generation) {
       try {
         socket.destroy();
       } catch (_) {}
       return;
     }
+    final clientIp = socket.remoteAddress.address;
+    if (clientIp != '127.0.0.1' && clientIp != '127.0.0.2' && !clientIp.startsWith('127.')) {
+      try { socket.destroy(); } catch (_) {}
+      _fail(isRu ? 'Отвергнуто внешнее подключение к порту RDP' : 'Rejected non-loopback connection to RDP port');
+      await _quietTeardownBridge(session);
+      return;
+    }
     session.socket = socket;
 
-    // 7. Мост TCP↔TCP: mstsc ↔ bridge-порт ядра. addStream в обе стороны —
-    //    честный backpressure (§3.3); завершение любой стороны завершает
-    //    сессию (kill-switch/ревок на сервере рвёт bridge-сокет — это и есть
-    //    детектор обрыва трубы).
+    // 7. Мост TCP↔TCP: mstsc ↔ bridge-порт ядра.
     unawaited(
       socket.addStream(bridge).then(
             (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
@@ -474,19 +505,37 @@ class RdpConnectorService extends ChangeNotifier {
                 _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
           ),
     );
+    _setPhase(RdpTunnelPhase.active, detail: '$host:$port');
   }
 
   /// Завершить сессию (кнопка «Завершить»/«Отменить», logout, dispose).
   Future<void> close({bool isRu = true}) async {
+    _connectGeneration++;
     final s = _session;
     if (s == null) {
       _setPhase(RdpTunnelPhase.idle);
       return;
     }
-    _finish(s, reason: _TunnelEndReason.user, isRu: isRu);
+    await _finish(s, reason: _TunnelEndReason.user, isRu: isRu);
+  }
+
+  void _cleanupTempRdpFile(_RdpTunnelSession s) {
+    if (s.tempRdpFile != null) {
+      try {
+        if (s.tempRdpFile!.existsSync()) {
+          s.tempRdpFile!.deleteSync();
+        }
+      } catch (_) {}
+      s.tempRdpFile = null;
+    }
   }
 
   void _fail(String text) {
+    _connectGeneration++;
+    final s = _session;
+    if (s != null) {
+      _cleanupTempRdpFile(s);
+    }
     _session = null; // мёртвая сессия не должна блокировать следующий заход
     lastError = text;
     _phase = RdpTunnelPhase.failed;
@@ -498,6 +547,7 @@ class RdpConnectorService extends ChangeNotifier {
     if (_session != s) return;
     _session = null;
     s.grantTtl?.cancel();
+    _cleanupTempRdpFile(s);
     // mstsc рвём всегда, КРОМЕ случая «пользователь сам закрыл mstsc» —
     // там процесс уже завершился.
     if (reason != _TunnelEndReason.mstscExited) {
@@ -563,6 +613,7 @@ class RdpConnectorService extends ChangeNotifier {
 
   Future<void> _quietTeardown(_RdpTunnelSession s, IOWebSocketChannel? ws) async {
     s.grantTtl?.cancel();
+    _cleanupTempRdpFile(s);
     try {
       ws?.sink.close();
     } catch (_) {}
@@ -573,6 +624,7 @@ class RdpConnectorService extends ChangeNotifier {
   /// гасим удалённую ногу, локальный сокет и слушатель.
   Future<void> _quietTeardownBridge(_RdpTunnelSession s) async {
     s.grantTtl?.cancel();
+    _cleanupTempRdpFile(s);
     try {
       s.socket?.destroy();
     } catch (_) {}
@@ -587,6 +639,9 @@ class RdpConnectorService extends ChangeNotifier {
     final s = _session;
     _session = null;
     s?.grantTtl?.cancel();
+    if (s != null) {
+      _cleanupTempRdpFile(s);
+    }
     try {
       s?.mstsc?.kill();
     } catch (_) {}
@@ -612,6 +667,7 @@ enum RdpTunnelPhase {
   listener,
   tunnel,
   launching,
+  waitingClient,
   active,
   closed,
   failed,
@@ -629,6 +685,7 @@ class _RdpTunnelSession {
   Socket? remote;
   Socket? socket;
   Process? mstsc;
+  File? tempRdpFile;
   Timer? grantTtl;
 
   _RdpTunnelSession({required this.grantId});
@@ -718,6 +775,30 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
     if (wsStatus != null) status = wsStatus;
   }
   switch (srvCode) {
+    case 'self_connection_prohibited':
+      return isRu
+          ? 'Подключение к своему компьютеру запрещено'
+          : 'Connecting to your current computer is prohibited';
+    case 'bridge_disabled':
+      return isRu
+          ? 'Прямой TCP-мост отключен администратором'
+          : 'Direct TCP bridge is disabled by administrator';
+    case 'target_unavailable':
+      return isRu
+          ? 'Рабочее место выключено или недоступно'
+          : 'Workstation is disabled or unavailable';
+    case 'target_access_denied':
+      return isRu
+          ? 'Доступ к рабочему месту запрещён'
+          : 'Access to workstation is denied';
+    case 'machine_mismatch':
+      return isRu
+          ? 'Несоответствие целевого компьютера'
+          : 'Target computer mismatch';
+    case 'user_disabled':
+      return isRu
+          ? 'Учётная запись пользователя заблокирована'
+          : 'User account is disabled';
     case 'target_not_assigned':
       return isRu
           ? 'Рабочее место не назначено вашей учётной записи'
@@ -752,6 +833,10 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
           : 'Target PC is not linked to a device. Please contact administrator';
   }
   switch (status) {
+    case 409:
+      return isRu
+          ? 'Подключение отклонено: конфликт сессии или самоподключение'
+          : 'Connection rejected: session conflict or self-connection';
     case 410:
       return isRu
           ? 'Время гранта истекло — повторите подключение'
@@ -776,8 +861,51 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
   return isRu ? 'Ошибка подключения: $error' : 'Connection error: $error';
 }
 
+/// Создание временного .rdp-файла с привязкой identity цели (SPN/сертификат)
+/// и маршрутизацией через локальный bridge (127.0.0.2:port).
+File? _createTempRdpFile({
+  required String grantId,
+  required String host,
+  required int port,
+  String? targetHost,
+}) {
+  if (targetHost == null || targetHost.trim().isEmpty) return null;
+  try {
+    final safeGrant = grantId.replaceAll(RegExp(r'[^a-zA-Z0-9\-]'), '');
+    final tempDir = Directory.systemTemp;
+    final file = File('${tempDir.path}${Platform.pathSeparator}ligament_rdp_$safeGrant.rdp');
+    final buffer = StringBuffer();
+    buffer.writeln('full address:s:$targetHost');
+    buffer.writeln('alternate full address:s:$host:$port');
+    buffer.writeln('server port:i:$port');
+    buffer.writeln('prompt for credentials:i:1');
+    buffer.writeln('authentication level:i:2');
+    buffer.writeln('enablecredsspsupport:i:1');
+    file.writeAsStringSync(buffer.toString(), flush: true);
+    return file;
+  } catch (e) {
+    debugPrint('rdp: failed to create temporary .rdp file: $e');
+    return null;
+  }
+}
+
 /// Запуск mstsc с fallback-путём System32 (§3.5). null — не найден.
-Future<Process?> _startMstsc(String host, int port) async {
+Future<Process?> _startMstsc({
+  required String host,
+  required int port,
+  File? tempRdpFile,
+}) async {
+  if (tempRdpFile != null) {
+    try {
+      return await Process.start('mstsc', [tempRdpFile.path]);
+    } catch (_) {
+      try {
+        return await Process.start(r'C:\Windows\System32\mstsc.exe', [tempRdpFile.path]);
+      } catch (_) {
+        // Fallback на обычный /v аргумент
+      }
+    }
+  }
   final arg = '/v:$host:$port';
   try {
     return await Process.start('mstsc', [arg]);

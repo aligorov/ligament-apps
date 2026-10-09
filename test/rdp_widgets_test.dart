@@ -121,6 +121,25 @@ void main() {
       expect(find.text('Служба Ligament offline'), findsOneWidget);
       debugDefaultTargetPlatformOverride = null;
     });
+
+    testWidgets('Windows + is_self: бейдж «Текущий ПК» и кнопка «Текущий компьютер», без overflow', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(harness(RdpTargetTile(
+        target: {...heavyTarget, 'online': true, 'is_self': true, 'rdp_available': false, 'rdp_reason': 'self_connection_prohibited'},
+        isRu: true,
+      )));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Текущий ПК'), findsOneWidget);
+      expect(find.text('Текущий компьютер'), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
+    });
   });
 
   group('RdpConnectDialog @ 390px', () {

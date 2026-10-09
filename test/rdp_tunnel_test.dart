@@ -42,6 +42,24 @@ void main() {
       );
     });
 
+    test('409 self_connection_prohibited → запрет самоподключения', () {
+      expect(
+        rdpConnectErrorText(ApiException(409, 'self_connection_prohibited'), isRu: true),
+        contains('своему компьютеру запрещено'),
+      );
+      expect(
+        rdpConnectErrorText(ApiException(409, 'self_connection_prohibited'), isRu: false),
+        contains('current computer is prohibited'),
+      );
+    });
+
+    test('403 bridge_disabled → отключен администратором', () {
+      expect(
+        rdpConnectErrorText(ApiException(403, 'bridge_disabled'), isRu: true),
+        contains('отключен администратором'),
+      );
+    });
+
     test('400 unsupported_route → служба не подключена', () {
       expect(
         rdpConnectErrorText(ApiException(400, 'unsupported_route'), isRu: true),

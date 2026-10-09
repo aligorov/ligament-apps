@@ -645,9 +645,12 @@ class ApiClient {
   /// сервере» (free-лицензия) — возвращаем пустой список, секция на главной
   /// скрывается. Коды ошибок пробрасываются ApiException'ом с серверным
   /// code (db_error и т.п.).
-  Future<List<Map<String, dynamic>>> getRdpTargets() async {
+  Future<List<Map<String, dynamic>>> getRdpTargets({String? instanceId}) async {
+    final query = (instanceId != null && instanceId.isNotEmpty)
+        ? '?instance_id=${Uri.encodeQueryComponent(instanceId)}'
+        : '';
     final res = await _get(
-      _cleanUrl('/api/v1/app/rdp/targets'),
+      _cleanUrl('/api/v1/app/rdp/targets$query'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {

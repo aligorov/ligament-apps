@@ -27,6 +27,13 @@ class RdpActions {
     final id = target['id']?.toString() ?? '';
     if (api == null || baseUrl == null || id.isEmpty) return;
     if (auth.rdp.isBusy || auth.rdp.isActive) return;
+    final s = context.stringsRead;
+    if (target['is_self'] == true) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(s.rdpSelfProhibited)),
+      );
+      return;
+    }
     final name = target['name']?.toString() ?? '';
     final actionId = auth.generateActionId();
 

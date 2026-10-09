@@ -46,6 +46,9 @@ class RdpTargetTile extends StatelessWidget {
     final route = target['route']?.toString() ?? '';
     final screenAvailable = target['screen_available'] == true;
     final screenReason = target['screen_reason']?.toString() ?? '';
+    final isSelf = target['is_self'] == true;
+    final rdpAvailable = target['rdp_available'] != false;
+    final rdpReason = target['rdp_reason']?.toString() ?? '';
 
     return Container(
       margin: margin ?? const EdgeInsets.only(bottom: 12),
@@ -104,7 +107,10 @@ class RdpTargetTile extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    Row(
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -122,34 +128,39 @@ class RdpTargetTile extends StatelessWidget {
                             ),
                           ),
                         ),
-                        if (isTs && maxSessions > 1) ...[
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              s.rdpParallelSessions(maxSessions),
-                              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 10),
-                              overflow: TextOverflow.ellipsis,
+                        if (isSelf)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF475569).withValues(alpha: 0.3),
+                              borderRadius: BorderRadius.circular(6),
                             ),
-                          ),
-                        ],
-                        if (route.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          // Мобильная адаптация (390px): маршрут — гибкий,
-                          // длинный relay-маршрут обрезается многоточием,
-                          // а не переполняет строку чипов.
-                          Flexible(
                             child: Text(
-                              '· $route',
-                              maxLines: 1,
+                              s.rdpSelfBadge,
                               style: const TextStyle(
-                                color: Color(0xFF64748B),
+                                color: Color(0xFF94A3B8),
                                 fontSize: 10,
-                                fontStyle: FontStyle.italic,
+                                fontWeight: FontWeight.bold,
                               ),
-                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                        ],
+                        if (isTs && maxSessions > 1)
+                          Text(
+                            s.rdpParallelSessions(maxSessions),
+                            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 10),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        if (route.isNotEmpty)
+                          Text(
+                            '· $route',
+                            maxLines: 1,
+                            style: const TextStyle(
+                              color: Color(0xFF64748B),
+                              fontSize: 10,
+                              fontStyle: FontStyle.italic,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                       ],
                     ),
                   ],
@@ -172,7 +183,7 @@ class RdpTargetTile extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: _connectControl(s, online),
+                child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason),
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -232,7 +243,7 @@ class RdpTargetTile extends StatelessWidget {
   /// неактивная «Служба Ligament offline»; прочие платформы → подсказка
   /// этапа 2b (кнопка «Экран» справа остаётся главной). Все варианты —
   /// в одну строку с многоточием: ширина ячейки на 390px ≈ 160px.
-  Widget _connectControl(AppStrings s, bool online) {
+  Widget _connectControl(AppStrings s, bool online, bool isSelf, bool rdpAvailable, String rdpReason) {
     if (!canLaunchRdp) {
       return Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
@@ -245,7 +256,27 @@ class RdpTargetTile extends StatelessWidget {
         ),
       );
     }
-    if (!online) {
+    if (isSelf || rdpReason == 'self_connection_prohibited') {
+      return Tooltip(
+        message: s.rdpSelfProhibited,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFF334155)),
+          ),
+          child: Text(
+            s.rdpSelfBtn,
+            maxLines: 1,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      );
+    }
+    if (!online || !rdpAvailable) {
       return Tooltip(
         message: s.rdpOfflineHint,
         child: Container(

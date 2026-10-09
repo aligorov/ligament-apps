@@ -11,6 +11,7 @@ import '../widgets/rdp_mfa_dialog.dart';
 import '../services/auth_state.dart';
 import '../services/deep_link_service.dart';
 import '../services/input_injector.dart';
+import '../services/rdp_actions.dart';
 import '../services/rdp_service.dart' show rdpConnectErrorText;
 import '../services/support_service.dart';
 import '../i18n/app_strings.dart';
@@ -121,8 +122,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final name = s.rdpDeepLinkTargetName;
 
     // Контракт T6: ligament://rdp/<target_uuid> — намерение подключиться.
-    // Ссылка несёт ТОЛЬКО UUID: грант и токен приложение получает у сервера
-    // само (в URI их не передаём никогда — cmdline читается любым процессом).
+    // Ссылка несёт ТОЛЬКО UUID: единый запуск через штатный WSS-коннектор
+    // (RdpActions.connectRdp) с MFA, валидацией цели и проверкой самоподключения.
     if (link.kind == LigamentDeepLinkKind.target) {
       if (api == null || baseUrl == null) {
         // Сессии нет — грант нечем авторизовать: понятный диалог входа.
@@ -130,14 +131,17 @@ class _HomeScreenState extends State<HomeScreen> {
             s.rdpDeepLinkNeedLoginTitle, s.rdpDeepLinkNeedLoginBody, s.close);
         return;
       }
-      final grant = await _grantDeepLinkTarget(auth, link.targetId!, s);
-      if (grant == null) return; // диалог уже показан (mfa/отказ гранта)
-      if (!mounted) return;
-      _startBridgeConnect(auth, api,
-          grantId: grant['grant_id']?.toString() ?? '',
-          token: grant['token']?.toString() ?? '',
-          name: name,
-          isRu: s.isRu);
+      final targetId = link.targetId!;
+      final targetObj = auth.rdpTargets.firstWhere(
+        (t) => t['id']?.toString() == targetId,
+        orElse: () => <String, dynamic>{'id': targetId, 'name': name},
+      );
+      if (targetObj['is_self'] == true) {
+        await _showDeepLinkInfoDialog(
+            s.rdpSelfBtn, s.rdpSelfProhibited, s.close);
+        return;
+      }
+      await RdpActions.connectRdp(context, auth, targetObj);
       return;
     }
 
@@ -155,90 +159,7 @@ class _HomeScreenState extends State<HomeScreen> {
         grantId: link.grantId!, token: token, name: name, isRu: s.isRu);
   }
 
-  /// Грант для target-ссылки (T6): POST /rdp/grant mode=bridge. null —
-  /// сервер отказал и диалог уже показан (428 mfa_required → инлайн-код,
-  /// затем «войти заново / подтвердил — повторить», прочие коды →
-  /// rdpConnectErrorText).
-  Future<Map<String, dynamic>?> _grantDeepLinkTarget(
-      AuthState auth, String targetId, AppStrings s) async {
-    try {
-      return await auth.grantRdpTargetBridge(targetId);
-    } on ApiException catch (e) {
-      if (e.statusCode == 428 || e.code == 'mfa_required' ||
-          e.code == 'invalid_code') {
-        if (!mounted) return null;
-        // Инлайн-подтверждение кодом (фикс 10-08-3): сначала код…
-        final code = await showRdpMfaCodeDialog(context,
-            isRu: s.isRu, wrongCode: e.code == 'invalid_code');
-        if (code != null) {
-          try {
-            return await auth.grantRdpTargetBridge(targetId, code: code);
-          } on ApiException catch (e2) {
-            if (e2.statusCode == 428 || e2.code == 'mfa_required' ||
-                e2.code == 'invalid_code') {
-              return _grantDeepLinkTarget(auth, targetId, s);
-            }
-            if (mounted) {
-              await _showDeepLinkInfoDialog(s.rdpDeepLinkGrantErrorTitle,
-                  rdpConnectErrorText(e2, isRu: s.isRu), s.close);
-            }
-            return null;
-          }
-        }
-        // …отмена кода — прежние пути (подтвердил в вебе / перелогин).
-        final retry = await _showDeepLinkMfaDialog(s);
-        if (retry == true) {
-          return _grantDeepLinkTarget(auth, targetId, s);
-        }
-      } else if (mounted) {
-        await _showDeepLinkInfoDialog(s.rdpDeepLinkGrantErrorTitle,
-            rdpConnectErrorText(e, isRu: s.isRu), s.close);
-      }
-      return null;
-    }
-  }
 
-  /// Диалог 428 mfa_required: «Подтвердил — повторить» (повтор гранта) /
-  /// «Войти заново» (разлогин) / «Закрыть». true — повторить попытку.
-  Future<bool?> _showDeepLinkMfaDialog(AppStrings s) async {
-    final auth = context.read<AuthState>();
-    var relogin = false;
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: Text(s.rdpDeepLinkMfaTitle,
-            style: const TextStyle(color: Colors.white, fontSize: 16)),
-        content: Text(s.rdpDeepLinkMfaBody,
-            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(false),
-            child: Text(s.close),
-          ),
-          TextButton(
-            onPressed: () {
-              relogin = true;
-              Navigator.of(dialogCtx).pop(false);
-            },
-            child: Text(s.rdpDeepLinkMfaRelogin),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF2563EB),
-              foregroundColor: Colors.white,
-            ),
-            child: Text(s.rdpDeepLinkMfaRetry),
-          ),
-        ],
-      ),
-    );
-    if (relogin) {
-      await auth.logout();
-    }
-    return result;
-  }
 
   /// Информационный диалог deep-link (единый тёмный стиль).
   Future<void> _showDeepLinkInfoDialog(

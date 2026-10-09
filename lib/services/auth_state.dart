@@ -1063,7 +1063,7 @@ class AuthState extends ChangeNotifier {
   Future<void> loadRdpTargets() async {
     if (api == null) return;
     try {
-      rdpTargets = await api!.getRdpTargets();
+      rdpTargets = await api!.getRdpTargets(instanceId: instanceId);
       rdpFeatureAvailable = true;
       notifyListeners();
     } on ApiException catch (e) {
@@ -1119,6 +1119,7 @@ class AuthState extends ChangeNotifier {
       if (iResp['ok'] == true) {
         _instanceRegistered = true;
         _startRdpHeartbeat();
+        await loadRdpTargets();
       }
     } catch (e) {
       debugPrint('auth_state: ошибка регистрации RDP machine/instance: $e');
