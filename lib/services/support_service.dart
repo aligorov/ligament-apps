@@ -204,28 +204,21 @@ class SupportService extends ChangeNotifier {
   static const int _maxConcurrentDownloads = 2;
   static const Duration _downloadStallTimeout = Duration(seconds: 60);
 
-  /// Emergency-фолбэк: публичные STUN Google/Cloudflare используются ТОЛЬКО
-  /// если сервер не отдал ice_servers в /api/v1/app/config (или конфиг
-  /// недоступен). TURN всегда должен приходить из корпоративного конфига.
-  static const List<Map<String, dynamic>> emergencyIceServers = [
-    {'urls': 'stun:stun.l.google.com:19302'},
-    {'urls': 'stun:stun1.l.google.com:19302'},
-    {'urls': 'stun:stun.cloudflare.com:3478'},
-  ];
+  /// Режим собственной инфраструктуры: публичные сторонние STUN/TURN-серверы
+  /// (Google, Cloudflare и др.) полностью исключены. Используются строго серверы
+  /// из корпоративного ядра (GET /api/v1/app/ice-servers).
+  static const List<Map<String, dynamic>> emergencyIceServers = [];
 
   /// ICE-серверы из конфига сервера; null — конфиг еще не загружен.
   List<Map<String, dynamic>>? _iceServersFromConfig;
 
   /// Актуальный список ICE-серверов для RTCPeerConnection.
   List<Map<String, dynamic>> get effectiveIceServers =>
-      (_iceServersFromConfig != null && _iceServersFromConfig!.isNotEmpty)
-          ? _iceServersFromConfig!
-          : emergencyIceServers;
+      _iceServersFromConfig ?? emergencyIceServers;
 
-  /// Устанавливает ICE-серверы из конфига (вызывается AuthState после
-  /// /api/v1/app/config). Пустой список игнорируется — сохраняется фолбэк.
+  /// Устанавливает ICE-серверы из корпоративного конфига/ядра.
   void setIceServers(List<Map<String, dynamic>>? servers) {
-    if (servers != null && servers.isNotEmpty) {
+    if (servers != null) {
       _iceServersFromConfig = servers;
     }
   }
@@ -693,11 +686,7 @@ class SupportService extends ChangeNotifier {
         }
       };
 
-      // Канал данных для удаленного управления мышью и клавиатурой
-      final dcInit = RTCDataChannelInit()..ordered = true;
-      _dataChannel = await _peerConnection!.createDataChannel('input', dcInit);
-      _setupDataChannel(_dataChannel!);
-
+      // Единственный создатель DataChannel — Viewer. Целевой узел только принимает:
       _peerConnection!.onDataChannel = (channel) {
         _setupDataChannel(channel);
       };

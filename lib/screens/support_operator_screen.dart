@@ -12,6 +12,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../api/client.dart';
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
 import '../services/ws_service.dart';
@@ -136,10 +137,38 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   /// кнопку, что была нажата (иначе middle/right клики залипают на агенте).
   final Map<int, int> _pointerDownButtons = {};
 
+  /// Гарантированное освобождение всех зажатых кнопок мыши при потере фокуса или выходе
+  void _releaseAllPointerButtons() {
+    if (_pointerDownButtons.isEmpty) return;
+    for (final btn in _pointerDownButtons.values) {
+      _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': 0.0, 'y': 0.0});
+    }
+    _pointerDownButtons.clear();
+  }
+
   /// Backoff реконнекта операторского WS (M-5).
   final ReconnectBackoff _wsBackoff = ReconnectBackoff();
   Timer? _wsReconnectTimer;
   Timer? _ownerWaitTimer;
+  Timer? _leaseTimer;
+
+  void _startLeaseRenewal() {
+    _leaseTimer?.cancel();
+    _leaseTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (!mounted || _isCleanedUp) return;
+      final auth = context.read<AuthState>();
+      try {
+        await auth.api?.renewSupportLease(widget.sessionId);
+      } on ApiException catch (e) {
+        if (e.statusCode == 410 || e.statusCode == 404 || e.code == 'session_ended') {
+          _leaseTimer?.cancel();
+          if (mounted && !_isCleanedUp) {
+            _setStatus('ended_by_server');
+          }
+        }
+      } catch (_) {}
+    });
+  }
 
   final List<SupportChatMessage> _chatMessages = [];
   late final ValueNotifier<List<SupportChatMessage>> _chatMessagesNotifier;
@@ -222,6 +251,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _initRendererAndWebRTC() async {
+    _startLeaseRenewal();
     // Этап 2.4: в owner-режиме consent не нужен — цель стартует шаринг
     // сама по support_prompt(owner:true); number-match отсутствует.
     if (widget.ownerMode) {
@@ -881,7 +911,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (msg['type'] == 'chat_message') {
         _sendWsSignal(msg);
       } else {
-        _sendWsSignal({'type': 'input_control', 'data': msg});
+        // Управление через WebSocket КАТЕГОРИЧЕСКИ НЕ отправляется — цель его там не исполняет.
+        // Блокируем отправку и не спамим в WS-сигнализацию.
+        if (_statusKey != 'conn_error' && mounted) {
+          debugPrint('support_operator: DataChannel not open, dropping input event ${msg['type']}');
+        }
       }
     }
   }
@@ -922,8 +956,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
     }
 
-    final normX = ((localPos.dx - offsetX) / renderW).clamp(0.0, 1.0);
-    final normY = ((localPos.dy - offsetY) / renderH).clamp(0.0, 1.0);
+    final relX = (localPos.dx - offsetX) / renderW;
+    final relY = (localPos.dy - offsetY) / renderH;
+
+    // Щелчки по чёрным полосам вокруг изображения игнорировать, а не переносить на край удалённого экрана:
+    if (relX < 0.0 || relX > 1.0 || relY < 0.0 || relY > 1.0) {
+      return;
+    }
+
+    final normX = relX.clamp(0.0, 1.0);
+    final normY = relY.clamp(0.0, 1.0);
 
     if (action == 'move') {
       _sendDataMessage({'type': 'mouse_move', 'x': normX, 'y': normY});
@@ -985,13 +1027,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 spacing: 6,
                 runSpacing: 6,
                 children: [
-                  _buildQuickKeyButton('Enter ↵', () => _sendSpecialKey('Enter')),
-                  _buildQuickKeyButton('Tab ⇥', () => _sendSpecialKey('Tab')),
-                  _buildQuickKeyButton('Esc ⎋', () => _sendSpecialKey('Escape')),
-                  _buildQuickKeyButton('Backspace ⌫', () => _sendSpecialKey('Backspace')),
-                  _buildQuickKeyButton('Win+R ⊞', () => _sendHotkey('win_r')),
-                  _buildQuickKeyButton('Ctrl+Alt+Del 🔒', () => _sendHotkey('ctrl_alt_del')),
-                  _buildQuickKeyButton(strings.isRu ? 'Диспетчер ⚡' : 'Task Mgr ⚡', () => _sendHotkey('task_mgr')),
+                  _buildQuickKeyButton('Enter', () => _sendSpecialKey('Enter')),
+                  _buildQuickKeyButton('Tab', () => _sendSpecialKey('Tab')),
+                  _buildQuickKeyButton('Esc', () => _sendSpecialKey('Escape')),
+                  _buildQuickKeyButton('Backspace', () => _sendSpecialKey('Backspace')),
+                  _buildQuickKeyButton('Win+R', () => _sendHotkey('win_r')),
+                  _buildQuickKeyButton(strings.isRu ? 'Диспетчер задач' : 'Task Manager', () => _sendHotkey('task_mgr')),
                 ],
               ),
             ],
@@ -1173,6 +1214,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         pc.close();
       } catch (_) {}
     }
+
+    _leaseTimer?.cancel();
+    _leaseTimer = null;
+    _releaseAllPointerButtons();
 
     try {
       _wsChannel?.sink.close();
@@ -1455,12 +1500,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       PopupMenuItem(value: 'win_e', child: Text(strings.hotkeyWinE, style: const TextStyle(color: Colors.white))),
                       PopupMenuItem(value: 'win_x', child: Text(strings.hotkeyWinX, style: const TextStyle(color: Colors.white))),
                       PopupMenuItem(value: 'win_d', child: Text(strings.hotkeyWinD, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'win_l', child: Text(strings.hotkeyWinL, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'task_mgr', child: Text(strings.hotkeyTaskMgr, style: const TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'ctrl_alt_del', child: Text('🔒 Ctrl+Alt+Del', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'alt_tab', child: Text('🔄 Alt + Tab', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'alt_f4', child: Text('❌ Alt + F4', style: TextStyle(color: Colors.white))),
-                      const PopupMenuItem(value: 'esc', child: Text('⎋ Escape', style: TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'win_l', child: Text(strings.isRu ? 'Заблокировать Windows (Win+L)' : 'Lock Windows (Win+L)', style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'task_mgr', child: Text(strings.isRu ? 'Диспетчер задач' : 'Task Manager', style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'alt_tab', child: Text(strings.isRu ? 'Переключить окно (Alt+Tab)' : 'Switch Window (Alt+Tab)', style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'alt_f4', child: Text(strings.isRu ? 'Закрыть окно (Alt+F4)' : 'Close Window (Alt+F4)', style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(value: 'esc', child: Text(strings.isRu ? 'Отмена (Escape)' : 'Cancel (Escape)', style: const TextStyle(color: Colors.white))),
                     ],
                     onSelected: _sendHotkey,
                   ),
@@ -1690,7 +1734,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   }
                 },
                 onPointerCancel: (ev) {
-                  _pointerDownButtons.remove(ev.pointer);
+                  final btn = _pointerDownButtons.remove(ev.pointer);
+                  if (btn != null && _isControlEnabled) {
+                    _sendPointerEvent('mouse_up', ev, btn);
+                  }
                 },
                 onPointerSignal: (signal) {
                   if (!_isControlEnabled) return;

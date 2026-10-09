@@ -3,17 +3,9 @@ import 'package:flutter/material.dart';
 
 import '../i18n/app_strings.dart';
 
-/// Плитка RDP-цели «Мой ПК» (этап 2.1, план §2.3-2.4): тёмная карточка в
-/// стиле AppsScreen (фон 0xFF1E293B, радиус 16), крупная иконка ПК, имя,
-/// чип типа (pc / terminal_server), строка endpoint, онлайн-индикатор
-/// (зелёная/серая точка + route) и кнопки действий.
-///
-/// - «Подключиться» — только Windows и !kIsWeb (этап 2.2, mstsc); offline
-///   заменяет кнопку на неактивную «Служба Ligament offline» (дизайн §10.1);
-/// - «Экран» — все платформы, этап 2b (сейчас заглушка-подсказка);
-/// - терминальный сервер — подпись «N параллельных сессий»;
-/// - место под будущий скрин capabilities (S2) оставлено: leading-иконка
-///   заменяется на Image.network без изменения layout.
+/// Плитка RDP-цели «Мой ПК»: современная премиальная тёмная карточка
+/// с мягким неоновым свечением, аккуратными градиентами, чёткой типографикой
+/// и адаптивными кнопками действий без обрезания текста ("Под...").
 class RdpTargetTile extends StatelessWidget {
   const RdpTargetTile({
     super.key,
@@ -60,25 +52,51 @@ class RdpTargetTile extends StatelessWidget {
       margin: margin ?? const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
+        color: const Color(0xFF131B2B),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF334155)),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.08),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.35),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
+          // Верхняя часть: Иконка + Имя + Бейджи
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                padding: const EdgeInsets.all(10),
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
+                  gradient: LinearGradient(
+                    colors: isTs
+                        ? [const Color(0xFFF59E0B).withValues(alpha: 0.18), const Color(0xFFB45309).withValues(alpha: 0.08)]
+                        : [const Color(0xFF0284C7).withValues(alpha: 0.22), const Color(0xFF0369A1).withValues(alpha: 0.06)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
                   borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isTs
+                        ? const Color(0xFFF59E0B).withValues(alpha: 0.35)
+                        : const Color(0xFF38BDF8).withValues(alpha: 0.35),
+                    width: 1,
+                  ),
                 ),
-                child: const Icon(
-                  Icons.desktop_windows_outlined,
-                  size: 26,
-                  color: Color(0xFF38BDF8),
+                child: Icon(
+                  isTs ? Icons.dns_rounded : Icons.desktop_windows_rounded,
+                  size: 22,
+                  color: isTs ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8),
                 ),
               ),
               const SizedBox(width: 12),
@@ -88,49 +106,64 @@ class RdpTargetTile extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        // Онлайн-индикатор цели: agent — живой агент службы;
-                        // relay/direct считаются доступными всегда (§1.1).
+                        // Неоновый индикатор статуса
                         Container(
-                          width: 9,
-                          height: 9,
+                          width: 8,
+                          height: 8,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: effectiveOnline ? const Color(0xFF10B981) : const Color(0xFF64748B),
+                            boxShadow: effectiveOnline
+                                ? [
+                                    BoxShadow(
+                                      color: const Color(0xFF10B981).withValues(alpha: 0.6),
+                                      blurRadius: 6,
+                                      spreadRadius: 1,
+                                    ),
+                                  ]
+                                : null,
                           ),
                         ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 7),
                         Expanded(
                           child: Text(
                             name,
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 15,
-                              fontWeight: FontWeight.bold,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.2,
                             ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 5),
                     Wrap(
                       spacing: 6,
                       runSpacing: 4,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
+                        // Бейдж типа устройства
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                           decoration: BoxDecoration(
                             color: (isTs ? const Color(0xFFF59E0B) : const Color(0xFF0284C7))
-                                .withValues(alpha: 0.2),
+                                .withValues(alpha: 0.14),
                             borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: (isTs ? const Color(0xFFF59E0B) : const Color(0xFF0284C7))
+                                  .withValues(alpha: 0.3),
+                              width: 0.8,
+                            ),
                           ),
                           child: Text(
                             isTs ? s.rdpKindTerminal : s.rdpKindPc,
                             style: TextStyle(
                               color: isTs ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8),
                               fontSize: 10,
-                              fontWeight: FontWeight.bold,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
@@ -138,15 +171,16 @@ class RdpTargetTile extends StatelessWidget {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF475569).withValues(alpha: 0.3),
+                              color: Colors.white.withValues(alpha: 0.06),
                               borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
                             ),
                             child: Text(
                               s.rdpSelfBadge,
                               style: const TextStyle(
                                 color: Color(0xFF94A3B8),
                                 fontSize: 10,
-                                fontWeight: FontWeight.bold,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
@@ -157,15 +191,21 @@ class RdpTargetTile extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                         if (route.isNotEmpty)
-                          Text(
-                            '· $route',
-                            maxLines: 1,
-                            style: const TextStyle(
-                              color: Color(0xFF64748B),
-                              fontSize: 10,
-                              fontStyle: FontStyle.italic,
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.04),
+                              borderRadius: BorderRadius.circular(4),
                             ),
-                            overflow: TextOverflow.ellipsis,
+                            child: Text(
+                              route,
+                              style: const TextStyle(
+                                color: Color(0xFF64748B),
+                                fontSize: 9,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
                           ),
                       ],
                     ),
@@ -174,31 +214,40 @@ class RdpTargetTile extends StatelessWidget {
               ),
             ],
           ),
-          if (endpoint.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              endpoint,
-              style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
-              overflow: TextOverflow.ellipsis,
+
+          if (endpoint.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, bottom: 2),
+              child: Text(
+                endpoint,
+                style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-          ],
-          const SizedBox(height: 12),
+
+          const SizedBox(height: 10),
+
+          // Нижняя часть: Кнопки действий
           if (isTs) ...[
             SizedBox(
               width: double.infinity,
+              height: 38,
               child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
             ),
           ] else ...[
-            Row(
-              children: [
-                Expanded(
-                  child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _screenControl(s, screenAvailable, screenReason),
-                ),
-              ],
+            SizedBox(
+              height: 38,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _screenControl(s, screenAvailable, screenReason),
+                  ),
+                ],
+              ),
             ),
           ],
         ],
@@ -228,22 +277,48 @@ class RdpTargetTile extends StatelessWidget {
       }
     }
 
-    final btn = OutlinedButton.icon(
-      onPressed: screenAvailable ? onScreen : null,
-      icon: const Icon(Icons.monitor_outlined, size: 16),
-      label: Text(
-        s.rdpScreenBtn,
-        maxLines: 1,
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-        overflow: TextOverflow.ellipsis,
-      ),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: screenAvailable ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
-        side: BorderSide(
-          color: screenAvailable ? const Color(0xFF0284C7) : const Color(0xFF334155),
+    final btn = Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: screenAvailable ? onScreen : null,
+        borderRadius: BorderRadius.circular(10),
+        child: Ink(
+          decoration: BoxDecoration(
+            color: screenAvailable
+                ? const Color(0xFF0284C7).withValues(alpha: 0.12)
+                : const Color(0xFF0F172A).withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: screenAvailable
+                  ? const Color(0xFF0284C7).withValues(alpha: 0.5)
+                  : Colors.white.withValues(alpha: 0.06),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.monitor_rounded,
+                size: 15,
+                color: screenAvailable ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  s.rdpScreenBtn,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: screenAvailable ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
         ),
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
 
@@ -253,14 +328,19 @@ class RdpTargetTile extends StatelessWidget {
     return btn;
   }
 
-  /// Кнопка подключения: Windows+online → «Подключиться»; offline →
-  /// неактивная («Служба Ligament offline» для agent, «Сервер недоступен» для direct/relay);
-  /// прочие платформы → подсказка этапа 2b.
+  /// Кнопка подключения:
+  /// - Для Terminal Server (полная ширина): "Подключиться"
+  /// - Для ПК (делит строку с «Экран»): "Подключить" (никогда не обрезается в "Под...")
   Widget _connectControl(AppStrings s, bool online, bool isSelf, bool rdpAvailable, String rdpReason, String route, bool isTs) {
     if (!canLaunchRdp) {
       return Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(vertical: 8),
         alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F172A).withValues(alpha: 0.4),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+        ),
         child: Text(
           isRu ? 'RDP — Windows / macOS' : 'RDP — Windows / macOS',
           maxLines: 1,
@@ -273,12 +353,12 @@ class RdpTargetTile extends StatelessWidget {
       return Tooltip(
         message: s.rdpSelfProhibited,
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: const Color(0xFF0F172A),
+            color: const Color(0xFF0F172A).withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF334155)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
           ),
           child: Text(
             s.rdpSelfBtn,
@@ -290,16 +370,36 @@ class RdpTargetTile extends StatelessWidget {
       );
     }
     final isServer = isTs || route == 'direct' || route == 'relay';
+    if (isServer && (!online || !rdpAvailable)) {
+      return Tooltip(
+        message: s.rdpServerOfflineHint,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+          ),
+          child: Text(
+            s.rdpServerOffline,
+            maxLines: 1,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      );
+    }
     if (!isServer && (!online || !rdpAvailable)) {
       return Tooltip(
         message: s.rdpOfflineHint,
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: const Color(0xFF0F172A),
+            color: const Color(0xFF0F172A).withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF334155)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
           ),
           child: Text(
             s.rdpServiceOffline,
@@ -314,12 +414,12 @@ class RdpTargetTile extends StatelessWidget {
       return Tooltip(
         message: isRu ? 'Цель отключена администратором' : 'Target disabled by admin',
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: const Color(0xFF0F172A),
+            color: const Color(0xFF0F172A).withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF334155)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
           ),
           child: Text(
             isRu ? 'Отключено' : 'Disabled',
@@ -330,27 +430,71 @@ class RdpTargetTile extends StatelessWidget {
         ),
       );
     }
-    return ElevatedButton.icon(
-      onPressed: connecting ? null : onConnect,
-      icon: connecting
-          ? const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-            )
-          : const Icon(Icons.terminal_outlined, size: 16),
-      label: Text(
-        s.rdpConnectBtn,
-        maxLines: 1,
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-        overflow: TextOverflow.ellipsis,
-      ),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: const Color(0xFF10B981),
-        foregroundColor: Colors.white,
-        disabledBackgroundColor: const Color(0xFF065F46),
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+
+    final btnLabel = isTs
+        ? s.rdpConnectBtn
+        : (isRu ? 'Подключить' : 'Connect');
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: connecting ? null : onConnect,
+        borderRadius: BorderRadius.circular(10),
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF059669), Color(0xFF10B981)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: const Color(0xFF34D399).withValues(alpha: 0.35),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF059669).withValues(alpha: 0.3),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (connecting)
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                )
+              else
+                const Icon(
+                  Icons.bolt_rounded,
+                  size: 16,
+                  color: Colors.white,
+                ),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  btnLabel,
+                  maxLines: 1,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    letterSpacing: -0.1,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

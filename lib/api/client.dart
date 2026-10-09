@@ -966,4 +966,22 @@ class ApiClient {
     } catch (_) {}
     throw ApiException(res.statusCode, errCode);
   }
+
+  /// Challenge-response продление media lease активной сессии экрана / Console:
+  /// GET /api/v1/app/support/{id}/lease
+  Future<Map<String, dynamic>> renewSupportLease(String sessionId) async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/support/$sessionId/lease'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String errCode = 'lease_renew_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
 }

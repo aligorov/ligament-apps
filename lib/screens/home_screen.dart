@@ -965,7 +965,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _connectingToSession ? null : () => _connectAsOperator(auth, sess),
                     icon: Icon(fullControl ? Icons.sports_esports : Icons.desktop_windows, size: 16),
                     label: Text(
-                      fullControl ? (isRu ? '🎮 Экран' : '🎮 Screen') : (isRu ? '👁 Экран' : '👁 Screen'),
+                      fullControl ? (isRu ? 'Управление: Console' : 'Control: Console') : (isRu ? 'Просмотр: Console' : 'View: Console'),
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                     style: ElevatedButton.styleFrom(

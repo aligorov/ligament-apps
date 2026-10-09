@@ -427,7 +427,7 @@ class AppStrings {
       ? '$n параллельн${n % 10 == 1 && n % 100 != 11 ? 'ая сессия' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'ые сессии' : 'ых сессий')}'
       : '$n parallel session${n == 1 ? '' : 's'}';
   String get rdpConnectBtn => isRu ? 'Подключиться' : 'Connect';
-  String get rdpScreenBtn => isRu ? 'Экран' : 'Screen';
+  String get rdpScreenBtn => 'Console';
   String get rdpServiceOffline => isRu ? 'Служба Ligament offline' : 'Ligament service offline';
   String get rdpServerOffline => isRu ? 'Сервер недоступен' : 'Server unavailable';
   String get rdpOfflineHint => isRu
@@ -437,8 +437,8 @@ class AppStrings {
       ? 'Сервер недоступен или отключен'
       : 'Server is unreachable or disabled';
   String get rdpScreenSoon => isRu
-      ? 'Режим «Экран» появится на следующем этапе'
-      : 'Screen mode arrives in the next stage';
+      ? 'Режим Console появится на следующем этапе'
+      : 'Console mode arrives in the next stage';
   String get rdpConnTitle => isRu ? 'Подключение к рабочему месту' : 'Connecting to Workstation';
   String get rdpStepGrant => isRu ? 'Получение доступа…' : 'Requesting access…';
   String get rdpStepListener => isRu ? 'Локальный слушатель…' : 'Local listener…';
@@ -510,33 +510,33 @@ class AppStrings {
       ? 'Требуется вход в приложение'
       : 'Sign-in required';
   String get rdpDeepLinkNeedLoginBody => isRu
-      ? 'Ссылка открывает рабочее место, но сессия приложения истекла. Войдите заново и повторите ссылку из веб-кабинета.'
+      ? 'Ссылка открывает рабочее место, но сессия приложения истекла. Войдите заново и повторите ссылку из веб-кабинете.'
       : 'The link opens a workstation, but the app session has expired. Sign in again and retry the link from the web portal.';
   String get rdpDeepLinkGrantErrorTitle => isRu
       ? 'Не удалось открыть ссылку'
       : 'Could not open the link';
 
-  // --- «Экран моего ПК» owner-режим (этап 2.4, план §5.2) ---
-  String get ownerScreenTitle => isRu ? 'Экран моего ПК' : 'My PC Screen';
+  // --- «Console моего ПК» owner-режим (этап 2.4, план §5.2) ---
+  String get ownerScreenTitle => isRu ? 'Консоль ПК' : 'PC Console';
   String get ownerScreenBadge => isRu ? 'Мой ПК' : 'My PC';
   String get ownerScreenWaiting => isRu
       ? 'Ждём начала трансляции с вашего ПК…'
       : 'Waiting for your PC to start sharing…';
   String ownerScreenProgress(String name) => isRu
-      ? 'Открываем экран «$name»…'
-      : 'Opening screen of "$name"…';
+      ? 'Открываем консоль «$name»…'
+      : 'Opening console of "$name"…';
   String get ownerScreenUnsupportedTitle => isRu
-      ? 'Режим «Экран» пока не поддерживается сервером'
-      : 'Screen mode is not supported by this server yet';
+      ? 'Режим «Console» пока не поддерживается сервером'
+      : 'Console mode is not supported by this server yet';
   String get ownerScreenUnsupportedBody => isRu
       ? 'Сервер выдал доступ, но не создал сессию просмотра — требуется ядро Ligament с этапом 2.4 (склейка mode=screen с support-сессиями). Обновите сервер и повторите.'
       : 'The server granted access but did not create a viewing session — a Ligament core with stage 2.4 (mode=screen to support-session glue) is required. Update the server and try again.';
   String get ownerScreenBannerTitle => isRu
-      ? '🖥 Ваш экран открыт вам'
-      : '🖥 Your screen is shared with you';
+      ? '🖥 Ваша консоль открыта'
+      : '🖥 Your console is open';
   String ownerScreenBannerBody(String device) => isRu
-      ? 'Трансляция экрана этого ПК для вашего устройства ${device.isEmpty ? 'в сети' : '\u00AB$device\u00BB'}. Виден только вам.'
-      : 'This PC\'s screen is streamed to your device ${device.isEmpty ? 'online' : '\u00AB$device\u00BB'}. Visible only to you.';
+      ? 'Трансляция консоли этого ПК для вашего устройства ${device.isEmpty ? 'в сети' : '\u00AB$device\u00BB'}. Доступно только вам.'
+      : 'This PC\'s console is streamed to your device ${device.isEmpty ? 'online' : '\u00AB$device\u00BB'}. Visible only to you.';
 
   // --- Windows identity / SSO ---
   String identityMismatchBanner(String account, String windowsUser) => isRu
