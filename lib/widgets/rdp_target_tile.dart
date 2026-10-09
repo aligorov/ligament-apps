@@ -183,7 +183,7 @@ class RdpTargetTile extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason),
+                child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -203,10 +203,14 @@ class RdpTargetTile extends StatelessWidget {
         tooltipMessage = isRu
             ? 'Целевой ПК не привязан к устройству'
             : 'Target PC is not bound to a device';
+      } else if (screenReason == 'self_connection_prohibited') {
+        tooltipMessage = isRu
+            ? 'Трансляция экрана на текущем ПК недоступна'
+            : 'Screen sharing on current PC is unavailable';
       } else if (screenReason == 'sharer_not_running') {
         tooltipMessage = isRu
-            ? 'Служба экрана не запущена на целевом ПК'
-            : 'Screen sharing is not running on target PC';
+            ? 'Приложение Ligament не открыто на целевом ПК'
+            : 'Ligament app is not open on target PC';
       } else {
         tooltipMessage = isRu
             ? 'Режим экрана недоступен'
@@ -240,10 +244,9 @@ class RdpTargetTile extends StatelessWidget {
   }
 
   /// Кнопка подключения: Windows+online → «Подключиться»; offline →
-  /// неактивная «Служба Ligament offline»; прочие платформы → подсказка
-  /// этапа 2b (кнопка «Экран» справа остаётся главной). Все варианты —
-  /// в одну строку с многоточием: ширина ячейки на 390px ≈ 160px.
-  Widget _connectControl(AppStrings s, bool online, bool isSelf, bool rdpAvailable, String rdpReason) {
+  /// неактивная («Служба Ligament offline» для agent, «Сервер недоступен» для direct/relay);
+  /// прочие платформы → подсказка этапа 2b.
+  Widget _connectControl(AppStrings s, bool online, bool isSelf, bool rdpAvailable, String rdpReason, String route, bool isTs) {
     if (!canLaunchRdp) {
       return Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
@@ -277,8 +280,10 @@ class RdpTargetTile extends StatelessWidget {
       );
     }
     if (!online || !rdpAvailable) {
+      final isServer = isTs || route == 'direct';
+      final isAgent = !isServer;
       return Tooltip(
-        message: s.rdpOfflineHint,
+        message: isAgent ? s.rdpOfflineHint : s.rdpServerOfflineHint,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           alignment: Alignment.center,
@@ -288,7 +293,7 @@ class RdpTargetTile extends StatelessWidget {
             border: Border.all(color: const Color(0xFF334155)),
           ),
           child: Text(
-            s.rdpServiceOffline,
+            isAgent ? s.rdpServiceOffline : s.rdpServerOffline,
             maxLines: 1,
             style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
             overflow: TextOverflow.ellipsis,

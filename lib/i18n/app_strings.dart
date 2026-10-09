@@ -429,9 +429,13 @@ class AppStrings {
   String get rdpConnectBtn => isRu ? 'Подключиться' : 'Connect';
   String get rdpScreenBtn => isRu ? 'Экран' : 'Screen';
   String get rdpServiceOffline => isRu ? 'Служба Ligament offline' : 'Ligament service offline';
+  String get rdpServerOffline => isRu ? 'Сервер недоступен' : 'Server unavailable';
   String get rdpOfflineHint => isRu
       ? 'Включите ПК или службу Ligament на нём'
       : 'Turn on the PC or its Ligament service';
+  String get rdpServerOfflineHint => isRu
+      ? 'Сервер недоступен или отключен'
+      : 'Server is unreachable or disabled';
   String get rdpScreenSoon => isRu
       ? 'Режим «Экран» появится на следующем этапе'
       : 'Screen mode arrives in the next stage';

@@ -140,6 +140,32 @@ void main() {
       expect(find.text('Текущий компьютер'), findsOneWidget);
       debugDefaultTargetPlatformOverride = null;
     });
+
+    testWidgets('Windows + direct terminal_server offline: «Сервер недоступен», без overflow', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(harness(RdpTargetTile(
+        target: {
+          'name': 'term01',
+          'kind': 'terminal_server',
+          'max_sessions': 50,
+          'online': false,
+          'route': 'direct',
+          'rdp_available': false,
+          'rdp_reason': 'target_offline',
+        },
+        isRu: true,
+      )));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Сервер недоступен'), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
+    });
   });
 
   group('RdpConnectDialog @ 390px', () {
