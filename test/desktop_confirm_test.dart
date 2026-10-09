@@ -189,4 +189,59 @@ void main() {
     expect(auth.activePrompt, isNull);
     expect(auth.pendingChallenges, isEmpty);
   });
+
+  test('W08: сетевая ошибка или invalid_code восстанавливает карточку (не теряется из вида)', () async {
+    var decisionCalls = 0;
+    final server = await startMock((method, path) async {
+      if (method == 'POST' &&
+          path.startsWith('/api/v1/app/challenges/') &&
+          path.endsWith('/decision')) {
+        decisionCalls++;
+        if (decisionCalls == 1) {
+          // Сетевой сбой / 500
+          return (500, '{"error":"internal_error"}');
+        }
+        return (200, '{}');
+      }
+      if (method == 'GET' && path == '/api/v1/app/challenges/pending') {
+        return (200, jsonEncode([challenge('ch-net')]));
+      }
+      if (method == 'GET' && path == '/api/v1/app/me/history') {
+        return (200, '[]');
+      }
+      return (404, '{"error":"unmocked $method $path"}');
+    });
+    addTearDown(() => server.close());
+
+    final auth = AuthState();
+    auth.api = ApiClient(baseUrl: 'http://127.0.0.1:${server.port}', token: 'tok');
+    auth.token = 'tok';
+    auth.currentUser = {'username': 'ivanov'};
+    auth.activePrompt = {
+      'challenge_id': 'ch-net',
+      'who': 'ivanov',
+      'service': 'Wi-Fi',
+      'expires_in_seconds': 120,
+    };
+
+    // Первый вызов падает с 500
+    await expectLater(
+      auth.submitDecision(challengeId: 'ch-net', approve: true),
+      throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 500)),
+    );
+
+    // W08: Карточка ВОССТАНОВЛЕНА, не удалена из UI
+    expect(auth.activePrompt, isNotNull);
+    expect(auth.activePrompt?['challenge_id'], 'ch-net');
+
+    // Polling не считает её resolved
+    await auth.loadPendingChallenges();
+    expect(auth.activePrompt?['challenge_id'], 'ch-net');
+
+    // Повторный вызов после восстановления сети успешен
+    await auth.submitDecision(challengeId: 'ch-net', approve: true);
+    expect(decisionCalls, 2);
+    expect(auth.activePrompt, isNull);
+  });
 }
+

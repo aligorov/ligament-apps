@@ -84,6 +84,19 @@ class TelemetryService {
     return netInfo;
   }
 
+  /// Получить локальные IPv4 адреса устройства для передачи в RDP-грант
+  static Future<List<String>> getLocalIPs() async {
+    if (cachedInternalIPs.isNotEmpty) {
+      return cachedInternalIPs;
+    }
+    final info = await collectNetworkInfo();
+    final list = info['internal_ips'];
+    if (list is List) {
+      return list.map((e) => e.toString()).toList();
+    }
+    return <String>[];
+  }
+
   // Windows Kernel32 FFI дескрипторы для мгновенного сбора метрик без запуска
   // процессов. Могут ОСТАТЬСЯ NULL (не-Windows платформа или kernel32.dll
   // не открылась — catch в _initWinKernel32): все обращения идут через

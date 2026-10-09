@@ -7,6 +7,7 @@ import 'package:web_socket_channel/io.dart';
 
 import '../api/client.dart';
 import '../widgets/rdp_mfa_dialog.dart';
+import 'telemetry_service.dart';
 
 /// RDP-коннектор (этап 2.2 плана docs/rdp-client-stage2-plan.md §3):
 /// grant → локальный loopback-слушатель → WS-мост до ядра → mstsc.
@@ -57,20 +58,22 @@ class RdpConnectorService extends ChangeNotifier {
   /// mfa_required (или 401 invalid_code при повторе) запрашивает подтверждение через
   /// mfaPrompt (или mfaCodePrompt) и повторяет запрос. Пустая карта = отмена.
   static Future<Map<String, dynamic>> _grantWithInlineMfa(
-    Future<Map<String, dynamic>> Function({String? code}) grant,
+    Future<Map<String, dynamic>> Function({String? code, String? attemptId}) grant,
     Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
   ) async {
     String? code;
+    String? attemptId;
     while (true) {
       try {
-        return await grant(code: code);
+        return await grant(code: code, attemptId: attemptId);
       } on ApiException catch (e) {
         if (mfaPrompt == null) rethrow;
-        if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
+        if (e.statusCode != 428 && e.code != 'invalid_code' && e.code != 'mfa_required') rethrow;
         final res = await mfaPrompt(e.code == 'invalid_code');
         if (res == null) return const {};
         code = res.code;
-        if (code == null || code.isEmpty) return const {};
+        attemptId = res.attemptId;
+        if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty)) return const {};
       }
     }
   }
@@ -115,14 +118,17 @@ class RdpConnectorService extends ChangeNotifier {
                 return c != null ? RdpMfaResult(code: c) : null;
               }
             : null);
+    final localIps = await TelemetryService.getLocalIPs();
     try {
       grant = await _grantWithInlineMfa(
-        ({code}) => api.rdpGrant(
+        ({code, attemptId}) => api.rdpGrant(
           targetId: targetId,
           mode: 'rdp',
           code: code,
+          attemptId: attemptId,
           actionId: actionId,
           sourceInstanceId: sourceInstanceId,
+          clientLocalIps: localIps,
         ),
         promptFn,
       );

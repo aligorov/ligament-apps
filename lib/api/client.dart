@@ -827,4 +827,114 @@ class ApiClient {
     }
     throw ApiException(res.statusCode, 'connect_failed');
   }
+
+  /// Регистрация машины доступа: POST /api/v1/app/rdp/machines/register
+  Future<Map<String, dynamic>> rdpRegisterMachine({
+    String? id,
+    String? hostname,
+    String? osType,
+    String? machinePublicKey,
+    String? keyAlgorithm,
+    String? enclaveType,
+  }) async {
+    final payload = <String, dynamic>{
+      if (id != null && id.isNotEmpty) 'id': id,
+      if (hostname != null && hostname.isNotEmpty) 'hostname': hostname,
+      if (osType != null && osType.isNotEmpty) 'os_type': osType,
+      if (machinePublicKey != null && machinePublicKey.isNotEmpty) 'machine_public_key': machinePublicKey,
+      if (keyAlgorithm != null && keyAlgorithm.isNotEmpty) 'key_algorithm': keyAlgorithm,
+      if (enclaveType != null && enclaveType.isNotEmpty) 'enclave_type': enclaveType,
+    };
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/machines/register'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String errCode = 'machine_register_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
+
+  /// Регистрация экземпляра сессии приложения (Sharer/Viewer): POST /api/v1/app/rdp/instances/register
+  Future<Map<String, dynamic>> rdpRegisterInstance({
+    required String instanceId,
+    String? machineId,
+    String? installationId,
+    String? instancePublicKey,
+    String? bootId,
+    int? osSessionId,
+    int? authLuid,
+    String? userSid,
+    int? posixUid,
+    String? posixDisplay,
+    bool canShareScreen = true,
+  }) async {
+    final payload = <String, dynamic>{
+      'instance_id': instanceId,
+      if (machineId != null && machineId.isNotEmpty) 'machine_id': machineId,
+      if (installationId != null && installationId.isNotEmpty) 'installation_id': installationId,
+      if (instancePublicKey != null && instancePublicKey.isNotEmpty) 'instance_public_key': instancePublicKey,
+      if (bootId != null && bootId.isNotEmpty) 'boot_id': bootId,
+      if (osSessionId != null) 'os_session_id': osSessionId,
+      if (authLuid != null) 'auth_luid': authLuid,
+      if (userSid != null && userSid.isNotEmpty) 'user_sid': userSid,
+      if (posixUid != null) 'posix_uid': posixUid,
+      if (posixDisplay != null && posixDisplay.isNotEmpty) 'posix_display': posixDisplay,
+      'can_share_screen': canShareScreen,
+    };
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/instances/register'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String errCode = 'instance_register_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
+
+  /// Heartbeat экземпляра процесса: POST /api/v1/app/rdp/instances/heartbeat
+  Future<void> rdpInstanceHeartbeat(String instanceId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/instances/heartbeat'),
+      headers: _headers(),
+      body: jsonEncode({'instance_id': instanceId}),
+    );
+    if (res.statusCode == 200) return;
+    String errCode = 'heartbeat_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
+
+  /// Активация сессии экрана выбранным Sharer: POST /api/v1/app/support/{id}/activate-screen
+  Future<Map<String, dynamic>> activateOwnerScreen(String sessionId, String instanceId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/support/$sessionId/activate-screen'),
+      headers: _headers(),
+      body: jsonEncode({'instance_id': instanceId}),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String errCode = 'activate_screen_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
 }

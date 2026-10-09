@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Результат подтверждения доступа: проверенный 6-значный TOTP код
+/// Результат подтверждения доступа: проверенный 6-значный TOTP код или attemptId passkey
 class RdpMfaResult {
   final bool passkey;
   final String? code;
-  const RdpMfaResult({this.passkey = false, this.code});
+  final String? attemptId;
+  const RdpMfaResult({this.passkey = false, this.code, this.attemptId});
 }
 
 /// Диалог инлайн-подтверждения RDP-действия (MFA):

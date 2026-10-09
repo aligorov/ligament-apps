@@ -44,6 +44,8 @@ class RdpTargetTile extends StatelessWidget {
     final online = target['online'] == true;
     final endpoint = target['endpoint']?.toString() ?? '';
     final route = target['route']?.toString() ?? '';
+    final screenAvailable = target['screen_available'] == true;
+    final screenReason = target['screen_reason']?.toString() ?? '';
 
     return Container(
       margin: margin ?? const EdgeInsets.only(bottom: 12),
@@ -174,28 +176,56 @@ class RdpTargetTile extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onScreen,
-                  icon: const Icon(Icons.monitor_outlined, size: 16),
-                  label: Text(
-                    s.rdpScreenBtn,
-                    maxLines: 1,
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF38BDF8),
-                    side: const BorderSide(color: Color(0xFF0284C7)),
-                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
+                child: _screenControl(s, screenAvailable, screenReason),
               ),
             ],
           ),
         ],
       ),
     );
+  }
+
+  Widget _screenControl(AppStrings s, bool screenAvailable, String screenReason) {
+    String tooltipMessage = '';
+    if (!screenAvailable) {
+      if (screenReason == 'screen_device_unbound') {
+        tooltipMessage = isRu
+            ? 'Целевой ПК не привязан к устройству'
+            : 'Target PC is not bound to a device';
+      } else if (screenReason == 'sharer_not_running') {
+        tooltipMessage = isRu
+            ? 'Служба экрана не запущена на целевом ПК'
+            : 'Screen sharing is not running on target PC';
+      } else {
+        tooltipMessage = isRu
+            ? 'Режим экрана недоступен'
+            : 'Screen mode is unavailable';
+      }
+    }
+
+    final btn = OutlinedButton.icon(
+      onPressed: screenAvailable ? onScreen : null,
+      icon: const Icon(Icons.monitor_outlined, size: 16),
+      label: Text(
+        s.rdpScreenBtn,
+        maxLines: 1,
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+        overflow: TextOverflow.ellipsis,
+      ),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: screenAvailable ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
+        side: BorderSide(
+          color: screenAvailable ? const Color(0xFF0284C7) : const Color(0xFF334155),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+
+    if (!screenAvailable) {
+      return Tooltip(message: tooltipMessage, child: btn);
+    }
+    return btn;
   }
 
   /// Кнопка подключения: Windows+online → «Подключиться»; offline →

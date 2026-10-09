@@ -176,6 +176,10 @@ class AuthState extends ChangeNotifier {
   String? _installationId;
   String get installationId => _installationId ?? instanceId;
 
+  Timer? _rdpHeartbeatTimer;
+  String? _registeredMachineId;
+  bool _instanceRegistered = false;
+
   /// Генерация уникального action_id для операций доступа RDP / Screen
   String generateActionId() => generateUuidV4();
 
@@ -989,6 +993,9 @@ class AuthState extends ChangeNotifier {
     rdp.closeGrantHandler = null;
     rdpTargets.clear();
     rdpFeatureAvailable = true;
+    _rdpHeartbeatTimer?.cancel();
+    _rdpHeartbeatTimer = null;
+    _instanceRegistered = false;
 
     // Windows-identity / SSO-состояние не переживает разлогин: proof
     // привязан к сессии устройства, баннер сбрасываем для следующего входа.
@@ -1042,6 +1049,7 @@ class AuthState extends ChangeNotifier {
       checkSupportSession(),
       refreshRelays(),
       loadRdpTargets(),
+      registerRdpMachineAndInstance(),
     ];
     if (isEngineer) {
       tasks.add(loadSupportQueue());
@@ -1069,6 +1077,64 @@ class AuthState extends ChangeNotifier {
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки RDP-целей: $e');
     }
+  }
+
+  /// Регистрация машины доступа и экземпляра сессии (Sharer/Viewer), запуск heartbeat (V01)
+  Future<void> registerRdpMachineAndInstance() async {
+    if (api == null || !isLoggedIn) return;
+    try {
+      String hostname = 'Device';
+      String osType = 'unknown';
+      if (kIsWeb) {
+        hostname = 'WebClient';
+        osType = 'web';
+      } else {
+        hostname = Platform.localHostname;
+        osType = Platform.operatingSystem;
+      }
+      final mResp = await api!.rdpRegisterMachine(
+        hostname: hostname,
+        osType: osType,
+      );
+      if (mResp['ok'] == true && mResp['machine_id'] != null) {
+        _registeredMachineId = mResp['machine_id'].toString();
+      }
+
+      final canShare = !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+      String? userSid;
+      if (!kIsWeb && Platform.isWindows) {
+        final winIdent = WindowsIdentity.instance.collect();
+        if (winIdent != null) {
+          userSid = winIdent.samCompatibleName;
+        }
+      }
+
+      final iResp = await api!.rdpRegisterInstance(
+        instanceId: instanceId,
+        machineId: _registeredMachineId,
+        installationId: installationId,
+        userSid: userSid,
+        canShareScreen: canShare,
+      );
+      if (iResp['ok'] == true) {
+        _instanceRegistered = true;
+        _startRdpHeartbeat();
+      }
+    } catch (e) {
+      debugPrint('auth_state: ошибка регистрации RDP machine/instance: $e');
+    }
+  }
+
+  void _startRdpHeartbeat() {
+    _rdpHeartbeatTimer?.cancel();
+    _rdpHeartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (api == null || !isLoggedIn || !_instanceRegistered) return;
+      try {
+        await api!.rdpInstanceHeartbeat(instanceId);
+      } catch (e) {
+        debugPrint('auth_state: rdp instance heartbeat failed: $e');
+      }
+    });
   }
 
   /// Загрузка и кэширование списка филиальных Relay-узлов
@@ -1285,76 +1351,74 @@ class AuthState extends ChangeNotifier {
   }) async {
     if (api == null) return;
 
-    // Снимок карточки ДО закрытия: при 403 desktop_confirm_forbidden
-    // (вход начат с этого же ПК — этап D) карточка возвращается на экран.
+    // Снимок карточки ДО закрытия (W08): сохраняем snapshot, но НЕ считаем
+    // челлендж завершённым (resolved) до успешного ответа сервера.
+    // При отмене биометрии, неверном коде, ошибке сети или 5xx карточка
+    // возвращается на экран, чтобы пользователь мог повторить действие.
     final promptSnapshot = activePrompt;
-    if (challengeId.isNotEmpty) {
-      _resolvedChallengeIds.add(challengeId);
-    }
-    activePrompt = null;
     await alert.resetWindowPriority();
 
-    if (approve) {
-      bool passkeyVerified = passkey ?? false;
-      // 1. Если передана явная просьба passkey, или включена GPO политика Windows Hello
-      if (passkey == true || gpo.requireWindowsHello) {
-        final didAuth = await localAuth.authenticate(
-          localizedReason: isRu
-              ? 'Подтвердите вход в корпоративную систему с помощью Passkey / биометрии'
-              : 'Confirm sign-in with Passkey / biometrics',
-          options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
-        );
-        if (!didAuth) {
-          throw Exception(isRu
-              ? 'Подтверждение Passkey отклонено'
-              : 'Passkey authentication rejected');
-        }
-        passkeyVerified = true;
-      } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-        // Мобильная биометрия: гейт только если биометрии ЗАРЕГИСТРИРОВАНЫ
-        var mobileBiometricsEnrolled = false;
-        try {
-          mobileBiometricsEnrolled =
-              (await localAuth.getAvailableBiometrics()).isNotEmpty;
-        } catch (_) {
-          // Плагин local_auth недоступен (стенд/эмулятор без биометрии) —
-          // не ломаем approve, пропускаем гейт
-        }
-        if (mobileBiometricsEnrolled) {
+    try {
+      if (approve) {
+        bool passkeyVerified = passkey ?? false;
+        // 1. Если передана явная просьба passkey, или включена GPO политика Windows Hello
+        if (passkey == true || gpo.requireWindowsHello) {
           final didAuth = await localAuth.authenticate(
             localizedReason: isRu
-                ? 'Подтвердите вход в корпоративную систему с помощью биометрии'
-                : 'Confirm login with biometrics',
+                ? 'Подтвердите вход в корпоративную систему с помощью Passkey / биометрии'
+                : 'Confirm sign-in with Passkey / biometrics',
             options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
           );
           if (!didAuth) {
             throw Exception(isRu
-                ? 'Биометрическое подтверждение отклонено'
-                : 'Biometric confirmation rejected');
+                ? 'Подтверждение Passkey отклонено'
+                : 'Passkey authentication rejected');
           }
           passkeyVerified = true;
-        }
-      } else if (!kIsWeb && (Platform.isMacOS || Platform.isWindows) && (code == null || code.isEmpty)) {
-        // Десктоп-аутентификация при подтверждении без TOTP-кода:
-        // пробуем вызвать системный Passkey (Touch ID / Windows Hello)
-        try {
-          final isSupported = await localAuth.isDeviceSupported();
-          if (isSupported) {
+        } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+          // Мобильная биометрия: гейт только если биометрии ЗАРЕГИСТРИРОВАНЫ
+          var mobileBiometricsEnrolled = false;
+          try {
+            mobileBiometricsEnrolled =
+                (await localAuth.getAvailableBiometrics()).isNotEmpty;
+          } catch (_) {
+            // Плагин local_auth недоступен (стенд/эмулятор без биометрии) —
+            // не ломаем approve, пропускаем гейт
+          }
+          if (mobileBiometricsEnrolled) {
             final didAuth = await localAuth.authenticate(
               localizedReason: isRu
-                  ? 'Подтвердите вход в корпоративную систему (Touch ID / Windows Hello)'
-                  : 'Confirm sign-in with Touch ID / Windows Hello',
+                  ? 'Подтвердите вход в корпоративную систему с помощью биометрии'
+                  : 'Confirm login with biometrics',
               options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
             );
-            if (didAuth) {
-              passkeyVerified = true;
+            if (!didAuth) {
+              throw Exception(isRu
+                  ? 'Биометрическое подтверждение отклонено'
+                  : 'Biometric confirmation rejected');
             }
+            passkeyVerified = true;
           }
-        } catch (_) {}
-      }
+        } else if (!kIsWeb && (Platform.isMacOS || Platform.isWindows) && (code == null || code.isEmpty)) {
+          // Десктоп-аутентификация при подтверждении без TOTP-кода:
+          // пробуем вызвать системный Passkey (Touch ID / Windows Hello)
+          try {
+            final isSupported = await localAuth.isDeviceSupported();
+            if (isSupported) {
+              final didAuth = await localAuth.authenticate(
+                localizedReason: isRu
+                    ? 'Подтвердите вход в корпоративную систему (Touch ID / Windows Hello)'
+                    : 'Confirm sign-in with Touch ID / Windows Hello',
+                options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+              );
+              if (didAuth) {
+                passkeyVerified = true;
+              }
+            }
+          } catch (_) {}
+        }
 
-      // 2. Отправка подтверждения
-      try {
+        // 2. Отправка подтверждения
         await api!.challengeDecision(
           challengeId: challengeId,
           decision: 'approve',
@@ -1362,24 +1426,40 @@ class AuthState extends ChangeNotifier {
           code: code,
           passkey: passkeyVerified,
         );
-      } on ApiException catch (e) {
-        if (e.statusCode == 403 && e.code == 'desktop_confirm_forbidden') {
-          // Сервер запретил подтверждать вход с того же ПК, с которого он
-          // начат: карточка ВОЗВРАЩАЕТСЯ — id вынимается из resolved (чтобы
-          // polling-тик не счёл челлендж закрытым и не погасил модалку),
-          // снимок восстанавливается, ошибка уходит в модал с пояснением
-          // «подтвердите с телефона или введите код».
-          _resolvedChallengeIds.remove(challengeId);
-          activePrompt = promptSnapshot;
-          notifyListeners();
-        }
-        rethrow;
+      } else {
+        await api!.challengeDecision(
+          challengeId: challengeId,
+          decision: 'deny',
+        );
       }
-    } else {
-      await api!.challengeDecision(
-        challengeId: challengeId,
-        decision: 'deny',
-      );
+
+      // Успешно подтверждено сервером: фиксируем в resolved и гасим активный prompt
+      if (challengeId.isNotEmpty) {
+        _resolvedChallengeIds.add(challengeId);
+      }
+      activePrompt = null;
+    } catch (e) {
+      // W08: Терминальные ошибки (например, промах числа number_match_mismatch или истёкший челлендж)
+      // закрывают карточку. Любые временные сбои (отмена биометрии, ошибка сети, 5xx,
+      // desktop_confirm_forbidden, invalid_code) восстанавливают карточку для повтора.
+      final isTerminal = e is ApiException &&
+          (e.code == 'number_match_mismatch' ||
+              e.code == 'challenge_expired' ||
+              e.code == 'challenge_closed');
+
+      if (isTerminal) {
+        if (challengeId.isNotEmpty) {
+          _resolvedChallengeIds.add(challengeId);
+        }
+        activePrompt = null;
+      } else {
+        activePrompt = promptSnapshot;
+        if (challengeId.isNotEmpty) {
+          _resolvedChallengeIds.remove(challengeId);
+        }
+      }
+      notifyListeners();
+      rethrow;
     }
 
     await loadPendingChallenges();
@@ -1470,6 +1550,9 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Активируем экранную сессию на сервере выбранным Sharer:
+      await api!.activateOwnerScreen(sessionId, instanceId);
+
       await support.startScreenSharing(
         sessionId: sessionId,
         api: api!,

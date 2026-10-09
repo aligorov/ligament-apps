@@ -7,6 +7,7 @@ import '../screens/rdp_connect_dialog.dart';
 import '../screens/support_operator_screen.dart';
 import '../services/auth_state.dart';
 import '../services/rdp_service.dart';
+import '../services/telemetry_service.dart';
 import '../widgets/rdp_mfa_dialog.dart';
 
 /// Сервис общих действий с рабочими местами RDP и «Экран»:
@@ -73,20 +74,24 @@ class RdpActions {
       } catch (_) {}
 
       Map<String, dynamic>? grant;
+      final localIps = await TelemetryService.getLocalIPs();
       {
         String? code;
+        String? attemptId;
         while (true) {
           try {
             grant = await api.rdpGrant(
               targetId: targetId,
               mode: 'screen',
               code: code,
+              attemptId: attemptId,
               actionId: actionId,
               sourceInstanceId: auth.instanceId,
+              clientLocalIps: localIps,
             );
             break;
           } on ApiException catch (e) {
-            if (e.statusCode != 428 && e.code != 'invalid_code') rethrow;
+            if (e.statusCode != 428 && e.code != 'invalid_code' && e.code != 'mfa_required') rethrow;
             if (!context.mounted) return;
             _popOwnerScreenProgress(context);
 
@@ -97,7 +102,8 @@ class RdpActions {
             );
             if (res == null) break;
             code = res.code;
-            if (code == null || code.isEmpty) break;
+            attemptId = res.attemptId;
+            if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty)) break;
 
             if (!context.mounted) return;
             unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));
