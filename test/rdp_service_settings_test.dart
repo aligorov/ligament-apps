@@ -74,7 +74,7 @@ void main() {
     await tester.pumpWidget(buildTestWidget(fakeService: fakeService));
     await tester.pumpAndSettle();
 
-    expect(find.text('RDP-служба (хост доступа)'), findsOneWidget);
+    expect(find.text('Служба доступа к этому ПК (Agent)'), findsOneWidget);
     expect(find.text('PC-BUH-01'), findsOneWidget);
     expect(find.text('Остановлена'), findsOneWidget);
 

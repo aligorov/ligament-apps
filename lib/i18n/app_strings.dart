@@ -461,10 +461,10 @@ class AppStrings {
       : 'Waiting for RDP client…';
 
   // --- Настройки: RDP-служба (Хост удалённого доступа, §8) ---
-  String get rdpServiceSettingsTitle => isRu ? 'RDP-служба (хост доступа)' : 'RDP Host Service';
+  String get rdpServiceSettingsTitle => isRu ? 'Служба доступа к этому ПК (Agent)' : 'Host Access Service (Agent)';
   String get rdpServiceSettingsDesc => isRu
-      ? 'Позволяет подключаться к этому компьютеру удалённо через Ligament.'
-      : 'Allows connecting to this computer remotely via Ligament.';
+      ? 'Нужна только если этот компьютер является удалённым рабочим местом (ПК), к которому подключаются другие. Для подключения к серверам по RDP настраивать эту службу не требуется.'
+      : 'Only needed if this PC is a remote workstation host for inbound connections. Not required for connecting to terminal servers via RDP.';
   String get rdpServiceStatusLabel => isRu ? 'Состояние службы' : 'Service Status';
   String get rdpServiceStatusRunning => isRu ? 'Работает (в сети)' : 'Running (Online)';
   String get rdpServiceStatusStopped => isRu ? 'Остановлена' : 'Stopped';

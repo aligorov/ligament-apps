@@ -53,6 +53,9 @@ class RdpTargetTile extends StatelessWidget {
     final rdpAvailable = target['rdp_available'] != false;
     final rdpReason = target['rdp_reason']?.toString() ?? '';
 
+    final isServer = isTs || route == 'direct' || route == 'relay';
+    final effectiveOnline = isServer ? true : online;
+
     return Container(
       margin: margin ?? const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
@@ -92,7 +95,7 @@ class RdpTargetTile extends StatelessWidget {
                           height: 9,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: online ? const Color(0xFF10B981) : const Color(0xFF64748B),
+                            color: effectiveOnline ? const Color(0xFF10B981) : const Color(0xFF64748B),
                           ),
                         ),
                         const SizedBox(width: 6),
@@ -286,11 +289,10 @@ class RdpTargetTile extends StatelessWidget {
         ),
       );
     }
-    if (!online || !rdpAvailable) {
-      final isServer = isTs || route == 'direct';
-      final isAgent = !isServer;
+    final isServer = isTs || route == 'direct' || route == 'relay';
+    if (!isServer && (!online || !rdpAvailable)) {
       return Tooltip(
-        message: isAgent ? s.rdpOfflineHint : s.rdpServerOfflineHint,
+        message: s.rdpOfflineHint,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           alignment: Alignment.center,
@@ -300,7 +302,27 @@ class RdpTargetTile extends StatelessWidget {
             border: Border.all(color: const Color(0xFF334155)),
           ),
           child: Text(
-            isAgent ? s.rdpServiceOffline : s.rdpServerOffline,
+            s.rdpServiceOffline,
+            maxLines: 1,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      );
+    }
+    if (rdpReason == 'target_disabled' || target['enabled'] == false) {
+      return Tooltip(
+        message: isRu ? 'Цель отключена администратором' : 'Target disabled by admin',
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFF334155)),
+          ),
+          child: Text(
+            isRu ? 'Отключено' : 'Disabled',
             maxLines: 1,
             style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
             overflow: TextOverflow.ellipsis,
