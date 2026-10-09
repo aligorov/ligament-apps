@@ -358,13 +358,23 @@ class InputInjector {
     final handles = <int>[];
     for (final m in RegExp(r'\d+').allMatches(sourceId)) {
       final v = int.tryParse(m.group(0)!);
-      if (v != null && v > 0) handles.add(v);
+      if (v != null && v >= 0) handles.add(v);
     }
     return handles;
   }
 
+  /// Число активных мониторов (Windows: SM_CMONITORS = 80).
+  int getMonitorCount() {
+    if (kIsWeb) return 1;
+    if (Platform.isWindows) {
+      final count = _winGetSystemMetrics?.call(80) ?? 1;
+      return count > 0 ? count : 1;
+    }
+    return 1;
+  }
+
   /// Геометрия монитора по id источника desktopCapturer.
-  /// Windows: id трактуется как HMONITOR (валидируется GetMonitorInfoW);
+  /// Windows: id трактуется как HMONITOR или индекс монитора (0, 1...);
   /// macOS: как CGDirectDisplayID (CGDisplayBounds).
   /// Возвращает null, если платформа не поддерживается или id не resolves.
   ScreenRect? getMonitorRectForSource(String sourceId) {
@@ -372,25 +382,44 @@ class InputInjector {
     final handles = _parseSourceHandles(sourceId);
     if (handles.isEmpty) return null;
 
-    if (Platform.isWindows && _winGetMonitorInfo != null) {
-      final mi = calloc<_MONITORINFO>();
-      try {
-        for (final h in handles) {
-          mi.ref.cbSize = ffi.sizeOf<_MONITORINFO>();
-          final rc = _winGetMonitorInfo!(ffi.Pointer.fromAddress(h), mi);
-          if (rc != 0) {
-            final r = mi.ref.rcMonitor;
-            if (r.right > r.left && r.bottom > r.top) {
-              return ScreenRect.fromLTRB(r.left, r.top, r.right, r.bottom);
+    if (Platform.isWindows) {
+      if (_winGetMonitorInfo != null) {
+        final mi = calloc<_MONITORINFO>();
+        try {
+          for (final h in handles) {
+            if (h > 100) {
+              mi.ref.cbSize = ffi.sizeOf<_MONITORINFO>();
+              final rc = _winGetMonitorInfo!(ffi.Pointer.fromAddress(h), mi);
+              if (rc != 0) {
+                final r = mi.ref.rcMonitor;
+                if (r.right > r.left && r.bottom > r.top) {
+                  return ScreenRect.fromLTRB(r.left, r.top, r.right, r.bottom);
+                }
+              }
             }
           }
+        } catch (_) {
+          // невалидный handle
+        } finally {
+          calloc.free(mi);
         }
-      } catch (_) {
-        // невалидный handle — фолбэк на primary
-      } finally {
-        calloc.free(mi);
       }
-      return null;
+
+      // Разрешение по индексу монитора (0 -> Primary, 1 -> Secondary)
+      final index = handles.first;
+      final (pw, ph) = getScreenSize();
+      if (index == 0) {
+        return ScreenRect(0, 0, pw, ph);
+      }
+      final virt = getVirtualDesktopRect();
+      if (index == 1 && virt.width > pw) {
+        if (virt.x < 0) {
+          return ScreenRect(virt.x, virt.y, -virt.x, virt.height);
+        } else {
+          return ScreenRect(pw, virt.y, virt.width - pw, virt.height);
+        }
+      }
+      return ScreenRect(0, 0, pw, ph);
     }
 
     if (Platform.isMacOS && _cgDisplayBounds != null) {

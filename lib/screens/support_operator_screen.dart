@@ -234,6 +234,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
+  AuthState? _auth;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _auth = context.read<AuthState>();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -315,13 +323,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           if (auth.token != null && auth.token!.isNotEmpty)
             'Authorization': 'Bearer ${auth.token}',
         },
-        connectTimeout: const Duration(seconds: 4),
+        connectTimeout: const Duration(seconds: 12),
         pingInterval: const Duration(seconds: 20),
       );
 
       _wsChannel!.ready.then((_) {
         _wsBackoff.reset();
+        if (mounted) {
+          setState(() {
+            _isConnected = true;
+            if (_statusKey == 'disconnected') {
+              _statusKey = _remoteRenderer.srcObject != null ? 'stream_active' : 'init';
+              _statusArg = null;
+            }
+          });
+        }
         _sendWsSignal({'type': 'request_offer'});
+        _sendWsSignal({'type': 'screen_list'});
       }).catchError((Object e) {
         debugPrint('support_operator: WS handshake не удался: $e');
         final str = e.toString();
@@ -653,8 +671,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           );
           Navigator.of(context).pop();
         }
-      } else if (data['type'] == 'chat_message' || payload['type'] == 'chat_message') {
-        _handleDataChannelMessage(payload['type'] == 'chat_message' ? payload : data);
+      } else {
+        final innerType = payload['type'] ?? data['type'];
+        if (innerType != null && innerType != 'offer' && innerType != 'answer' && innerType != 'candidate') {
+          _handleDataChannelMessage(payload['type'] != null ? payload : data);
+        }
       }
     } catch (e) {
       debugPrint('support_operator: ошибка обработки WS: $e');
@@ -932,15 +953,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } catch (_) {}
     }
     if (!sent) {
-      if (msg['type'] == 'chat_message') {
-        _sendWsSignal(msg);
-      } else {
-        // Управление через WebSocket КАТЕГОРИЧЕСКИ НЕ отправляется — цель его там не исполняет.
-        // Блокируем отправку и не спамим в WS-сигнализацию.
-        if (_statusKey != 'conn_error' && mounted) {
-          debugPrint('support_operator: DataChannel not open, dropping input event ${msg['type']}');
-        }
-      }
+      // WS-фоллбэк: если DataChannel еще не открыт или закрылся,
+      // пересылаем команду ввода или запрос экранов через WebSocket ядра
+      _sendWsSignal({'type': 'input_control', 'data': msg});
     }
   }
 
@@ -1313,13 +1328,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _keyboardFocus.dispose();
     _restoreWindowSize();
     _cleanupResources();
+    final auth = _auth;
+    final sessId = widget.sessionId;
+    if (auth != null && auth.api != null && sessId.isNotEmpty) {
+      try {
+        auth.api!.endSupportSession(sessionId: sessId).catchError((_) => null);
+      } catch (_) {}
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
-    final isOwner = widget.ownerMode;
+    final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
     final String clientName;
     final String pcName;
     final bool is1C;
@@ -1555,16 +1577,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     },
                   ),
 
-                  // Чат с пользователем
-                  IconButton(
-                    icon: Badge(
-                      isLabelVisible: _unreadChatCount > 0,
-                      label: Text('$_unreadChatCount'),
-                      child: const Icon(Icons.chat_bubble_outline, color: Color(0xFF38BDF8), size: 20),
+                  // Чат с пользователем (скрыт для владельца консоли ПК)
+                  if (!isOwner)
+                    IconButton(
+                      icon: Badge(
+                        isLabelVisible: _unreadChatCount > 0,
+                        label: Text('$_unreadChatCount'),
+                        child: const Icon(Icons.chat_bubble_outline, color: Color(0xFF38BDF8), size: 20),
+                      ),
+                      tooltip: strings.chatWithUserTooltip,
+                      onPressed: _showOperatorChatModal,
                     ),
-                    tooltip: strings.chatWithUserTooltip,
-                    onPressed: _showOperatorChatModal,
-                  ),
 
                   // Бейджи телеметрии (CPU, Диск)
                   if (_cpuPercent > 0 || _diskPercent > 0)
@@ -1845,13 +1868,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           scaleEnabled: _zoomMode == OperatorZoomMode.zoomIn,
                           minScale: 1.0,
                           maxScale: 3.0,
-                          child: Container(
-                            key: _videoKey,
-                            child: RTCVideoView(
-                              _remoteRenderer,
-                              objectFit: _zoomMode == OperatorZoomMode.fit
-                                  ? RTCVideoViewObjectFit.RTCVideoViewObjectFitContain
-                                  : RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                          child: MouseRegion(
+                            cursor: SystemMouseCursors.basic,
+                            child: Container(
+                              key: _videoKey,
+                              child: RTCVideoView(
+                                _remoteRenderer,
+                                objectFit: _zoomMode == OperatorZoomMode.fit
+                                    ? RTCVideoViewObjectFit.RTCVideoViewObjectFitContain
+                                    : RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                              ),
                             ),
                           ),
                         ),
@@ -1914,18 +1940,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       icon: const Icon(Icons.keyboard_alt_outlined, size: 16, color: Color(0xFF38BDF8)),
                       label: Text(strings.enterTextBtn, style: const TextStyle(fontSize: 12, color: Colors.white)),
                     ),
-                    TextButton.icon(
-                      onPressed: _showOperatorChatModal,
-                      icon: Badge(
-                        isLabelVisible: _unreadChatCount > 0,
-                        label: Text('$_unreadChatCount'),
-                        child: const Icon(Icons.chat_bubble_outline, size: 16, color: Color(0xFF38BDF8)),
+                    if (!isOwner)
+                      TextButton.icon(
+                        onPressed: _showOperatorChatModal,
+                        icon: Badge(
+                          isLabelVisible: _unreadChatCount > 0,
+                          label: Text('$_unreadChatCount'),
+                          child: const Icon(Icons.chat_bubble_outline, size: 16, color: Color(0xFF38BDF8)),
+                        ),
+                        label: Text(
+                          _unreadChatCount > 0 ? '${strings.chatTitle} ($_unreadChatCount)' : strings.chatTitle,
+                          style: const TextStyle(fontSize: 12, color: Colors.white),
+                        ),
                       ),
-                      label: Text(
-                        _unreadChatCount > 0 ? '${strings.chatTitle} ($_unreadChatCount)' : strings.chatTitle,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
-                      ),
-                    ),
                   ],
                 ),
               ),

@@ -736,7 +736,18 @@ class SupportService extends ChangeNotifier {
         if (sources.isEmpty) {
           throw Exception('Не найдены источники экрана для захвата');
         }
-        _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
+        var initialScreens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
+        if (Platform.isWindows) {
+          final count = InputInjector.instance.getMonitorCount();
+          if (count > initialScreens.length) {
+            for (int i = initialScreens.length; i < count; i++) {
+              final id = '$i';
+              final name = 'Screen ${i + 1}';
+              initialScreens.add(_screenEntryForSource(id, name));
+            }
+          }
+        }
+        _screens = initialScreens;
         final selectedSource = sources.first;
         _currentScreenId = selectedSource.id;
         _applyActiveScreenRect(selectedSource.id);
@@ -1005,12 +1016,21 @@ class SupportService extends ChangeNotifier {
           ? signal['data'] as Map<String, dynamic>
           : signal;
 
-      if (payload['type'] == 'chat_message' ||
-          (payload['type'] == 'input_control' && (payload['data'] as Map?)?['type'] == 'chat_message')) {
-        final chatData = payload['type'] == 'chat_message'
-            ? payload
-            : (payload['data'] as Map<String, dynamic>);
-        _handleRemoteInput(chatData);
+      if (payload['type'] == 'chat_message') {
+        _handleRemoteInput(payload);
+        return;
+      }
+
+      if (payload['type'] == 'input_control') {
+        final inputData = (payload['data'] is Map<String, dynamic>)
+            ? payload['data'] as Map<String, dynamic>
+            : payload;
+        _handleRemoteInput(inputData);
+        return;
+      }
+
+      if (payload['type'] == 'screen_list' || payload['type'] == 'switch_screen') {
+        _handleRemoteInput(payload);
         return;
       }
 
@@ -1111,27 +1131,46 @@ class SupportService extends ChangeNotifier {
   }
 
   Future<void> _sendScreenList() async {
-    if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) return;
     try {
       if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         try {
           final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
           if (sources.isNotEmpty) {
-            _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
+            var screensList = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
+            if (Platform.isWindows) {
+              final count = InputInjector.instance.getMonitorCount();
+              if (count > screensList.length) {
+                for (int i = screensList.length; i < count; i++) {
+                  final id = '$i';
+                  final name = 'Screen ${i + 1}';
+                  screensList.add(_screenEntryForSource(id, name));
+                }
+              }
+            }
+            _screens = screensList;
             debugPrint('support_service: обновлен список экранов (${_screens.length}): $_screens');
           }
         } catch (e) {
           debugPrint('support_service: ошибка динамического обновления экранов: $e');
         }
       }
-      _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
+      final payload = {
         'type': 'screen_list',
         'screens': _screens,
         'selected_id': _currentScreenId,
         if (_currentScreenRect != null) 'selected_rect': _currentScreenRect!.toJson(),
         if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
           'virtual_desktop': InputInjector.instance.getVirtualDesktopRect().toJson(),
-      })));
+      };
+      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
+      }
+      if (_activeSessionId != null && _api != null) {
+        _api!.sendSupportSignal(
+          sessionId: _activeSessionId!,
+          signal: payload,
+        ).catchError((_) => null);
+      }
     } catch (_) {}
   }
 

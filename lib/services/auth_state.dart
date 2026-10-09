@@ -1548,11 +1548,12 @@ class AuthState extends ChangeNotifier {
 
     if (support.state == SupportSessionState.connecting ||
         support.state == SupportSessionState.active) {
-      debugPrint('auth_state: owner-экран отклонён — уже идёт другая сессия поддержки');
+      debugPrint('auth_state: завершаем предыдущую сессию ${support.activeSessionId} для подключения новой owner-сессии $sessionId');
       try {
-        await api!.endSupportSession(sessionId: sessionId);
-      } catch (_) {}
-      return;
+        await support.stopScreenSharing();
+      } catch (e) {
+        debugPrint('auth_state: ошибка остановки предыдущей сессии: $e');
+      }
     }
 
     final initiatorName = prompt['initiator_device_name']?.toString() ??
