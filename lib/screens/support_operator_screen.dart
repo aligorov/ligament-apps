@@ -160,10 +160,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         await auth.api?.renewSupportLease(widget.sessionId);
       } on ApiException catch (e) {
-        if (e.statusCode == 410 || e.statusCode == 404 || e.code == 'session_ended') {
+        if (e.statusCode == 410 || e.statusCode == 404 || e.statusCode == 403 || e.code == 'session_ended') {
           _leaseTimer?.cancel();
+          _leaseTimer = null;
           if (mounted && !_isCleanedUp) {
+            _isControlEnabled = false;
             _setStatus('ended_by_server');
+            _cleanupResources();
           }
         }
       } catch (_) {}
@@ -492,13 +495,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
 
     _peerConnection!.onDataChannel = (channel) {
+      debugPrint('support_operator: received remote data channel: ${channel.label}');
       _setupDataChannel(channel);
     };
-
-    // Создаем свой data channel, если еще не открыт
-    final dcInit = RTCDataChannelInit()..ordered = true;
-    final dc = await _peerConnection!.createDataChannel('input', dcInit);
-    _setupDataChannel(dc);
   }
 
   void _setupDataChannel(RTCDataChannel channel) {
@@ -959,9 +958,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final relX = (localPos.dx - offsetX) / renderW;
     final relY = (localPos.dy - offsetY) / renderH;
 
-    // Щелчки по чёрным полосам вокруг изображения игнорировать, а не переносить на край удалённого экрана:
-    if (relX < 0.0 || relX > 1.0 || relY < 0.0 || relY > 1.0) {
-      return;
+    final isOutside = relX < 0.0 || relX > 1.0 || relY < 0.0 || relY > 1.0;
+
+    // Щелчки по чёрным полосам вокруг изображения игнорировать (не начинать нажатие вне экрана).
+    // Но отпускание (mouse_up) ОБЯЗАНО отправляться с clamp-координатами, чтобы не допустить залипания кнопки.
+    if (isOutside && action != 'mouse_up') {
+      // Если ни одна кнопка не зажата, игнорируем обычное перемещение вне кадра
+      if (_pointerDownButtons.isEmpty) {
+        return;
+      }
     }
 
     final normX = relX.clamp(0.0, 1.0);
@@ -1188,6 +1193,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _isCleanedUp = true;
     _ownerWaitTimer?.cancel();
     _ownerWaitTimer = null;
+    _leaseTimer?.cancel();
+    _leaseTimer = null;
+
+    // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
+    _releaseAllPointerButtons();
 
     try {
       _remoteRenderer.srcObject = null;
@@ -1214,10 +1224,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         pc.close();
       } catch (_) {}
     }
-
-    _leaseTimer?.cancel();
-    _leaseTimer = null;
-    _releaseAllPointerButtons();
 
     try {
       _wsChannel?.sink.close();

@@ -67,6 +67,25 @@ void main() {
       );
     });
 
+    test('500 / db_error / session_already_active → понятные сообщения об ошибках', () {
+      expect(
+        rdpConnectErrorText(ApiException(500, 'db_error'), isRu: true),
+        contains('ошибка базы данных'),
+      );
+      expect(
+        rdpConnectErrorText(ApiException(500, 'db_error'), isRu: false),
+        contains('database error'),
+      );
+      expect(
+        rdpConnectErrorText(ApiException(409, 'session_already_active'), isRu: true),
+        contains('уже активна'),
+      );
+      expect(
+        rdpConnectErrorText(ApiException(500, 'unknown_internal'), isRu: true),
+        contains('Сервер временно недоступен'),
+      );
+    });
+
     test('WS-handshake статусы 410/502/503 из текста ошибки', () {
       final expired = rdpConnectErrorText(
         Exception('WebSocketChannelException: ... status 410 ...'),

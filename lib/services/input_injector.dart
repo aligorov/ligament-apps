@@ -842,29 +842,58 @@ class InputInjector {
     }
   }
 
+  static String _normalizeKeyName(String key) {
+    return key.toLowerCase().replaceAll(' ', '').replaceAll('_', '').replaceAll('-', '');
+  }
+
   int? _mapToMacKeyCode(String key, int? code) {
     if (code != null && code > 0) return code;
-    switch (key.toLowerCase()) {
+    final clean = _normalizeKeyName(key);
+    switch (clean) {
       case 'enter':
       case 'return': return 36;
       case 'tab': return 48;
       case 'space':
-      case ' ': return 49;
+      case '': return 49;
       case 'backspace':
       case 'delete': return 51;
+      case 'forwarddelete': return 117;
       case 'escape':
       case 'esc': return 53;
       case 'command':
-      case 'meta': return 55;
-      case 'shift': return 56;
+      case 'meta':
+      case 'metaleft':
+      case 'commandleft': return 55;
+      case 'metaright':
+      case 'commandright': return 54;
+      case 'shift':
+      case 'shiftleft': return 56;
+      case 'shiftright': return 60;
       case 'option':
-      case 'alt': return 58;
+      case 'alt':
+      case 'altleft':
+      case 'optionleft': return 58;
+      case 'altright':
+      case 'optionright': return 61;
       case 'control':
-      case 'ctrl': return 59;
-      case 'arrowleft': return 123;
-      case 'arrowright': return 124;
-      case 'arrowdown': return 125;
-      case 'arrowup': return 126;
+      case 'ctrl':
+      case 'controlleft':
+      case 'ctrlleft': return 59;
+      case 'controlright':
+      case 'ctrlright': return 62;
+      case 'capslock': return 57;
+      case 'arrowleft':
+      case 'left': return 123;
+      case 'arrowright':
+      case 'right': return 124;
+      case 'arrowdown':
+      case 'down': return 125;
+      case 'arrowup':
+      case 'up': return 126;
+      case 'home': return 115;
+      case 'end': return 119;
+      case 'pageup': return 116;
+      case 'pagedown': return 121;
       case 'a': return 0;
       case 's': return 1;
       case 'd': return 2;
@@ -882,6 +911,27 @@ class InputInjector {
       case 'r': return 15;
       case 'y': return 16;
       case 't': return 17;
+      case '1': return 18;
+      case '2': return 19;
+      case '3': return 20;
+      case '4': return 21;
+      case '6': return 22;
+      case '5': return 23;
+      case 'equal': return 24;
+      case '9': return 25;
+      case '7': return 26;
+      case 'minus': return 27;
+      case '8': return 28;
+      case '0': return 29;
+      case 'o': return 31;
+      case 'u': return 32;
+      case 'i': return 34;
+      case 'p': return 35;
+      case 'l': return 37;
+      case 'j': return 38;
+      case 'k': return 40;
+      case 'm': return 46;
+      case 'n': return 45;
       default:
         if (key.length == 1) {
           final cu = key.toUpperCase().codeUnitAt(0);
@@ -896,30 +946,82 @@ class InputInjector {
 
   int _mapToWinKeyCode(String key, int? code) {
     if (code != null && code > 0) return code;
-    switch (key.toLowerCase()) {
-      case 'enter': return 0x0D; // VK_RETURN
+    final clean = _normalizeKeyName(key);
+    switch (clean) {
+      case 'enter':
+      case 'return': return 0x0D; // VK_RETURN
       case 'tab': return 0x09;   // VK_TAB
       case 'space':
-      case ' ': return 0x20;     // VK_SPACE
+      case '': return 0x20;     // VK_SPACE
       case 'backspace': return 0x08; // VK_BACK
-      case 'delete': return 0x2E; // VK_DELETE
+      case 'delete':
+      case 'del': return 0x2E; // VK_DELETE
       case 'escape':
       case 'esc': return 0x1B;    // VK_ESCAPE
       case 'control':
-      case 'ctrl': return 0x11;   // VK_CONTROL
-      case 'alt': return 0x12;    // VK_MENU
-      case 'shift': return 0x10;  // VK_SHIFT
+      case 'ctrl':
+      case 'controlleft':
+      case 'ctrlleft': return 0x11; // VK_CONTROL
+      case 'controlright':
+      case 'ctrlright': return 0x11; // VK_CONTROL
+      case 'alt':
+      case 'altleft':
+      case 'menu': return 0x12;    // VK_MENU
+      case 'altright': return 0x12; // VK_MENU
+      case 'shift':
+      case 'shiftleft': return 0x10;  // VK_SHIFT
+      case 'shiftright': return 0x10; // VK_SHIFT
       case 'meta':
-      case 'win': return 0x5B;    // VK_LWIN
-      case 'arrowleft': return 0x25; // VK_LEFT
-      case 'arrowright': return 0x27; // VK_RIGHT
-      case 'arrowup': return 0x26;   // VK_UP
-      case 'arrowdown': return 0x28; // VK_DOWN
+      case 'win':
+      case 'windows':
+      case 'metaleft':
+      case 'winleft': return 0x5B;    // VK_LWIN
+      case 'metaright':
+      case 'winright': return 0x5C;   // VK_RWIN
+      case 'arrowleft':
+      case 'left': return 0x25; // VK_LEFT
+      case 'arrowright':
+      case 'right': return 0x27; // VK_RIGHT
+      case 'arrowup':
+      case 'up': return 0x26;   // VK_UP
+      case 'arrowdown':
+      case 'down': return 0x28; // VK_DOWN
+      case 'capslock': return 0x14; // VK_CAPITAL
+      case 'home': return 0x24; // VK_HOME
+      case 'end': return 0x23; // VK_END
+      case 'pageup': return 0x21; // VK_PRIOR
+      case 'pagedown': return 0x22; // VK_NEXT
+      case 'insert': return 0x2D; // VK_INSERT
+      case 'f1': return 0x70;
+      case 'f2': return 0x71;
+      case 'f3': return 0x72;
+      case 'f4': return 0x73;
+      case 'f5': return 0x74;
+      case 'f6': return 0x75;
+      case 'f7': return 0x76;
+      case 'f8': return 0x77;
+      case 'f9': return 0x78;
+      case 'f10': return 0x79;
+      case 'f11': return 0x7A;
+      case 'f12': return 0x7B;
       default:
-        if (key.isNotEmpty) {
+        if (key.length == 1) {
           return key.toUpperCase().codeUnitAt(0);
+        }
+        if (clean.length == 1) {
+          return clean.toUpperCase().codeUnitAt(0);
         }
         return 0;
     }
+  }
+
+  @visibleForTesting
+  static int mapToWinKeyCodeForTesting(String key, [int? code]) {
+    return instance._mapToWinKeyCode(key, code);
+  }
+
+  @visibleForTesting
+  static int? mapToMacKeyCodeForTesting(String key, [int? code]) {
+    return instance._mapToMacKeyCode(key, code);
   }
 }

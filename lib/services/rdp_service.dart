@@ -917,6 +917,14 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
       return isRu
           ? 'Целевой ПК не привязан к устройству. Обратитесь к администратору'
           : 'Target PC is not linked to a device. Please contact administrator';
+    case 'session_already_active':
+      return isRu
+          ? 'Сессия уже активна на этом рабочем месте'
+          : 'Session is already active on this workstation';
+    case 'db_error':
+      return isRu
+          ? 'Внутренняя ошибка базы данных. Попробуйте снова через несколько секунд'
+          : 'Internal database error. Please try again in a few seconds';
   }
   switch (status) {
     case 409:
@@ -927,6 +935,10 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
       return isRu
           ? 'Время гранта истекло — повторите подключение'
           : 'Grant expired — please reconnect';
+    case 500:
+      return isRu
+          ? 'Сервер временно недоступен или произошла внутренняя ошибка'
+          : 'Server is temporarily unavailable or encountered an internal error';
     case 502:
       return isRu
           ? 'Рабочее место недоступно: цель не отвечает'

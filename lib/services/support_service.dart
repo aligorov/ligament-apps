@@ -248,6 +248,7 @@ class SupportService extends ChangeNotifier {
   String? _currentScreenId;
   ScreenRect? _currentScreenRect;
   Timer? _telemetryTimer;
+  Timer? _leaseWatchdogTimer;
   final TelemetryService _telemetry = TelemetryService();
 
   final List<SupportChatMessage> _chatMessages = [];
@@ -686,7 +687,16 @@ class SupportService extends ChangeNotifier {
         }
       };
 
-      // Единственный создатель DataChannel — Viewer. Целевой узел только принимает:
+      // Целевой узел является Offerer в WebRTC. Чтобы SDP Offer содержал
+      // секцию m=application (SCTP), DataChannel обязан быть создан до вызова createOffer().
+      try {
+        final dcInit = RTCDataChannelInit()..ordered = true;
+        final dc = await _peerConnection!.createDataChannel('control', dcInit);
+        _setupDataChannel(dc);
+      } catch (e) {
+        debugPrint('support_service: ошибка предварительного создания DataChannel: $e');
+      }
+
       _peerConnection!.onDataChannel = (channel) {
         _setupDataChannel(channel);
       };
@@ -827,6 +837,28 @@ class SupportService extends ChangeNotifier {
     _establishmentDeadlineTimer = null;
     _disconnectedTimer?.cancel();
     _disconnectedTimer = null;
+    _leaseWatchdogTimer?.cancel();
+    _leaseWatchdogTimer = null;
+  }
+
+  void _startLeaseWatchdog() {
+    _leaseWatchdogTimer?.cancel();
+    _leaseWatchdogTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (_state != SupportSessionState.active || _activeSessionId == null || _api == null) return;
+      try {
+        final sess = await _api!.getCurrentSupportSession();
+        if (sess == null) {
+          _failSession('Срок действия сеанса удаленного доступа истёк');
+          return;
+        }
+        final status = sess['status']?.toString();
+        if (status == 'completed' || status == 'cancelled' || status == 'rejected') {
+          _failSession('Сеанс удаленной помощи завершен сервером');
+        }
+      } catch (e) {
+        debugPrint('support_service: lease watchdog check error: $e');
+      }
+    });
   }
 
   void _onP2pConnected() {
@@ -837,6 +869,7 @@ class SupportService extends ChangeNotifier {
     if (_state != SupportSessionState.active) {
       _state = SupportSessionState.active;
       _startPeriodicTelemetry();
+      _startLeaseWatchdog();
       _setWakelock(true);
       notifyListeners();
     }
@@ -1260,7 +1293,8 @@ class SupportService extends ChangeNotifier {
     // чат и ПЕРЕКЛЮЧЕНИЕ транслируемого монитора (m-5: просмотр нескольких
     // мониторов не дает управления). Ввод, буфер обмена и файловые передачи
     // блокируются ДО какой-либо обработки команды.
-    if (_accessMode == 'view_only' &&
+    final isViewOnly = _accessMode.toLowerCase().trim() == 'view_only';
+    if (isViewOnly &&
         type != 'screen_list' &&
         type != 'chat_message' &&
         type != 'switch_screen') {
@@ -1349,11 +1383,6 @@ class SupportService extends ChangeNotifier {
       final reason = input['reason']?.toString() ?? 'передача не удалась';
       _addSystemMessage('⚠ Файл "$filename" не доставлен: $reason');
       notifyListeners();
-      return;
-    }
-
-    if (_accessMode == 'view_only') {
-      // Режим «Только просмотр» блокирует команды управления
       return;
     }
 
