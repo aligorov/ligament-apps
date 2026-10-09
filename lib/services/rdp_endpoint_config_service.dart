@@ -16,6 +16,8 @@ class RdpEndpointConfigService {
   static const String _registrySubkey = r'SOFTWARE\Ligament\2FA';
   static const String _serviceName = 'LigamentEndpointService';
 
+  static const String _registryPoliciesSubkey = r'SOFTWARE\Policies\Ligament\2FA';
+
   bool get isWindows => !kIsWeb && Platform.isWindows;
 
   /// Имя текущей машины
@@ -41,22 +43,26 @@ class RdpEndpointConfigService {
     }
   }
 
-  /// Проверка, настроен ли агент в реестре HKLM
+  /// Проверка, настроен ли агент в реестре HKLM (Policies или SOFTWARE)
   bool isAgentConfigured() {
     if (!isWindows) return false;
-    try {
-      final key = Registry.openPath(RegistryHive.localMachine, path: _registrySubkey);
-      final enabled = key.getValueAsInt('RdpAgentEnabled');
-      final agentKey = key.getValueAsString('RdpAgentKey');
-      key.close();
-      return enabled == 1 && agentKey != null && agentKey.isNotEmpty;
-    } catch (_) {
-      return false;
+    for (final path in [_registryPoliciesSubkey, _registrySubkey]) {
+      try {
+        final key = Registry.openPath(RegistryHive.localMachine, path: path);
+        final enabled = key.getValueAsInt('RdpAgentEnabled');
+        final agentKey = key.getValueAsString('RdpAgentKey');
+        key.close();
+        if (enabled == 1 && agentKey != null && agentKey.isNotEmpty) {
+          return true;
+        }
+      } catch (_) {}
     }
+    return false;
   }
 
   /// Настройка agent_key через привилегированный запуск (UAC RunAs).
   /// Записывает ServerURL, RdpAgentKey, RdpAgentEnabled=1 в HKLM\SOFTWARE\Ligament\2FA
+  /// и HKLM\SOFTWARE\Policies\Ligament\2FA (резервный ключ против затирания MSI),
   /// и запускает/перезапускает службу LigamentEndpointService.
   /// Ключ передаётся строго в процесс и очищается вызывающей стороной.
   Future<bool> configureEndpointService({
@@ -78,12 +84,14 @@ class RdpEndpointConfigService {
 
     try {
       final commands = <String>[];
-      commands.add('New-Item -Path "HKLM:\\SOFTWARE\\Ligament\\2FA" -Force | Out-Null');
-      commands.add('Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Ligament\\2FA" -Name "RdpAgentKey" -Value "$trimmedKey" -Type String');
-      commands.add('Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Ligament\\2FA" -Name "RdpAgentEnabled" -Value 1 -Type DWord');
-      if (serverUrl != null && serverUrl.isNotEmpty) {
-        final sanitizedUrl = serverUrl.replaceAll('"', '').replaceAll("'", '').replaceAll(';', '');
-        commands.add('Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Ligament\\2FA" -Name "ServerURL" -Value "$sanitizedUrl" -Type String');
+      for (final root in [r'HKLM:\SOFTWARE\Ligament\2FA', r'HKLM:\SOFTWARE\Policies\Ligament\2FA']) {
+        commands.add('New-Item -Path "$root" -Force | Out-Null');
+        commands.add('Set-ItemProperty -Path "$root" -Name "RdpAgentKey" -Value "$trimmedKey" -Type String');
+        commands.add('Set-ItemProperty -Path "$root" -Name "RdpAgentEnabled" -Value 1 -Type DWord');
+        if (serverUrl != null && serverUrl.isNotEmpty) {
+          final sanitizedUrl = serverUrl.replaceAll('"', '').replaceAll("'", '').replaceAll(';', '');
+          commands.add('Set-ItemProperty -Path "$root" -Name "ServerURL" -Value "$sanitizedUrl" -Type String');
+        }
       }
       // Запуск/перезапуск службы
       commands.add('if (Get-Service "$_serviceName" -ErrorAction SilentlyContinue) { Restart-Service "$_serviceName" -ErrorAction SilentlyContinue }');

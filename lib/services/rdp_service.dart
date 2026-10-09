@@ -60,14 +60,15 @@ class RdpConnectorService extends ChangeNotifier {
   /// mfa_required (или 401 invalid_code при повторе) запрашивает подтверждение через
   /// mfaPrompt (или mfaCodePrompt) и повторяет запрос. Пустая карта = отмена.
   static Future<Map<String, dynamic>> _grantWithInlineMfa(
-    Future<Map<String, dynamic>> Function({String? code, String? attemptId}) grant,
+    Future<Map<String, dynamic>> Function({String? code, String? attemptId, bool? passkey}) grant,
     Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
   ) async {
     String? code;
     String? attemptId;
+    bool? passkey;
     while (true) {
       try {
-        return await grant(code: code, attemptId: attemptId);
+        return await grant(code: code, attemptId: attemptId, passkey: passkey);
       } on ApiException catch (e) {
         if (mfaPrompt == null) rethrow;
         if (e.statusCode != 428 && e.code != 'invalid_code' && e.code != 'mfa_required') rethrow;
@@ -75,7 +76,8 @@ class RdpConnectorService extends ChangeNotifier {
         if (res == null) return const {};
         code = res.code;
         attemptId = res.attemptId;
-        if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty)) return const {};
+        passkey = res.passkey ? true : null;
+        if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty) && passkey != true) return const {};
       }
     }
   }
@@ -131,11 +133,12 @@ class RdpConnectorService extends ChangeNotifier {
     final localIps = await TelemetryService.getLocalIPs();
     try {
       grant = await _grantWithInlineMfa(
-        ({code, attemptId}) => api.rdpGrant(
+        ({code, attemptId, passkey}) => api.rdpGrant(
           targetId: targetId,
           mode: 'rdp',
           code: code,
           attemptId: attemptId,
+          passkey: passkey,
           actionId: actionId,
           sourceInstanceId: sourceInstanceId,
           clientLocalIps: localIps,
@@ -193,37 +196,70 @@ class RdpConnectorService extends ChangeNotifier {
       }
     });
 
-    // 3. WS-труба до ядра (claim на сервере: grant→active, session создана).
-    //    Device-токен — заголовком Authorization. Грант-токен — подпротоколом
-    //    Sec-WebSocket-Protocol: grant, <hex> (формат согласован с сервером;
-    //    поддержан и браузерным WebSocket API, и dart IOWebSocketChannel) —
-    //    в query секрет не кладём: URL пишут в логи прокси/балансировщика.
-    _setPhase(RdpTunnelPhase.tunnel);
-    final wsUrl = rdpWsConnectUrl(baseUrl, grantId);
-    IOWebSocketChannel ws;
-    try {
-      ws = IOWebSocketChannel.connect(
-        wsUrl,
-        protocols: rdpWsSubprotocols(token),
-        headers: {
-          if (api.token != null && api.token!.isNotEmpty)
-            'Authorization': 'Bearer ${api.token}',
-        },
-        connectTimeout: const Duration(seconds: 10),
-        pingInterval: const Duration(seconds: 20),
-      );
-      await ws.ready;
-    } catch (e) {
-      await _teardownListener(session);
-      _fail(rdpConnectErrorText(e, isRu: isRu));
-      return;
+    // Проверяем прямое TCP-подключение к целевому хосту (LAN/VPN) для direct-маршрута:
+    // если клиент находится в одной локальной сети с терминальным сервером или ПК,
+    // соединяемся напрямую и не гоняем трафик через облачный WS.
+    Socket? directSocket;
+    final route = grant['route']?.toString() ?? '';
+    if (route == 'direct' && targetHost != null && targetHost.isNotEmpty) {
+      String dHost = targetHost;
+      int dPort = 3389;
+      if (dHost.contains(':')) {
+        final parts = dHost.split(':');
+        dHost = parts[0];
+        dPort = int.tryParse(parts[1]) ?? 3389;
+      }
+      try {
+        directSocket = await Socket.connect(dHost, dPort, timeout: const Duration(seconds: 3));
+      } catch (_) {
+        directSocket = null;
+      }
     }
-    if (_connectGeneration != generation || _session != session) {
-      // close() успел отработать между await'ами — тихо выходим.
-      await _quietTeardown(session, ws);
-      return;
+
+    IOWebSocketChannel? ws;
+    if (directSocket != null) {
+      // Прямой маршрут в локальной сети успешен: клеймим сессию в Core
+      try {
+        await api.rdpDirectClaim(grantId: grantId, token: token);
+      } catch (e) {
+        try { directSocket.destroy(); } catch (_) {}
+        await _teardownListener(session);
+        _fail(rdpConnectErrorText(e, isRu: isRu));
+        return;
+      }
+      session.remote = directSocket;
+    } else {
+      // 3. WS-труба до ядра (claim на сервере: grant→active, session создана).
+      //    Device-токен — заголовком Authorization. Грант-токен — подпротоколом
+      //    Sec-WebSocket-Protocol: grant, <hex> (формат согласован с сервером;
+      //    поддержан и браузерным WebSocket API, и dart IOWebSocketChannel) —
+      //    в query секрет не кладём: URL пишут в логи прокси/балансировщика.
+      _setPhase(RdpTunnelPhase.tunnel);
+      final wsUrl = rdpWsConnectUrl(baseUrl, grantId);
+      try {
+        ws = IOWebSocketChannel.connect(
+          wsUrl,
+          protocols: rdpWsSubprotocols(token),
+          headers: {
+            if (api.token != null && api.token!.isNotEmpty)
+              'Authorization': 'Bearer ${api.token}',
+          },
+          connectTimeout: const Duration(seconds: 10),
+          pingInterval: const Duration(seconds: 20),
+        );
+        await ws.ready;
+      } catch (e) {
+        await _teardownListener(session);
+        _fail(rdpConnectErrorText(e, isRu: isRu));
+        return;
+      }
+      if (_connectGeneration != generation || _session != session) {
+        // close() успел отработать между await'ами — тихо выходим.
+        await _quietTeardown(session, ws);
+        return;
+      }
+      session.ws = ws;
     }
-    session.ws = ws;
 
     // 4. mstsc (только Windows: на остальных платформах этапа 2 — «Экран»).
     _setPhase(RdpTunnelPhase.launching);
@@ -299,21 +335,38 @@ class RdpConnectorService extends ChangeNotifier {
     session.socket = socket;
     session.grantTtl?.cancel();
 
-    // 6. Мост: TCP ↔ WS бинарными кадрами.
-    unawaited(
-      ws.sink.addStream(socket.cast<Uint8List>()).then(
-            (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
-            onError: (Object e) =>
-                _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
-          ),
-    );
-    unawaited(
-      socket.addStream(ws.stream.cast<List<int>>()).then(
-            (_) => _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu),
-            onError: (Object e) =>
-                _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu),
-          ),
-    );
+    // 6. Мост: TCP ↔ Remote Socket (direct) или TCP ↔ WS (cloud).
+    if (directSocket != null) {
+      unawaited(
+        directSocket.addStream(socket).then(
+              (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+              onError: (Object e) =>
+                  _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+            ),
+      );
+      unawaited(
+        socket.addStream(directSocket).then(
+              (_) => _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
+              onError: (Object e) =>
+                  _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
+            ),
+      );
+    } else if (ws != null) {
+      unawaited(
+        ws.sink.addStream(socket.cast<Uint8List>()).then(
+              (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+              onError: (Object e) =>
+                  _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+            ),
+      );
+      unawaited(
+        socket.addStream(ws.stream.cast<List<int>>()).then(
+              (_) => _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu),
+              onError: (Object e) =>
+                  _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu),
+            ),
+      );
+    }
     _setPhase(RdpTunnelPhase.active, detail: '$host:$port');
   }
 
@@ -641,6 +694,9 @@ class RdpConnectorService extends ChangeNotifier {
   Future<void> _quietTeardown(_RdpTunnelSession s, IOWebSocketChannel? ws) async {
     s.grantTtl?.cancel();
     _cleanupTempRdpFile(s);
+    try {
+      s.remote?.destroy();
+    } catch (_) {}
     try {
       ws?.sink.close();
     } catch (_) {}

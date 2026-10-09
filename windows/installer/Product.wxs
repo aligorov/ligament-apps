@@ -40,24 +40,31 @@
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <!-- SERVERURL: адрес сервера 2FA при установке из командной строки:
          msiexec /i Ligament-2FA-Windows-x64.msi SERVERURL=https://2fa.example.corp
-         Свойство не задано — в реестр уйдёт пустая строка, CP её игнорирует
-         и использует свой дефолт; после установки адрес можно задать/изменить
-         через HKLM\SOFTWARE\Policies\Ligament\2FA\ServerURL или
-         ligament-cp-settings.reg из RDP-ZIP. -->
-    <Property Id="SERVERURL" Secure="yes" />
+         Свойство не задано — считывается существующее значение из реестра HKLM,
+         сохраняя конфигурацию при обновлении/переустановке без параметров. -->
+    <Property Id="SERVERURL" Secure="yes">
+      <RegistrySearch Id="ExistingServerUrl"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="ServerURL"
+                      Type="raw" />
+    </Property>
     <!-- RDPAGENTKEY: ключ endpoint-службы RDP Access Gateway (формат
          «<endpoint_uuid>:<agent_key_hex>», выдаётся админом при создании
          agent-endpoint в 2fa). msiexec /i Ligament-2FA-Windows-x64.msi
          RDPAGENTKEY=<uuid>:<hex> — значение уходит в
          HKLM\SOFTWARE\Ligament\2FA\RdpAgentKey (EndpointServiceComponent),
-         службу читает его при старте. Не задан — пустая строка, служба
-         стартует пассивной (RdpAgentEnabled по умолчанию 0 в коде службы),
-         ключ можно задать позже политикой
-         HKLM\SOFTWARE\Policies\Ligament\2FA\RdpAgentKey.
+         службу читает его при старте. Не задан на CLI — считывается
+         существующий ключ из реестра, предотвращая затирание при обновлении.
          Hidden=yes: ключ — секрет, msiexec /l*v и UI установки не должны
-         раскрывать его значение (Secure оставлен — свойство можно задать
-         из командной строки молча). -->
-    <Property Id="RDPAGENTKEY" Secure="yes" Hidden="yes" />
+         раскрывать его значение. -->
+    <Property Id="RDPAGENTKEY" Secure="yes" Hidden="yes">
+      <RegistrySearch Id="ExistingRdpAgentKey"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="RdpAgentKey"
+                      Type="raw" />
+    </Property>
   </Product>
 
   <Fragment>

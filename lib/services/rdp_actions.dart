@@ -85,6 +85,7 @@ class RdpActions {
       {
         String? code;
         String? attemptId;
+        bool? passkey;
         while (true) {
           try {
             grant = await api.rdpGrant(
@@ -92,6 +93,7 @@ class RdpActions {
               mode: 'screen',
               code: code,
               attemptId: attemptId,
+              passkey: passkey,
               actionId: actionId,
               sourceInstanceId: auth.instanceId,
               clientLocalIps: localIps,
@@ -110,7 +112,8 @@ class RdpActions {
             if (res == null) break;
             code = res.code;
             attemptId = res.attemptId;
-            if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty)) break;
+            passkey = res.passkey ? true : null;
+            if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty) && passkey != true) break;
 
             if (!context.mounted) return;
             unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));

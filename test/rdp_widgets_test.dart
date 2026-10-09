@@ -7,6 +7,7 @@ import 'package:ligament_authenticator/services/auth_state.dart';
 import 'package:ligament_authenticator/services/rdp_service.dart';
 import 'package:ligament_authenticator/screens/rdp_connect_dialog.dart';
 import 'package:ligament_authenticator/widgets/rdp_target_tile.dart';
+import 'package:ligament_authenticator/widgets/rdp_mfa_dialog.dart';
 
 /// Мобильная адаптация (390px — базовый iPhone/Android): плитка RDP-цели и
 /// диалог подключения обязаны вмещаться без RenderFlex-overflow при
@@ -218,5 +219,84 @@ void main() {
       expect(find.text('Получение доступа…'), findsOneWidget);
       expect(find.text('Отмена'), findsOneWidget);
     });
+
+    testWidgets('RdpMfaDialog: отображает кнопку Passkey и подтверждает по клику',
+        (tester) async {
+      final fakeAuth = _FakeLocalAuth();
+      RdpMfaResult? result;
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => ElevatedButton(
+              onPressed: () async {
+                result = await showRdpMfaDialog(
+                  ctx,
+                  isRu: true,
+                  localAuth: fakeAuth,
+                );
+              },
+              child: const Text('Открыть'),
+            ),
+          ),
+        ),
+      ));
+
+      await tester.tap(find.text('Открыть'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('🔑 Подтвердить через Passkey'), findsOneWidget);
+      expect(find.text('Подтвердить кодом'), findsOneWidget);
+
+      await tester.tap(find.text('🔑 Подтвердить через Passkey'));
+      await tester.pumpAndSettle();
+
+      expect(fakeAuth.authenticateCalled, isTrue);
+      expect(result?.passkey, isTrue);
+      expect(result?.code, isNull);
+    });
+
+    testWidgets('RdpMfaDialog: позволяет ввести 6-значный TOTP код',
+        (tester) async {
+      final fakeAuth = _FakeLocalAuth();
+      RdpMfaResult? result;
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => ElevatedButton(
+              onPressed: () async {
+                result = await showRdpMfaDialog(
+                  ctx,
+                  isRu: true,
+                  localAuth: fakeAuth,
+                );
+              },
+              child: const Text('Открыть'),
+            ),
+          ),
+        ),
+      ));
+
+      await tester.tap(find.text('Открыть'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField), '654321');
+      await tester.tap(find.text('Подтвердить кодом'));
+      await tester.pumpAndSettle();
+
+      expect(fakeAuth.authenticateCalled, isFalse);
+      expect(result?.passkey, isFalse);
+      expect(result?.code, equals('654321'));
+    });
   });
+}
+
+class _FakeLocalAuth {
+  bool authenticateCalled = false;
+  Future<bool> isDeviceSupported() async => true;
+  Future<bool> authenticate({required String localizedReason, dynamic options}) async {
+    authenticateCalled = true;
+    return true;
+  }
 }

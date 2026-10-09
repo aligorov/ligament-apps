@@ -354,6 +354,7 @@ class _FakeApi extends ApiClient {
     String? actionId,
     String? sourceInstanceId,
     String? attemptId,
+    bool? passkey,
     List<String>? clientLocalIps,
   }) =>
       _behavior(targetId);

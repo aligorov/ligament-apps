@@ -682,6 +682,7 @@ class ApiClient {
     String? actionId,
     String? sourceInstanceId,
     String? attemptId,
+    bool? passkey,
     List<String>? clientLocalIps,
   }) async {
     final payload = <String, dynamic>{
@@ -691,6 +692,7 @@ class ApiClient {
       if (actionId != null && actionId.isNotEmpty) 'action_id': actionId,
       if (sourceInstanceId != null && sourceInstanceId.isNotEmpty) 'source_instance_id': sourceInstanceId,
       if (attemptId != null && attemptId.isNotEmpty) 'attempt_id': attemptId,
+      if (passkey == true) 'passkey': true,
       if (clientLocalIps != null && clientLocalIps.isNotEmpty) 'client_local_ips': clientLocalIps,
     };
     final res = await _post(
@@ -702,6 +704,30 @@ class ApiClient {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
     String errCode = 'grant_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
+
+  /// Активация прямого локального RDP-сеанса (LAN/VPN) без WSS-туннеля ядра.
+  Future<Map<String, dynamic>> rdpDirectClaim({
+    required String grantId,
+    required String token,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/direct-claim'),
+      headers: _headers(),
+      body: jsonEncode({
+        'grant_id': grantId,
+        'token': token,
+      }),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    String errCode = 'direct_claim_failed';
     try {
       final errObj = jsonDecode(utf8.decode(res.bodyBytes));
       errCode = errObj['error']?.toString() ?? errCode;
