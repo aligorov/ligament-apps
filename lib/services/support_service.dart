@@ -204,21 +204,35 @@ class SupportService extends ChangeNotifier {
   static const int _maxConcurrentDownloads = 2;
   static const Duration _downloadStallTimeout = Duration(seconds: 60);
 
-  /// Режим собственной инфраструктуры: публичные сторонние STUN/TURN-серверы
-  /// (Google, Cloudflare и др.) полностью исключены. Используются строго серверы
-  /// из корпоративного ядра (GET /api/v1/app/ice-servers).
-  static const List<Map<String, dynamic>> emergencyIceServers = [];
+  /// STUN-серверы по умолчанию (fallback): используются, если корпоративный
+  /// сервер не сконфигурировал собственные TURN/STUN-серверы.
+  static const List<Map<String, dynamic>> emergencyIceServers = [
+    {
+      'urls': [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun2.l.google.com:19302',
+      ],
+    },
+    {
+      'urls': [
+        'stun:stun.cloudflare.com:3478',
+      ],
+    },
+  ];
 
   /// ICE-серверы из конфига сервера; null — конфиг еще не загружен.
   List<Map<String, dynamic>>? _iceServersFromConfig;
 
   /// Актуальный список ICE-серверов для RTCPeerConnection.
   List<Map<String, dynamic>> get effectiveIceServers =>
-      _iceServersFromConfig ?? emergencyIceServers;
+      (_iceServersFromConfig != null && _iceServersFromConfig!.isNotEmpty)
+          ? _iceServersFromConfig!
+          : emergencyIceServers;
 
   /// Устанавливает ICE-серверы из корпоративного конфига/ядра.
   void setIceServers(List<Map<String, dynamic>>? servers) {
-    if (servers != null) {
+    if (servers != null && servers.isNotEmpty) {
       _iceServersFromConfig = servers;
     }
   }
@@ -623,14 +637,28 @@ class SupportService extends ChangeNotifier {
     _accessMode = accessMode;
 
     try {
-      // ICE-серверы берутся из конфига сервера (B-1); Google/Cloudflare STUN —
-      // только emergency-фолбэк при недоступности конфига.
-      if (_iceServersFromConfig == null) {
+      // ICE-серверы берутся из /api/v1/app/ice-servers или конфига сервера;
+      // Google/Cloudflare STUN — emergency-фолбэк.
+      if (_iceServersFromConfig == null || _iceServersFromConfig!.isEmpty) {
         try {
-          final cfg = await api.getConfig();
-          setIceServers(parseIceServersConfig(cfg));
+          final iceRaw = await api.getIceServers();
+          final parsed = parseIceServersConfig({'ice_servers': iceRaw});
+          if (parsed.isNotEmpty) {
+            setIceServers(parsed);
+          }
         } catch (e) {
-          debugPrint('support_service: конфиг недоступен, emergency STUN: $e');
+          debugPrint('support_service: ошибка получения ice-servers: $e');
+        }
+        if (_iceServersFromConfig == null || _iceServersFromConfig!.isEmpty) {
+          try {
+            final cfg = await api.getConfig();
+            final parsed = parseIceServersConfig(cfg);
+            if (parsed.isNotEmpty) {
+              setIceServers(parsed);
+            }
+          } catch (e) {
+            debugPrint('support_service: конфиг недоступен, emergency STUN: $e');
+          }
         }
       }
       final rtcConfig = <String, dynamic>{
@@ -913,8 +941,16 @@ class SupportService extends ChangeNotifier {
     _attemptIceRestart();
   }
 
-  void _attemptIceRestart() {
+  void _attemptIceRestart({bool force = false, bool iceRestart = true}) {
     if (_isStopping || _peerConnection == null || _activeSessionId == null) return;
+    if (force) {
+      _iceRestartAttempts = 0;
+      _lastIceRestartAt = DateTime.now();
+      debugPrint('support_service: форсированный re-offer по запросу оператора');
+      _sendOffer(iceRestart: iceRestart);
+      _armEstablishmentTimeouts();
+      return;
+    }
     if (_iceRestartAttempts >= 3) {
       _failSession('Не удалось восстановить P2P-соединение после 3 попыток');
       return;
@@ -933,7 +969,7 @@ class SupportService extends ChangeNotifier {
     _iceRestartAttempts++;
     _lastIceRestartAt = now;
     debugPrint('support_service: ICE-рестарт, попытка $_iceRestartAttempts/3');
-    _sendOffer(iceRestart: true);
+    _sendOffer(iceRestart: iceRestart);
   }
 
   /// Терминальный отказ сессии: остановка трансляции + ошибка в UI/чат.
@@ -979,6 +1015,13 @@ class SupportService extends ChangeNotifier {
       }
 
       if (_peerConnection == null) return;
+
+      if (payload['type'] == 'request_offer' || payload['type'] == 'renegotiate') {
+        debugPrint('support_service: получен запрос офера (request_offer) от оператора');
+        final iceRestart = payload['iceRestart'] == true;
+        _attemptIceRestart(force: true, iceRestart: iceRestart);
+        return;
+      }
 
       if (payload.containsKey('sdp')) {
         final sdpMap = payload['sdp'] as Map<String, dynamic>;

@@ -154,9 +154,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _startLeaseRenewal() {
     _leaseTimer?.cancel();
-    _leaseTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+    final auth = context.read<AuthState>();
+    // Немедленное первое продление при открытии консоли (защита от истечения initial lease)
+    auth.api?.renewSupportLease(widget.sessionId).catchError((_) => <String, dynamic>{});
+    _leaseTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!mounted || _isCleanedUp) return;
-      final auth = context.read<AuthState>();
       try {
         await auth.api?.renewSupportLease(widget.sessionId);
       } on ApiException catch (e) {
@@ -319,6 +321,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       _wsChannel!.ready.then((_) {
         _wsBackoff.reset();
+        _sendWsSignal({'type': 'request_offer'});
       }).catchError((Object e) {
         debugPrint('support_operator: WS handshake не удался: $e');
         final str = e.toString();
@@ -334,6 +337,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               ),
             );
           }
+        } else {
+          _scheduleWsReconnect();
         }
       });
 
@@ -479,18 +484,38 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
     };
 
-    _peerConnection!.onTrack = (RTCTrackEvent event) {
+    _peerConnection!.onIceConnectionState = (state) {
+      debugPrint('support_operator: ice connection state: $state');
+      if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+        _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
+      }
+    };
+
+    _peerConnection!.onTrack = (RTCTrackEvent event) async {
       debugPrint('support_operator: remote track received: ${event.track.kind}');
-      if (event.streams.isNotEmpty && mounted) {
+      if (mounted) {
         _ownerWaitTimer?.cancel();
         _ownerWaitTimer = null;
-        setState(() {
-          _remoteRenderer.srcObject = event.streams[0];
-          _isConnected = true;
-          _currentNumberMatch = null;
-          _statusKey = 'stream_active';
-          _statusArg = null;
-        });
+        MediaStream? stream;
+        if (event.streams.isNotEmpty) {
+          stream = event.streams[0];
+        } else {
+          try {
+            stream = await createLocalMediaStream('remote_stream');
+            await stream.addTrack(event.track);
+          } catch (e) {
+            debugPrint('support_operator: fallback media stream error: $e');
+          }
+        }
+        if (mounted && stream != null) {
+          setState(() {
+            _remoteRenderer.srcObject = stream;
+            _isConnected = true;
+            _currentNumberMatch = null;
+            _statusKey = 'stream_active';
+            _statusArg = null;
+          });
+        }
       }
     };
 

@@ -984,4 +984,24 @@ class ApiClient {
     } catch (_) {}
     throw ApiException(res.statusCode, errCode);
   }
+
+  /// Получение STUN/TURN серверов для WebRTC удаленной помощи:
+  /// GET /api/v1/app/ice-servers
+  Future<List<Map<String, dynamic>>> getIceServers() async {
+    try {
+      final res = await _get(
+        _cleanUrl('/api/v1/app/ice-servers'),
+        headers: _headers(),
+      );
+      if (res.statusCode == 200) {
+        final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        final raw = data['ice_servers'];
+        if (raw is List) {
+          return raw.whereType<Map<String, dynamic>>().toList();
+        }
+      }
+    } catch (_) {}
+    return const [];
+  }
 }
+

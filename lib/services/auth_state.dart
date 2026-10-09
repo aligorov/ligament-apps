@@ -1159,10 +1159,20 @@ class AuthState extends ChangeNotifier {
         notifyListeners();
       }
       // ICE-серверы (STUN/TURN) для WebRTC удаленной помощи (B-1)
-      final ice = parseIceServersConfig(cfg);
-      if (ice.isNotEmpty) {
-        iceServers = ice;
-        support.setIceServers(ice);
+      final iceFromCfg = parseIceServersConfig(cfg);
+      if (iceFromCfg.isNotEmpty) {
+        iceServers = iceFromCfg;
+        support.setIceServers(iceFromCfg);
+      }
+      try {
+        final iceRaw = await api!.getIceServers();
+        final ice = parseIceServersConfig({'ice_servers': iceRaw});
+        if (ice.isNotEmpty) {
+          iceServers = ice;
+          support.setIceServers(ice);
+        }
+      } catch (e) {
+        debugPrint('auth_state: ошибка получения ice-servers: $e');
       }
     } catch (e) {
       debugPrint('auth_state: ошибка обновления списка relay: $e');
