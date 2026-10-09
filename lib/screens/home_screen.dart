@@ -54,9 +54,9 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     // План §2.2: online-статус RDP-целей тухнет без обновления (сервер
     // переводит endpoint в offline только по факту disconnect/timeout) —
-    // дергаем список раз в 60 с, пока главная вкладка видима и цели есть.
-    _rdpTargetsTimer = Timer.periodic(const Duration(seconds: 60), (_) {
-      if (!mounted || _currentIndex != 0) return;
+    // дергаем список раз в 30 с, пока видимы главная вкладка (0) или вкладка сервисов (2).
+    _rdpTargetsTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted || (_currentIndex != 0 && _currentIndex != 2)) return;
       final auth = context.read<AuthState>();
       if (auth.rdpTargets.isNotEmpty) {
         unawaited(auth.loadRdpTargets());
@@ -459,7 +459,15 @@ class _HomeScreenState extends State<HomeScreen> {
       body: pages[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (idx) => setState(() => _currentIndex = idx),
+        onTap: (idx) {
+          setState(() => _currentIndex = idx);
+          if (idx == 2) {
+            final auth = context.read<AuthState>();
+            if (auth.rdpFeatureAvailable) {
+              unawaited(auth.loadRdpTargets());
+            }
+          }
+        },
         backgroundColor: const Color(0xFF1E293B),
         selectedItemColor: const Color(0xFF38BDF8),
         unselectedItemColor: const Color(0xFF64748B),

@@ -64,7 +64,8 @@ void main() {
   });
 
   group('RdpTargetTile @ 390px', () {
-    testWidgets('не-Windows: подсказка «RDP — только Windows» + «Экран», без overflow', (tester) async {
+    testWidgets('не-десктоп: подсказка «RDP — Windows / macOS» + «Экран», без overflow', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
@@ -77,10 +78,30 @@ void main() {
       await tester.pump();
 
       expect(tester.takeException(), isNull);
-      expect(find.text('RDP — только Windows'), findsOneWidget);
+      expect(find.text('RDP — Windows / macOS'), findsOneWidget);
       expect(find.text('Экран'), findsOneWidget);
       // Длинный маршрут обрезается многоточием, а не ломает строку чипов.
       expect(find.textContaining('agent-relay-moscow'), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('macOS + online: «Подключиться» + «Экран» в ряд, без overflow', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(harness(RdpTargetTile(
+        target: heavyTarget,
+        isRu: true,
+      )));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Подключиться'), findsOneWidget);
+      expect(find.text('Экран'), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
     });
 
     testWidgets('Windows + online: «Подключиться» + «Экран» в ряд, без overflow', (tester) async {

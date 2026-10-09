@@ -20,6 +20,16 @@ class _AppsScreenState extends State<AppsScreen> {
   String _selectedFilter = 'all'; // all | workstations | apps
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _refresh(context.read<AuthState>());
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();

@@ -32,7 +32,10 @@ class RdpTargetTile extends StatelessWidget {
   final bool connecting;
   final EdgeInsetsGeometry? margin;
 
-  static bool get canLaunchRdp => !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+  static bool get canLaunchRdp =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS);
 
   @override
   Widget build(BuildContext context) {
@@ -252,7 +255,7 @@ class RdpTargetTile extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 10),
         alignment: Alignment.center,
         child: Text(
-          isRu ? 'RDP — только Windows' : 'RDP — Windows only',
+          isRu ? 'RDP — Windows / macOS' : 'RDP — Windows / macOS',
           maxLines: 1,
           style: const TextStyle(color: Color(0xFF64748B), fontSize: 10),
           overflow: TextOverflow.ellipsis,

@@ -83,11 +83,18 @@ class RdpConnectorService extends ChangeNotifier {
   @visibleForTesting
   static bool? windowsOverride;
 
-  bool get _canRunMstsc => windowsOverride ?? (!kIsWeb && Platform.isWindows);
+  @visibleForTesting
+  static Future<Process?> Function({
+    required String host,
+    required int port,
+    File? tempRdpFile,
+  })? startClientOverride;
+
+  bool get _canRunMstsc =>
+      windowsOverride ?? (!kIsWeb && (Platform.isWindows || Platform.isMacOS));
 
   /// Запуск туннеля до цели. Владелец — AuthState (одиночка на приложение).
-  /// Только Windows (mstsc): на остальных платформах этапа 2 — режим
-  /// «Экран» (§5), RDP-кнопка на плитке не рисуется; guard ниже — защита.
+  /// Windows (mstsc) и macOS (Windows App / Remote Desktop).
   Future<void> connect({
     required ApiClient api,
     required String baseUrl,
@@ -102,8 +109,8 @@ class RdpConnectorService extends ChangeNotifier {
     if (isBusy || isActive) return;
     if (!_canRunMstsc) {
       _fail(isRu
-          ? 'RDP-подключение доступно только на Windows'
-          : 'RDP connection is available on Windows only');
+          ? 'RDP-подключение доступно только на Windows и macOS'
+          : 'RDP connection is available on Windows and macOS only');
       return;
     }
     final generation = ++_connectGeneration;
@@ -229,30 +236,37 @@ class RdpConnectorService extends ChangeNotifier {
     session.tempRdpFile = tempRdp;
     Process? mstsc;
     try {
-      mstsc = await _startMstsc(host: host, port: port, tempRdpFile: tempRdp);
+      mstsc = await _startRdpClient(host: host, port: port, tempRdpFile: tempRdp);
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardown(session, ws);
       return;
     }
 
-    // 4b. mstsc не найден — туннель не нужен.
+    // 4b. RDP-клиент не найден — туннель не нужен.
     if (mstsc == null) {
       _fail(isRu
-          ? 'Не удалось запустить удалённый рабочий стол (mstsc.exe)'
-          : 'Failed to launch Remote Desktop (mstsc.exe)');
+          ? (Platform.isMacOS
+              ? 'Не удалось запустить RDP-клиент (Windows App)'
+              : 'Не удалось запустить удалённый рабочий стол (mstsc.exe)')
+          : (Platform.isMacOS
+              ? 'Failed to launch RDP client (Windows App)'
+              : 'Failed to launch Remote Desktop (mstsc.exe)'));
       await _quietTeardown(session, ws);
       return;
     }
     session.mstsc = mstsc;
     // Пользователь закрыл окно mstsc → сессия завершена (§3.5).
-    unawaited(mstsc.exitCode.then(
-      (_) {
-        if (_session == session) {
-          _finish(session, reason: _TunnelEndReason.mstscExited, isRu: isRu);
-        }
-      },
-    ));
+    // На macOS команда `open` завершается сразу, туннель держится сокетом RDP-сеанса.
+    if (!Platform.isMacOS) {
+      unawaited(mstsc.exitCode.then(
+        (_) {
+          if (_session == session) {
+            _finish(session, reason: _TunnelEndReason.mstscExited, isRu: isRu);
+          }
+        },
+      ));
+    }
 
     // 5. Ожидание клиента (mstsc): слушатель принимает РОВНО одно loopback-соединение.
     _setPhase(RdpTunnelPhase.waitingClient, detail: '$host:$port');
@@ -331,8 +345,8 @@ class RdpConnectorService extends ChangeNotifier {
     if (isBusy || isActive) return;
     if (!_canRunMstsc) {
       _fail(isRu
-          ? 'RDP-подключение доступно только на Windows'
-          : 'RDP connection is available on Windows only');
+          ? 'RDP-подключение доступно только на Windows и macOS'
+          : 'RDP connection is available on Windows and macOS only');
       return;
     }
     if (grantId.isEmpty || token.isEmpty) {
@@ -434,11 +448,17 @@ class RdpConnectorService extends ChangeNotifier {
     final port = listener.port;
     final host = listener.address.address;
 
-    // 5. mstsc на локальный слушатель — мост мостит его до bridge-порта.
+    // 5. RDP-клиент на локальный слушатель — мост мостит его до bridge-порта.
     _setPhase(RdpTunnelPhase.launching);
+    final tempRdp = _createTempRdpFile(
+      grantId: grantId,
+      host: host,
+      port: port,
+    );
+    session.tempRdpFile = tempRdp;
     Process? mstsc;
     try {
-      mstsc = await _startMstsc(host: host, port: port);
+      mstsc = await _startRdpClient(host: host, port: port, tempRdpFile: tempRdp);
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardownBridge(session);
@@ -446,20 +466,27 @@ class RdpConnectorService extends ChangeNotifier {
     }
     if (mstsc == null) {
       _fail(isRu
-          ? 'Не удалось запустить удаленный рабочий стол (mstsc.exe)'
-          : 'Failed to launch Remote Desktop (mstsc.exe)');
+          ? (Platform.isMacOS
+              ? 'Не удалось запустить RDP-клиент (Windows App)'
+              : 'Не удалось запустить удаленный рабочий стол (mstsc.exe)')
+          : (Platform.isMacOS
+              ? 'Failed to launch RDP client (Windows App)'
+              : 'Failed to launch Remote Desktop (mstsc.exe)'));
       await _quietTeardownBridge(session);
       return;
     }
     session.mstsc = mstsc;
     // Пользователь закрыл окно mstsc → сессия завершена (как в connect()).
-    unawaited(mstsc.exitCode.then(
-      (_) {
-        if (_session == session) {
-          _finish(session, reason: _TunnelEndReason.mstscExited, isRu: isRu);
-        }
-      },
-    ));
+    // На macOS команда `open` завершается сразу, туннель держится сокетом RDP-сеанса.
+    if (!Platform.isMacOS) {
+      unawaited(mstsc.exitCode.then(
+        (_) {
+          if (_session == session) {
+            _finish(session, reason: _TunnelEndReason.mstscExited, isRu: isRu);
+          }
+        },
+      ));
+    }
 
     // 6. Ожидание клиента (mstsc): слушатель принимает РОВНО одно соединение.
     _setPhase(RdpTunnelPhase.waitingClient, detail: '$host:$port');
@@ -711,11 +738,14 @@ const Duration rdpBridgeHandshakeWindow = Duration(seconds: 2);
   return (host, port);
 }
 
-/// Адрес локального слушателя: 127.0.0.2 — весь 127/8 это loopback, адрес
-/// не конфликтует с занятыми портами других localhost-сервисов клиента
-/// (local-detect на 127.0.0.1:8757) и лишает Windows «оптимизаций»
-/// loopback-RDP на 127.0.0.1 (план §3.6).
-InternetAddress rdpLoopbackBindAddress() => InternetAddress('127.0.0.2');
+/// Адрес локального слушателя: 127.0.0.1 на macOS, 127.0.0.2 на Windows (весь 127/8 — loopback,
+/// не конфликтует с занятыми портами других localhost-сервисов клиента).
+InternetAddress rdpLoopbackBindAddress() {
+  if (!kIsWeb && Platform.isMacOS) {
+    return InternetAddress.loopbackIPv4;
+  }
+  return InternetAddress('127.0.0.2');
+}
 
 Future<ServerSocket> _bindLoopback() async {
   try {
@@ -862,25 +892,34 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
 }
 
 /// Создание временного .rdp-файла с привязкой identity цели (SPN/сертификат)
-/// и маршрутизацией через локальный bridge (127.0.0.2:port).
+/// и маршрутизацией через локальный bridge (127.0.0.1:port на macOS, 127.0.0.2:port на Windows).
 File? _createTempRdpFile({
   required String grantId,
   required String host,
   required int port,
   String? targetHost,
 }) {
-  if (targetHost == null || targetHost.trim().isEmpty) return null;
+  if (!Platform.isMacOS && (targetHost == null || targetHost.trim().isEmpty)) return null;
   try {
     final safeGrant = grantId.replaceAll(RegExp(r'[^a-zA-Z0-9\-]'), '');
     final tempDir = Directory.systemTemp;
     final file = File('${tempDir.path}${Platform.pathSeparator}ligament_rdp_$safeGrant.rdp');
     final buffer = StringBuffer();
-    buffer.writeln('full address:s:$targetHost');
-    buffer.writeln('alternate full address:s:$host:$port');
-    buffer.writeln('server port:i:$port');
-    buffer.writeln('prompt for credentials:i:1');
-    buffer.writeln('authentication level:i:2');
-    buffer.writeln('enablecredsspsupport:i:1');
+    if (Platform.isMacOS) {
+      buffer.writeln('full address:s:$host:$port');
+      buffer.writeln('server port:i:$port');
+      buffer.writeln('prompt for credentials:i:1');
+      buffer.writeln('authentication level:i:0');
+      buffer.writeln('enablecredsspsupport:i:1');
+    } else {
+      final th = (targetHost != null && targetHost.trim().isNotEmpty) ? targetHost : host;
+      buffer.writeln('full address:s:$th');
+      buffer.writeln('alternate full address:s:$host:$port');
+      buffer.writeln('server port:i:$port');
+      buffer.writeln('prompt for credentials:i:1');
+      buffer.writeln('authentication level:i:2');
+      buffer.writeln('enablecredsspsupport:i:1');
+    }
     file.writeAsStringSync(buffer.toString(), flush: true);
     return file;
   } catch (e) {
@@ -889,12 +928,31 @@ File? _createTempRdpFile({
   }
 }
 
-/// Запуск mstsc с fallback-путём System32 (§3.5). null — не найден.
-Future<Process?> _startMstsc({
+/// Запуск RDP-клиента: Windows App / Microsoft Remote Desktop на macOS, mstsc на Windows (§3.5). null — не найден.
+Future<Process?> _startRdpClient({
   required String host,
   required int port,
   File? tempRdpFile,
 }) async {
+  if (RdpConnectorService.startClientOverride != null) {
+    return await RdpConnectorService.startClientOverride!(
+      host: host,
+      port: port,
+      tempRdpFile: tempRdpFile,
+    );
+  }
+  if (Platform.isMacOS) {
+    if (tempRdpFile == null) return null;
+    try {
+      return await Process.start('open', ['-a', 'Windows App', tempRdpFile.path]);
+    } catch (_) {
+      try {
+        return await Process.start('open', ['-a', 'Microsoft Remote Desktop', tempRdpFile.path]);
+      } catch (_) {
+        return await Process.start('open', [tempRdpFile.path]);
+      }
+    }
+  }
   if (tempRdpFile != null) {
     try {
       return await Process.start('mstsc', [tempRdpFile.path]);

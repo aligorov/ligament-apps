@@ -274,6 +274,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _wsBackoff.reset();
       }).catchError((Object e) {
         debugPrint('support_operator: WS handshake не удался: $e');
+        final str = e.toString();
+        if (str.contains('409') || str.contains('invalid_transition')) {
+          _isCleanedUp = true;
+          _wsReconnectTimer?.cancel();
+          if (mounted) {
+            _setStatus('ended_by_server');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                backgroundColor: const Color(0xFFEF4444),
+                content: Text(context.stringsRead.sessionEndedByServer),
+              ),
+            );
+          }
+        }
       });
 
       _wsChannel!.stream.listen(
@@ -283,6 +297,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         onDone: () {
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
+          if (_statusKey == 'ended_by_server') return;
           setState(() {
             _isConnected = false;
             _currentNumberMatch = null;
@@ -294,14 +309,40 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         onError: (err) {
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
-          _setStatus('conn_error', err.toString());
+          final errStr = err.toString();
+          if (errStr.contains('409') || errStr.contains('invalid_transition')) {
+            _isCleanedUp = true;
+            _wsReconnectTimer?.cancel();
+            _setStatus('ended_by_server');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                backgroundColor: const Color(0xFFEF4444),
+                content: Text(context.stringsRead.sessionEndedByServer),
+              ),
+            );
+            return;
+          }
+          _setStatus('conn_error', errStr);
           _scheduleWsReconnect();
         },
         cancelOnError: true,
       );
     } catch (e) {
       if (mounted) {
-        _setStatus('conn_error', e.toString());
+        final errStr = e.toString();
+        if (errStr.contains('409') || errStr.contains('invalid_transition')) {
+          _isCleanedUp = true;
+          _wsReconnectTimer?.cancel();
+          _setStatus('ended_by_server');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFFEF4444),
+              content: Text(context.stringsRead.sessionEndedByServer),
+            ),
+          );
+        } else {
+          _setStatus('conn_error', errStr);
+        }
       }
     }
   }

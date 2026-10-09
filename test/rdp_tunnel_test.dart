@@ -282,9 +282,13 @@ void main() {
 
     test('живой мост: handshake принят, дальше отказ только на mstsc',
         () async {
+      RdpConnectorService.startClientOverride =
+          ({required host, required port, tempRdpFile}) async => null;
+      addTearDown(() => RdpConnectorService.startClientOverride = null);
+
       // «Порт» с верным поведением: принимает и держит соединение (токен
-      // принят). На не-Windows запуск mstsc невозможен — сессия обязана
-      // дожить до фазы launching и упасть именно на mstsc, а не на
+      // принят). Запуск RDP-клиента падает (override null) — сессия обязана
+      // дожить до фазы launching и упасть именно на запуске клиента, а не на
       // handshake-окне.
       final ln = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final conns = <Socket>[];
@@ -305,7 +309,7 @@ void main() {
       final svc = RdpConnectorService();
       await svc.connectBridge(api: api, grantId: 'g', token: 't', isRu: true);
       expect(svc.phase, RdpTunnelPhase.failed);
-      expect(svc.lastError, contains('mstsc'));
+      expect(svc.lastError, contains(Platform.isMacOS ? 'Windows App' : 'mstsc'));
     }, timeout: const Timeout(Duration(seconds: 30)));
   });
 
