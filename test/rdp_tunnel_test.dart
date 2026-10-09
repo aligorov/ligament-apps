@@ -81,6 +81,14 @@ void main() {
         contains('уже активна'),
       );
       expect(
+        rdpConnectErrorText(ApiException(409, 'sharer_not_running'), isRu: true),
+        contains('Пользователь не вошёл в систему или экран заблокирован'),
+      );
+      expect(
+        rdpConnectErrorText(ApiException(409, 'sharer_not_running'), isRu: false),
+        contains('User is not logged in or screen is locked'),
+      );
+      expect(
         rdpConnectErrorText(ApiException(500, 'unknown_internal'), isRu: true),
         contains('Сервер временно недоступен'),
       );

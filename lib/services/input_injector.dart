@@ -114,6 +114,8 @@ class InputInjector {
   int Function()? _winLockWorkStation;
   int Function(int)? _winGetSystemMetrics;
   int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>)? _winGetMonitorInfo;
+  int Function(int, int, int)? _winOpenInputDesktop;
+  int Function(int)? _winCloseDesktop;
 
   // Windows LL-хуки блокировки физического ввода: колбэки и message loop
   // живут в нативном input_block.cpp (runner, экспорт из exe) — из чистого
@@ -209,6 +211,16 @@ class InputInjector {
       _winGetMonitorInfo = _user32Lib!.lookupFunction<
           ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>),
           int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>)>('GetMonitorInfoW');
+      try {
+        _winOpenInputDesktop = _user32Lib!.lookupFunction<
+            ffi.IntPtr Function(ffi.Uint32, ffi.Int32, ffi.Uint32),
+            int Function(int, int, int)>('OpenInputDesktop');
+        _winCloseDesktop = _user32Lib!.lookupFunction<
+            ffi.Int32 Function(ffi.IntPtr),
+            int Function(int)>('CloseDesktop');
+      } catch (e) {
+        debugPrint('input_injector: OpenInputDesktop lookup failed: $e');
+      }
       // Нативный хелпер блокировки: экспорт из собственного exe
       // (windows/runner/input_block.cpp, dllexport).
       try {
@@ -264,6 +276,22 @@ class InputInjector {
       return _axIsProcessTrusted?.call() ?? false;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Проверка, заблокирован ли рабочий стол Windows (экран Winlogon / блокировка Win+L).
+  /// Возвращает true, если активным стал защищённый десктоп Winlogon.
+  bool isWorkstationLocked() {
+    if (kIsWeb || !Platform.isWindows || _winOpenInputDesktop == null) return false;
+    try {
+      final hDesk = _winOpenInputDesktop!(0, 0, 0x0100 /* DESKTOP_SWITCHDESKTOP */);
+      if (hDesk == 0) {
+        return true;
+      }
+      _winCloseDesktop?.call(hDesk);
+      return false;
+    } catch (_) {
+      return false;
     }
   }
 

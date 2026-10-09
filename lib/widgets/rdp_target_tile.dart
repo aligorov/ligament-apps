@@ -244,7 +244,7 @@ class RdpTargetTile extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: _screenControl(s, screenAvailable, screenReason),
+                    child: _screenControl(context, s, screenAvailable, screenReason),
                   ),
                 ],
               ),
@@ -255,7 +255,7 @@ class RdpTargetTile extends StatelessWidget {
     );
   }
 
-  Widget _screenControl(AppStrings s, bool screenAvailable, String screenReason) {
+  Widget _screenControl(BuildContext context, AppStrings s, bool screenAvailable, String screenReason) {
     String tooltipMessage = '';
     if (!screenAvailable) {
       if (screenReason == 'screen_device_unbound') {
@@ -268,8 +268,8 @@ class RdpTargetTile extends StatelessWidget {
             : 'Screen sharing on current PC is unavailable';
       } else if (screenReason == 'sharer_not_running') {
         tooltipMessage = isRu
-            ? 'Приложение Ligament не открыто на целевом ПК'
-            : 'Ligament app is not open on target PC';
+            ? 'ПК заблокирован или не залогинен (используйте RDP)'
+            : 'PC is locked or not logged in (use RDP)';
       } else {
         tooltipMessage = isRu
             ? 'Режим экрана недоступен'
@@ -280,7 +280,25 @@ class RdpTargetTile extends StatelessWidget {
     final btn = Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: screenAvailable ? onScreen : null,
+        onTap: screenAvailable
+            ? onScreen
+            : () {
+                final msg = screenReason == 'sharer_not_running'
+                    ? (isRu
+                        ? 'ПК заблокирован или сеанс не начат. Для входа используйте кнопку «Подключить» (RDP).'
+                        : 'PC is locked or user not logged in. Use the "Connect" (RDP) button to access.')
+                    : tooltipMessage;
+                if (msg.isNotEmpty) {
+                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                    SnackBar(
+                      content: Text(msg),
+                      duration: const Duration(seconds: 4),
+                      behavior: SnackBarBehavior.floating,
+                      backgroundColor: const Color(0xFF1E293B),
+                    ),
+                  );
+                }
+              },
         borderRadius: BorderRadius.circular(10),
         child: Ink(
           decoration: BoxDecoration(

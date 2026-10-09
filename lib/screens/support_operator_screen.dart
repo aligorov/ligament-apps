@@ -14,6 +14,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../api/client.dart';
 import '../services/auth_state.dart';
+import '../services/rdp_actions.dart';
 import '../services/support_service.dart';
 import '../services/ws_service.dart';
 import '../i18n/app_strings.dart';
@@ -78,6 +79,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool _isConnected = false;
   bool _isInputBlocked = false;
   bool _isControlEnabled = true;
+  bool _isRemoteScreenLocked = false;
   MouseClickMode _mouseClickMode = MouseClickMode.left;
 
   void _setStatus(String key, [String? arg]) {
@@ -576,6 +578,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _selectedScreenId = sel ?? (_screens.isNotEmpty ? _screens.first['id']?.toString() : null);
         });
       }
+    } else if (type == 'screen_lock_state') {
+      final locked = data['locked'] == true;
+      if (mounted) {
+        setState(() {
+          _isRemoteScreenLocked = locked;
+        });
+      }
     } else if (type == 'telemetry') {
       if (mounted) {
         setState(() {
@@ -711,6 +720,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     ).catchError((e) {
       debugPrint('support_operator: ошибка отправки сообщения через API: $e');
     });
+  }
+
+  Future<void> _switchToRdp() async {
+    final auth = context.read<AuthState>();
+    final target = Map<String, dynamic>.from(widget.sessionData);
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    unawaited(RdpActions.connectRdp(context, auth, target));
   }
 
   void _showOperatorChatModal() {
@@ -1749,6 +1766,47 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     strings.numberMatchHintClient,
                     style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
                   ),
+                ],
+              ),
+            ),
+
+          // Баннер заблокированного экрана Windows
+          if (_isRemoteScreenLocked)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              color: const Color(0xFFB91C1C),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_rounded, color: Colors.white, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      strings.isRu
+                          ? 'Экран Windows заблокирован (Winlogon). Видео и ввод заблокированы защитой ОС. Для работы с экраном блокировки переключитесь на RDP.'
+                          : 'Windows screen is locked (Winlogon). Video and input paused by OS security. Switch to RDP to unlock.',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (widget.ownerMode) ...[
+                    const SizedBox(width: 10),
+                    ElevatedButton.icon(
+                      onPressed: _switchToRdp,
+                      icon: const Icon(Icons.desktop_windows_rounded, size: 15),
+                      label: Text(strings.isRu ? 'Открыть RDP' : 'Open RDP'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: const Color(0xFFB91C1C),
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

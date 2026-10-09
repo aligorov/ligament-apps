@@ -925,6 +925,10 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
       return isRu
           ? 'Внутренняя ошибка базы данных. Попробуйте снова через несколько секунд'
           : 'Internal database error. Please try again in a few seconds';
+    case 'sharer_not_running':
+      return isRu
+          ? 'Пользователь не вошёл в систему или экран заблокирован. Для доступа к заблокированному ПК используйте режим RDP (Удалённый рабочий стол).'
+          : 'User is not logged in or screen is locked. Use RDP (Remote Desktop) mode for access.';
   }
   switch (status) {
     case 409:

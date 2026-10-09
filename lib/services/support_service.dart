@@ -263,6 +263,8 @@ class SupportService extends ChangeNotifier {
   ScreenRect? _currentScreenRect;
   Timer? _telemetryTimer;
   Timer? _leaseWatchdogTimer;
+  Timer? _lockCheckTimer;
+  bool _lastLockState = false;
   final TelemetryService _telemetry = TelemetryService();
 
   final List<SupportChatMessage> _chatMessages = [];
@@ -909,6 +911,7 @@ class SupportService extends ChangeNotifier {
       _state = SupportSessionState.active;
       _startPeriodicTelemetry();
       _startLeaseWatchdog();
+      _startLockMonitoring();
       _setWakelock(true);
       notifyListeners();
     }
@@ -1232,6 +1235,41 @@ class SupportService extends ChangeNotifier {
     } catch (_) {}
   }
 
+  void _startLockMonitoring() {
+    _lockCheckTimer?.cancel();
+    _lastLockState = false;
+    if (kIsWeb || !Platform.isWindows) return;
+    _lockCheckTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (_state != SupportSessionState.active) return;
+      final locked = InputInjector.instance.isWorkstationLocked();
+      if (locked != _lastLockState) {
+        _lastLockState = locked;
+        _notifyLockState(locked);
+      }
+    });
+  }
+
+  void _notifyLockState(bool locked) {
+    final payload = {
+      'type': 'screen_lock_state',
+      'locked': locked,
+      'message': locked
+          ? 'Экран Windows заблокирован (Winlogon). Видеопоток и ввод временно приостановлены защитой Windows. Для разблокировки используйте RDP.'
+          : 'Экран Windows разблокирован.',
+    };
+    try {
+      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
+      }
+    } catch (_) {}
+    if (_activeSessionId != null && _api != null) {
+      _api!.sendSupportSignal(
+        sessionId: _activeSessionId!,
+        signal: {'screen_lock_state': payload},
+      ).catchError((_) {});
+    }
+  }
+
   /// Начало входящей файловой передачи: проверка лимитов размера и числа
   /// одновременных закачек, запуск таймаута ожидания первого чанка.
   void _handleFileStart(Map<String, dynamic> input) {
@@ -1528,6 +1566,9 @@ class SupportService extends ChangeNotifier {
 
       _telemetryTimer?.cancel();
       _telemetryTimer = null;
+      _lockCheckTimer?.cancel();
+      _lockCheckTimer = null;
+      _lastLockState = false;
       _cancelResilienceTimers();
       _p2pConnected = false;
       _iceRestartAttempts = 0;

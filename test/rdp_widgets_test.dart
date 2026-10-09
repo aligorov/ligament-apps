@@ -170,7 +170,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      await tester.pumpWidget(harness(RdpTargetTile(
+      await tester.pumpWidget(harness(const RdpTargetTile(
         target: {
           'name': 'term01',
           'kind': 'terminal_server',
@@ -197,7 +197,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      await tester.pumpWidget(harness(RdpTargetTile(
+      await tester.pumpWidget(harness(const RdpTargetTile(
         target: {
           'name': 'TS-CLUSTER-01',
           'kind': 'terminal_server',
