@@ -58,10 +58,19 @@ Map<String, dynamic> normalizeBrowserSsoPrompt(Map<String, dynamic> raw) {
 /// - сервер адресовал трансляцию конкретной agent-цели
 ///   (target_device_id непуст и != наш device_id): это не моя машина.
 bool ownerScreenPromptTargetsThisDevice(
-    Map<String, dynamic> prompt, String? ownDeviceId) {
+    Map<String, dynamic> prompt, String? ownDeviceId, [String? registeredMachineId]) {
   final initiator = prompt['initiator_device_id']?.toString();
   if (initiator != null && initiator.isNotEmpty && initiator == ownDeviceId) {
     return false;
+  }
+  final targetMachine = prompt['target_machine_id']?.toString();
+  if (targetMachine != null && targetMachine.isNotEmpty) {
+    if (registeredMachineId != null && registeredMachineId.isNotEmpty) {
+      if (targetMachine == registeredMachineId) {
+        return true;
+      }
+      return false;
+    }
   }
   final target = prompt['target_device_id']?.toString();
   if (target != null && target.isNotEmpty && target != ownDeviceId) {
@@ -1510,7 +1519,7 @@ class AuthState extends ChangeNotifier {
     final sessionId = prompt['session_id']?.toString() ?? '';
     if (sessionId.isEmpty || api == null) return;
 
-    if (!ownerScreenPromptTargetsThisDevice(prompt, _ownDeviceId)) {
+    if (!ownerScreenPromptTargetsThisDevice(prompt, _ownDeviceId, _registeredMachineId)) {
       debugPrint(
           'auth_state: owner-экран адресован другому устройству — игнорируем');
       return;

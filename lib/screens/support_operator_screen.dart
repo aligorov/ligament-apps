@@ -139,6 +139,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   /// Backoff реконнекта операторского WS (M-5).
   final ReconnectBackoff _wsBackoff = ReconnectBackoff();
   Timer? _wsReconnectTimer;
+  Timer? _ownerWaitTimer;
 
   final List<SupportChatMessage> _chatMessages = [];
   late final ValueNotifier<List<SupportChatMessage>> _chatMessagesNotifier;
@@ -225,6 +226,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     // сама по support_prompt(owner:true); number-match отсутствует.
     if (widget.ownerMode) {
       _setStatus('owner_waiting');
+      _ownerWaitTimer?.cancel();
+      _ownerWaitTimer = Timer(const Duration(seconds: 25), () {
+        if (!mounted || _isCleanedUp || _isConnected) return;
+        if (_statusKey == 'owner_waiting') {
+          final s = context.stringsRead;
+          _setStatus(
+            'conn_error',
+            s.isRu
+                ? 'Целевой ПК не ответил на запрос трансляции (проверьте, что приложение Ligament запущено на целевом ПК)'
+                : 'Target PC did not respond to stream request (ensure Ligament app is running on target PC)',
+          );
+        }
+      });
     } else {
       _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
     }
@@ -435,6 +449,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _peerConnection!.onTrack = (RTCTrackEvent event) {
       debugPrint('support_operator: remote track received: ${event.track.kind}');
       if (event.streams.isNotEmpty && mounted) {
+        _ownerWaitTimer?.cancel();
+        _ownerWaitTimer = null;
         setState(() {
           _remoteRenderer.srcObject = event.streams[0];
           _isConnected = true;
@@ -1129,6 +1145,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _cleanupResources() {
     if (_isCleanedUp) return;
     _isCleanedUp = true;
+    _ownerWaitTimer?.cancel();
+    _ownerWaitTimer = null;
 
     try {
       _remoteRenderer.srcObject = null;

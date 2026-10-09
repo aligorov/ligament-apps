@@ -150,5 +150,36 @@ void main() {
         isFalse,
       );
     });
+
+    test('target_machine_id совпадает с зарегистрированной машиной — транслируем даже при несовпадении device_id', () {
+      expect(
+        ownerScreenPromptTargetsThisDevice(
+          {
+            'session_id': 's1',
+            'initiator_device_id': 'dev-viewer',
+            'target_device_id': 'old-dev-id',
+            'target_machine_id': 'machine-123',
+          },
+          'new-dev-id',
+          'machine-123',
+        ),
+        isTrue,
+      );
+    });
+
+    test('target_machine_id другой машины — игнорируем', () {
+      expect(
+        ownerScreenPromptTargetsThisDevice(
+          {
+            'session_id': 's1',
+            'initiator_device_id': 'dev-viewer',
+            'target_machine_id': 'other-machine-456',
+          },
+          'my-dev-id',
+          'machine-123',
+        ),
+        isFalse,
+      );
+    });
   });
 }
