@@ -61,6 +61,27 @@ class RdpEndpointConfigService {
     return false;
   }
 
+  /// Текущий процесс уже повышен (high integrity / роль Administrator)?
+  /// Под elevated-процессом RunAs-оркестрация не нужна (инцидент
+  /// 2026-10-10 «agent_key не добавляется под администратором»).
+  Future<bool> isProcessElevated() async {
+    if (!isWindows) return false;
+    try {
+      final res = await Process.run('powershell', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[bool](([System.Security.Principal.WindowsPrincipal]'
+            '[System.Security.Principal.WindowsIdentity]::GetCurrent())'
+            '.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator))',
+      ]).timeout(const Duration(seconds: 6));
+      return res.exitCode == 0 &&
+          res.stdout.toString().trim().toLowerCase() == 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Настройка agent_key через привилегированный запуск (UAC RunAs).
   /// Записывает ServerURL, RdpAgentKey, RdpAgentEnabled=1 в HKLM\SOFTWARE\Ligament\2FA
   /// и HKLM\SOFTWARE\Policies\Ligament\2FA (резервный ключ против затирания MSI),
@@ -123,8 +144,17 @@ try {
       Set-ItemProperty -Path \$root -Name 'ServerURL' -Value \$data.serverUrl -Type String
     }
   }
+  # Ключи записаны — это успех. Перезапуск службы — best-effort: сбой
+  # перезапуска (служба отключена/занята) не должен ронять конфигурацию
+  # и показывать юзеру ложное «требуются права администратора».
   if (Get-Service -Name '$_serviceName' -ErrorAction SilentlyContinue) {
-    Restart-Service -Name '$_serviceName' -ErrorAction Stop
+    try {
+      if ((Get-Service -Name '$_serviceName').Status -ne 'Running') {
+        Start-Service -Name '$_serviceName' -ErrorAction SilentlyContinue
+      } else {
+        Restart-Service -Name '$_serviceName' -ErrorAction SilentlyContinue
+      }
+    } catch { }
   }
   exit 0
 } catch {
@@ -133,18 +163,43 @@ try {
 ''';
       await tempScriptFile.writeAsString(psCode, flush: true);
 
-      final proc = await Process.run(
-        'powershell',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-Command',
-          'Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList \'-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${tempScriptFile.path.replaceAll('"', '`"')}"\' | ForEach-Object { exit \$_.ExitCode }',
-        ],
-      ).timeout(const Duration(seconds: 35));
-
+      // Инцидент 2026-10-10 «не могу добавить agent_key под администратором»:
+      // если процесс УЖЕ elevated — RunAs-оркестрация не нужна и вредна
+      // (UAC-промпт/таймаут/PassThru-код). Пишем скрипт напрямую.
+      final elevated = await isProcessElevated();
+      debugPrint('rdp_endpoint_config_service: elevated=$elevated');
+      ProcessResult proc;
+      if (elevated) {
+        proc = await Process.run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            tempScriptFile.path,
+          ],
+        ).timeout(const Duration(seconds: 30));
+      } else {
+        // UAC-промпт может ждать юзера — таймаут 120с, не 35
+        // (при таймауте finally удалял cfg-файл до прочтения дочерним
+        // процессом — гарантированный exit 2).
+        proc = await Process.run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-Command',
+            'Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList \'-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${tempScriptFile.path.replaceAll('"', '`"')'}\' | ForEach-Object { exit \$_.ExitCode }',
+          ],
+        ).timeout(const Duration(seconds: 120));
+      }
+      debugPrint('rdp_endpoint_config_service: exitCode=${proc.exitCode} '
+          'stdout=${(proc.stdout ?? '').toString().trim().isNotEmpty ? "<есть>" : "<пусто>"} '
+          'stderr=${(proc.stderr ?? '').toString().trim()}');
       return proc.exitCode == 0;
     } catch (e) {
       debugPrint('rdp_endpoint_config_service: ошибка настройки: $e');
