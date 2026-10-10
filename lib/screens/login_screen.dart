@@ -136,7 +136,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Icon(Icons.account_circle_outlined, size: 56, color: Color(0xFF38BDF8)),
+                    // Логотип «Связка» (концепт A, ligament-a-links-mark):
+                    // прозрачная марка на тёмной теме логина.
+                    Image.asset('assets/icons/logo_mark.png', width: 56, height: 56),
                     const SizedBox(height: 16),
                     Text(
                       serverName,
