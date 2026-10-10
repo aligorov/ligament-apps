@@ -31,9 +31,9 @@ std::string String(const EncodableMap& map, const char* key) {
 double Number(const EncodableMap& map, const char* key, double fallback = 0) {
   const auto* value = Find(map, key);
   if (!value) return fallback;
-  if (const auto* n = std::get_if<double>(value)) return std::isfinite(*n) ? *n : fallback;
-  if (const auto* n = std::get_if<int32_t>(value)) return *n;
-  if (const auto* n = std::get_if<int64_t>(value)) return static_cast<double>(*n);
+  if (const auto* d = std::get_if<double>(value)) return std::isfinite(*d) ? *d : fallback;
+  if (const auto* i32 = std::get_if<int32_t>(value)) return *i32;
+  if (const auto* i64 = std::get_if<int64_t>(value)) return static_cast<double>(*i64);
   return fallback;
 }
 std::wstring Wide(const std::string& text) {
@@ -143,22 +143,31 @@ WORD VirtualKey(const EncodableMap& input) {
   const auto key = String(input, "key");
   const int code = static_cast<int>(Number(input, "keyCode"));
   if (code > 0 && code < 256) return static_cast<WORD>(code);
-  const std::pair<const char*, WORD> keys[] = {
-    {"Enter", VK_RETURN}, {"Tab", VK_TAB}, {"Escape", VK_ESCAPE}, {"Backspace", VK_BACK},
-    {"Delete", VK_DELETE}, {"Insert", VK_INSERT}, {"Home", VK_HOME}, {"End", VK_END},
-    {"PageUp", VK_PRIOR}, {"PageDown", VK_NEXT}, {"ArrowLeft", VK_LEFT}, {"ArrowRight", VK_RIGHT},
-    {"ArrowUp", VK_UP}, {"ArrowDown", VK_DOWN}, {"Shift", VK_SHIFT}, {"Control", VK_CONTROL},
-    {"Alt", VK_MENU}, {"Meta", VK_LWIN}, {"CapsLock", VK_CAPITAL}, {" ", VK_SPACE}
+  struct KeyMapping {
+    const char* name;
+    WORD vk;
   };
-  for (const auto& item : keys) if (key == item.first) return item.second;
+  static const KeyMapping keys[] = {
+    {"Enter", static_cast<WORD>(VK_RETURN)}, {"Tab", static_cast<WORD>(VK_TAB)},
+    {"Escape", static_cast<WORD>(VK_ESCAPE)}, {"Backspace", static_cast<WORD>(VK_BACK)},
+    {"Delete", static_cast<WORD>(VK_DELETE)}, {"Insert", static_cast<WORD>(VK_INSERT)},
+    {"Home", static_cast<WORD>(VK_HOME)}, {"End", static_cast<WORD>(VK_END)},
+    {"PageUp", static_cast<WORD>(VK_PRIOR)}, {"PageDown", static_cast<WORD>(VK_NEXT)},
+    {"ArrowLeft", static_cast<WORD>(VK_LEFT)}, {"ArrowRight", static_cast<WORD>(VK_RIGHT)},
+    {"ArrowUp", static_cast<WORD>(VK_UP)}, {"ArrowDown", static_cast<WORD>(VK_DOWN)},
+    {"Shift", static_cast<WORD>(VK_SHIFT)}, {"Control", static_cast<WORD>(VK_CONTROL)},
+    {"Alt", static_cast<WORD>(VK_MENU)}, {"Meta", static_cast<WORD>(VK_LWIN)},
+    {"CapsLock", static_cast<WORD>(VK_CAPITAL)}, {" ", static_cast<WORD>(VK_SPACE)}
+  };
+  for (const auto& item : keys) if (key == item.name) return item.vk;
   if (key.size() >= 2 && key[0] == 'F') {
     char* end = nullptr;
     const long n = strtol(key.c_str() + 1, &end, 10);
     if (end && *end == 0 && n >= 1 && n <= 24) return static_cast<WORD>(VK_F1 + n - 1);
   }
   if (key.size() == 1) {
-    const SHORT vk = VkKeyScanW(static_cast<unsigned char>(key[0]));
-    if (vk != -1) return LOBYTE(vk);
+    const SHORT vk = VkKeyScanW(static_cast<WCHAR>(static_cast<unsigned char>(key[0])));
+    if (vk != -1) return static_cast<WORD>(LOBYTE(vk));
   }
   return 0;
 }
@@ -255,15 +264,15 @@ class ServiceConsoleBridge::InputWorker {
       }
       return;
     }
-    if (action == "win_r") combo = {VK_LWIN, 'R'};
-    else if (action == "win_e") combo = {VK_LWIN, 'E'};
-    else if (action == "win_d") combo = {VK_LWIN, 'D'};
-    else if (action == "alt_tab") combo = {VK_MENU, VK_TAB};
-    else if (action == "alt_f4") combo = {VK_MENU, VK_F4};
-    else if (action == "ctrl_shift_esc") combo = {VK_CONTROL, VK_SHIFT, VK_ESCAPE};
-    else if (action == "ctrl_c") combo = {VK_CONTROL, 'C'};
-    else if (action == "ctrl_v") combo = {VK_CONTROL, 'V'};
-    else if (action == "ctrl_a") combo = {VK_CONTROL, 'A'};
+    if (action == "win_r") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('R')};
+    else if (action == "win_e") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('E')};
+    else if (action == "win_d") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('D')};
+    else if (action == "alt_tab") combo = {static_cast<WORD>(VK_MENU), static_cast<WORD>(VK_TAB)};
+    else if (action == "alt_f4") combo = {static_cast<WORD>(VK_MENU), static_cast<WORD>(VK_F4)};
+    else if (action == "ctrl_shift_esc") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>(VK_SHIFT), static_cast<WORD>(VK_ESCAPE)};
+    else if (action == "ctrl_c") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>('C')};
+    else if (action == "ctrl_v") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>('V')};
+    else if (action == "ctrl_a") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>('A')};
     for (WORD key : combo) SendKey(key, true);
     for (auto key = combo.rbegin(); key != combo.rend(); ++key) SendKey(*key, false);
   }
@@ -292,8 +301,9 @@ class ServiceConsoleBridge::InputWorker {
       const bool modifier = keys_.count(VK_CONTROL) || keys_.count(VK_MENU) || keys_.count(VK_LWIN);
       if (!modifier && (text.size() == 1 || text.size() == 2) && text[0] > 127) {
         for (wchar_t ch : text) {
-          SendKey(ch, down, true);
-          if (down) unicode_.insert(ch); else unicode_.erase(ch);
+          const auto wch = static_cast<WORD>(ch);
+          SendKey(wch, down, true);
+          if (down) unicode_.insert(wch); else unicode_.erase(wch);
         }
       } else {
         const WORD key = VirtualKey(input);
@@ -356,8 +366,8 @@ ServiceConsoleBridge::ServiceConsoleBridge(flutter::BinaryMessenger* messenger)
     if (call.method_name() == "lease") {
       int64_t remaining = 0;
       if (call.arguments()) {
-        if (const auto* n = std::get_if<int64_t>(call.arguments())) remaining = *n;
-        else if (const auto* n = std::get_if<int32_t>(call.arguments())) remaining = *n;
+        if (const auto* i64 = std::get_if<int64_t>(call.arguments())) remaining = *i64;
+        else if (const auto* i32 = std::get_if<int32_t>(call.arguments())) remaining = *i32;
       }
       input_->Lease(remaining);
       result->Success(); return;

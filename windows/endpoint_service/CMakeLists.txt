@@ -11,4 +11,5 @@ target_link_libraries(ligament_endpoint PRIVATE winhttp ws2_32 advapi32 wtsapi32
 if(MSVC)
     # статический рантайм: служба не должна тянуть vcruntime.dll
     set_property(TARGET ligament_endpoint PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    target_compile_options(ligament_endpoint PRIVATE /wd4456 /wd4244)
 endif()
