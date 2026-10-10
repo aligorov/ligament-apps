@@ -179,52 +179,6 @@ class RdpActions {
     } catch (e) {
       if (!context.mounted) return;
       _popOwnerScreenProgress(context);
-      if (e is ApiException && e.code == 'sharer_not_running') {
-        final switchRdp = await showDialog<bool>(
-          context: context,
-          builder: (dialogCtx) => AlertDialog(
-            backgroundColor: const Color(0xFF1E293B),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: Row(
-              children: [
-                const Icon(Icons.lock_clock_rounded, color: Color(0xFF38BDF8), size: 24),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    s.isRu ? 'ПК заблокирован или не залогинен' : 'PC is locked or logged out',
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
-                  ),
-                ),
-              ],
-            ),
-            content: Text(
-              s.isRu
-                  ? 'Консоль («Экран») работает только в активном сеансе Windows. Сейчас на целевом ПК никто не вошёл в систему или экран заблокирован.\n\nДля входа в систему и удалённого управления экраном блокировки подключитесь через RDP (Удалённый рабочий стол).'
-                  : 'Console ("Screen") mode works only in an active Windows user session. Currently no user is logged in or screen is locked.\n\nUse RDP (Remote Desktop) mode to log into Windows and control the lock screen.',
-              style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 13, height: 1.4),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogCtx).pop(false),
-                child: Text(s.close, style: const TextStyle(color: Color(0xFF94A3B8))),
-              ),
-              ElevatedButton.icon(
-                onPressed: () => Navigator.of(dialogCtx).pop(true),
-                icon: const Icon(Icons.desktop_windows_rounded, size: 16),
-                label: Text(s.isRu ? 'Подключить RDP' : 'Connect RDP'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF0284C7),
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ],
-          ),
-        );
-        if (switchRdp == true && context.mounted) {
-          unawaited(connectRdp(context, auth, target));
-        }
-        return;
-      }
       await _showOwnerScreenError(
         context,
         s,

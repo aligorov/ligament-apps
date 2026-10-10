@@ -927,8 +927,8 @@ String rdpConnectErrorText(Object error, {required bool isRu}) {
           : 'Internal database error. Please try again in a few seconds';
     case 'sharer_not_running':
       return isRu
-          ? 'Пользователь не вошёл в систему или экран заблокирован. Для доступа к заблокированному ПК используйте режим RDP (Удалённый рабочий стол).'
-          : 'User is not logged in or screen is locked. Use RDP (Remote Desktop) mode for access.';
+          ? 'Приложение Ligament не запущено на целевом ПК'
+          : 'Ligament app is not running on target PC';
   }
   switch (status) {
     case 409:

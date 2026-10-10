@@ -263,8 +263,6 @@ class SupportService extends ChangeNotifier {
   ScreenRect? _currentScreenRect;
   Timer? _telemetryTimer;
   Timer? _leaseWatchdogTimer;
-  Timer? _lockCheckTimer;
-  bool _lastLockState = false;
   final TelemetryService _telemetry = TelemetryService();
 
   final List<SupportChatMessage> _chatMessages = [];
@@ -738,30 +736,27 @@ class SupportService extends ChangeNotifier {
         if (sources.isEmpty) {
           throw Exception('Не найдены источники экрана для захвата');
         }
-        var initialScreens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
-        if (Platform.isWindows) {
-          final count = InputInjector.instance.getMonitorCount();
-          if (count > initialScreens.length) {
-            for (int i = initialScreens.length; i < count; i++) {
-              final id = '$i';
-              final name = 'Screen ${i + 1}';
-              initialScreens.add(_screenEntryForSource(id, name));
-            }
-          }
-        }
-        _screens = initialScreens;
+        _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
         final selectedSource = sources.first;
         _currentScreenId = selectedSource.id;
         _applyActiveScreenRect(selectedSource.id);
 
         debugPrint('support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
-        screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-          'audio': false,
-          'video': {
-            'deviceId': {'exact': selectedSource.id},
-            'mandatory': {'frameRate': 25.0},
-          },
-        });
+        try {
+          screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+            'audio': false,
+            'video': {
+              'deviceId': {'exact': selectedSource.id},
+            },
+          });
+        } catch (_) {
+          screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+            'audio': false,
+            'video': {
+              'deviceId': selectedSource.id,
+            },
+          });
+        }
       } else {
         // Мобильные платформы и Web
         screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
@@ -911,7 +906,6 @@ class SupportService extends ChangeNotifier {
       _state = SupportSessionState.active;
       _startPeriodicTelemetry();
       _startLeaseWatchdog();
-      _startLockMonitoring();
       _setWakelock(true);
       notifyListeners();
     }
@@ -1041,6 +1035,15 @@ class SupportService extends ChangeNotifier {
 
       if (payload['type'] == 'request_offer' || payload['type'] == 'renegotiate') {
         debugPrint('support_service: получен запрос офера (request_offer) от оператора');
+        if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
+          try {
+            final dcInit = RTCDataChannelInit()..ordered = true;
+            final dc = await _peerConnection!.createDataChannel('control', dcInit);
+            _setupDataChannel(dc);
+          } catch (e) {
+            debugPrint('support_service: ошибка пересоздания DataChannel при request_offer: $e');
+          }
+        }
         final iceRestart = payload['iceRestart'] == true;
         _attemptIceRestart(force: true, iceRestart: iceRestart);
         return;
@@ -1139,18 +1142,7 @@ class SupportService extends ChangeNotifier {
         try {
           final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
           if (sources.isNotEmpty) {
-            var screensList = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
-            if (Platform.isWindows) {
-              final count = InputInjector.instance.getMonitorCount();
-              if (count > screensList.length) {
-                for (int i = screensList.length; i < count; i++) {
-                  final id = '$i';
-                  final name = 'Screen ${i + 1}';
-                  screensList.add(_screenEntryForSource(id, name));
-                }
-              }
-            }
-            _screens = screensList;
+            _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
             debugPrint('support_service: обновлен список экранов (${_screens.length}): $_screens');
           }
         } catch (e) {
@@ -1181,13 +1173,22 @@ class SupportService extends ChangeNotifier {
   Future<void> switchScreen(String screenId) async {
     if (kIsWeb || _peerConnection == null) return;
     try {
-      final newStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-        'audio': false,
-        'video': {
-          'deviceId': {'exact': screenId},
-          'mandatory': {'frameRate': 25.0},
-        },
-      });
+      MediaStream newStream;
+      try {
+        newStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          'audio': false,
+          'video': {
+            'deviceId': {'exact': screenId},
+          },
+        });
+      } catch (_) {
+        newStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          'audio': false,
+          'video': {
+            'deviceId': screenId,
+          },
+        });
+      }
 
       final newVideoTracks = newStream.getVideoTracks();
       if (newVideoTracks.isEmpty) return;
@@ -1201,7 +1202,11 @@ class SupportService extends ChangeNotifier {
         }
       }
 
-      _localStream?.getVideoTracks().forEach((t) => t.stop());
+      _localStream?.getVideoTracks().forEach((t) {
+        try {
+          t.stop();
+        } catch (_) {}
+      });
       _localStream?.dispose();
       _localStream = newStream;
       _currentScreenId = screenId;
@@ -1235,40 +1240,6 @@ class SupportService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  void _startLockMonitoring() {
-    _lockCheckTimer?.cancel();
-    _lastLockState = false;
-    if (kIsWeb || !Platform.isWindows) return;
-    _lockCheckTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (_state != SupportSessionState.active) return;
-      final locked = InputInjector.instance.isWorkstationLocked();
-      if (locked != _lastLockState) {
-        _lastLockState = locked;
-        _notifyLockState(locked);
-      }
-    });
-  }
-
-  void _notifyLockState(bool locked) {
-    final payload = {
-      'type': 'screen_lock_state',
-      'locked': locked,
-      'message': locked
-          ? 'Экран Windows заблокирован (Winlogon). Видеопоток и ввод временно приостановлены защитой Windows. Для разблокировки используйте RDP.'
-          : 'Экран Windows разблокирован.',
-    };
-    try {
-      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
-        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
-      }
-    } catch (_) {}
-    if (_activeSessionId != null && _api != null) {
-      _api!.sendSupportSignal(
-        sessionId: _activeSessionId!,
-        signal: {'screen_lock_state': payload},
-      ).catchError((_) {});
-    }
-  }
 
   /// Начало входящей файловой передачи: проверка лимитов размера и числа
   /// одновременных закачек, запуск таймаута ожидания первого чанка.
@@ -1566,9 +1537,6 @@ class SupportService extends ChangeNotifier {
 
       _telemetryTimer?.cancel();
       _telemetryTimer = null;
-      _lockCheckTimer?.cancel();
-      _lockCheckTimer = null;
-      _lastLockState = false;
       _cancelResilienceTimers();
       _p2pConnected = false;
       _iceRestartAttempts = 0;
@@ -1629,15 +1597,13 @@ class SupportService extends ChangeNotifier {
         } catch (_) {}
       }
 
-      // 5. Окончательное освобождение нативных дескрипторов производим в фоне (не блокируя UI)
-      Future.microtask(() async {
-        try {
-          await stream?.dispose();
-        } catch (_) {}
-        try {
-          await pc?.dispose();
-        } catch (_) {}
-      });
+      // 5. Окончательное освобождение нативных дескрипторов
+      try {
+        await stream?.dispose().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+      } catch (_) {}
+      try {
+        await pc?.dispose().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+      } catch (_) {}
     } catch (e) {
       debugPrint('support_service: ошибка при stopScreenSharing: $e');
     } finally {

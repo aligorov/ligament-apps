@@ -82,11 +82,11 @@ void main() {
       );
       expect(
         rdpConnectErrorText(ApiException(409, 'sharer_not_running'), isRu: true),
-        contains('Пользователь не вошёл в систему или экран заблокирован'),
+        contains('Приложение Ligament не запущено'),
       );
       expect(
         rdpConnectErrorText(ApiException(409, 'sharer_not_running'), isRu: false),
-        contains('User is not logged in or screen is locked'),
+        contains('Ligament app is not running'),
       );
       expect(
         rdpConnectErrorText(ApiException(500, 'unknown_internal'), isRu: true),

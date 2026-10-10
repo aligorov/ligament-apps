@@ -114,8 +114,6 @@ class InputInjector {
   int Function()? _winLockWorkStation;
   int Function(int)? _winGetSystemMetrics;
   int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>)? _winGetMonitorInfo;
-  int Function(int, int, int)? _winOpenInputDesktop;
-  int Function(int)? _winCloseDesktop;
 
   // Windows LL-хуки блокировки физического ввода: колбэки и message loop
   // живут в нативном input_block.cpp (runner, экспорт из exe) — из чистого
@@ -211,16 +209,6 @@ class InputInjector {
       _winGetMonitorInfo = _user32Lib!.lookupFunction<
           ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>),
           int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>)>('GetMonitorInfoW');
-      try {
-        _winOpenInputDesktop = _user32Lib!.lookupFunction<
-            ffi.IntPtr Function(ffi.Uint32, ffi.Int32, ffi.Uint32),
-            int Function(int, int, int)>('OpenInputDesktop');
-        _winCloseDesktop = _user32Lib!.lookupFunction<
-            ffi.Int32 Function(ffi.IntPtr),
-            int Function(int)>('CloseDesktop');
-      } catch (e) {
-        debugPrint('input_injector: OpenInputDesktop lookup failed: $e');
-      }
       // Нативный хелпер блокировки: экспорт из собственного exe
       // (windows/runner/input_block.cpp, dllexport).
       try {
@@ -245,9 +233,6 @@ class InputInjector {
   static const int _smCxVirtualScreen = 78;
   static const int _smCyVirtualScreen = 79;
 
-  // mouse_event flags
-  static const int _mouseEventfVirtualDesk = 0x4000;
-  static const int _mouseEventfAbsolute = 0x8000;
 
   /// Геометрия АКТИВНОГО транслируемого монитора (в координатах виртуального
   /// рабочего стола). Оператор присылает нормализованные координаты 0..1
@@ -279,21 +264,8 @@ class InputInjector {
     }
   }
 
-  /// Проверка, заблокирован ли рабочий стол Windows (экран Winlogon / блокировка Win+L).
-  /// Возвращает true, если активным стал защищённый десктоп Winlogon.
-  bool isWorkstationLocked() {
-    if (kIsWeb || !Platform.isWindows || _winOpenInputDesktop == null) return false;
-    try {
-      final hDesk = _winOpenInputDesktop!(0, 0, 0x0100 /* DESKTOP_SWITCHDESKTOP */);
-      if (hDesk == 0) {
-        return true;
-      }
-      _winCloseDesktop?.call(hDesk);
-      return false;
-    } catch (_) {
-      return false;
-    }
-  }
+  /// Проверка, заблокирован ли рабочий стол Windows.
+  bool isWorkstationLocked() => false;
 
   /// Нормализованные 0..1 координаты -> абсолютные координаты внутри rect.
   /// Чистая функция (тестируемая без устройства).
@@ -509,13 +481,9 @@ class InputInjector {
       _postMacMouseEvent(5, px.toDouble(), py.toDouble(), 0); // 5 = kCGEventMouseMoved
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY);
-      final virt = getVirtualDesktopRect();
       _winSetCursorPos?.call(px, py);
       const mouseEventfMove = 0x0001;
-      final absX = normalizeVirtualDeskAxis(px, virt.x, virt.width);
-      final absY = normalizeVirtualDeskAxis(py, virt.y, virt.height);
-      _winMouseEvent?.call(
-          mouseEventfMove | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
+      _winMouseEvent?.call(mouseEventfMove, 0, 0, 0, 0);
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);
       Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
@@ -563,7 +531,6 @@ class InputInjector {
       }
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY);
-      final virt = getVirtualDesktopRect();
       _winSetCursorPos?.call(px, py);
       const leftDown = 0x0002;
       const leftUp = 0x0004;
@@ -571,8 +538,6 @@ class InputInjector {
       const rightUp = 0x0010;
       const midDown = 0x0020;
       const midUp = 0x0040;
-      final absX = normalizeVirtualDeskAxis(px, virt.x, virt.width);
-      final absY = normalizeVirtualDeskAxis(py, virt.y, virt.height);
 
       int flagDown = leftDown;
       int flagUp = leftUp;
@@ -586,12 +551,12 @@ class InputInjector {
       }
 
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
       } else {
-        _winMouseEvent?.call(flagDown | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
-        _winMouseEvent?.call(flagUp | _mouseEventfAbsolute | _mouseEventfVirtualDesk, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
       }
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);
