@@ -396,10 +396,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  Future<void> _restoreWindowSize() async {
+  Future<void> _restoreWindowSize({Duration? delay}) async {
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         if (_previousWindowSize != null) {
+          if (delay != null) {
+            await Future.delayed(delay);
+          }
           await windowManager.setMinimumSize(const Size(380, 600));
           await windowManager.setSize(_previousWindowSize!);
         }
@@ -1441,7 +1444,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   bool _isCleanedUp = false;
 
-  void _cleanupResources() {
+  void _cleanupResources({bool deferDisposal = true}) {
     if (_isCleanedUp) return;
     _isCleanedUp = true;
     // Ш3/Ш4: единая отмена стадийных и grace-таймеров
@@ -1493,16 +1496,26 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _wsReconnectTimer?.cancel();
     _wsReconnectTimer = null;
 
-    // Отложенное освобождение нативных DirectX текстур рендерера и WebRTC соединения,
-    // чтобы анимация закрытия окна (route pop) завершилась абсолютно гладко без зависаний
-    Future.delayed(const Duration(milliseconds: 350), () {
+    // Освобождение нативных текстур рендерера и WebRTC-соединения.
+    // По умолчанию — отложенно (350мс), чтобы pop-анимация маршрута
+    // прошла гладко. deferDisposal=false — из dispose(): анимация уже
+    // завершена, текстуру надо снять ДО возврата размера окна (см.
+    // комментарий в dispose — resize при живой WebRTC-текстуре на macOS
+    // калечит композицию окна: полностью чёрный экран).
+    void disposeNative() {
       try {
         _remoteRenderer.dispose();
       } catch (_) {}
       try {
         pc?.dispose();
       } catch (_) {}
-    });
+    }
+
+    if (deferDisposal) {
+      Future.delayed(const Duration(milliseconds: 350), disposeNative);
+    } else {
+      disposeNative();
+    }
   }
 
   void _endSession() async {
@@ -1547,8 +1560,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void dispose() {
     _chatMessagesNotifier.dispose();
     _keyboardFocus.dispose();
-    _restoreWindowSize();
-    _cleanupResources();
+    // Чёрный экран после «назад» (инцидент console-any-state): прежний
+    // порядок запускал возврат размера окна ПРИ живой WebRTC-текстуре —
+    // на macOS resize окна с зарегистрированной текстурой рендерера
+    // ломает композицию, окно остаётся полностью чёрным. Гасим нативные
+    // ресурсы синхронно (pop-анимация уже завершена), окно возвращаем
+    // с задержкой — после снятия текстуры.
+    _cleanupResources(deferDisposal: false);
+    _restoreWindowSize(delay: const Duration(milliseconds: 500));
     final auth = _auth;
     final sessId = widget.sessionId;
     if (auth != null && auth.api != null && sessId.isNotEmpty) {
