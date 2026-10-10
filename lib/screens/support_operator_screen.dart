@@ -534,6 +534,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _statusKey = 'stream_active';
             _statusArg = null;
           });
+          _sendDataMessage({'type': 'screen_list'});
         }
       }
     };

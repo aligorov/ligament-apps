@@ -1582,11 +1582,8 @@ class AuthState extends ChangeNotifier {
     } catch (e) {
       debugPrint('auth_state: не удалось начать трансляцию owner-экрана: $e');
       await support.stopScreenSharing();
-      // Сессию закрываем на сервере — инициатор увидит support_ended,
-      // а не зависший «ожидание экрана».
-      try {
-        await api!.endSupportSession(sessionId: sessionId);
-      } catch (_) {}
+      // Не завершаем сессию на сервере при временном локальном сбое захвата,
+      // чтобы оператор не получал ложное «Сеанс завершен пользователем».
     }
     notifyListeners();
   }

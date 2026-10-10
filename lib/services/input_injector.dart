@@ -482,8 +482,13 @@ class InputInjector {
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY);
       _winSetCursorPos?.call(px, py);
+      final virt = getVirtualDesktopRect();
+      final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
+      final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
       const mouseEventfMove = 0x0001;
-      _winMouseEvent?.call(mouseEventfMove, 0, 0, 0, 0);
+      const mouseEventfAbsolute = 0x8000;
+      const mouseEventfVirtualDesk = 0x4000;
+      _winMouseEvent?.call(mouseEventfMove | mouseEventfAbsolute | mouseEventfVirtualDesk, normVx, normVy, 0, 0);
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);
       Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
@@ -532,6 +537,13 @@ class InputInjector {
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY);
       _winSetCursorPos?.call(px, py);
+      final virt = getVirtualDesktopRect();
+      final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
+      final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
+      const mouseEventfAbsolute = 0x8000;
+      const mouseEventfVirtualDesk = 0x4000;
+      const baseFlags = mouseEventfAbsolute | mouseEventfVirtualDesk;
+
       const leftDown = 0x0002;
       const leftUp = 0x0004;
       const rightDown = 0x0008;
@@ -551,12 +563,12 @@ class InputInjector {
       }
 
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
       } else {
-        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
-        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
       }
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);

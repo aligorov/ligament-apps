@@ -732,29 +732,46 @@ class SupportService extends ChangeNotifier {
       // Захват экрана: получение списка всех мониторов на десктопе
       MediaStream screenStream;
       if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-        final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
-        if (sources.isEmpty) {
-          throw Exception('Не найдены источники экрана для захвата');
-        }
-        _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
-        final selectedSource = sources.first;
-        _currentScreenId = selectedSource.id;
-        _applyActiveScreenRect(selectedSource.id);
-
-        debugPrint('support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
+        List<DesktopCapturerSource> sources = [];
         try {
+          sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
+        } catch (e) {
+          debugPrint('support_service: desktopCapturer.getSources error: $e');
+        }
+        if (sources.isNotEmpty) {
+          _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
+          final selectedSource = sources.first;
+          _currentScreenId = selectedSource.id;
+          _applyActiveScreenRect(selectedSource.id);
+
+          debugPrint('support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
+          try {
+            screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+              'audio': false,
+              'video': {
+                'deviceId': {'exact': selectedSource.id},
+              },
+            });
+          } catch (_) {
+            try {
+              screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+                'audio': false,
+                'video': {
+                  'deviceId': selectedSource.id,
+                },
+              });
+            } catch (_) {
+              screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+                'audio': false,
+                'video': true,
+              });
+            }
+          }
+        } else {
+          debugPrint('support_service: sources пуст, fallback на базовый getDisplayMedia');
           screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
             'audio': false,
-            'video': {
-              'deviceId': {'exact': selectedSource.id},
-            },
-          });
-        } catch (_) {
-          screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-            'audio': false,
-            'video': {
-              'deviceId': selectedSource.id,
-            },
+            'video': true,
           });
         }
       } else {
