@@ -1150,6 +1150,27 @@ class AuthState extends ChangeNotifier {
   }
 
   /// Регистрация машины доступа и экземпляра сессии (Sharer/Viewer), запуск heartbeat (V01)
+  /// Стабильный ключ установки для идентичности машины (rdp_machines.
+  /// machine_public_key): 32 случайных байт hex, генерируется один раз и
+  /// живёт в SharedPreferences до удаления установки. См. комментарий
+  /// в registerRdpMachineAndInstance.
+  String? _machinePublicKey;
+  Future<String> ensureMachinePublicKey() async {
+    final cached = _machinePublicKey;
+    if (cached != null && cached.isNotEmpty) return cached;
+    final prefs = await SharedPreferences.getInstance();
+    var key = prefs.getString('machine_public_key');
+    if (key == null || key.isEmpty) {
+      final rnd = math.Random.secure();
+      key = List<int>.generate(32, (_) => rnd.nextInt(256))
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+      await prefs.setString('machine_public_key', key);
+    }
+    _machinePublicKey = key;
+    return key;
+  }
+
   Future<void> registerRdpMachineAndInstance() async {
     if (api == null || !isLoggedIn) return;
     try {
@@ -1165,6 +1186,15 @@ class AuthState extends ChangeNotifier {
       final mResp = await api!.rdpRegisterMachine(
         hostname: hostname,
         osType: osType,
+        // Стабильный ключ установки: server ON CONFLICT (machine_public_key)
+        // держит ОДНУ машину на установку. Без ключа машина = SHA256(device_id
+        // + hostname) — каждый перелогин/ротация device-токена создавала
+        // НОВУЮ машину, пиннинг rdp_endpoints оставался на старой, промпт
+        // консоли уходил офлайн-устройству («Ждём начала трансляции…»).
+        // Ключ — идентификатор, не кред: сервер не верифицирует подписи.
+        machinePublicKey: await ensureMachinePublicKey(),
+        keyAlgorithm: 'INSTALL_RANDOM',
+        enclaveType: 'app_storage',
       );
       if (mResp['ok'] == true && mResp['machine_id'] != null) {
         _registeredMachineId = mResp['machine_id'].toString();

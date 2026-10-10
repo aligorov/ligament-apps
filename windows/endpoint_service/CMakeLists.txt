@@ -8,6 +8,13 @@ add_executable(ligament_endpoint endpoint_service.cpp console_host_process.cpp)
 # wtsapi32/userenv — Ш5 agent_console_wake; bcrypt — генерация случайных pipe имён для console_host_process
 target_link_libraries(ligament_endpoint PRIVATE winhttp ws2_32 advapi32 wtsapi32 userenv bcrypt)
 
+# Реальная версия приложения (из pubspec через build_msi.ps1) — в
+# rdp_endpoints.agent_version на сервере; «dev» для ручных cmake-сборок.
+if(NOT DEFINED LigamentAgentVersion)
+  set(LigamentAgentVersion "dev")
+endif()
+target_compile_definitions(ligament_endpoint PRIVATE LigamentAgentVersion="${LigamentAgentVersion}")
+
 if(MSVC)
     # статический рантайм: служба не должна тянуть vcruntime.dll
     set_property(TARGET ligament_endpoint PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")

@@ -553,10 +553,14 @@ class ApiClient {
     required String sessionId,
     required String text,
     String? senderName,
+    String? clientId,
   }) async {
     final body = jsonEncode({
       'text': text,
       if (senderName != null && senderName.isNotEmpty) 'sender_name': senderName,
+      // Идемпотентный ключ (0074): повторная запись той же пары
+      // (session_id, client_id) на сервере — no-op, дублей в чате нет.
+      if (clientId != null && clientId.isNotEmpty) 'client_id': clientId,
     });
     http.Response res;
     try {
@@ -587,6 +591,7 @@ class ApiClient {
           'type': 'chat_message',
           'text': text,
           'sender_name': senderName ?? 'Пользователь',
+          if (clientId != null && clientId.isNotEmpty) 'client_id': clientId,
         },
       );
     }
@@ -600,6 +605,25 @@ class ApiClient {
       _cleanUrl('/api/v1/app/support/$sessionId/end'),
       headers: _headers(),
     ).timeout(const Duration(seconds: 4));
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'end_support_failed');
+    }
+  }
+
+  /// Завершение сессии ОПЕРАТОРОМ (инженером): app-токен, сервер пускает
+  /// админа/engineer-роли и владельца (checkOperatorAuth). Прежний путь
+  /// /app/support/{id}/end для оператора всегда давал 403 (только владелец)
+  /// — «завершённая» оператором сессия висела active в очереди часами.
+  Future<void> endSupportSessionAsOperator({
+    required String sessionId,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/support/sessions/$sessionId/end'),
+      headers: _headers(),
+    ).timeout(const Duration(seconds: 4));
+    if (res.statusCode == 409) {
+      return; // уже терминальная — повторное закрытие не ошибка
+    }
     if (res.statusCode != 200) {
       throw ApiException(res.statusCode, 'end_support_failed');
     }

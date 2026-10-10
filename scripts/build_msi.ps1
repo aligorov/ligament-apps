@@ -61,10 +61,17 @@ if (Test-Path "$SvcDir\CMakeLists.txt") {
 $EpDir = "$ClientDir\windows\endpoint_service"
 if (Test-Path "$EpDir\CMakeLists.txt") {
     Write-Host "`n[2c/5] Компиляция Ligament Endpoint Service (ligament_endpoint.exe)..." -ForegroundColor Yellow
-    cmake -B "$EpDir\build" -S "$EpDir" -A x64
+    # Версия агента = версия приложения из pubspec (rdp_endpoints.agent_version
+    # на сервере): «1.0.0» вечно зашитая версия сбивала диагностику обновлений.
+    $epVersion = "dev"
+    $epPubspec = Get-Content "$ClientDir\pubspec.yaml" -Raw
+    if ($epPubspec -match '(?m)^version:\s*(\d+\.\d+\.\d+(?:\+\d+)?)') {
+        $epVersion = $Matches[1]
+    }
+    cmake -B "$EpDir\build" -S "$EpDir" -A x64 "-DLigamentAgentVersion=$epVersion"
     cmake --build "$EpDir\build" --config Release
     if (Test-Path "$EpDir\build\Release\ligament_endpoint.exe") {
-        Write-Host " Успешно скомпилирована служба: ligament_endpoint.exe" -ForegroundColor Green
+        Write-Host " Успешно скомпилирована служба: ligament_endpoint.exe (agent $epVersion)" -ForegroundColor Green
     } else {
         Write-Error "Ошибка: ligament_endpoint.exe не скомпилировалась!"
     }

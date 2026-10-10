@@ -19,6 +19,10 @@ class SupportChatMessage {
   final String senderName;
   final String text;
   final DateTime timestamp;
+  // Идемпотентный ключ отправителя: одинаков в DC-копии и REST-записи —
+  // сервер (миграция 0074) дедупит пару (session_id, client_id) в одну
+  // строку, приёмник глушит эхо DC↔история независимо от расхождения часов.
+  final String clientId;
 
   SupportChatMessage({
     required this.id,
@@ -26,6 +30,7 @@ class SupportChatMessage {
     required this.senderName,
     required this.text,
     required this.timestamp,
+    this.clientId = '',
   });
 
   Map<String, dynamic> toJson() => {
@@ -35,6 +40,7 @@ class SupportChatMessage {
     'sender_name': senderName,
     'text': text,
     'timestamp': timestamp.millisecondsSinceEpoch,
+    if (clientId.isNotEmpty) 'client_id': clientId,
   };
 
   factory SupportChatMessage.fromJson(Map<String, dynamic> json) {
@@ -58,6 +64,7 @@ class SupportChatMessage {
           (json['sender'] == 'operator' ? 'Инженер' : 'Пользователь'),
       text: json['text']?.toString() ?? '',
       timestamp: ts,
+      clientId: json['client_id']?.toString() ?? '',
     );
   }
 }
@@ -381,6 +388,7 @@ class SupportService extends ChangeNotifier {
         final chatMsg = SupportChatMessage.fromJson(item);
         final idx = _chatMessages.indexWhere((m) =>
             m.id == chatMsg.id ||
+            (chatMsg.clientId.isNotEmpty && m.clientId == chatMsg.clientId) ||
             (m.sender == chatMsg.sender &&
                 m.text == chatMsg.text &&
                 m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5));
@@ -409,6 +417,7 @@ class SupportService extends ChangeNotifier {
       senderName: senderName ?? 'Пользователь',
       text: text.trim(),
       timestamp: DateTime.now(),
+      clientId: 'user-msg_${DateTime.now().millisecondsSinceEpoch}',
     );
     _chatMessages.add(msg);
     notifyListeners();
@@ -420,6 +429,7 @@ class SupportService extends ChangeNotifier {
         sessionId: _activeSessionId!,
         text: msg.text,
         senderName: msg.senderName,
+        clientId: msg.clientId,
       ).catchError((e) {
         debugPrint('support_service: ошибка отправки сообщения через API: $e');
       });
@@ -762,12 +772,18 @@ class SupportService extends ChangeNotifier {
         _setupDataChannel(channel);
       };
 
-      // Захват экрана: получение списка всех мониторов на десктопе
+      // Захват экрана: получение списка всех мониторов на десктопе.
+      // Любой шаг захвата — с таймаутом 45с: на Linux XDG-portal (и после
+      // закрытия TCC-диалога на macOS) getDisplayMedia-фьючерс может не
+      // резолвиться и не падать неограниченно долго — сеанс висел
+      // «подключение» часами (инцидент 2026-10-10, SOS к Linux).
       MediaStream screenStream;
       if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         List<DesktopCapturerSource> sources = [];
         try {
-          sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
+          sources = await desktopCapturer
+              .getSources(types: [SourceType.Screen])
+              .timeout(const Duration(seconds: 45));
         } catch (e) {
           debugPrint('support_service: desktopCapturer.getSources error: $e');
         }
@@ -779,41 +795,46 @@ class SupportService extends ChangeNotifier {
           _applyActiveScreenRect(selectedSource.id);
 
           debugPrint('support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
+          const captureTimeout = Duration(seconds: 45);
           try {
-            screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+            screenStream = await navigator.mediaDevices
+                .getDisplayMedia(<String, dynamic>{
               'audio': false,
               'video': {
                 'deviceId': {'exact': selectedSource.id},
               },
-            });
+            }).timeout(captureTimeout);
           } catch (_) {
             try {
-              screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+              screenStream = await navigator.mediaDevices
+                  .getDisplayMedia(<String, dynamic>{
                 'audio': false,
                 'video': {
                   'deviceId': selectedSource.id,
                 },
-              });
+              }).timeout(captureTimeout);
             } catch (_) {
-              screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+              screenStream = await navigator.mediaDevices
+                  .getDisplayMedia(<String, dynamic>{
                 'audio': false,
                 'video': true,
-              });
+              }).timeout(captureTimeout);
             }
           }
         } else {
           debugPrint('support_service: sources пуст, fallback на базовый getDisplayMedia');
-          screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          screenStream = await navigator.mediaDevices
+              .getDisplayMedia(<String, dynamic>{
             'audio': false,
             'video': true,
-          });
+          }).timeout(const Duration(seconds: 45));
         }
       } else {
         // Мобильные платформы и Web
         screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': false,
           'video': true,
-        });
+        }).timeout(const Duration(seconds: 60));
       }
       _localStream = screenStream;
       _requireCaptureEpoch(epoch);
@@ -1486,6 +1507,7 @@ class SupportService extends ChangeNotifier {
         final chatMsg = SupportChatMessage.fromJson(input);
         final isDuplicate = _chatMessages.any((m) =>
             m.id == chatMsg.id ||
+            (chatMsg.clientId.isNotEmpty && m.clientId == chatMsg.clientId) ||
             (m.sender == chatMsg.sender &&
                 m.text == chatMsg.text &&
                 m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5));

@@ -65,6 +65,12 @@
                       Name="RdpAgentKey"
                       Type="raw" />
     </Property>
+    <!-- RDPAGENTENABLED: MSI с RDPAGENTKEY обязан давать РАБОЧУЮ службу сразу
+         после установки — без этого DWORD служба «пассивна» (Valid()=false,
+         цикл сна 30с), endpoint на сервере вечно offline. Без ключа значение
+         безвредно (Valid() требует и ключ). Отключить при явной установке:
+         msiexec ... RDPAGENTENABLED=0. -->
+    <Property Id="RDPAGENTENABLED" Value="1" Secure="yes" />
   </Product>
 
   <Fragment>
@@ -189,6 +195,10 @@
           <RegistryValue Name="FailClose" Type="integer" Value="1" />
           <RegistryValue Name="AllowSelfSigned" Type="integer" Value="0" />
           <RegistryValue Name="BypassAccounts" Type="string" Value="" />
+          <!-- RdpAgentEnabled из свойства RDPAGENTENABLED (default 1):
+               иначе MSI-флоу «msiexec RDPAGENTKEY=… SERVERURL=…» ставил
+               пассивную службу — см. комментарий у свойства. -->
+          <RegistryValue Name="RdpAgentEnabled" Type="integer" Value="[RDPAGENTENABLED]" />
         </RegistryKey>
       </Component>
 

@@ -460,6 +460,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         final chatMsg = SupportChatMessage.fromJson(item);
         final idx = _chatMessages.indexWhere((m) =>
             m.id == chatMsg.id ||
+            (chatMsg.clientId.isNotEmpty && m.clientId == chatMsg.clientId) ||
             (m.sender == chatMsg.sender &&
                 m.text == chatMsg.text &&
                 m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5));
@@ -857,6 +858,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         final msg = SupportChatMessage.fromJson(data);
         final isDuplicate = _chatMessages.any((m) =>
             m.id == msg.id ||
+            (msg.clientId.isNotEmpty && m.clientId == msg.clientId) ||
             (m.sender == msg.sender &&
                 m.text == msg.text &&
                 m.timestamp.difference(msg.timestamp).abs().inSeconds < 5));
@@ -950,12 +952,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (text.trim().isEmpty) return;
     final auth = context.read<AuthState>();
     final operatorName = auth.displayName.isNotEmpty ? auth.displayName : context.stringsRead.defaultEngineerName;
+    final ms = DateTime.now().millisecondsSinceEpoch;
     final msg = SupportChatMessage(
-      id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
+      id: 'msg_$ms',
       sender: 'operator',
       senderName: operatorName,
       text: text.trim(),
       timestamp: DateTime.now(),
+      // Один client_id в DC/WS/REST-копиях: сервер (0074) пишет одну
+      // строку, эхо глушится приёмником по ключу.
+      clientId: 'operator-msg_$ms',
     );
 
     if (!_chatMessages.any((m) => m.id == msg.id)) {
@@ -972,6 +978,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       sessionId: widget.sessionId,
       text: msg.text,
       senderName: operatorName,
+      clientId: msg.clientId,
     ).catchError((e) {
       debugPrint('support_operator: ошибка отправки сообщения через API: $e');
     });
@@ -1610,11 +1617,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (confirm == true && mounted) {
       final auth = context.read<AuthState>();
       final sessId = widget.sessionId;
+      final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
       _releaseAllPressedInputs();
       try {
-        await auth.api?.endSupportSession(sessionId: sessId).timeout(
-          const Duration(seconds: 2),
-        );
+        // Оператор SOS бьёт в operator-маршрут (app-токен + роль инженера):
+        // прежний /app/.../end для него всегда 403 — сессия не закрывалась.
+        if (isOwner) {
+          await auth.api?.endSupportSession(sessionId: sessId).timeout(
+            const Duration(seconds: 2),
+          );
+        } else {
+          await auth.api?.endSupportSessionAsOperator(sessionId: sessId).timeout(
+            const Duration(seconds: 2),
+          );
+        }
       } catch (e) {
         debugPrint('support_operator: endSupportSession error/timeout: $e');
       }
@@ -1641,8 +1657,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final auth = _auth;
     final sessId = widget.sessionId;
     if (auth != null && auth.api != null && sessId.isNotEmpty) {
+      final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
       try {
-        auth.api!.endSupportSession(sessionId: sessId).catchError((_) => null);
+        // dispose() у оператора — тоже корректный конец сессии (окно
+        // закрыли = сеанс завершён), иначе она висит active в очереди.
+        if (isOwner) {
+          auth.api!.endSupportSession(sessionId: sessId).catchError((_) => null);
+        } else {
+          auth.api!.endSupportSessionAsOperator(sessionId: sessId).catchError((_) => null);
+        }
       } catch (_) {}
     }
     super.dispose();

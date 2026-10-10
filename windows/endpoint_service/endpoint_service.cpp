@@ -86,7 +86,13 @@ namespace {
 
 const wchar_t* kSvcName = L"LigamentEndpointService";
 const wchar_t* kAppExe = L"ligament_authenticator.exe"; // будим Ш5 (как service.cpp)
-const char kAgentVersion[] = "1.0.0";
+// Версия агента пробрасывается из pubspec.yaml при сборке MSI
+// (build_msi.ps1 → cmake -DLIGAMENT_AGENT_VERSION). «dev» — локальная
+// сборка без define: на сервере видно, что это не релизная служба.
+#ifndef LigamentAgentVersion
+#define LigamentAgentVersion "dev"
+#endif
+const char kAgentVersion[] = LigamentAgentVersion;
 const int kStableResetMs = 60000;   // сброс backoff после минуты стабильности
 const int kPingEveryMs = 25000;     // app-level ping (сердцебиение ниже WS-пингов WinHTTP)
 const int kDialTimeoutSec = 4;      // connect до 127.0.0.1:3389
@@ -771,6 +777,31 @@ public:
         if (!m_cfg.deviceId.empty()) {
             path += L"&device_id=" + m_cfg.deviceId;
         }
+        // Имя машины (UTF-8 + percent-encoding): ядро v0.8.162 показывает его
+        // в списке машин; без него endpoint безымянный «Endpoint <uuid>».
+        {
+            wchar_t hostBuf[256];
+            DWORD hostLen = (DWORD)(sizeof(hostBuf) / sizeof(hostBuf[0]));
+            if (GetComputerNameW(hostBuf, &hostLen)) {
+                const std::string utf8 = WideToUtf8(std::wstring(hostBuf, hostLen));
+                static const char* kHex = "0123456789ABCDEF";
+                std::wstring enc;
+                enc.reserve(utf8.size() * 3);
+                for (unsigned char c : utf8) {
+                    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_') {
+                        enc += (wchar_t)c;
+                    } else {
+                        enc += L'%';
+                        enc += (wchar_t)kHex[(c >> 4) & 0xF];
+                        enc += (wchar_t)kHex[c & 0xF];
+                    }
+                }
+                if (!enc.empty()) {
+                    path += L"&hostname=" + enc;
+                }
+            }
+        }
         HINTERNET hRequest = WinHttpOpenRequest(m_hConnect, L"GET", path.c_str(), nullptr,
             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
             isHttps ? WINHTTP_FLAG_SECURE : 0);
@@ -1151,7 +1182,11 @@ private:
             if (console != 0xFFFFFFFF) {
                 HANDLE hProcessToken = nullptr;
                 if (OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID, &hProcessToken)) {
-                    if (DuplicateTokenEx(hProcessToken, MAXIMUM_ALLOWED, nullptr, SecurityIdentification, TokenPrimary, &hToken)) {
+                    // SecurityImpersonation (НЕ SecurityIdentification):
+                    // identification-токен по документации не годится для
+                    // CreateProcessAsUserW — спавн приложения до логина падал
+                    // как spawn_failed (wake не поднимал консоль).
+                    if (DuplicateTokenEx(hProcessToken, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &hToken)) {
                         if (SetTokenInformation(hToken, TokenSessionId, &console, sizeof(console))) {
                             targetSession = console;
                         } else {
