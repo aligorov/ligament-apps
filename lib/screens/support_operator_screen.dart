@@ -1497,11 +1497,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _wsReconnectTimer = null;
 
     // Освобождение нативных текстур рендерера и WebRTC-соединения.
-    // По умолчанию — отложенно (350мс), чтобы pop-анимация маршрута
-    // прошла гладко. deferDisposal=false — из dispose(): анимация уже
-    // завершена, текстуру надо снять ДО возврата размера окна (см.
-    // комментарий в dispose — resize при живой WebRTC-текстуре на macOS
-    // калечит композицию окна: полностью чёрный экран).
+    //
+    // macOS: unregister текстуры (renderer.dispose) рядом с pop-анимацией
+    // или resize ловит raster-поток Flutter на живом кадре → дедлок:
+    // контент окна навсегда чёрный при живом титлбаре (воспроизводилось и
+    // при sync-dispose в конце pop [v1.1.22], и при 350мс-defer [v1.1.21]).
+    // Поэтому на macOS текстуру гасим только через 3с — когда raster
+    // гарантированно простаивает. resize при зарегистрированной, но пустой
+    // (srcObject=null) текстуре безопасен: окно консоли свободно ресайзят
+    // даже во время живого стрима.
     void disposeNative() {
       try {
         _remoteRenderer.dispose();
@@ -1511,7 +1515,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } catch (_) {}
     }
 
-    if (deferDisposal) {
+    if (!kIsWeb && Platform.isMacOS) {
+      Future.delayed(const Duration(seconds: 3), disposeNative);
+    } else if (deferDisposal) {
       Future.delayed(const Duration(milliseconds: 350), disposeNative);
     } else {
       disposeNative();
@@ -1560,12 +1566,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void dispose() {
     _chatMessagesNotifier.dispose();
     _keyboardFocus.dispose();
-    // Чёрный экран после «назад» (инцидент console-any-state): прежний
-    // порядок запускал возврат размера окна ПРИ живой WebRTC-текстуре —
-    // на macOS resize окна с зарегистрированной текстурой рендерера
-    // ломает композицию, окно остаётся полностью чёрным. Гасим нативные
-    // ресурсы синхронно (pop-анимация уже завершена), окно возвращаем
-    // с задержкой — после снятия текстуры.
+    // Чёрный экран после «назад» (инцидент console-any-state): корневая
+    // причина — unregister WebRTC-текстуры (renderer.dispose) впритык к
+    // pop-анимации/resize ловит raster-поток macOS на живом кадре → дедлок.
+    // Порядок: srcObject=null и pc.close() синхронно (стоп кадров), окно
+    // возвращаем через 500мс (resize при пустой текстуре безопасен — её
+    // юзеры делают и на живом стриме), нативный dispose текстуры на macOS
+    // _cleanupResources уводит на 3с — см. комментарий там.
     _cleanupResources(deferDisposal: false);
     _restoreWindowSize(delay: const Duration(milliseconds: 500));
     final auth = _auth;
