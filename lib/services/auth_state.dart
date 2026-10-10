@@ -59,22 +59,21 @@ Map<String, dynamic> normalizeBrowserSsoPrompt(Map<String, dynamic> raw) {
 /// - target_machine_id == registeredMachineId (оба непусты).
 ///
 /// false (prompt игнорируется), когда:
-/// - инициатор — мы сами (initiator_device_id == наш device_id): это
-///   устройство — viewer, экран оно не транслирует;
 /// - адресация чужая (поле задано, но не совпало);
 /// - адресация неизвестная/неполная: target-поля пусты, наш device_id
 ///   неизвестен при device-адресации, машина не зарегистрирована при
 ///   machine-адресации. Гейт fail-closed (Д3 аудита): раньше пустые
 ///   target-поля или незарегистрированная машина «проваливались» к
 ///   `return true` и машина начинала трансляцию чужой сессии.
+///
+/// Инициатор==мы (viewer): игнорируем ТОЛЬКО если адресация при этом не
+/// наша — точное совпадение machine/device разрешает self-консоль
+/// (подключение к своему ПК с той же машины, инцидент 2026-10-10).
 bool ownerScreenPromptTargetsThisDevice(
     Map<String, dynamic> prompt, String? ownDeviceId, [String? registeredMachineId]) {
-  final initiator = prompt['initiator_device_id']?.toString();
-  if (initiator != null && initiator.isNotEmpty && initiator == ownDeviceId) {
-    return false;
-  }
   // Точное совпадение по машине (обе стороны непусты) — приоритетная
-  // адресация: machine_id переживает ротацию device_id (Д7).
+  // адресация: machine_id переживает ротацию device_id (Д7) и покрывает
+  // self-консоль (viewer и цель на одной машине).
   final targetMachine = prompt['target_machine_id']?.toString();
   if (targetMachine != null &&
       targetMachine.isNotEmpty &&
@@ -83,10 +82,18 @@ bool ownerScreenPromptTargetsThisDevice(
       targetMachine == registeredMachineId) {
     return true;
   }
-  // Иначе — только точное совпадение по устройству. Любая другая
-  // комбинация (поля пусты, адресация чужая или неполная) — false.
   final target = prompt['target_device_id']?.toString();
-  return target != null && target.isNotEmpty && target == ownDeviceId;
+  final deviceMatch = target != null && target.isNotEmpty && target == ownDeviceId;
+  if (deviceMatch) {
+    return true;
+  }
+  // Мы не цель: если мы инициатор — точно игнор (мы viewer), иначе
+  // чужая/неполная адресация — fail-closed.
+  final initiator = prompt['initiator_device_id']?.toString();
+  if (initiator != null && initiator.isNotEmpty && initiator == ownDeviceId) {
+    return false;
+  }
+  return false;
 }
 
 /// Генерация RFC 4122 v4 UUID с использованием криптостойкого ГСЧ

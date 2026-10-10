@@ -229,7 +229,10 @@ void main() {
       );
     });
 
-    test('инициатор — мы сами: viewer, экран не транслирует (и при адресации в нас)', () {
+    test('инициатор — мы сами без адресации: viewer, экран не транслирует; self-консоль (адресация в нас) — разрешена', () {
+      // Инцидент 2026-10-10 «подключение к своему ПК запрещено»: точное
+      // совпадение machine/device РАЗРЕШАЕТ трансляцию даже когда мы и
+      // инициатор (консоль к своему ПК с той же машины).
       expect(
         ownerScreenPromptTargetsThisDevice(
           {'session_id': 's1', 'initiator_device_id': 'dev-me'},
@@ -246,7 +249,19 @@ void main() {
           },
           'dev-me',
         ),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        ownerScreenPromptTargetsThisDevice(
+          {
+            'session_id': 's1',
+            'initiator_device_id': 'dev-me',
+            'target_machine_id': 'mach-1',
+          },
+          'dev-me',
+          'mach-1',
+        ),
+        isTrue,
       );
     });
   });
