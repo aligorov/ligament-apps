@@ -979,7 +979,7 @@ class AuthState extends ChangeNotifier {
       deviceName: deviceName,
       platform: platform,
       osVersion: osVersion,
-      appVersion: kAppVersion,
+      appVersion: appVersion,
       securityPosture: initialPosture,
       windowsIdentity: WindowsIdentity.snapshot(),
     );

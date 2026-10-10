@@ -14,6 +14,7 @@ import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
+import 'app_version.dart';
 
 Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
   try {
@@ -32,6 +33,7 @@ Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initAppVersion();
 
   // Deep-link ligament://rdp/<uuid> (аудит RDP-11, контракт T6), холодный
   // старт: Windows передаёт URI схемы в argv (windows/runner/main.cpp

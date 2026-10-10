@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/rdp_service_settings_card.dart';
+import '../app_version.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -761,9 +762,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Center(
             child: Column(
               children: [
-                const Text(
-                  'Ligament 2FA v1.0.1+7 (v0.4.49)',
-                  style: TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.bold),
+                Text(
+                  'Ligament 2FA v$appVersion',
+                  style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),
                 Text(
