@@ -4,8 +4,8 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project, bool service_console)
+    : project_(project), service_console_(service_console) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -25,10 +25,13 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  if (service_console_) {
+    service_console_bridge_ = std::make_unique<ServiceConsoleBridge>(flutter_controller_->engine()->messenger());
+  }
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+    if (!service_console_) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -40,6 +43,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  service_console_bridge_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

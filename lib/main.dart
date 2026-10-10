@@ -12,6 +12,7 @@ import 'services/autoshare_service.dart';
 import 'services/deep_link_service.dart';
 import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
+import 'services/service_console_host.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 import 'app_version.dart';
@@ -33,6 +34,21 @@ Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // A service worker has its own machine-scoped authorization. Never restore
+  // a GUI user's tokens, local HTTP listener, notifications, tray or window.
+  if (args.any((arg) => arg.startsWith('--service-console'))) {
+    if (kIsWeb || !Platform.isWindows) exit(2);
+    try {
+      final pipe = serviceConsolePipeFromArgs(args);
+      if (pipe == null) exit(2);
+      runApp(const SizedBox.shrink());
+      await runServiceConsoleHost(pipe);
+    } catch (_) {
+      debugPrint('service_console: bootstrap_failed');
+      exit(2);
+    }
+    return;
+  }
   await initAppVersion();
 
   // Deep-link ligament://rdp/<uuid> (аудит RDP-11, контракт T6), холодный

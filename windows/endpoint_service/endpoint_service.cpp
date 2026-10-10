@@ -60,6 +60,7 @@
 #include <wtsapi32.h>   // WTSGetActiveConsoleSessionId / WTSQueryUserToken (Ш5)
 #include <tlhelp32.h>   // Toolhelp-снапшот: ligament_authenticator уже в сессии?
 #include <userenv.h>    // CreateEnvironmentBlock (Ш5: окружение пользователя)
+#include "console_host_process.h" // Ш6: SYSTEM-воркер консоли в сессии Winlogon/LogonUI
 #include <stdio.h>
 #include <cctype>
 #include <cwctype>
@@ -955,6 +956,7 @@ public:
         }
         if (m_ping.joinable()) m_ping.join();
         CloseAllStreams();
+        m_consoleHost.Stop();
     }
 
 private:
@@ -971,6 +973,7 @@ private:
     DWORD m_httpStatus = 0;
     bool m_lastFatalAuth = false;
 
+    ConsoleHostProcess m_consoleHost;        // Ш6: процесс захвата консоли под SYSTEM
     std::mutex m_sendMu;                     // единый писатель WS (серилизует кадры стримов)
     std::mutex m_streamsMu;
     // Владение ctx — разделяемое (RDP-09): карта + захваты по значению в
@@ -1028,6 +1031,23 @@ private:
             // Ш5 (console-any-state): юзер вошёл, приложение закрыто —
             // поднять клиент в консольной сессии, ответить wake_result.
             HandleConsoleWake(json);
+        } else if (type == "console_start") {
+            // Ш6: ядро запрашивает старт headless-воркера консоли под SYSTEM
+            std::string sessId = JsonExtractString(json, "session_id");
+            std::string sUrl = JsonExtractString(json, "server_url");
+            std::string token = JsonExtractString(json, "host_token");
+            std::wstring wsUrl = Utf8ToWide(sUrl);
+            Log(L"console_start: сессия %S, URL %s", sessId.c_str(), wsUrl.c_str());
+            m_consoleHost.Start(sessId, wsUrl, token, [this, sessId](bool ok, const char* reason) {
+                Log(L"console_start_result: сессия %S -> %d (%S)", sessId.c_str(), ok ? 1 : 0, reason ? reason : "");
+                WsSendText("{\"type\":\"console_start_result\",\"session_id\":\"" + sessId +
+                           "\",\"started\":" + (ok ? "true" : "false") +
+                           ",\"reason\":\"" + std::string(reason ? reason : "") + "\"}");
+            });
+        } else if (type == "console_stop") {
+            std::string sessId = JsonExtractString(json, "session_id");
+            Log(L"console_stop: сессия %S", sessId.c_str());
+            m_consoleHost.Stop(sessId);
         } else if (type == "pong") {
             // app-level heartbeat ответ — ничего не делаем
         }

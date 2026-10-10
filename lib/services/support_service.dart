@@ -199,6 +199,32 @@ bool _isValidIceUrl(String url) {
 
 /// Сервис управления WebRTC экраном и вводом для удаленной поддержки (SOS).
 class SupportService extends ChangeNotifier {
+  SupportService({
+    this.serviceHost = false,
+    this.serviceInput,
+    this.serviceReleaseInput,
+  });
+
+  /// SYSTEM workers expose only screen and input. They must never inherit
+  /// ordinary SOS file/clipboard/chat features with SYSTEM privileges.
+  final bool serviceHost;
+  final Future<void> Function(Map<String, dynamic>)? serviceInput;
+  final Future<void> Function()? serviceReleaseInput;
+
+  static bool serviceHostCommandAllowed(String type) => const {
+    'screen_list', 'switch_screen', 'mouse_move', 'mouse_down', 'mouse_up',
+    'mouse_click', 'click', 'wheel', 'mouse_wheel', 'key_down', 'key_up',
+    'block_input', 'hotkey',
+  }.contains(type);
+
+  int _captureEpoch = 0;
+
+  void _requireCaptureEpoch(int epoch) {
+    if (epoch != _captureEpoch || _isStopping) {
+      throw StateError('capture_cancelled');
+    }
+  }
+
   /// Лимиты файловых передач (защита памяти/диска от нелимитированных закачек)
   static const int _maxFileTransferBytes = 50 * 1024 * 1024; // 50 МБ
   static const int _maxConcurrentDownloads = 2;
@@ -225,8 +251,9 @@ class SupportService extends ChangeNotifier {
   List<Map<String, dynamic>>? _iceServersFromConfig;
 
   /// Актуальный список ICE-серверов для RTCPeerConnection.
-  List<Map<String, dynamic>> get effectiveIceServers =>
-      (_iceServersFromConfig != null && _iceServersFromConfig!.isNotEmpty)
+  List<Map<String, dynamic>> get effectiveIceServers => serviceHost
+      ? (_iceServersFromConfig ?? const [])
+      : (_iceServersFromConfig != null && _iceServersFromConfig!.isNotEmpty)
           ? _iceServersFromConfig!
           : emergencyIceServers;
 
@@ -633,6 +660,7 @@ class SupportService extends ChangeNotifier {
     required ApiClient api,
     String accessMode = 'full_control',
   }) async {
+    final epoch = ++_captureEpoch;
     _activeSessionId = sessionId;
     _api = api;
     _accessMode = accessMode;
@@ -667,7 +695,9 @@ class SupportService extends ChangeNotifier {
         'sdpSemantics': 'unified-plan',
       };
 
+      _requireCaptureEpoch(epoch);
       _peerConnection = await createPeerConnection(rtcConfig);
+      _requireCaptureEpoch(epoch);
 
       // ICE кандидаты отправляются через серверный сигнальный шлюз оператору
       _peerConnection!.onIceCandidate = (candidate) {
@@ -721,10 +751,12 @@ class SupportService extends ChangeNotifier {
       try {
         final dcInit = RTCDataChannelInit()..ordered = true;
         final dc = await _peerConnection!.createDataChannel('control', dcInit);
+        _requireCaptureEpoch(epoch);
         _setupDataChannel(dc);
       } catch (e) {
         debugPrint('support_service: ошибка предварительного создания DataChannel: $e');
       }
+      _requireCaptureEpoch(epoch);
 
       _peerConnection!.onDataChannel = (channel) {
         _setupDataChannel(channel);
@@ -739,6 +771,7 @@ class SupportService extends ChangeNotifier {
         } catch (e) {
           debugPrint('support_service: desktopCapturer.getSources error: $e');
         }
+        _requireCaptureEpoch(epoch);
         if (sources.isNotEmpty) {
           _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
           final selectedSource = sources.first;
@@ -783,6 +816,7 @@ class SupportService extends ChangeNotifier {
         });
       }
       _localStream = screenStream;
+      _requireCaptureEpoch(epoch);
 
       for (final track in _localStream!.getVideoTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
@@ -790,6 +824,7 @@ class SupportService extends ChangeNotifier {
 
       // m-6: видео экрана — читаемость текста важнее плавности
       await _applyVideoSenderTuning();
+      _requireCaptureEpoch(epoch);
 
       // m-1: на macOS без Accessibility-разрешения инъекции ввода молча
       // игнорируются — честно подсказываем пользователю до начала сеанса.
@@ -802,12 +837,13 @@ class SupportService extends ChangeNotifier {
       // Создаем и отправляем SDP Offer (M-1: state=active только после
       // onConnectionState==connected)
       await _sendOffer();
+      _requireCaptureEpoch(epoch);
       _state = SupportSessionState.connecting;
       _armEstablishmentTimeouts();
       notifyListeners();
     } catch (e) {
       debugPrint('support_service: ошибка инициализации захвата экрана: $e');
-      stopScreenSharing();
+      await stopScreenSharing();
       rethrow;
     }
   }
@@ -950,6 +986,7 @@ class SupportService extends ChangeNotifier {
 
   /// M-8: держим экран включенным, пока активна SOS-сессия (мобильные).
   void _setWakelock(bool enabled) {
+    if (serviceHost) return;
     if (kIsWeb) return;
     try {
       if (enabled) {
@@ -1273,6 +1310,7 @@ class SupportService extends ChangeNotifier {
   }
 
   Future<void> _sendCurrentTelemetry() async {
+    if (serviceHost) return;
     if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) return;
     try {
       final cpu = await _telemetry.collectCpuMetrics();
@@ -1425,6 +1463,7 @@ class SupportService extends ChangeNotifier {
   void _handleRemoteInput(Map<String, dynamic> input) async {
     final type = (input['type'] ?? input['action'])?.toString();
     if (type == null) return;
+    if (serviceHost && !serviceHostCommandAllowed(type)) return;
 
     // Гейт режима «Только просмотр» (view_only): разрешены список экранов,
     // чат и ПЕРЕКЛЮЧЕНИЕ транслируемого монитора (m-5: просмотр нескольких
@@ -1523,6 +1562,22 @@ class SupportService extends ChangeNotifier {
       return;
     }
 
+    if (serviceHost) {
+      final inject = serviceInput;
+      if (inject == null) return;
+      try {
+        await inject({
+          ...input,
+          'type': type,
+          if (_currentScreenRect != null)
+            'screen_rect': _currentScreenRect!.toJson(),
+        });
+      } catch (_) {
+        await _failSession('Служба не смогла выполнить удалённый ввод');
+      }
+      return;
+    }
+
     try {
       debugPrint('support_service: remote input command: $type');
       switch (type) {
@@ -1575,12 +1630,19 @@ class SupportService extends ChangeNotifier {
 
   /// Остановка трансляции экрана и освобождение ресурсов (асинхронно, с защитой от рекурсии)
   Future<void> stopScreenSharing() async {
+    ++_captureEpoch;
     if (_isStopping) return;
     _isStopping = true;
 
     try {
       // 1. Немедленно освобождаем мышь и ввод пользователя
-      InputInjector.instance.setInputBlocked(false);
+      if (serviceHost) {
+        try {
+          await serviceReleaseInput?.call();
+        } catch (_) {}
+      } else {
+        InputInjector.instance.setInputBlocked(false);
+      }
       _setWakelock(false);
 
       _telemetryTimer?.cancel();
@@ -1656,7 +1718,7 @@ class SupportService extends ChangeNotifier {
       debugPrint('support_service: ошибка при stopScreenSharing: $e');
     } finally {
       _isStopping = false;
-      InputInjector.instance.setInputBlocked(false);
+      if (!serviceHost) InputInjector.instance.setInputBlocked(false);
     }
   }
 

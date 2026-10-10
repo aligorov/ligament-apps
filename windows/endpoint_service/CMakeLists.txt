@@ -4,10 +4,9 @@ project(ligament_endpoint LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(ligament_endpoint endpoint_service.cpp)
-# wtsapi32/userenv — Ш5 agent_console_wake (WTSQueryUserToken,
-# CreateEnvironmentBlock); стиль — как windows/service/CMakeLists.txt
-target_link_libraries(ligament_endpoint PRIVATE winhttp ws2_32 advapi32 wtsapi32 userenv)
+add_executable(ligament_endpoint endpoint_service.cpp console_host_process.cpp)
+# wtsapi32/userenv — Ш5 agent_console_wake; bcrypt — генерация случайных pipe имён для console_host_process
+target_link_libraries(ligament_endpoint PRIVATE winhttp ws2_32 advapi32 wtsapi32 userenv bcrypt)
 
 if(MSVC)
     # статический рантайм: служба не должна тянуть vcruntime.dll
