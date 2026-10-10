@@ -515,6 +515,28 @@ bool AppRunningInSession(DWORD sessionId) {
     return found;
 }
 
+// Проверка, запущен ли ligament_authenticator.exe в любой сессии на ПК
+bool FindRunningAppSession(DWORD& outSessionId) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, kAppExe) != 0) continue;
+            DWORD pidSession = 0;
+            if (ProcessIdToSessionId(pe.th32ProcessID, &pidSession)) {
+                outSessionId = pidSession;
+                found = true;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return found;
+}
+
 // Запуск приложения в пользовательской сессии (порт LaunchAppInSession из
 // service.cpp; hToken уже запрошен вызывающим через WTSQueryUserToken —
 // отдельный шаг с отдельным кодом ошибки no_user_token).
@@ -547,6 +569,12 @@ bool SpawnAppInSession(HANDLE hToken, DWORD sessionId, const std::wstring& autos
     PROCESS_INFORMATION pi = {};
     BOOL ok = CreateProcessAsUserW(hToken, appPath, args, nullptr, nullptr,
         FALSE, env ? CREATE_UNICODE_ENVIRONMENT : 0, env, nullptr, &si, &pi);
+    if (!ok) {
+        // Fallback на winsta0\Winlogon (экран блокировки / экран входа Windows)
+        si.lpDesktop = (LPWSTR)L"winsta0\\Winlogon";
+        ok = CreateProcessAsUserW(hToken, appPath, args, nullptr, nullptr,
+            FALSE, env ? CREATE_UNICODE_ENVIRONMENT : 0, env, nullptr, &si, &pi);
+    }
     if (env) DestroyEnvironmentBlock(env);
     if (ok) {
         Log(L"console_wake: клиент запущен в сессии %lu (pid %lu)", sessionId, pi.dwProcessId);
@@ -1002,36 +1030,71 @@ private:
     void HandleConsoleWake(const std::string& json) {
         const std::string sessionId = JsonExtractString(json, "session_id");
 
-        // 1) Есть ли вообще подключённая к физической консоли сессия.
-        DWORD console = WTSGetActiveConsoleSessionId();
-        if (console == 0xFFFFFFFF) {
-            Log(L"agent_console_wake %S: нет активной консольной сессии (ПК без вошедшего пользователя)",
-                sessionId.c_str());
-            SendConsoleWakeResult(sessionId, false, "no_user_session");
-            return;
-        }
-
-        // 2) Токен пользователя этой сессии (служба — LocalSystem, имеет
-        //    SE_TCB_NAME; отказ = сессия есть, вошедшего юзера нет).
-        HANDLE hToken = nullptr;
-        if (!WTSQueryUserToken(console, &hToken)) {
-            Log(L"agent_console_wake %S: WTSQueryUserToken(сессия %lu) failed %lu",
-                sessionId.c_str(), console, GetLastError());
-            SendConsoleWakeResult(sessionId, false, "no_user_token");
-            return;
-        }
-
-        // 3) Уже запущен в ЭТОЙ сессии — второй экземпляр не спавним.
-        if (AppRunningInSession(console)) {
-            CloseHandle(hToken);
+        // 1) Уже запущен в любой сессии (включая консольную) — второй экземпляр не спавним.
+        DWORD runningSession = 0xFFFFFFFF;
+        if (FindRunningAppSession(runningSession)) {
             Log(L"agent_console_wake %S: клиент уже запущен в сессии %lu",
-                sessionId.c_str(), console);
+                sessionId.c_str(), runningSession);
             SendConsoleWakeResult(sessionId, true, "already_running");
             return;
         }
 
-        // 4) Спавн с --autoshare=<session_id> (авто-логин приложения).
-        const bool ok = SpawnAppInSession(hToken, console, Utf8ToWide(sessionId));
+        // 2) Ищем токен пользователя: сначала в активной консольной сессии.
+        DWORD targetSession = WTSGetActiveConsoleSessionId();
+        HANDLE hToken = nullptr;
+        if (targetSession != 0xFFFFFFFF) {
+            WTSQueryUserToken(targetSession, &hToken);
+        }
+
+        // 3) Если в консольной сессии токена нет — перебираем остальные сессии (экран заблокирован / Fast User Switching).
+        if (!hToken) {
+            PWTS_SESSION_INFOW pSessions = nullptr;
+            DWORD count = 0;
+            if (WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pSessions, &count)) {
+                for (int pass = 0; pass < 3 && hToken == nullptr; pass++) {
+                    WTS_CONNECTSTATE_CLASS desiredState = (pass == 0) ? WTSActive : ((pass == 1) ? WTSConnected : WTSDisconnected);
+                    for (DWORD i = 0; i < count; i++) {
+                        if (pSessions[i].State == desiredState && pSessions[i].SessionId != targetSession) {
+                            if (WTSQueryUserToken(pSessions[i].SessionId, &hToken)) {
+                                targetSession = pSessions[i].SessionId;
+                                break;
+                            }
+                        }
+                    }
+                }
+                WTSFreeMemory(pSessions);
+            }
+        }
+
+        // 4) Если пользователя нет вообще (экран входа Windows / до логона) —
+        // дублируем SYSTEM токен службы в консольную сессию.
+        if (!hToken) {
+            DWORD console = (targetSession != 0xFFFFFFFF) ? targetSession : WTSGetActiveConsoleSessionId();
+            if (console != 0xFFFFFFFF) {
+                HANDLE hProcessToken = nullptr;
+                if (OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID, &hProcessToken)) {
+                    if (DuplicateTokenEx(hProcessToken, MAXIMUM_ALLOWED, nullptr, SecurityIdentification, TokenPrimary, &hToken)) {
+                        if (SetTokenInformation(hToken, TokenSessionId, &console, sizeof(console))) {
+                            targetSession = console;
+                        } else {
+                            CloseHandle(hToken);
+                            hToken = nullptr;
+                        }
+                    }
+                    CloseHandle(hProcessToken);
+                }
+            }
+        }
+
+        if (!hToken) {
+            Log(L"agent_console_wake %S: не удалось получить токен для сессии %lu",
+                sessionId.c_str(), targetSession);
+            SendConsoleWakeResult(sessionId, false, "no_user_token");
+            return;
+        }
+
+        // 5) Спавн с --autoshare=<session_id> (авто-логин приложения).
+        const bool ok = SpawnAppInSession(hToken, targetSession, Utf8ToWide(sessionId));
         CloseHandle(hToken);
         SendConsoleWakeResult(sessionId, ok, ok ? "launched" : "spawn_failed");
     }

@@ -8,8 +8,24 @@ import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/rdp_service_settings_card.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        context.read<AuthState>().refreshProfile();
+        context.read<AuthState>().refreshRelays();
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -108,12 +124,21 @@ class SettingsScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Icon(Icons.shield_outlined, color: Color(0xFF38BDF8), size: 20),
-                    const SizedBox(width: 8),
-                    Text(
-                      s.security2FASection,
-                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                    Row(
+                      children: [
+                        const Icon(Icons.shield_outlined, color: Color(0xFF38BDF8), size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          s.security2FASection,
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF38BDF8)),
+                      onPressed: () => auth.refreshProfile(),
                     ),
                   ],
                 ),

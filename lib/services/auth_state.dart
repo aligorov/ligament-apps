@@ -554,7 +554,10 @@ class AuthState extends ChangeNotifier {
       }
     }
 
-    final cachedRelaysRaw = prefs.getString('cached_relays');
+    final relayCacheKey = serverUrl != null
+        ? 'cached_relays_${serverUrl!.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}'
+        : 'cached_relays';
+    final cachedRelaysRaw = prefs.getString(relayCacheKey);
     if (cachedRelaysRaw != null && cachedRelaysRaw.isNotEmpty) {
       try {
         final decoded = jsonDecode(cachedRelaysRaw);
@@ -562,6 +565,8 @@ class AuthState extends ChangeNotifier {
           relays = decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
         }
       } catch (_) {}
+    } else {
+      relays = [];
     }
 
     // Миграция: ранее токен хранился в SharedPreferences в открытом виде.
@@ -1008,6 +1013,7 @@ class AuthState extends ChangeNotifier {
     if (deviceId != null && deviceId.isNotEmpty) {
       await localDetect.start(deviceId);
     }
+    await refreshProfile();
     await refreshAll();
     // Фаза 2: после успешного логина один раз предъявляем CP-билет.
     unawaited(presentSsoTicket());
@@ -1060,6 +1066,7 @@ class AuthState extends ChangeNotifier {
     activeNotificationPrompt = null;
     activeRelayEndpoint = null;
     activeRelayName = null;
+    relays.clear();
     pendingChallenges.clear();
     allowedApps.clear();
     history.clear();
@@ -1091,6 +1098,7 @@ class AuthState extends ChangeNotifier {
   Future<void> refreshAll() async {
     if (!isLoggedIn) return;
     final tasks = <Future>[
+      refreshProfile(),
       loadPendingChallenges(),
       loadAllowedApps(),
       loadHistory(),
@@ -1217,6 +1225,18 @@ class AuthState extends ChangeNotifier {
     });
   }
 
+  /// Обновление профиля текущего пользователя (включая статус факторов 2FA)
+  Future<void> refreshProfile() async {
+    if (api == null || !isLoggedIn) return;
+    try {
+      final p = await api!.getProfile();
+      currentUser = p;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('auth_state: ошибка обновления профиля: $e');
+    }
+  }
+
   /// Загрузка и кэширование списка филиальных Relay-узлов
   Future<void> refreshRelays() async {
     if (api == null) return;
@@ -1224,10 +1244,16 @@ class AuthState extends ChangeNotifier {
       final cfg = await api!.getConfig();
       if (cfg['relays'] is List) {
         relays = (cfg['relays'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('cached_relays', jsonEncode(relays));
-        notifyListeners();
+      } else {
+        relays = [];
       }
+      final prefs = await SharedPreferences.getInstance();
+      final relayCacheKey = serverUrl != null
+          ? 'cached_relays_${serverUrl!.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}'
+          : 'cached_relays';
+      await prefs.setString(relayCacheKey, jsonEncode(relays));
+      await prefs.remove('cached_relays');
+      notifyListeners();
       // ICE-серверы (STUN/TURN) для WebRTC удаленной помощи (B-1)
       final iceFromCfg = parseIceServersConfig(cfg);
       if (iceFromCfg.isNotEmpty) {
