@@ -776,6 +776,14 @@ class InputInjector {
       const keyUp = 0x0002;
 
       switch (hotkey) {
+        case 'win_space':
+        case 'alt_shift':
+        case 'ctrl_shift':
+          final keys = hotkey == 'win_space' ? [vkLWin, 0x20]
+              : hotkey == 'alt_shift' ? [vkMenu, vkShift] : [vkControl, vkShift];
+          for (final key in keys) { _winKeybdEvent?.call(key, 0, 0, 0); }
+          for (final key in keys.reversed) { _winKeybdEvent?.call(key, 0, keyUp, 0); }
+          break;
         case 'win_key':
           _winKeybdEvent?.call(vkLWin, 0, 0, 0);
           _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);

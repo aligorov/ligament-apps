@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +14,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../api/client.dart';
+import '../services/remote_keyboard.dart';
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
 import '../services/ws_service.dart';
@@ -123,7 +125,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   /// Ш3: активна ошибка стадии с кнопкой «Повторить».
   bool get _stageRetryActive =>
-      _statusKey == 'pc_no_offer' || _statusKey == 'pc_no_track' || _statusKey == 'no_first_frame';
+      _statusKey == 'pc_no_offer' ||
+      _statusKey == 'pc_no_track' ||
+      _statusKey == 'no_first_frame';
 
   void _setStatus(String key, [String? arg]) {
     setState(() {
@@ -189,6 +193,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   OperatorZoomMode _zoomMode = OperatorZoomMode.fit;
   double _zoomScale = 1.0;
+  final TransformationController _videoTransform = TransformationController();
+
+  void _applyVideoZoom(double scale) {
+    _zoomScale = scale.clamp(1.0, 8.0);
+    _videoTransform.value =
+        Matrix4.diagonal3Values(_zoomScale, _zoomScale, 1.0);
+  }
+
   final FocusNode _keyboardFocus = FocusNode();
   final GlobalKey _videoKey = GlobalKey();
 
@@ -198,13 +210,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   final Map<int, int> _pointerDownButtons = {};
 
   /// Гарантированное освобождение всех зажатых кнопок мыши при потере фокуса или выходе
-  void _releaseAllPointerButtons() {
-    if (_pointerDownButtons.isEmpty) return;
-    for (final btn in _pointerDownButtons.values) {
-      _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': 0.0, 'y': 0.0});
-    }
-    _pointerDownButtons.clear();
-  }
 
   /// Backoff реконнекта операторского WS (M-5).
   final ReconnectBackoff _wsBackoff = ReconnectBackoff();
@@ -223,19 +228,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Timer? _firstFrameStageTimer;
   Timer? _pcGraceTimer;
 
-  final Set<String> _pressedKeys = {};
+  final RemoteKeyboard _remoteKeyboard = RemoteKeyboard();
 
   void _startLeaseRenewal() {
     _leaseTimer?.cancel();
     final auth = context.read<AuthState>();
     // Немедленное первое продление при открытии консоли (защита от истечения initial lease)
-    auth.api?.renewSupportLease(widget.sessionId).catchError((_) => <String, dynamic>{});
+    auth.api
+        ?.renewSupportLease(widget.sessionId)
+        .catchError((_) => <String, dynamic>{});
     _leaseTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!mounted || _isCleanedUp) return;
       try {
         await auth.api?.renewSupportLease(widget.sessionId);
       } on ApiException catch (e) {
-        if (e.statusCode == 410 || e.statusCode == 404 || e.statusCode == 403 || e.code == 'session_ended') {
+        if (e.statusCode == 410 ||
+            e.statusCode == 404 ||
+            e.statusCode == 403 ||
+            e.code == 'session_ended') {
           _leaseTimer?.cancel();
           _leaseTimer = null;
           // Ш4: lease 410/404/403 — единое завершение с корректным выходом
@@ -317,13 +327,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': 0.0, 'y': 0.0});
     }
     _pointerDownButtons.clear();
-    for (final key in _pressedKeys.toList()) {
-      _sendDataMessage({'type': 'key_up', 'key': key});
+    for (final message in _remoteKeyboard.releaseAll()) {
+      _sendDataMessage(message);
     }
-    _pressedKeys.clear();
   }
 
-  bool get _isViewOnlySession => widget.sessionData['access_mode']?.toString() == 'view_only';
+  bool get _isViewOnlySession =>
+      widget.sessionData['access_mode']?.toString() == 'view_only';
 
   /// Ш3/A-20: сброс стадийной готовности при переподключении (§4.3).
   void _resetStageReadiness() {
@@ -422,29 +432,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   late final ValueNotifier<List<SupportChatMessage>> _chatMessagesNotifier;
   int _unreadChatCount = 0;
 
-  Size? _previousWindowSize;
-
   Future<void> _expandWindowForOperator() async {
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
-        _previousWindowSize = await windowManager.getSize();
         await windowManager.setMinimumSize(const Size(800, 600));
         await windowManager.setSize(const Size(1280, 820));
         await windowManager.setResizable(true);
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _restoreWindowSize({Duration? delay}) async {
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
-      try {
-        if (_previousWindowSize != null) {
-          if (delay != null) {
-            await Future.delayed(delay);
-          }
-          await windowManager.setMinimumSize(const Size(380, 600));
-          await windowManager.setSize(_previousWindowSize!);
-        }
       } catch (_) {}
     }
   }
@@ -493,7 +487,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   void initState() {
     super.initState();
-    _chatMessagesNotifier = ValueNotifier<List<SupportChatMessage>>(_chatMessages);
+    _chatMessagesNotifier =
+        ValueNotifier<List<SupportChatMessage>>(_chatMessages);
     _expandWindowForOperator();
     _isChatOnly = widget.isChatOnly;
     _currentNumberMatch = widget.numberMatch;
@@ -541,9 +536,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (serverUrl.startsWith('https://')) {
       serverUrl = 'wss://${serverUrl.substring(8)}';
     } else {
-      _setStatus('conn_error', auth.isRu
-          ? 'Требуется https/wss адрес сервера (открытый ws:// запрещён)'
-          : 'https/wss server URL required (plain ws:// is forbidden)');
+      _setStatus(
+          'conn_error',
+          auth.isRu
+              ? 'Требуется https/wss адрес сервера (открытый ws:// запрещён)'
+              : 'https/wss server URL required (plain ws:// is forbidden)');
       return;
     }
     if (serverUrl.endsWith('/')) {
@@ -576,7 +573,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             // Ш3 (Д5): WS-открытие — только сигнальный канал, НЕ «подключено»
             _signalReady = true;
             if (_statusKey == 'disconnected') {
-              _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
+              _statusKey =
+                  consoleConnectionStatusKey(_isConnected, _frameReady);
               _statusArg = null;
             }
           });
@@ -656,7 +654,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (!mounted || _isCleanedUp) return;
     _wsReconnectTimer?.cancel();
     final delay = _wsBackoff.nextDelay();
-    debugPrint('support_operator: WS реконнект через ${delay.inMilliseconds}мс');
+    debugPrint(
+        'support_operator: WS реконнект через ${delay.inMilliseconds}мс');
     _wsReconnectTimer = Timer(delay, () {
       if (mounted && !_isCleanedUp) {
         _connectWebSocket();
@@ -736,7 +735,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _statusArg = state.name;
           });
           _schedulePcGraceTermination();
-        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
           // Ш4: Disconnected — временный статус, сессию НЕ завершаем;
           // идущий grace-таймер перезапускаем, чтобы ICE restart успел.
           setState(() {
@@ -758,7 +758,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
 
     _peerConnection!.onTrack = (RTCTrackEvent event) async {
-      debugPrint('support_operator: remote track received: ${event.track.kind}');
+      debugPrint(
+          'support_operator: remote track received: ${event.track.kind}');
       if (mounted) {
         // Ш3/A-06: трек пришёл — offer/track стадии пройдены (Д5: трек ≠ кадр)
         _cancelOfferStageTimer();
@@ -790,7 +791,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
 
     _peerConnection!.onDataChannel = (channel) {
-      debugPrint('support_operator: received remote data channel: ${channel.label}');
+      debugPrint(
+          'support_operator: received remote data channel: ${channel.label}');
       _setupDataChannel(channel);
     };
   }
@@ -828,8 +830,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (mounted) {
         setState(() {
           _screens = list.cast<Map<String, dynamic>>();
-          _selectedScreenId = sel ?? (_screens.isNotEmpty ? _screens.first['id']?.toString() : null);
+          _selectedScreenId = sel ??
+              (_screens.isNotEmpty ? _screens.first['id']?.toString() : null);
         });
+      }
+    } else if (type == 'clipboard_error') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(context.stringsRead.isRu
+              ? 'Буфер обмена недоступен на защищённом экране Windows'
+              : 'Clipboard unavailable on the Windows secure desktop'),
+        ));
       }
     } else if (type == 'block_input_ack') {
       final ack = data['blocked'] == true;
@@ -845,7 +856,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         setState(() {
           _cpuPercent = (data['cpu_percent'] as num?)?.toInt() ?? _cpuPercent;
           _cpuWarning = data['cpu_warning'] == true || _cpuPercent >= 90;
-          _diskPercent = (data['disk_percent'] as num?)?.toInt() ?? _diskPercent;
+          _diskPercent =
+              (data['disk_percent'] as num?)?.toInt() ?? _diskPercent;
           _diskFreeGb = (data['disk_free_gb'] as num?)?.toInt() ?? _diskFreeGb;
           _diskWarning = data['disk_warning'] == true;
         });
@@ -874,9 +886,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             });
             if (msg.sender != 'operator' && !widget.ownerMode) {
               context.read<AuthState>().alert.triggerChatNotification(
-                sender: msg.senderName,
-                message: msg.text,
-              );
+                    sender: msg.senderName,
+                    message: msg.text,
+                  );
             }
           }
         }
@@ -886,7 +898,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _handleWsMessage(dynamic message) async {
     try {
-      final text = message is String ? message : utf8.decode(message as List<int>);
+      final text =
+          message is String ? message : utf8.decode(message as List<int>);
       final data = jsonDecode(text) as Map<String, dynamic>;
 
       final payload = (data['data'] is Map<String, dynamic>)
@@ -928,7 +941,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           cMap['sdpMLineIndex'] as int?,
         );
         final remoteDesc = await _peerConnection?.getRemoteDescription();
-        if (remoteDesc == null || remoteDesc.type == null || remoteDesc.type!.isEmpty) {
+        if (remoteDesc == null ||
+            remoteDesc.type == null ||
+            remoteDesc.type!.isEmpty) {
           _pendingCandidates.add(candidate);
         } else {
           await _peerConnection?.addCandidate(candidate);
@@ -939,7 +954,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _onSessionTerminated('session_ended');
       } else {
         final innerType = payload['type'] ?? data['type'];
-        if (innerType != null && innerType != 'offer' && innerType != 'answer' && innerType != 'candidate') {
+        if (innerType != null &&
+            innerType != 'offer' &&
+            innerType != 'answer' &&
+            innerType != 'candidate') {
           _handleDataChannelMessage(payload['type'] != null ? payload : data);
         }
       }
@@ -951,7 +969,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _sendChatMessage(String text) {
     if (text.trim().isEmpty) return;
     final auth = context.read<AuthState>();
-    final operatorName = auth.displayName.isNotEmpty ? auth.displayName : context.stringsRead.defaultEngineerName;
+    final operatorName = auth.displayName.isNotEmpty
+        ? auth.displayName
+        : context.stringsRead.defaultEngineerName;
     final ms = DateTime.now().millisecondsSinceEpoch;
     final msg = SupportChatMessage(
       id: 'msg_$ms',
@@ -974,16 +994,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _sendDataMessage(msg.toJson());
     _sendWsSignal(msg.toJson());
 
-    auth.api?.sendSupportChatMessage(
+    auth.api
+        ?.sendSupportChatMessage(
       sessionId: widget.sessionId,
       text: msg.text,
       senderName: operatorName,
       clientId: msg.clientId,
-    ).catchError((e) {
+    )
+        .catchError((e) {
       debugPrint('support_operator: ошибка отправки сообщения через API: $e');
     });
   }
-
 
   void _showOperatorChatModal() {
     setState(() {
@@ -1018,7 +1039,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               }
             });
 
-            final clientDisplayName = widget.sessionData['employee_name'] ?? widget.sessionData['username'] ?? strings.defaultClientName;
+            final clientDisplayName = widget.sessionData['employee_name'] ??
+                widget.sessionData['username'] ??
+                strings.defaultClientName;
             return Container(
               height: MediaQuery.of(context).size.height * 0.75,
               decoration: const BoxDecoration(
@@ -1033,90 +1056,129 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               child: Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
                     child: Row(
                       children: [
-                        const Icon(Icons.chat, color: Color(0xFF38BDF8), size: 22),
+                        const Icon(Icons.chat,
+                            color: Color(0xFF38BDF8), size: 22),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             strings.chatWithUser(clientDisplayName),
-                            style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold),
                           ),
                         ),
                         IconButton(
-                          icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                          icon: const Icon(Icons.close,
+                              color: Color(0xFF94A3B8), size: 20),
                           onPressed: () => Navigator.of(ctx).pop(),
                           padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                          constraints:
+                              const BoxConstraints(minWidth: 32, minHeight: 32),
                         ),
                       ],
                     ),
                   ),
                   const Divider(color: Color(0xFF1E293B), height: 1),
-
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
-                        _buildOperatorChatChip(strings.isRu ? '👋 Здравствуйте! Подключился к экрану.' : '👋 Hello! Connected to screen.'),
-                        _buildOperatorChatChip(strings.isRu ? '📁 Пожалуйста, сохраните открытые файлы.' : '📁 Please save your open files.'),
-                        _buildOperatorChatChip(strings.isRu ? '🔄 Сейчас потребуется перезагрузить систему.' : '🔄 System reboot will be needed now.'),
-                        _buildOperatorChatChip(strings.isRu ? '✅ Проблема устранена, проверяйте!' : '✅ Issue is resolved, please check!'),
+                        _buildOperatorChatChip(strings.isRu
+                            ? '👋 Здравствуйте! Подключился к экрану.'
+                            : '👋 Hello! Connected to screen.'),
+                        _buildOperatorChatChip(strings.isRu
+                            ? '📁 Пожалуйста, сохраните открытые файлы.'
+                            : '📁 Please save your open files.'),
+                        _buildOperatorChatChip(strings.isRu
+                            ? '🔄 Сейчас потребуется перезагрузить систему.'
+                            : '🔄 System reboot will be needed now.'),
+                        _buildOperatorChatChip(strings.isRu
+                            ? '✅ Проблема устранена, проверяйте!'
+                            : '✅ Issue is resolved, please check!'),
                       ],
                     ),
                   ),
-
                   Expanded(
                     child: messages.isEmpty
                         ? Center(
                             child: Text(
                               strings.chatEmptyPrompt,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                              style: const TextStyle(
+                                  color: Color(0xFF64748B), fontSize: 13),
                             ),
                           )
                         : ListView.builder(
                             controller: scrollController,
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
                             itemCount: messages.length,
                             itemBuilder: (c, i) {
                               final msg = messages[i];
                               final isOperator = msg.sender == 'operator';
-                              final timeStr = DateFormat('HH:mm').format(msg.timestamp);
+                              final timeStr =
+                                  DateFormat('HH:mm').format(msg.timestamp);
 
                               return Align(
-                                alignment: isOperator ? Alignment.centerRight : Alignment.centerLeft,
+                                alignment: isOperator
+                                    ? Alignment.centerRight
+                                    : Alignment.centerLeft,
                                 child: Container(
                                   margin: const EdgeInsets.only(bottom: 8),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 8),
                                   constraints: BoxConstraints(
-                                    maxWidth: MediaQuery.of(context).size.width * 0.75,
+                                    maxWidth:
+                                        MediaQuery.of(context).size.width *
+                                            0.75,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: isOperator ? const Color(0xFF2563EB) : const Color(0xFF1E293B),
+                                    color: isOperator
+                                        ? const Color(0xFF2563EB)
+                                        : const Color(0xFF1E293B),
                                     borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
-                                      color: isOperator ? const Color(0xFF3B82F6) : const Color(0xFF334155),
+                                      color: isOperator
+                                          ? const Color(0xFF3B82F6)
+                                          : const Color(0xFF334155),
                                     ),
                                   ),
                                   child: Column(
-                                    crossAxisAlignment: isOperator ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                                    crossAxisAlignment: isOperator
+                                        ? CrossAxisAlignment.end
+                                        : CrossAxisAlignment.start,
                                     children: [
                                       if (!isOperator)
                                         Padding(
-                                          padding: const EdgeInsets.only(bottom: 2),
+                                          padding:
+                                              const EdgeInsets.only(bottom: 2),
                                           child: Text(
                                             msg.senderName,
-                                            style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 10, fontWeight: FontWeight.bold),
+                                            style: const TextStyle(
+                                                color: Color(0xFF38BDF8),
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold),
                                           ),
                                         ),
-                                      Text(msg.text, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                                      Text(msg.text,
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 13)),
                                       const SizedBox(height: 2),
                                       Text(
                                         timeStr,
-                                        style: TextStyle(color: isOperator ? Colors.white70 : const Color(0xFF64748B), fontSize: 9),
+                                        style: TextStyle(
+                                            color: isOperator
+                                                ? Colors.white70
+                                                : const Color(0xFF64748B),
+                                            fontSize: 9),
                                       ),
                                     ],
                                   ),
@@ -1125,7 +1187,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             },
                           ),
                   ),
-
                   Container(
                     padding: EdgeInsets.only(
                       left: 12,
@@ -1142,13 +1203,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         Expanded(
                           child: TextField(
                             controller: textController,
-                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
                             decoration: InputDecoration(
                               hintText: strings.chatInputHint,
-                              hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                              hintStyle: const TextStyle(
+                                  color: Color(0xFF64748B), fontSize: 13),
                               filled: true,
                               fillColor: const Color(0xFF1E293B),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 10),
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(20),
                                 borderSide: BorderSide.none,
@@ -1164,7 +1228,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         ),
                         const SizedBox(width: 8),
                         IconButton(
-                          icon: const Icon(Icons.send, color: Color(0xFF38BDF8)),
+                          icon:
+                              const Icon(Icons.send, color: Color(0xFF38BDF8)),
                           onPressed: () {
                             final val = textController.text.trim();
                             if (val.isNotEmpty) {
@@ -1204,7 +1269,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: const Color(0xFF334155)),
           ),
-          child: Text(text, style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11)),
+          child: Text(text,
+              style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11)),
         ),
       ),
     );
@@ -1217,7 +1283,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendDataMessage(Map<String, dynamic> msg) {
-    if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+    if (_dataChannel != null &&
+        _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode(msg)));
         return;
@@ -1234,7 +1301,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
     if (!_controlReady) return;
-    final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
+    final renderBox =
+        _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
     final localPos = renderBox.globalToLocal(event.position);
@@ -1256,7 +1324,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     double offsetX = 0.0;
     double offsetY = 0.0;
 
-    if (_zoomMode == OperatorZoomMode.fit) {
+    {
       if (containerAspect > videoAspect) {
         // Черные полосы по бокам (left / right)
         renderW = containerH * videoAspect;
@@ -1306,9 +1374,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         backgroundColor: const Color(0xFF1E293B),
         title: Row(
           children: [
-            const Icon(Icons.keyboard_alt_outlined, color: Color(0xFF38BDF8), size: 20),
+            const Icon(Icons.keyboard_alt_outlined,
+                color: Color(0xFF38BDF8), size: 20),
             const SizedBox(width: 8),
-            Text(strings.textInputTitle, style: const TextStyle(color: Colors.white, fontSize: 16)),
+            Text(strings.textInputTitle,
+                style: const TextStyle(color: Colors.white, fontSize: 16)),
           ],
         ),
         content: SizedBox(
@@ -1331,7 +1401,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   hintStyle: const TextStyle(color: Color(0xFF64748B)),
                   filled: true,
                   fillColor: const Color(0xFF0F172A),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8)),
                 ),
                 onSubmitted: (val) {
                   Navigator.of(ctx).pop();
@@ -1339,7 +1410,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 },
               ),
               const SizedBox(height: 14),
-              Text(strings.quickKeys, style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
+              Text(strings.quickKeys,
+                  style:
+                      const TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
               const SizedBox(height: 6),
               Wrap(
                 spacing: 6,
@@ -1348,9 +1421,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   _buildQuickKeyButton('Enter', () => _sendSpecialKey('Enter')),
                   _buildQuickKeyButton('Tab', () => _sendSpecialKey('Tab')),
                   _buildQuickKeyButton('Esc', () => _sendSpecialKey('Escape')),
-                  _buildQuickKeyButton('Backspace', () => _sendSpecialKey('Backspace')),
+                  _buildQuickKeyButton(
+                      'Backspace', () => _sendSpecialKey('Backspace')),
                   _buildQuickKeyButton('Win+R', () => _sendHotkey('win_r')),
-                  _buildQuickKeyButton(strings.isRu ? 'Диспетчер задач' : 'Task Manager', () => _sendHotkey('task_mgr')),
+                  _buildQuickKeyButton(
+                      strings.isRu ? 'Диспетчер задач' : 'Task Manager',
+                      () => _sendHotkey('task_mgr')),
                 ],
               ),
             ],
@@ -1369,7 +1445,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             },
             icon: const Icon(Icons.send, size: 14),
             label: Text(strings.send),
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0284C7)),
           ),
         ],
       ),
@@ -1389,7 +1466,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         ),
         child: Text(
           label,
-          style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold),
+          style: const TextStyle(
+              color: Color(0xFF38BDF8),
+              fontSize: 11,
+              fontWeight: FontWeight.bold),
         ),
       ),
     );
@@ -1409,25 +1489,26 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _sendTextToRemote(String text) {
     if (text.isEmpty) return;
-    _sendDataMessage({'type': 'clipboard_set', 'text': text});
-    // A-14 (аудит 2026-10-10): после установки буфера выполняем вставку (paste),
-    // чтобы текст вставился в активное поле ввода удалённого ПК,
-    // а чувствительный текст не дублируется в SnackBar целиком.
-    Future.delayed(const Duration(milliseconds: 150), () {
-      if (mounted && _controlReady) {
-        _sendDataMessage({'type': 'hotkey', 'action': 'paste'});
-      }
-    });
+    if (!_controlReady) return;
+    if (text.length > 4096) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Maximum: 4096 UTF-16 characters')));
+      return;
+    }
+    _sendDataMessage({'type': 'text_input', 'text': text});
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(isRu ? 'Текст передан и вставлен на удалённом ПК' : 'Text sent and pasted to remote PC'),
+        content: Text(isRu
+            ? 'Текст отправлен на удалённый ПК'
+            : 'Text sent to remote PC'),
         duration: const Duration(seconds: 2),
       ),
     );
   }
 
   void _toggleBlockInput() {
+    if (!_controlReady) return;
     setState(() {
       _isInputBlocked = !_isInputBlocked;
     });
@@ -1435,11 +1516,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendHotkey(String action) {
+    if (!_controlReady) return;
     _sendDataMessage({'type': 'hotkey', 'action': action});
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(isRu ? 'Отправлена комбинация: $action' : 'Shortcut sent: $action'),
+        content: Text(
+            isRu ? 'Отправлена комбинация: $action' : 'Shortcut sent: $action'),
         duration: const Duration(milliseconds: 900),
       ),
     );
@@ -1480,7 +1563,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
-        title: Text(strings.clientClipboardTitle, style: const TextStyle(color: Colors.white)),
+        title: Text(strings.clientClipboardTitle,
+            style: const TextStyle(color: Colors.white)),
         content: SelectableText(
           text.isNotEmpty ? text : strings.clipboardEmpty,
           style: const TextStyle(color: Color(0xFF94A3B8)),
@@ -1509,7 +1593,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   bool _isCleanedUp = false;
 
-  void _cleanupResources({bool deferDisposal = true}) {
+  void _cleanupResources() {
     if (_isCleanedUp) return;
     _isCleanedUp = true;
     // Ш3/Ш4: единая отмена стадийных и grace-таймеров
@@ -1520,7 +1604,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _leaseTimer = null;
 
     // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
-    _releaseAllPointerButtons();
+    _releaseAllPressedInputs();
 
     // Ш3/Ш4 (Д6): полный сброс признаков готовности
     _signalReady = false;
@@ -1538,7 +1622,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         dc.onMessage = null;
         dc.onDataChannelState = null;
-        dc.close();
       } catch (_) {}
     }
 
@@ -1550,7 +1633,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         pc.onIceCandidate = null;
         pc.onTrack = null;
         pc.onDataChannel = null;
-        pc.close();
       } catch (_) {}
     }
 
@@ -1561,32 +1643,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _wsReconnectTimer?.cancel();
     _wsReconnectTimer = null;
 
-    // Освобождение нативных текстур рендерера и WebRTC-соединения.
-    //
-    // macOS: unregister текстуры (renderer.dispose) рядом с pop-анимацией
-    // или resize ловит raster-поток Flutter на живом кадре → дедлок:
-    // контент окна навсегда чёрный при живом титлбаре (воспроизводилось и
-    // при sync-dispose в конце pop [v1.1.22], и при 350мс-defer [v1.1.21]).
-    // Поэтому на macOS текстуру гасим только через 3с — когда raster
-    // гарантированно простаивает. resize при зарегистрированной, но пустой
-    // (srcObject=null) текстуре безопасен: окно консоли свободно ресайзят
-    // даже во время живого стрима.
-    void disposeNative() {
+    // The native renderer patch unregisters outside its pixel-buffer lock.
+    // Await transport shutdown before releasing the texture; no timer guessing.
+    unawaited(() async {
       try {
-        _remoteRenderer.dispose();
+        await dc?.close();
       } catch (_) {}
       try {
-        pc?.dispose();
+        await pc?.close();
       } catch (_) {}
-    }
-
-    if (!kIsWeb && Platform.isMacOS) {
-      Future.delayed(const Duration(seconds: 3), disposeNative);
-    } else if (deferDisposal) {
-      Future.delayed(const Duration(milliseconds: 350), disposeNative);
-    } else {
-      disposeNative();
-    }
+      try {
+        await _remoteRenderer.dispose();
+      } catch (_) {}
+      try {
+        await pc?.dispose();
+      } catch (_) {}
+    }());
   }
 
   void _endSession() async {
@@ -1595,7 +1667,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
-        title: Text(strings.confirmEndSessionTitle, style: const TextStyle(color: Colors.white)),
+        title: Text(strings.confirmEndSessionTitle,
+            style: const TextStyle(color: Colors.white)),
         content: Text(
           strings.confirmEndSessionDesc,
           style: const TextStyle(color: Color(0xFF94A3B8)),
@@ -1607,7 +1680,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFEF4444)),
             child: Text(strings.endSession),
           ),
         ],
@@ -1624,12 +1698,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         // прежний /app/.../end для него всегда 403 — сессия не закрывалась.
         if (isOwner) {
           await auth.api?.endSupportSession(sessionId: sessId).timeout(
-            const Duration(seconds: 2),
-          );
+                const Duration(seconds: 2),
+              );
         } else {
-          await auth.api?.endSupportSessionAsOperator(sessionId: sessId).timeout(
-            const Duration(seconds: 2),
-          );
+          await auth.api
+              ?.endSupportSessionAsOperator(sessionId: sessId)
+              .timeout(
+                const Duration(seconds: 2),
+              );
         }
       } catch (e) {
         debugPrint('support_operator: endSupportSession error/timeout: $e');
@@ -1645,15 +1721,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _releaseAllPressedInputs();
     _chatMessagesNotifier.dispose();
     _keyboardFocus.dispose();
-    // Чёрный экран после «назад» (инцидент console-any-state): корневая
-    // причина — unregister WebRTC-текстуры (renderer.dispose) впритык к
-    // pop-анимации/resize ловит raster-поток macOS на живом кадре → дедлок.
-    // Порядок: srcObject=null и pc.close() синхронно (стоп кадров), окно
-    // возвращаем через 500мс (resize при пустой текстуре безопасен — её
-    // юзеры делают и на живом стриме), нативный dispose текстуры на macOS
-    // _cleanupResources уводит на 3с — см. комментарий там.
-    _cleanupResources(deferDisposal: false);
-    _restoreWindowSize(delay: const Duration(milliseconds: 500));
+    _videoTransform.dispose();
+    _cleanupResources();
     final auth = _auth;
     final sessId = widget.sessionId;
     if (auth != null && auth.api != null && sessId.isNotEmpty) {
@@ -1662,9 +1731,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         // dispose() у оператора — тоже корректный конец сессии (окно
         // закрыли = сеанс завершён), иначе она висит active в очереди.
         if (isOwner) {
-          auth.api!.endSupportSession(sessionId: sessId).catchError((_) => null);
+          auth.api!
+              .endSupportSession(sessionId: sessId)
+              .catchError((_) => null);
         } else {
-          auth.api!.endSupportSessionAsOperator(sessionId: sessId).catchError((_) => null);
+          auth.api!
+              .endSupportSessionAsOperator(sessionId: sessId)
+              .catchError((_) => null);
         }
       } catch (_) {}
     }
@@ -1690,10 +1763,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       is1C = false;
     } else {
       clientName = (widget.sessionData['display_name'] ??
-          widget.sessionData['employee_name'] ??
-          widget.sessionData['username'] ??
-          strings.clientFallback).toString();
-      pcName = widget.sessionData['device_name'] ?? widget.sessionData['pc_name'] ?? 'PC';
+              widget.sessionData['employee_name'] ??
+              widget.sessionData['username'] ??
+              strings.clientFallback)
+          .toString();
+      pcName = widget.sessionData['device_name'] ??
+          widget.sessionData['pc_name'] ??
+          'PC';
       is1C = widget.sessionData['category'] == '1c';
     }
 
@@ -1721,13 +1797,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
+                        icon: const Icon(Icons.arrow_back,
+                            color: Colors.white, size: 20),
                         tooltip: strings.backTooltip,
                         onPressed: () => Navigator.of(context).pop(),
                       ),
                       if (isOwner)
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
                             color: const Color(0xFF10B981),
                             borderRadius: BorderRadius.circular(6),
@@ -1735,25 +1813,35 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.home_work_outlined, size: 12, color: Colors.white),
+                              const Icon(Icons.home_work_outlined,
+                                  size: 12, color: Colors.white),
                               const SizedBox(width: 4),
                               Text(
                                 strings.ownerScreenBadge,
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11),
                               ),
                             ],
                           ),
                         )
                       else
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
-                            color: is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7),
+                            color: is1C
+                                ? const Color(0xFFF59E0B)
+                                : const Color(0xFF0284C7),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
                             is1C ? (strings.isRu ? '1С' : '1C') : 'IT',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11),
                           ),
                         ),
                       const SizedBox(width: 8),
@@ -1762,7 +1850,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         children: [
                           Text(
                             '$clientName ($pcName)',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13),
                           ),
                           Text(
                             _getStatusText(strings),
@@ -1785,21 +1876,27 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         DropdownButton<String>(
-                          value: _screens.any((s) => s['id']?.toString() == _selectedScreenId)
+                          value: _screens.any((s) =>
+                                  s['id']?.toString() == _selectedScreenId)
                               ? _selectedScreenId
-                              : (_screens.isNotEmpty ? _screens.first['id']?.toString() : null),
+                              : (_screens.isNotEmpty
+                                  ? _screens.first['id']?.toString()
+                                  : null),
                           dropdownColor: const Color(0xFF1E293B),
                           underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12),
                           items: _screens.map((s) {
                             return DropdownMenuItem<String>(
                               value: s['id']?.toString(),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  const Icon(Icons.desktop_windows, size: 14, color: Color(0xFF38BDF8)),
+                                  const Icon(Icons.desktop_windows,
+                                      size: 14, color: Color(0xFF38BDF8)),
                                   const SizedBox(width: 4),
-                                  Text(s['name']?.toString() ?? strings.monitor, overflow: TextOverflow.ellipsis),
+                                  Text(s['name']?.toString() ?? strings.monitor,
+                                      overflow: TextOverflow.ellipsis),
                                 ],
                               ),
                             );
@@ -1809,7 +1906,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           },
                         ),
                         IconButton(
-                          icon: const Icon(Icons.refresh, size: 16, color: Color(0xFF94A3B8)),
+                          icon: const Icon(Icons.refresh,
+                              size: 16, color: Color(0xFF94A3B8)),
                           tooltip: strings.refreshScreensTooltip,
                           onPressed: () {
                             _sendDataMessage({'type': 'screen_list'});
@@ -1830,39 +1928,56 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     children: [
                       IconButton(
                         icon: Icon(
-                          _zoomMode == OperatorZoomMode.fit ? Icons.fit_screen : Icons.aspect_ratio,
+                          _zoomMode == OperatorZoomMode.fit
+                              ? Icons.fit_screen
+                              : Icons.aspect_ratio,
                           color: const Color(0xFF38BDF8),
                           size: 18,
                         ),
-                        tooltip: _zoomMode == OperatorZoomMode.fit ? strings.zoomFitTooltip : strings.zoom1to1Tooltip,
+                        tooltip: _zoomMode == OperatorZoomMode.fit
+                            ? strings.zoomFitTooltip
+                            : strings.zoom1to1Tooltip,
                         onPressed: () {
                           setState(() {
                             if (_zoomMode == OperatorZoomMode.fit) {
                               _zoomMode = OperatorZoomMode.original;
-                              _zoomScale = 1.0;
+                              final box = _videoKey.currentContext
+                                  ?.findRenderObject() as RenderBox?;
+                              _applyVideoZoom(box == null
+                                  ? 1
+                                  : math.max(
+                                      _remoteRenderer.videoWidth /
+                                          box.size.width,
+                                      _remoteRenderer.videoHeight /
+                                          box.size.height));
                             } else {
                               _zoomMode = OperatorZoomMode.fit;
+                              _applyVideoZoom(1);
                             }
                           });
                         },
                       ),
                       IconButton(
-                        icon: const Icon(Icons.zoom_in, color: Colors.white, size: 18),
+                        icon: const Icon(Icons.zoom_in,
+                            color: Colors.white, size: 18),
                         tooltip: strings.zoomInTooltip,
                         onPressed: () {
                           setState(() {
                             _zoomMode = OperatorZoomMode.zoomIn;
-                            _zoomScale = (_zoomScale + 0.25).clamp(1.0, 3.0);
+                            _applyVideoZoom(_zoomScale + 0.25);
                           });
                         },
                       ),
                       IconButton(
-                        icon: const Icon(Icons.zoom_out, color: Colors.white, size: 18),
+                        icon: const Icon(Icons.zoom_out,
+                            color: Colors.white, size: 18),
                         tooltip: strings.zoomOutTooltip,
                         onPressed: () {
                           setState(() {
-                            _zoomScale = (_zoomScale - 0.25).clamp(0.5, 3.0);
-                            if (_zoomScale <= 1.0) _zoomMode = OperatorZoomMode.fit;
+                            _applyVideoZoom(_zoomScale - 0.25);
+                            if (_zoomScale <= 1.0) {
+                              _zoomMode = OperatorZoomMode.fit;
+                            }
                           });
                         },
                       ),
@@ -1873,41 +1988,113 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   IconButton(
                     icon: Icon(
                       _isInputBlocked ? Icons.lock : Icons.lock_open,
-                      color: _isInputBlocked ? const Color(0xFFEF4444) : const Color(0xFF94A3B8),
+                      color: _isInputBlocked
+                          ? const Color(0xFFEF4444)
+                          : const Color(0xFF94A3B8),
                       size: 18,
                     ),
-                    tooltip: _isInputBlocked ? strings.unblockClientInputTooltip : strings.blockClientInputTooltip,
-                    onPressed: _toggleBlockInput,
+                    tooltip: _isInputBlocked
+                        ? strings.unblockClientInputTooltip
+                        : strings.blockClientInputTooltip,
+                    onPressed: _controlReady ? _toggleBlockInput : null,
                   ),
 
                   // Горячие клавиши
                   PopupMenuButton<String>(
-                    icon: const Icon(Icons.keyboard, color: Color(0xFF38BDF8), size: 20),
+                    enabled: _controlReady,
+                    icon: const Icon(Icons.keyboard,
+                        color: Color(0xFF38BDF8), size: 20),
                     tooltip: strings.hotkeysTooltip,
                     color: const Color(0xFF1E293B),
                     itemBuilder: (ctx) => [
-                      PopupMenuItem(value: 'win_key', child: Text(strings.hotkeyWin, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'win_r', child: Text(strings.hotkeyWinR, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'win_e', child: Text(strings.hotkeyWinE, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'win_x', child: Text(strings.hotkeyWinX, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'win_d', child: Text(strings.hotkeyWinD, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'win_l', child: Text(strings.isRu ? 'Заблокировать Windows (Win+L)' : 'Lock Windows (Win+L)', style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'task_mgr', child: Text(strings.isRu ? 'Диспетчер задач' : 'Task Manager', style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'alt_tab', child: Text(strings.isRu ? 'Переключить окно (Alt+Tab)' : 'Switch Window (Alt+Tab)', style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'alt_f4', child: Text(strings.isRu ? 'Закрыть окно (Alt+F4)' : 'Close Window (Alt+F4)', style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'esc', child: Text(strings.isRu ? 'Отмена (Escape)' : 'Cancel (Escape)', style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'win_space',
+                          child: Text(
+                              strings.isRu
+                                  ? 'Переключить язык (Win+Space)'
+                                  : 'Switch language (Win+Space)',
+                              style: const TextStyle(color: Colors.white))),
+                      const PopupMenuItem(
+                          value: 'alt_shift',
+                          child: Text('Alt+Shift',
+                              style: TextStyle(color: Colors.white))),
+                      const PopupMenuItem(
+                          value: 'ctrl_shift',
+                          child: Text('Ctrl+Shift',
+                              style: TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'win_key',
+                          child: Text(strings.hotkeyWin,
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'win_r',
+                          child: Text(strings.hotkeyWinR,
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'win_e',
+                          child: Text(strings.hotkeyWinE,
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'win_x',
+                          child: Text(strings.hotkeyWinX,
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'win_d',
+                          child: Text(strings.hotkeyWinD,
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'win_l',
+                          child: Text(
+                              strings.isRu
+                                  ? 'Заблокировать Windows (Win+L)'
+                                  : 'Lock Windows (Win+L)',
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'task_mgr',
+                          child: Text(
+                              strings.isRu ? 'Диспетчер задач' : 'Task Manager',
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'alt_tab',
+                          child: Text(
+                              strings.isRu
+                                  ? 'Переключить окно (Alt+Tab)'
+                                  : 'Switch Window (Alt+Tab)',
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'alt_f4',
+                          child: Text(
+                              strings.isRu
+                                  ? 'Закрыть окно (Alt+F4)'
+                                  : 'Close Window (Alt+F4)',
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'esc',
+                          child: Text(
+                              strings.isRu
+                                  ? 'Отмена (Escape)'
+                                  : 'Cancel (Escape)',
+                              style: const TextStyle(color: Colors.white))),
                     ],
                     onSelected: _sendHotkey,
                   ),
 
                   // Буфер обмена
                   PopupMenuButton<String>(
-                    icon: const Icon(Icons.content_paste, color: Color(0xFF38BDF8), size: 20),
+                    enabled: _controlReady,
+                    icon: const Icon(Icons.content_paste,
+                        color: Color(0xFF38BDF8), size: 20),
                     tooltip: strings.clipboardTooltip,
                     color: const Color(0xFF1E293B),
                     itemBuilder: (ctx) => [
-                      PopupMenuItem(value: 'send', child: Text(strings.sendLocalBuffer, style: const TextStyle(color: Colors.white))),
-                      PopupMenuItem(value: 'get', child: Text(strings.readRemoteBuffer, style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'send',
+                          child: Text(strings.sendLocalBuffer,
+                              style: const TextStyle(color: Colors.white))),
+                      PopupMenuItem(
+                          value: 'get',
+                          child: Text(strings.readRemoteBuffer,
+                              style: const TextStyle(color: Colors.white))),
                     ],
                     onSelected: (val) {
                       if (val == 'send') _sendLocalClipboardToRemote();
@@ -1921,7 +2108,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       icon: Badge(
                         isLabelVisible: _unreadChatCount > 0,
                         label: Text('$_unreadChatCount'),
-                        child: const Icon(Icons.chat_bubble_outline, color: Color(0xFF38BDF8), size: 20),
+                        child: const Icon(Icons.chat_bubble_outline,
+                            color: Color(0xFF38BDF8), size: 20),
                       ),
                       tooltip: strings.chatWithUserTooltip,
                       onPressed: _showOperatorChatModal,
@@ -1933,16 +2121,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 3),
                           decoration: BoxDecoration(
-                            color: _cpuWarning ? const Color(0xFFEF4444).withValues(alpha: 0.2) : const Color(0xFF334155),
+                            color: _cpuWarning
+                                ? const Color(0xFFEF4444).withValues(alpha: 0.2)
+                                : const Color(0xFF334155),
                             borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: _cpuWarning ? const Color(0xFFEF4444) : const Color(0xFF475569)),
+                            border: Border.all(
+                                color: _cpuWarning
+                                    ? const Color(0xFFEF4444)
+                                    : const Color(0xFF475569)),
                           ),
                           child: Text(
                             '⚡ CPU: $_cpuPercent%',
                             style: TextStyle(
-                              color: _cpuWarning ? const Color(0xFFEF4444) : Colors.white,
+                              color: _cpuWarning
+                                  ? const Color(0xFFEF4444)
+                                  : Colors.white,
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
                             ),
@@ -1950,16 +2146,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         ),
                         const SizedBox(width: 4),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 3),
                           decoration: BoxDecoration(
-                            color: _diskWarning ? const Color(0xFFEF4444).withValues(alpha: 0.2) : const Color(0xFF334155),
+                            color: _diskWarning
+                                ? const Color(0xFFEF4444).withValues(alpha: 0.2)
+                                : const Color(0xFF334155),
                             borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: _diskWarning ? const Color(0xFFEF4444) : const Color(0xFF475569)),
+                            border: Border.all(
+                                color: _diskWarning
+                                    ? const Color(0xFFEF4444)
+                                    : const Color(0xFF475569)),
                           ),
                           child: Text(
                             '💾 $_diskFreeGb ${strings.gbUnit} ($_diskPercent%)',
                             style: TextStyle(
-                              color: _diskWarning ? const Color(0xFFEF4444) : Colors.white,
+                              color: _diskWarning
+                                  ? const Color(0xFFEF4444)
+                                  : Colors.white,
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
                             ),
@@ -1971,26 +2175,39 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   // Переключатель управления / просмотра
                   IconButton(
                     icon: Icon(
-                      _isControlEnabled ? Icons.sports_esports : Icons.visibility,
+                      _isControlEnabled
+                          ? Icons.sports_esports
+                          : Icons.visibility,
                       color: _isViewOnlySession
                           ? const Color(0xFF64748B)
-                          : (_isControlEnabled ? const Color(0xFF10B981) : const Color(0xFF94A3B8)),
+                          : (_isControlEnabled
+                              ? const Color(0xFF10B981)
+                              : const Color(0xFF94A3B8)),
                       size: 20,
                     ),
                     tooltip: _isViewOnlySession
-                        ? (strings.isRu ? 'Режим только просмотр (управление запрещено)' : 'View-only mode (control disabled)')
-                        : (_isControlEnabled ? strings.controlEnabledTooltip : strings.controlDisabledTooltip),
+                        ? (strings.isRu
+                            ? 'Режим только просмотр (управление запрещено)'
+                            : 'View-only mode (control disabled)')
+                        : (_isControlEnabled
+                            ? strings.controlEnabledTooltip
+                            : strings.controlDisabledTooltip),
                     onPressed: _isViewOnlySession
                         ? null
                         : () {
                             final next = !_isControlEnabled;
                             if (!next) {
+                              _sendDataMessage(
+                                  {'type': 'block_input', 'blocked': false});
+                              _isInputBlocked = false;
                               _releaseAllPressedInputs();
                             }
                             setState(() => _isControlEnabled = next);
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text(_isControlEnabled ? strings.controlEnabledNotice : strings.controlDisabledNotice),
+                                content: Text(_isControlEnabled
+                                    ? strings.controlEnabledNotice
+                                    : strings.controlDisabledNotice),
                                 duration: const Duration(milliseconds: 800),
                               ),
                             );
@@ -1999,26 +2216,37 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
                   // Ввод текста на удаленный ПК
                   IconButton(
-                    icon: const Icon(Icons.keyboard_alt_outlined, color: Color(0xFF38BDF8), size: 20),
+                    icon: const Icon(Icons.keyboard_alt_outlined,
+                        color: Color(0xFF38BDF8), size: 20),
                     tooltip: strings.enterTextTooltip,
-                    onPressed: _showTextInputDialog,
+                    onPressed: _controlReady ? _showTextInputDialog : null,
                   ),
 
                   // Режим клика мыши (ЛКМ / ПКМ)
                   IconButton(
                     icon: Icon(
-                      _mouseClickMode == MouseClickMode.right ? Icons.mouse : Icons.touch_app,
-                      color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : const Color(0xFF94A3B8),
+                      _mouseClickMode == MouseClickMode.right
+                          ? Icons.mouse
+                          : Icons.touch_app,
+                      color: _mouseClickMode == MouseClickMode.right
+                          ? const Color(0xFFF59E0B)
+                          : const Color(0xFF94A3B8),
                       size: 18,
                     ),
-                    tooltip: _mouseClickMode == MouseClickMode.right ? strings.rightClickModeTooltip : strings.leftClickModeTooltip,
+                    tooltip: _mouseClickMode == MouseClickMode.right
+                        ? strings.rightClickModeTooltip
+                        : strings.leftClickModeTooltip,
                     onPressed: () {
                       setState(() {
-                        _mouseClickMode = _mouseClickMode == MouseClickMode.left ? MouseClickMode.right : MouseClickMode.left;
+                        _mouseClickMode = _mouseClickMode == MouseClickMode.left
+                            ? MouseClickMode.right
+                            : MouseClickMode.left;
                       });
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(_mouseClickMode == MouseClickMode.right ? strings.rightClickNotice : strings.leftClickNotice),
+                          content: Text(_mouseClickMode == MouseClickMode.right
+                              ? strings.rightClickNotice
+                              : strings.leftClickNotice),
                           duration: const Duration(milliseconds: 800),
                         ),
                       );
@@ -2030,11 +2258,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     ElevatedButton.icon(
                       onPressed: _requestScreenAccess,
                       icon: const Icon(Icons.desktop_windows, size: 14),
-                      label: Text(strings.requestScreen2fa, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                      label: Text(strings.requestScreen2fa,
+                          style: const TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.bold)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF0284C7),
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
@@ -2044,11 +2275,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   ElevatedButton.icon(
                     onPressed: _endSession,
                     icon: const Icon(Icons.call_end, size: 14),
-                    label: Text(strings.endSession, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                    label: Text(strings.endSession,
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFEF4444),
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
                       minimumSize: Size.zero,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
@@ -2060,7 +2294,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
           // Карточка с контрольным числом (если сеанс еще авторизуется клиентом).
           // В owner-режиме контрольного числа нет (§5.2: без number-match).
-          if (!isOwner && !_isConnected && !_isChatOnly && _currentNumberMatch != null && _statusKey == 'waiting_consent')
+          if (!isOwner &&
+              !_isConnected &&
+              !_isChatOnly &&
+              _currentNumberMatch != null &&
+              _statusKey == 'waiting_consent')
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
@@ -2073,11 +2311,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 children: [
                   Text(
                     strings.numberMatchForClient,
-                    style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                    style:
+                        const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
                   ),
                   const SizedBox(height: 8),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
                     decoration: BoxDecoration(
                       color: const Color(0xFF0F172A),
                       borderRadius: BorderRadius.circular(12),
@@ -2095,12 +2335,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   const SizedBox(height: 8),
                   Text(
                     strings.numberMatchHintClient,
-                    style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                    style:
+                        const TextStyle(color: Color(0xFF64748B), fontSize: 11),
                   ),
                 ],
               ),
             ),
-
 
           // Область удаленного экрана
           Expanded(
@@ -2114,28 +2354,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               },
               onKeyEvent: (node, event) {
                 if (!_controlReady) return KeyEventResult.ignored;
-                final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
-                final keyLabel = event.logicalKey.keyLabel;
-                final character = event.character;
-                if (isDown) {
-                  _pressedKeys.add(keyLabel);
-                } else {
-                  _pressedKeys.remove(keyLabel);
-                }
-                _sendDataMessage({
-                  'type': isDown ? 'key_down' : 'key_up',
-                  'key': keyLabel,
-                  if (character != null && character.isNotEmpty) 'char': character,
-                });
+                _sendDataMessage(_remoteKeyboard.message(event));
                 return KeyEventResult.handled;
               },
               child: Listener(
+                behavior: HitTestBehavior.opaque,
                 onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerMove: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerDown: (ev) {
                   if (!_controlReady) return;
                   _keyboardFocus.requestFocus();
-                  final btn = pointerDownButton(ev.buttons, _mouseClickMode == MouseClickMode.right);
+                  final btn = pointerDownButton(
+                      ev.buttons, _mouseClickMode == MouseClickMode.right);
                   _pointerDownButtons[ev.pointer] = btn;
                   _sendPointerEvent('mouse_down', ev, btn);
                 },
@@ -2157,7 +2387,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 onPointerSignal: (signal) {
                   if (!_controlReady) return;
                   if (signal is PointerScrollEvent) {
-                    _sendDataMessage({'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
+                    _sendDataMessage(
+                        {'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
                   }
                 },
                 child: Center(
@@ -2168,22 +2399,29 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             Container(
                               padding: const EdgeInsets.all(20),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                                color: const Color(0xFF0284C7)
+                                    .withValues(alpha: 0.15),
                                 shape: BoxShape.circle,
                               ),
-                              child: const Icon(Icons.chat_outlined, size: 48, color: Color(0xFF38BDF8)),
+                              child: const Icon(Icons.chat_outlined,
+                                  size: 48, color: Color(0xFF38BDF8)),
                             ),
                             const SizedBox(height: 16),
                             Text(
                               strings.chatModeTitle,
-                              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold),
                             ),
                             const SizedBox(height: 8),
                             Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 32),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 32),
                               child: Text(
                                 strings.chatModeDesc,
-                                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                                style: const TextStyle(
+                                    color: Color(0xFF94A3B8), fontSize: 13),
                                 textAlign: TextAlign.center,
                               ),
                             ),
@@ -2191,24 +2429,34 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             ElevatedButton.icon(
                               onPressed: _requestScreenAccess,
                               icon: const Icon(Icons.desktop_windows, size: 18),
-                              label: Text(strings.requestScreenAccessBtn, style: const TextStyle(fontWeight: FontWeight.bold)),
+                              label: Text(strings.requestScreenAccessBtn,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold)),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF0284C7),
                                 foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 24, vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
                               ),
                             ),
                             const SizedBox(height: 12),
                             OutlinedButton.icon(
                               onPressed: _showOperatorChatModal,
-                              icon: const Icon(Icons.chat_bubble_outline, size: 16),
-                              label: Text(_chatMessages.isEmpty ? strings.openChatWindowBtn : '💬 ${strings.chatTitle} (${_chatMessages.length})'),
+                              icon: const Icon(Icons.chat_bubble_outline,
+                                  size: 16),
+                              label: Text(_chatMessages.isEmpty
+                                  ? strings.openChatWindowBtn
+                                  : '💬 ${strings.chatTitle} (${_chatMessages.length})'),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: const Color(0xFF38BDF8),
-                                side: const BorderSide(color: Color(0xFF0284C7)),
-                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                side:
+                                    const BorderSide(color: Color(0xFF0284C7)),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 18, vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
                               ),
                             ),
                           ],
@@ -2217,11 +2465,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           ? Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const CircularProgressIndicator(color: Color(0xFF38BDF8)),
+                                const CircularProgressIndicator(
+                                    color: Color(0xFF38BDF8)),
                                 const SizedBox(height: 16),
                                 Text(
                                   _getStatusText(strings),
-                                  style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                                  style: const TextStyle(
+                                      color: Color(0xFF94A3B8), fontSize: 14),
                                   textAlign: TextAlign.center,
                                 ),
                                 // Ш3: повтор зависшей стадии подключения
@@ -2245,11 +2495,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                               ? Column(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Icon(Icons.videocam_off_outlined, size: 48, color: Color(0xFFF59E0B)),
+                                    const Icon(Icons.videocam_off_outlined,
+                                        size: 48, color: Color(0xFFF59E0B)),
                                     const SizedBox(height: 16),
                                     Text(
                                       _getStatusText(strings),
-                                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                                      style: const TextStyle(
+                                          color: Color(0xFF94A3B8),
+                                          fontSize: 14),
                                       textAlign: TextAlign.center,
                                     ),
                                     const SizedBox(height: 16),
@@ -2258,25 +2511,31 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                       icon: const Icon(Icons.refresh, size: 16),
                                       label: Text(strings.retry),
                                       style: ElevatedButton.styleFrom(
-                                        backgroundColor: const Color(0xFF0284C7),
+                                        backgroundColor:
+                                            const Color(0xFF0284C7),
                                         foregroundColor: Colors.white,
                                       ),
                                     ),
                                   ],
                                 )
                               : InteractiveViewer(
-                                  scaleEnabled: _zoomMode == OperatorZoomMode.zoomIn,
+                                  transformationController: _videoTransform,
+                                  scaleEnabled:
+                                      _zoomMode == OperatorZoomMode.zoomIn,
                                   minScale: 1.0,
-                                  maxScale: 3.0,
+                                  maxScale: 8.0,
+                                  onInteractionEnd: (_) {
+                                    _zoomScale = _videoTransform.value
+                                        .getMaxScaleOnAxis();
+                                  },
                                   child: MouseRegion(
                                     cursor: SystemMouseCursors.basic,
                                     child: Container(
                                       key: _videoKey,
                                       child: RTCVideoView(
                                         _remoteRenderer,
-                                        objectFit: _zoomMode == OperatorZoomMode.fit
-                                            ? RTCVideoViewObjectFit.RTCVideoViewObjectFitContain
-                                            : RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                                        objectFit: RTCVideoViewObjectFit
+                                            .RTCVideoViewObjectFitContain,
                                       ),
                                     ),
                                   ),
@@ -2303,43 +2562,68 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     TextButton.icon(
                       onPressed: () {
                         setState(() {
-                          _mouseClickMode = _mouseClickMode == MouseClickMode.left ? MouseClickMode.right : MouseClickMode.left;
+                          _mouseClickMode =
+                              _mouseClickMode == MouseClickMode.left
+                                  ? MouseClickMode.right
+                                  : MouseClickMode.left;
                         });
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text(_mouseClickMode == MouseClickMode.right ? strings.rightClickNotice : strings.leftClickNotice),
+                            content: Text(
+                                _mouseClickMode == MouseClickMode.right
+                                    ? strings.rightClickNotice
+                                    : strings.leftClickNotice),
                             duration: const Duration(milliseconds: 700),
                           ),
                         );
                       },
                       icon: Icon(
-                        _mouseClickMode == MouseClickMode.right ? Icons.mouse : Icons.touch_app,
+                        _mouseClickMode == MouseClickMode.right
+                            ? Icons.mouse
+                            : Icons.touch_app,
                         size: 16,
-                        color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
+                        color: _mouseClickMode == MouseClickMode.right
+                            ? const Color(0xFFF59E0B)
+                            : const Color(0xFF38BDF8),
                       ),
                       label: Text(
-                        _mouseClickMode == MouseClickMode.right ? strings.rightClickModeShort : strings.leftClickModeShort,
+                        _mouseClickMode == MouseClickMode.right
+                            ? strings.rightClickModeShort
+                            : strings.leftClickModeShort,
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
-                          color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : Colors.white,
+                          color: _mouseClickMode == MouseClickMode.right
+                              ? const Color(0xFFF59E0B)
+                              : Colors.white,
                         ),
                       ),
                     ),
                     TextButton.icon(
-                      onPressed: () => _sendDataMessage({'type': 'wheel', 'deltaY': -180}),
-                      icon: const Icon(Icons.arrow_upward, size: 14, color: Color(0xFF38BDF8)),
-                      label: Text(strings.scrollUp, style: const TextStyle(fontSize: 12, color: Colors.white)),
+                      onPressed: () =>
+                          _sendDataMessage({'type': 'wheel', 'deltaY': -180}),
+                      icon: const Icon(Icons.arrow_upward,
+                          size: 14, color: Color(0xFF38BDF8)),
+                      label: Text(strings.scrollUp,
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white)),
                     ),
                     TextButton.icon(
-                      onPressed: () => _sendDataMessage({'type': 'wheel', 'deltaY': 180}),
-                      icon: const Icon(Icons.arrow_downward, size: 14, color: Color(0xFF38BDF8)),
-                      label: Text(strings.scrollDown, style: const TextStyle(fontSize: 12, color: Colors.white)),
+                      onPressed: () =>
+                          _sendDataMessage({'type': 'wheel', 'deltaY': 180}),
+                      icon: const Icon(Icons.arrow_downward,
+                          size: 14, color: Color(0xFF38BDF8)),
+                      label: Text(strings.scrollDown,
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white)),
                     ),
                     TextButton.icon(
-                      onPressed: _showTextInputDialog,
-                      icon: const Icon(Icons.keyboard_alt_outlined, size: 16, color: Color(0xFF38BDF8)),
-                      label: Text(strings.enterTextBtn, style: const TextStyle(fontSize: 12, color: Colors.white)),
+                      onPressed: _controlReady ? _showTextInputDialog : null,
+                      icon: const Icon(Icons.keyboard_alt_outlined,
+                          size: 16, color: Color(0xFF38BDF8)),
+                      label: Text(strings.enterTextBtn,
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white)),
                     ),
                     if (!isOwner)
                       TextButton.icon(
@@ -2347,11 +2631,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         icon: Badge(
                           isLabelVisible: _unreadChatCount > 0,
                           label: Text('$_unreadChatCount'),
-                          child: const Icon(Icons.chat_bubble_outline, size: 16, color: Color(0xFF38BDF8)),
+                          child: const Icon(Icons.chat_bubble_outline,
+                              size: 16, color: Color(0xFF38BDF8)),
                         ),
                         label: Text(
-                          _unreadChatCount > 0 ? '${strings.chatTitle} ($_unreadChatCount)' : strings.chatTitle,
-                          style: const TextStyle(fontSize: 12, color: Colors.white),
+                          _unreadChatCount > 0
+                              ? '${strings.chatTitle} ($_unreadChatCount)'
+                              : strings.chatTitle,
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white),
                         ),
                       ),
                   ],

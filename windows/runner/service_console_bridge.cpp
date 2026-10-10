@@ -8,7 +8,9 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <future>
 #include <mutex>
+#include <map>
 #include <set>
 #include <string>
 #include <thread>
@@ -200,27 +202,38 @@ class ServiceConsoleBridge::InputWorker {
   bool Enqueue(const EncodableMap& input) {
     const auto type = String(input, "type");
     static const std::set<std::string> allowed = {"mouse_move", "mouse_down", "mouse_up", "mouse_click",
-      "click", "wheel", "mouse_wheel", "key_down", "key_up", "hotkey"};
+      "click", "wheel", "mouse_wheel", "key_down", "key_up", "hotkey", "text_input", "block_input", "clipboard_probe"};
     if (!allowed.count(type)) return false;
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (stopped_ || Clock::now() >= deadline_) return false;
-    if (type == "mouse_move" && !queue_.empty() && String(queue_.back(), "type") == type) {
-      queue_.back() = input;
-    } else {
-      if (queue_.size() >= 256) { queue_.clear(); release_ = true; ready_.notify_one(); return false; }
-      queue_.push_back(input);
+    if (type == "text_input" && String(input, "text").size() > 16384) return false;
+    auto done = (type == "block_input" || type == "clipboard_probe") ? std::make_shared<std::promise<bool>>() : nullptr;
+    auto completion = done ? done->get_future() : std::future<bool>();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopped_ || Clock::now() >= deadline_) return false;
+      if (type == "mouse_move" && !queue_.empty() && String(queue_.back().input, "type") == type) {
+        queue_.back().input = input;
+      } else {
+        if (queue_.size() >= 256) { queue_.clear(); release_ = true; ready_.notify_one(); return false; }
+        queue_.push_back({input, done});
+      }
+      ready_.notify_one();
     }
-    ready_.notify_one();
-    return true;
+    if (!done) return true;
+    try {
+      if (completion.wait_for(std::chrono::seconds(2)) == std::future_status::ready) return completion.get();
+    } catch (const std::future_error&) {}
+    Release();
+    return false;
   }
  private:
-  void ReleasePressed() {
+  void ReleasePressed(bool unblock = true) {
+    if (unblock && blocked_) { BlockInput(FALSE); blocked_ = false; }
     for (WORD key : keys_) SendKey(key, false);
     for (WORD key : unicode_) SendKey(key, false, true);
     if (buttons_ & 1) SendMouse(MOUSEEVENTF_LEFTUP);
     if (buttons_ & 2) SendMouse(MOUSEEVENTF_MIDDLEUP);
     if (buttons_ & 4) SendMouse(MOUSEEVENTF_RIGHTUP);
-    keys_.clear(); unicode_.clear(); buttons_ = 0;
+    keys_.clear(); unicode_.clear(); unicode_keys_.clear(); buttons_ = 0;
   }
   bool AttachInputDesktop() {
     HDESK current = OpenInputDesktop(0, FALSE, GENERIC_ALL);
@@ -246,13 +259,23 @@ class ServiceConsoleBridge::InputWorker {
     if (width <= 0 || height <= 0 || width > 65536 || height > 65536) return;
     const double nx = std::clamp(Number(input, "x"), 0.0, 1.0);
     const double ny = std::clamp(Number(input, "y"), 0.0, 1.0);
-    SetCursorPos(x + static_cast<int>(nx * (width - 1)), y + static_cast<int>(ny * (height - 1)));
+    const int virtual_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int virtual_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (virtual_width <= 1 || virtual_height <= 1) return;
+    INPUT event{};
+    event.type = INPUT_MOUSE;
+    event.mi.dx = static_cast<LONG>((x + nx * (width - 1) - virtual_x) * 65535.0 / (virtual_width - 1));
+    event.mi.dy = static_cast<LONG>((y + ny * (height - 1) - virtual_y) * 65535.0 / (virtual_height - 1));
+    event.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    SendInput(1, &event, sizeof(event));
   }
   void Hotkey(const EncodableMap& input) {
     auto action = String(input, "action");
     if (action.empty()) action = String(input, "hotkey");
     if (action.empty()) action = String(input, "key");
-    if (action == "lock") { LockWorkStation(); return; }
+    if (action == "lock" || action == "win_l") { LockWorkStation(); return; }
     std::vector<WORD> combo;
     if (action == "ctrl_alt_del") {
       // Software SAS remains governed by Windows policy. Never emulate it as ordinary key presses.
@@ -264,20 +287,41 @@ class ServiceConsoleBridge::InputWorker {
       }
       return;
     }
-    if (action == "win_r") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('R')};
+    if (action == "win_key") combo = {static_cast<WORD>(VK_LWIN)};
+    else if (action == "win_space") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>(VK_SPACE)};
+    else if (action == "alt_shift") combo = {static_cast<WORD>(VK_MENU), static_cast<WORD>(VK_SHIFT)};
+    else if (action == "ctrl_shift") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>(VK_SHIFT)};
+    else if (action == "win_x") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('X')};
+    else if (action == "esc") combo = {static_cast<WORD>(VK_ESCAPE)};
+    else if (action == "win_r") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('R')};
     else if (action == "win_e") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('E')};
     else if (action == "win_d") combo = {static_cast<WORD>(VK_LWIN), static_cast<WORD>('D')};
     else if (action == "alt_tab") combo = {static_cast<WORD>(VK_MENU), static_cast<WORD>(VK_TAB)};
     else if (action == "alt_f4") combo = {static_cast<WORD>(VK_MENU), static_cast<WORD>(VK_F4)};
-    else if (action == "ctrl_shift_esc") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>(VK_SHIFT), static_cast<WORD>(VK_ESCAPE)};
+    else if ((action == "ctrl_shift_esc" || action == "task_mgr")) combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>(VK_SHIFT), static_cast<WORD>(VK_ESCAPE)};
     else if (action == "ctrl_c") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>('C')};
-    else if (action == "ctrl_v") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>('V')};
+    else if ((action == "ctrl_v" || action == "paste")) combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>('V')};
     else if (action == "ctrl_a") combo = {static_cast<WORD>(VK_CONTROL), static_cast<WORD>('A')};
     for (WORD key : combo) SendKey(key, true);
     for (auto key = combo.rbegin(); key != combo.rend(); ++key) SendKey(*key, false);
   }
   void Execute(const EncodableMap& input) {
     const auto type = String(input, "type");
+    if (type == "text_input") {
+      ReleasePressed(false);
+      const auto text = Wide(String(input, "text"));
+      for (wchar_t ch : text) {
+        if (ch == L'\r') continue;
+        if (ch == L'\n' || ch == L'\t') {
+          const WORD vk = ch == L'\n' ? VK_RETURN : VK_TAB;
+          SendKey(vk, true); SendKey(vk, false);
+        } else {
+          SendKey(static_cast<WORD>(ch), true, true);
+          SendKey(static_cast<WORD>(ch), false, true);
+        }
+      }
+      return;
+    }
     if (type == "mouse_move") { Move(input); return; }
     if (type == "mouse_down" || type == "mouse_up" || type == "mouse_click" || type == "click") {
       Move(input);
@@ -298,8 +342,19 @@ class ServiceConsoleBridge::InputWorker {
       const bool down = type == "key_down";
       auto text = Wide(String(input, "char"));
       if (text.empty()) text = Wide(String(input, "key"));
-      const bool modifier = keys_.count(VK_CONTROL) || keys_.count(VK_MENU) || keys_.count(VK_LWIN);
+      const WORD physical_key = VirtualKey(input);
+      if (!down) {
+        const auto text_down = unicode_keys_.find(physical_key);
+        if (text_down != unicode_keys_.end()) {
+          for (wchar_t ch : text_down->second) { SendKey(static_cast<WORD>(ch), false, true); unicode_.erase(static_cast<WORD>(ch)); }
+          unicode_keys_.erase(text_down);
+          return;
+        }
+        if (keys_.erase(physical_key)) { SendKey(physical_key, false); return; }
+      }
+      const bool modifier = keys_.count(VK_CONTROL) || keys_.count(VK_LCONTROL) || keys_.count(VK_RCONTROL) || keys_.count(VK_MENU) || keys_.count(VK_LMENU) || keys_.count(VK_RMENU) || keys_.count(VK_LWIN) || keys_.count(VK_RWIN);
       if (!modifier && (text.size() == 1 || text.size() == 2) && text[0] > 127) {
+        if (down && physical_key) unicode_keys_[physical_key] = text;
         for (wchar_t ch : text) {
           const auto wch = static_cast<WORD>(ch);
           SendKey(wch, down, true);
@@ -316,7 +371,7 @@ class ServiceConsoleBridge::InputWorker {
   void Run() {
     original_desktop_ = GetThreadDesktop(GetCurrentThreadId());
     for (;;) {
-      EncodableMap input;
+      QueuedInput queued;
       bool release = false;
       {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -325,10 +380,21 @@ class ServiceConsoleBridge::InputWorker {
         release = release_ || Clock::now() >= deadline_;
         release_ = false;
         if (release) queue_.clear();
-        else if (!queue_.empty()) { input = std::move(queue_.front()); queue_.pop_front(); }
+        else if (!queue_.empty()) { queued = std::move(queue_.front()); queue_.pop_front(); }
       }
       if (release) ReleasePressed();
-      if (!input.empty() && AttachInputDesktop()) Execute(input);
+      if (!queued.input.empty()) {
+        bool ok = AttachInputDesktop();
+        if (ok && String(queued.input, "type") == "block_input") {
+          const auto* value = Find(queued.input, "blocked");
+          const auto* desired = value ? std::get_if<bool>(value) : nullptr;
+          ok = desired && (blocked_ == *desired || BlockInput(*desired ? TRUE : FALSE));
+          if (ok) blocked_ = *desired;
+        } else if (ok && String(queued.input, "type") == "clipboard_probe") {
+          ok = desktop_name_ == L"Default";
+        } else if (ok) Execute(queued.input);
+        if (queued.done) queued.done->set_value(ok);
+      }
     }
     ReleasePressed();
     if (original_desktop_) SetThreadDesktop(original_desktop_);
@@ -336,14 +402,21 @@ class ServiceConsoleBridge::InputWorker {
   }
   std::mutex mutex_;
   std::condition_variable ready_;
-  std::deque<EncodableMap> queue_;
+  struct QueuedInput {
+    EncodableMap input;
+    std::shared_ptr<std::promise<bool>> done;
+  };
+  std::deque<QueuedInput> queue_;
   Clock::time_point deadline_{};
   bool stopped_ = false, release_ = false;
-  std::thread thread_;
   HDESK original_desktop_ = nullptr, desktop_ = nullptr;
   std::wstring desktop_name_;
   std::set<WORD> keys_, unicode_;
+  std::map<WORD, std::wstring> unicode_keys_;
   int buttons_ = 0;
+  bool blocked_ = false;
+  // Start the worker only after every field it accesses has been initialized.
+  std::thread thread_;
 };
 
 ServiceConsoleBridge::ServiceConsoleBridge(flutter::BinaryMessenger* messenger)

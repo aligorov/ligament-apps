@@ -35,7 +35,10 @@ target 'Runner' do
   end
 end
 
+require_relative '../patches/webrtc_renderer_lock'
+
 post_install do |installer|
+  patch_webrtc_renderer(File.join(__dir__, 'Flutter/ephemeral/.symlinks/plugins/flutter_webrtc/common/darwin/Classes/FlutterRTCVideoRenderer.m'))
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
   end

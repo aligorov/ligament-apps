@@ -213,7 +213,8 @@ class SupportService extends ChangeNotifier {
   });
 
   /// SYSTEM workers expose only screen and input. They must never inherit
-  /// ordinary SOS file/clipboard/chat features with SYSTEM privileges.
+  /// ordinary SOS file/chat features with SYSTEM privileges. Clipboard is
+  /// permitted only after the native worker verifies the Default desktop.
   final bool serviceHost;
   final Future<void> Function(Map<String, dynamic>)? serviceInput;
   final Future<void> Function()? serviceReleaseInput;
@@ -221,7 +222,7 @@ class SupportService extends ChangeNotifier {
   static bool serviceHostCommandAllowed(String type) => const {
     'screen_list', 'switch_screen', 'mouse_move', 'mouse_down', 'mouse_up',
     'mouse_click', 'click', 'wheel', 'mouse_wheel', 'key_down', 'key_up',
-    'block_input', 'hotkey',
+    'block_input', 'hotkey', 'text_input', 'clipboard_set', 'clipboard_get',
   }.contains(type);
 
   int _captureEpoch = 0;
@@ -1499,6 +1500,15 @@ class SupportService extends ChangeNotifier {
       return;
     }
 
+    if (serviceHost && (type == 'clipboard_set' || type == 'clipboard_get')) {
+      try {
+        await serviceInput?.call({'type': 'clipboard_probe'});
+      } catch (_) {
+        _sendSignalOrData({'type': 'clipboard_error', 'reason': 'secure_desktop'});
+        return;
+      }
+    }
+
     if (type == 'screen_list') {
       await _sendScreenList();
       return;
@@ -1534,6 +1544,7 @@ class SupportService extends ChangeNotifier {
       return;
     } else if (type == 'clipboard_set') {
       final text = input['text']?.toString() ?? '';
+      if (text.length > 65536) return;
       await Clipboard.setData(ClipboardData(text: text));
       final sysMsg = SupportChatMessage(
         id: 'sys_clip_${DateTime.now().millisecondsSinceEpoch}',
@@ -1594,7 +1605,14 @@ class SupportService extends ChangeNotifier {
           if (_currentScreenRect != null)
             'screen_rect': _currentScreenRect!.toJson(),
         });
+        if (type == 'block_input') {
+          _sendSignalOrData({'type': 'block_input_ack', 'blocked': input['blocked'] == true});
+        }
       } catch (_) {
+        if (type == 'block_input') {
+          _sendSignalOrData({'type': 'block_input_ack', 'blocked': false, 'error': 'input_rejected'});
+          return;
+        }
         await _failSession('Служба не смогла выполнить удалённый ввод');
       }
       return;
@@ -1603,6 +1621,12 @@ class SupportService extends ChangeNotifier {
     try {
       debugPrint('support_service: remote input command: $type');
       switch (type) {
+        case 'text_input':
+          final text = input['text'];
+          if (text is! String || text.length > 4096) return;
+          await Clipboard.setData(ClipboardData(text: text));
+          await InputInjector.instance.triggerHotkey('ctrl_v');
+          break;
         case 'mouse_move':
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
           final y = (input['y'] as num?)?.toDouble() ?? 0.0;
