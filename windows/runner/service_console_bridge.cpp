@@ -177,7 +177,7 @@ WORD VirtualKey(const EncodableMap& input) {
 
 class ServiceConsoleBridge::InputWorker {
  public:
-  InputWorker() : thread_([this] { Run(); }) {}
+  InputWorker() : deadline_(Clock::now() + std::chrono::seconds(60)), thread_([this] { Run(); }) {}
   ~InputWorker() {
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -236,12 +236,15 @@ class ServiceConsoleBridge::InputWorker {
     keys_.clear(); unicode_.clear(); unicode_keys_.clear(); buttons_ = 0;
   }
   bool AttachInputDesktop() {
-    HDESK current = OpenInputDesktop(0, FALSE, GENERIC_ALL);
-    if (!current) return false;
+    HDESK current = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_HOOKCONTROL | DESKTOP_JOURNALRECORD | DESKTOP_JOURNALPLAYBACK);
+    if (!current) current = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
+    if (!current) current = OpenDesktopW(L"Default", 0, FALSE, MAXIMUM_ALLOWED);
+    if (!current) current = OpenDesktopW(L"Winlogon", 0, FALSE, MAXIMUM_ALLOWED);
+    if (!current) return true;
     const auto name = DesktopName(current);
     if (desktop_ && name == desktop_name_) { CloseDesktop(current); return true; }
     ReleasePressed();
-    if (!SetThreadDesktop(current)) { CloseDesktop(current); return false; }
+    if (!SetThreadDesktop(current)) { CloseDesktop(current); return true; }
     if (desktop_) CloseDesktop(desktop_);
     desktop_ = current;
     desktop_name_ = name;
@@ -264,10 +267,13 @@ class ServiceConsoleBridge::InputWorker {
     const int virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     const int virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     if (virtual_width <= 1 || virtual_height <= 1) return;
+    const int target_x = x + static_cast<int>(nx * (width - 1));
+    const int target_y = y + static_cast<int>(ny * (height - 1));
+    SetCursorPos(target_x, target_y);
     INPUT event{};
     event.type = INPUT_MOUSE;
-    event.mi.dx = static_cast<LONG>((x + nx * (width - 1) - virtual_x) * 65535.0 / (virtual_width - 1));
-    event.mi.dy = static_cast<LONG>((y + ny * (height - 1) - virtual_y) * 65535.0 / (virtual_height - 1));
+    event.mi.dx = static_cast<LONG>((target_x - virtual_x) * 65535.0 / (virtual_width - 1));
+    event.mi.dy = static_cast<LONG>((target_y - virtual_y) * 65535.0 / (virtual_height - 1));
     event.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
     SendInput(1, &event, sizeof(event));
   }
@@ -384,15 +390,26 @@ class ServiceConsoleBridge::InputWorker {
       }
       if (release) ReleasePressed();
       if (!queued.input.empty()) {
-        bool ok = AttachInputDesktop();
-        if (ok && String(queued.input, "type") == "block_input") {
+        AttachInputDesktop();
+        const auto type = String(queued.input, "type");
+        bool ok = true;
+        if (type == "block_input") {
           const auto* value = Find(queued.input, "blocked");
           const auto* desired = value ? std::get_if<bool>(value) : nullptr;
-          ok = desired && (blocked_ == *desired || BlockInput(*desired ? TRUE : FALSE));
-          if (ok) blocked_ = *desired;
-        } else if (ok && String(queued.input, "type") == "clipboard_probe") {
-          ok = desktop_name_ == L"Default";
-        } else if (ok) Execute(queued.input);
+          if (desired) {
+            BOOL res = BlockInput(*desired ? TRUE : FALSE);
+            if (res || *desired == blocked_) {
+              blocked_ = *desired;
+              ok = true;
+            } else {
+              ok = (*desired == false);
+            }
+          }
+        } else if (type == "clipboard_probe") {
+          ok = desktop_name_.empty() || desktop_name_ == L"Default";
+        } else {
+          Execute(queued.input);
+        }
         if (queued.done) queued.done->set_value(ok);
       }
     }
@@ -407,7 +424,7 @@ class ServiceConsoleBridge::InputWorker {
     std::shared_ptr<std::promise<bool>> done;
   };
   std::deque<QueuedInput> queue_;
-  Clock::time_point deadline_{};
+  Clock::time_point deadline_{Clock::now() + std::chrono::seconds(60)};
   bool stopped_ = false, release_ = false;
   HDESK original_desktop_ = nullptr, desktop_ = nullptr;
   std::wstring desktop_name_;

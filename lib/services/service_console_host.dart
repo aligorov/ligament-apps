@@ -318,7 +318,10 @@ class _WebRtcServiceCapture implements ServiceConsoleCapture {
       serviceInput: (input) async {
         final accepted =
             await _serviceConsoleChannel.invokeMethod<bool>('input', input);
-        if (accepted != true) throw StateError('Remote input rejected');
+        final type = input['type']?.toString();
+        if (accepted != true && type == 'block_input') {
+          throw StateError('Remote input rejected');
+        }
       },
       serviceReleaseInput: () =>
           _serviceConsoleChannel.invokeMethod<void>('releaseInput'),

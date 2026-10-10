@@ -51,8 +51,10 @@ bool isSessionTerminatedMessage(Map<String, dynamic> data) {
   final inner = payload['type']?.toString();
   return top == 'session_ended' ||
       top == 'support_ended' ||
+      top == 'console_end' ||
       inner == 'session_ended' ||
-      inner == 'support_ended';
+      inner == 'support_ended' ||
+      inner == 'console_end';
 }
 
 /// Ш3 (§4.3): статус соединения по стадийным признакам — «Трансляция
@@ -395,11 +397,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (!mounted || _isCleanedUp) return;
     final messenger = ScaffoldMessenger.of(context);
     final strings = context.stringsRead;
+    _cancelStageTimers();
     _pcGraceTimer?.cancel();
     _pcGraceTimer = null;
+    _leaseTimer?.cancel();
+    _leaseTimer = null;
     _setStatus(reasonKey);
     _isControlEnabled = false;
     _cleanupResources();
+    _restoreWindowSize(delay: const Duration(milliseconds: 300));
     // Закрыть маршруты поверх консоли (диалоги/чат/модалки), затем саму
     // консоль: pop верхнего route оставлял бы открытый чат (Д6).
     final consoleRoute = ModalRoute.of(context);
@@ -432,13 +438,30 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   late final ValueNotifier<List<SupportChatMessage>> _chatMessagesNotifier;
   int _unreadChatCount = 0;
 
+  Size? _previousWindowSize;
+
   Future<void> _expandWindowForOperator() async {
     if (!kIsWeb &&
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
+        _previousWindowSize = await windowManager.getSize();
         await windowManager.setMinimumSize(const Size(800, 600));
         await windowManager.setSize(const Size(1280, 820));
         await windowManager.setResizable(true);
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _restoreWindowSize({Duration? delay}) async {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        if (delay != null) {
+          await Future.delayed(delay);
+        }
+        final targetSize = _previousWindowSize ?? const Size(440, 720);
+        await windowManager.setMinimumSize(const Size(380, 600));
+        await windowManager.setSize(targetSize);
       } catch (_) {}
     }
   }
@@ -823,6 +846,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _handleDataChannelMessage(Map<String, dynamic> data) {
+    if (isSessionTerminatedMessage(data)) {
+      _onSessionTerminated('session_ended');
+      return;
+    }
     final type = data['type']?.toString();
     if (type == 'screen_list') {
       final list = data['screens'] as List<dynamic>? ?? [];
@@ -1643,22 +1670,25 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _wsReconnectTimer?.cancel();
     _wsReconnectTimer = null;
 
-    // The native renderer patch unregisters outside its pixel-buffer lock.
-    // Await transport shutdown before releasing the texture; no timer guessing.
-    unawaited(() async {
+    // Освобождение нативных текстур рендерера и WebRTC-соединения.
+    // На macOS: unregister текстуры (renderer.dispose) во время pop-анимации/resize
+    // ловит raster-поток Flutter на живом кадре -> дедлок (черный экран).
+    // Поэтому srcObject=null синхронно (стоп кадров), а нативный dispose рендерера
+    // на macOS откладываем на 3 секунды, когда raster-поток уже гарантированно спокоен.
+    void disposeNative() {
       try {
-        await dc?.close();
+        _remoteRenderer.dispose();
       } catch (_) {}
       try {
-        await pc?.close();
+        pc?.dispose();
       } catch (_) {}
-      try {
-        await _remoteRenderer.dispose();
-      } catch (_) {}
-      try {
-        await pc?.dispose();
-      } catch (_) {}
-    }());
+    }
+
+    if (!kIsWeb && Platform.isMacOS) {
+      Future.delayed(const Duration(seconds: 3), disposeNative);
+    } else {
+      Future.delayed(const Duration(milliseconds: 350), disposeNative);
+    }
   }
 
   void _endSession() async {
@@ -1723,6 +1753,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _keyboardFocus.dispose();
     _videoTransform.dispose();
     _cleanupResources();
+    _restoreWindowSize(delay: const Duration(milliseconds: 300));
     final auth = _auth;
     final sessId = widget.sessionId;
     if (auth != null && auth.api != null && sessId.isNotEmpty) {

@@ -15,6 +15,10 @@ void main() {
       expect(isSessionTerminatedMessage({'type': 'support_ended'}), isTrue);
     });
 
+    test('верхний data[type]: console_end', () {
+      expect(isSessionTerminatedMessage({'type': 'console_end'}), isTrue);
+    });
+
     test('нормализованный payload[type] (как SDP) — data.data обёртка', () {
       expect(
         isSessionTerminatedMessage({
@@ -25,6 +29,12 @@ void main() {
       expect(
         isSessionTerminatedMessage({
           'data': {'type': 'support_ended'}
+        }),
+        isTrue,
+      );
+      expect(
+        isSessionTerminatedMessage({
+          'data': {'type': 'console_end'}
         }),
         isTrue,
       );
