@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import 'services/auth_state.dart';
+import 'services/autoshare_service.dart';
 import 'services/deep_link_service.dart';
 import 'services/support_service.dart';
 import 'screens/connect_screen.dart';
@@ -22,6 +23,24 @@ void main(List<String> args) async {
   // легаси-токен в query означает grant веб-кабинета. Если юзер ещё не
   // залогинен — AuthState сохранит ссылку и применит после успешного входа.
   final deepLinkUri = ligamentUriFromArgs(args);
+
+  // Ш5 Wake (план docs/console-any-state-plan.md §5): запуск
+  // службой-сторожем с --autoshare=<session_id>. Режим headless: окно
+  // скрыто, после восстановления сессии и подключения WS приложение
+  // само начнёт owner-трансляцию этой сессии (AuthState.requestAutoshare).
+  final autoshareSessionId = kIsWeb ? null : autoshareSessionFromArgs(args);
+
+  // Single-instance для autoshare-запусков (план §8, риск «двойной
+  // запуск»): эксклюзивный файл-лок; если его уже держит другой
+  // экземпляр — этот запуск не обслуживает wake, выходим сразу.
+  if (autoshareSessionId != null) {
+    final singleInstance = AutoshareSingleInstance();
+    final locked = await singleInstance.acquire();
+    if (!locked) {
+      debugPrint('main: autoshare-лок занят другим экземпляром — выходим');
+      exit(0);
+    }
+  }
 
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
@@ -61,8 +80,11 @@ void main(List<String> args) async {
   };
 
   // Запуск в свернутом виде (например, автозагрузка Windows/MSI с флагом --minimized):
-  // окно не показывается, приложение сидит в системном трее.
-  final startMinimized = !kIsWeb && args.contains('--minimized');
+  // окно не показывается, приложение сидит в системном трее. Ш5: --autoshare
+  // тоже стартует свёрнутым — wake поднимает трансляцию, а не окно; при
+  // неудачном восстановлении сессии приложение молча остаётся в трее.
+  final startMinimized = !kIsWeb &&
+      (args.contains('--minimized') || autoshareSessionId != null);
 
   // Инициализация оконного менеджера для Windows, macOS и Linux
   if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
@@ -100,6 +122,12 @@ void main(List<String> args) async {
   // логина. Некорректные ссылки игнорируются внутри handleDeepLink.
   if (deepLinkUri != null) {
     authState.handleDeepLink(deepLinkUri);
+  }
+
+  // Ш5: регистрируем autoshare-сессию ПОСЛЕ init(): сработает один раз,
+  // когда сессия восстановлена и WS подключен. Нет токена — молчим в трее.
+  if (autoshareSessionId != null) {
+    authState.requestAutoshare(autoshareSessionId);
   }
 
   runApp(

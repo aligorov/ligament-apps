@@ -47,36 +47,46 @@ Map<String, dynamic> normalizeBrowserSsoPrompt(Map<String, dynamic> raw) {
   };
 }
 
-/// Гейт адресации owner-«Экрана» (этап 2.4): должен ли ЭТОТ клиент начать
-/// трансляцию по support_prompt с owner:true. Prompt рассылается ВСЕМ
-/// устройствам владельца, поэтому каждый получатель решает локально.
-/// Чистая функция — тестируется без WS/сервера (owner_screen_test.dart).
+/// Гейт адресации owner-«Экрана» (этап 2.4; Ш2 плана
+/// docs/console-any-state-plan.md): должен ли ЭТОТ клиент начать
+/// трансляцию по support_prompt с owner:true. Prompt может приходить
+/// нескольким устройствам владельца, поэтому каждый получатель решает
+/// локально. Чистая функция — тестируется без WS/сервера
+/// (owner_screen_test.dart).
+///
+/// Устройство является целью ТОЛЬКО при точном совпадении адресации:
+/// - target_device_id == ownDeviceId (оба непусты), ИЛИ
+/// - target_machine_id == registeredMachineId (оба непусты).
 ///
 /// false (prompt игнорируется), когда:
 /// - инициатор — мы сами (initiator_device_id == наш device_id): это
 ///   устройство — viewer, экран оно не транслирует;
-/// - сервер адресовал трансляцию конкретной agent-цели
-///   (target_device_id непуст и != наш device_id): это не моя машина.
+/// - адресация чужая (поле задано, но не совпало);
+/// - адресация неизвестная/неполная: target-поля пусты, наш device_id
+///   неизвестен при device-адресации, машина не зарегистрирована при
+///   machine-адресации. Гейт fail-closed (Д3 аудита): раньше пустые
+///   target-поля или незарегистрированная машина «проваливались» к
+///   `return true` и машина начинала трансляцию чужой сессии.
 bool ownerScreenPromptTargetsThisDevice(
     Map<String, dynamic> prompt, String? ownDeviceId, [String? registeredMachineId]) {
   final initiator = prompt['initiator_device_id']?.toString();
   if (initiator != null && initiator.isNotEmpty && initiator == ownDeviceId) {
     return false;
   }
+  // Точное совпадение по машине (обе стороны непусты) — приоритетная
+  // адресация: machine_id переживает ротацию device_id (Д7).
   final targetMachine = prompt['target_machine_id']?.toString();
-  if (targetMachine != null && targetMachine.isNotEmpty) {
-    if (registeredMachineId != null && registeredMachineId.isNotEmpty) {
-      if (targetMachine == registeredMachineId) {
-        return true;
-      }
-      return false;
-    }
+  if (targetMachine != null &&
+      targetMachine.isNotEmpty &&
+      registeredMachineId != null &&
+      registeredMachineId.isNotEmpty &&
+      targetMachine == registeredMachineId) {
+    return true;
   }
+  // Иначе — только точное совпадение по устройству. Любая другая
+  // комбинация (поля пусты, адресация чужая или неполная) — false.
   final target = prompt['target_device_id']?.toString();
-  if (target != null && target.isNotEmpty && target != ownDeviceId) {
-    return false;
-  }
-  return true;
+  return target != null && target.isNotEmpty && target == ownDeviceId;
 }
 
 /// Генерация RFC 4122 v4 UUID с использованием криптостойкого ГСЧ
@@ -188,6 +198,26 @@ class AuthState extends ChangeNotifier {
   Timer? _rdpHeartbeatTimer;
   String? _registeredMachineId;
   bool _instanceRegistered = false;
+
+  // --- Д8 (аудит 2026-10-10, план Ш2): ретрай регистрации машины ---
+  // Тихий отказ регистрации оставлял _registeredMachineId == null
+  // навсегда, а с fail-closed гейтом owner-экрана (Д3) это навсегда
+  // отключало машину от консоли. Теперь после refreshAll без machine_id
+  // регистрация перепробуется: первая попытка через 30с, далее каждые
+  // 60с — до успеха или logout. Задержки — поля (не константы):
+  // сужаются тестом.
+  @visibleForTesting
+  Duration machineRetryFirstDelay = const Duration(seconds: 30);
+  @visibleForTesting
+  Duration machineRetryNextDelay = const Duration(seconds: 60);
+  Timer? _machineRetryTimer;
+
+  // --- Ш5 (--autoshare, план docs/console-any-state-plan.md §5): ---
+  // headless-запуск owner-трансляции по wake-флагу службы-сторожа.
+  // Срабатывает ОДИН раз, когда сессия восстановлена (isLoggedIn) и WS
+  // подключен (isOnline); реконнекты WS повторный запуск НЕ дают.
+  String? _autoshareSessionId;
+  bool _autoshareStarted = false;
 
   /// Генерация уникального action_id для операций доступа RDP / Screen
   String generateActionId() => generateUuidV4();
@@ -757,6 +787,10 @@ class AuthState extends ChangeNotifier {
 
     ws.onConnected = () {
       isOnline = true;
+      // Ш5 (--autoshare): первый успешный коннект после восстановления
+      // сессии — точка готовности для headless owner-запуска. Повторные
+      // onConnected (реконнекты) ничего не перезапускают (one-shot).
+      wsConnectedAutoshareCheck();
       loadNotifications();
       notifyListeners();
     };
@@ -983,6 +1017,9 @@ class AuthState extends ChangeNotifier {
   Future<void> logout() async {
     _pollingTimer?.cancel();
     _pollingTimer = null;
+    // Д8: ретрай регистрации машины не переживает разлогин.
+    _machineRetryTimer?.cancel();
+    _machineRetryTimer = null;
     try {
       await api?.logout();
     } catch (_) {}
@@ -1039,6 +1076,10 @@ class AuthState extends ChangeNotifier {
     // Deep-link грант одноразовый и короткоживущий — разлогин обнуляет
     // ожидание (ссылка устареет раньше следующего входа).
     _pendingRdpDeepLink = null;
+    // Ш5: autoshare-ожидание тоже привязано к сессии устройства — после
+    // logout headless-запуск не срабатывает.
+    _autoshareSessionId = null;
+    _autoshareStarted = false;
     try {
       await _secureStorage.delete(key: _tokenKey);
     } catch (e) {
@@ -1064,6 +1105,10 @@ class AuthState extends ChangeNotifier {
       tasks.add(loadSupportQueue());
     }
     await Future.wait(tasks);
+    // Д8: машина могла не зарегистрироваться (сеть/5xx) — планируем
+    // повтор, пока machine_id не появится. Идемпотентно: уже
+    // запланированный ретрай или успех ничего не делают.
+    _scheduleMachineRetryIfNeeded();
   }
 
   /// Загрузка RDP-целей «Мой ПК» (этап 2.1). 404/free-лицензия — фича
@@ -1133,6 +1178,31 @@ class AuthState extends ChangeNotifier {
     } catch (e) {
       debugPrint('auth_state: ошибка регистрации RDP machine/instance: $e');
     }
+  }
+
+  /// Д8: спланировать повторную регистрацию машины, если её id так и не
+  /// получен. Безопасно вызывать из любого места (refreshAll, ретрай) —
+  /// уже запланированный таймер и успешная регистрация ничего не делают.
+  void _scheduleMachineRetryIfNeeded() {
+    if (_machineRetryTimer != null) return; // попытка уже запланирована
+    if (!isLoggedIn) return;
+    if (_registeredMachineId != null && _registeredMachineId!.isNotEmpty) return;
+    _machineRetryTimer = Timer(machineRetryFirstDelay, _retryMachineRegistration);
+  }
+
+  /// Одна итерация ретрая: повторить регистрацию (если id всё ещё нет) и
+  /// перепланировать себя с интервалом machineRetryNextDelay. Останавливается
+  /// на успехе, при logout/dispose (таймер снят) — спама при успехе нет.
+  Future<void> _retryMachineRegistration() async {
+    _machineRetryTimer = null;
+    if (!isLoggedIn) return;
+    if (_registeredMachineId == null || _registeredMachineId!.isEmpty) {
+      await registerRdpMachineAndInstance();
+    }
+    if (!isLoggedIn) return; // logout во время запроса
+    if (_registeredMachineId != null && _registeredMachineId!.isNotEmpty) return;
+    _machineRetryTimer?.cancel();
+    _machineRetryTimer = Timer(machineRetryNextDelay, _retryMachineRegistration);
   }
 
   void _startRdpHeartbeat() {
@@ -1515,16 +1585,14 @@ class AuthState extends ChangeNotifier {
   /// mode=screen → S3-склейка на сервере → support_prompt с owner:true).
   /// Без accept-диалога и number-match: сразу startScreenSharing().
   ///
-  /// Гейты:
+  /// Гейты входа:
+  /// - адресация (fail-closed, Д3): только точное совпадение
+  ///   device/machine (ownerScreenPromptTargetsThisDevice) — иначе
+  ///   prompt адресован другому агенту и игнорируется;
   /// - инициатор (initiator_device_id == наш device_id) — это viewer, он
-  ///   экран НЕ транслирует;
-  /// - точечная адресация agent-цели (target_device_id непуст и не наш
-  ///   device_id) — это не моя машина, prompt адресован другому агенту;
-  /// - мобильные/web цели не поддержаны (getDisplayMedia нет) — «Экран»
-  ///   открывают только НА десктоп, с телефона — только просмотр;
-  /// - занятость: уже идёт другая трансляция (например, живой SOS к
-  ///   инженеру) — owner-сессия закрывается на сервере, чтобы инициатор
-  ///   сразу увидел завершение, а не молчание.
+  ///   экран НЕ транслирует.
+  /// Дальше — общий запуск startOwnerScreenFromWake (платформа,
+  /// идемпотентность, занятость).
   Future<void> _handleOwnerScreenPrompt(Map<String, dynamic> prompt) async {
     final sessionId = prompt['session_id']?.toString() ?? '';
     if (sessionId.isEmpty || api == null) return;
@@ -1535,17 +1603,54 @@ class AuthState extends ChangeNotifier {
       return;
     }
 
+    final initiatorName = prompt['initiator_device_name']?.toString() ??
+        prompt['initiator_device']?.toString();
+    await startOwnerScreenFromWake(
+      sessionId,
+      category: prompt['category']?.toString(),
+      initiatorDeviceName: initiatorName,
+    );
+  }
+
+  /// Общий запуск owner-трансляции по session_id — для WS-промпта
+  /// (этап 2.4, адресация проверена гейтом выше) и для headless-запуска
+  /// по --autoshare (Ш5 Wake: служба-сторож подняла приложение уже с
+  /// выбранной сессией — промпт-гейт не нужен, адресация состоялась
+  /// локально). Ошибки — только debugPrint, без UI.
+  Future<void> startOwnerScreenFromWake(
+    String sessionId, {
+    String? category,
+    String? initiatorDeviceName,
+  }) async {
+    if (sessionId.isEmpty) return;
+    // Локальный биндинг вместо `api!`: между await'ами параллельный
+    // logout может сбросить api.
+    final client = api;
+    if (client == null) return;
+
+    // Платформенный гейт: транслировать экран может только десктоп
+    // (getDisplayMedia на мобильных/web недоступен — там только просмотр).
     if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       debugPrint('auth_state: owner-экран проигнорирован: платформа не может быть целью');
       return;
     }
 
+    // Идемпотентность: эта сессия уже авторизуется/подключается/
+    // транслируется (WS-промпт и --autoshare могут прийти вместе), либо
+    // по ней открыт accept-диалог — ничего не делаем.
     if (support.activeSessionId == sessionId &&
-        (support.state == SupportSessionState.connecting ||
+        (support.state == SupportSessionState.authorizing ||
+            support.state == SupportSessionState.connecting ||
             support.state == SupportSessionState.active)) {
-      return; // эта сессия уже транслируется
+      return; // эта сессия уже запускается/транслируется
+    }
+    if (activeSupportPrompt?['session_id']?.toString() == sessionId) {
+      return; // ждём явного решения пользователя по этой сессии
     }
 
+    // Занятость: уже идёт другая трансляция (например, живой SOS к
+    // инженеру) — owner-сессия закрывается на сервере, чтобы инициатор
+    // сразу увидел завершение, а не молчание.
     if (support.state == SupportSessionState.connecting ||
         support.state == SupportSessionState.active) {
       debugPrint('auth_state: завершаем предыдущую сессию ${support.activeSessionId} для подключения новой owner-сессии $sessionId');
@@ -1556,27 +1661,25 @@ class AuthState extends ChangeNotifier {
       }
     }
 
-    final initiatorName = prompt['initiator_device_name']?.toString() ??
-        prompt['initiator_device']?.toString();
     // Ключевое отличие от SOS: accept-диалог (SupportApprovalModal) не
     // показывается — activeSupportPrompt остаётся null.
     support.setAuthorizing(
       sessionId: sessionId,
-      category: prompt['category']?.toString(),
+      category: category,
       accessMode: 'full_control', // свой ПК — всегда полный доступ (§5.2)
-      api: api,
+      api: client,
       owner: true,
-      initiatorDevice: initiatorName,
+      initiatorDevice: initiatorDeviceName,
     );
     notifyListeners();
 
     try {
       // Активируем экранную сессию на сервере выбранным Sharer:
-      await api!.activateOwnerScreen(sessionId, instanceId);
+      await client.activateOwnerScreen(sessionId, instanceId);
 
       await support.startScreenSharing(
         sessionId: sessionId,
-        api: api!,
+        api: client,
         accessMode: 'full_control',
       );
     } catch (e) {
@@ -1586,6 +1689,37 @@ class AuthState extends ChangeNotifier {
       // чтобы оператор не получал ложное «Сеанс завершен пользователем».
     }
     notifyListeners();
+  }
+
+  /// Ш5 Wake: main() передаёт session_id из argv (--autoshare=<sid>,
+  /// запуск службой-сторожем). Запуск owner-трансляции сработает один
+  /// раз — когда сессия восстановлена (isLoggedIn) И WS подключен
+  /// (isOnline; точка готовности — первый ws.onConnected, см.
+  /// wsConnectedAutoshareCheck). Реконнекты WS повторный запуск НЕ
+  /// дают. Если сессия не восстановилась (нет токена / 401 → logout) —
+  /// молча ничего не происходит, окно остаётся свёрнутым в трее.
+  void requestAutoshare(String sessionId) {
+    if (sessionId.isEmpty) return;
+    _autoshareSessionId = sessionId;
+    _autoshareStarted = false;
+    _maybeStartAutoshare();
+  }
+
+  /// Точка готовности WS для autoshare (вызывается из ws.onConnected).
+  /// Публичный метод только для теста защиты от повторного срабатывания
+  /// при реконнекте.
+  @visibleForTesting
+  void wsConnectedAutoshareCheck() => _maybeStartAutoshare();
+
+  void _maybeStartAutoshare() {
+    final sid = _autoshareSessionId;
+    if (sid == null || _autoshareStarted) return;
+    if (!isLoggedIn || !isOnline) return; // ждём сессию и первый коннект
+    _autoshareStarted = true; // one-shot: реконнекты не перезапускают
+    debugPrint('auth_state: autoshare — headless запуск owner-сессии $sid');
+    unawaited(startOwnerScreenFromWake(sid).catchError((Object e) {
+      debugPrint('auth_state: autoshare owner-запуск не удался: $e');
+    }));
   }
 
   /// Подтверждение удаленного доступа инженеру (approve) с проверкой контрольного числа
@@ -1832,6 +1966,7 @@ class AuthState extends ChangeNotifier {
   @override
   void dispose() {
     _pollingTimer?.cancel();
+    _machineRetryTimer?.cancel();
     unawaited(localDetect.stop());
     ws.disconnect();
     telemetry.stopReporting();

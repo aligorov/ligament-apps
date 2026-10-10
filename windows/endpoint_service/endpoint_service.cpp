@@ -22,6 +22,17 @@
 //                  через named pipe \\.\pipe\LigamentRdpGate (см. ниже).
 //                  RDP-02: nonce вяжется к logon_id запросившего окна —
 //                  чужое окно входа его не получит.
+//   ядро → агент: {"type":"agent_console_wake","session_id":"<uuid>",
+//                  "machine_id":"<uuid>"} — Ш5 плана console-any-state:
+//                  юзер вошёл, приложение закрыто — поднять
+//                  ligament_authenticator.exe в консольной сессии
+//                  (--minimized --autoshare=<session_id>). machine_id
+//                  агентом игнорируется: соединение уже привязано ядром
+//                  к этому endpoint по agent_key.
+//   агент → ядро: {"type":"agent_console_wake_result","session_id":"<uuid>",
+//                  "spawned":true|false,"reason":"launched"|
+//                  "already_running"|"no_user_session"|"no_user_token"|
+//                  "spawn_failed"} — ответ до таймаута ядра (~10с).
 //
 // LOOPBACK ENFORCEMENT (план §4: «endpoint открывает ТОЛЬКО локальный RDP
 // и не является универсальным прокси»): host/port из agent_dial ИГНОРИРУЮТСЯ,
@@ -46,6 +57,9 @@
 #include <ws2tcpip.h>
 #include <shlobj.h>
 #include <sddl.h>
+#include <wtsapi32.h>   // WTSGetActiveConsoleSessionId / WTSQueryUserToken (Ш5)
+#include <tlhelp32.h>   // Toolhelp-снапшот: ligament_authenticator уже в сессии?
+#include <userenv.h>    // CreateEnvironmentBlock (Ш5: окружение пользователя)
 #include <stdio.h>
 #include <cctype>
 #include <cwctype>
@@ -64,10 +78,13 @@
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "wtsapi32.lib") // WTSQueryUserToken (Ш5)
+#pragma comment(lib, "userenv.lib")  // CreateEnvironmentBlock (Ш5)
 
 namespace {
 
 const wchar_t* kSvcName = L"LigamentEndpointService";
+const wchar_t* kAppExe = L"ligament_authenticator.exe"; // будим Ш5 (как service.cpp)
 const char kAgentVersion[] = "1.0.0";
 const int kStableResetMs = 60000;   // сброс backoff после минуты стабильности
 const int kPingEveryMs = 25000;     // app-level ping (сердцебиение ниже WS-пингов WinHTTP)
@@ -467,6 +484,80 @@ std::wstring Utf8ToWide(const std::string& s) {
     return out;
 }
 
+// ---------------- Wake приложения в консольной сессии (Ш5) ----------------
+// Кадр agent_console_wake (Ш5 плана docs/console-any-state-plan.md): юзер
+// вошёл, приложение закрыто — поднять ligament_authenticator.exe в
+// КОНСОЛЬНОЙ сессии (WTSGetActiveConsoleSessionId) с --autoshare=<sid>.
+// Запуск — порт LaunchAppInSession из service.cpp с исправлением рецензии:
+// CreateEnvironmentBlock(hToken) + CREATE_UNICODE_ENVIRONMENT вместо
+// наследования LocalSystem-окружения службы.
+
+// ligament_authenticator.exe уже жив в УКАЗАННОЙ сессии? (порт
+// AppRunningInSession из service.cpp). Ошибка снапшота = «жив»: будить
+// вслепую нельзя — риск второго экземпляра (план §8 «двойной запуск»).
+bool AppRunningInSession(DWORD sessionId) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return true; // не знаем — не спавним
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, kAppExe) != 0) continue;
+            DWORD pidSession = 0;
+            if (ProcessIdToSessionId(pe.th32ProcessID, &pidSession) && pidSession == sessionId) {
+                found = true;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return found;
+}
+
+// Запуск приложения в пользовательской сессии (порт LaunchAppInSession из
+// service.cpp; hToken уже запрошен вызывающим через WTSQueryUserToken —
+// отдельный шаг с отдельным кодом ошибки no_user_token).
+bool SpawnAppInSession(HANDLE hToken, DWORD sessionId, const std::wstring& autoshare) {
+    // exe службы лежит рядом с приложением (один INSTALLFOLDER)
+    wchar_t exePath[MAX_PATH] = {0};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    wchar_t* slash = wcsrchr(exePath, L'\\');
+    if (slash) *(slash + 1) = 0;
+    wchar_t appPath[MAX_PATH] = {0};
+    swprintf_s(appPath, L"%s%s", exePath, kAppExe);
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    si.lpDesktop = (LPWSTR)L"winsta0\\default"; // рабочий стол пользователя
+    // Буфер с запасом: путь ≤ MAX_PATH + « --minimized --autoshare=» + UUID.
+    wchar_t args[MAX_PATH + 96] = {0};
+    _snwprintf_s(args, _countof(args), _TRUNCATE,
+                 L"\"%s\" --minimized --autoshare=%s", appPath, autoshare.c_str());
+
+    // Рецензия Ш5: CreateProcessAsUserW с lpEnvironment=NULL наследует
+    // окружение СЛУЖБЫ (LocalSystem) — у приложения пользователя ломаются
+    // %APPDATA%/%LOCALAPPDATA%. Берём окружение из ЕГО токена.
+    LPVOID env = nullptr;
+    if (!CreateEnvironmentBlock(&env, hToken, TRUE)) {
+        env = nullptr; // fallback — унаследовать окружение службы
+        Log(L"console_wake: CreateEnvironmentBlock failed %lu — окружение службы",
+            GetLastError());
+    }
+    PROCESS_INFORMATION pi = {};
+    BOOL ok = CreateProcessAsUserW(hToken, appPath, args, nullptr, nullptr,
+        FALSE, env ? CREATE_UNICODE_ENVIRONMENT : 0, env, nullptr, &si, &pi);
+    if (env) DestroyEnvironmentBlock(env);
+    if (ok) {
+        Log(L"console_wake: клиент запущен в сессии %lu (pid %lu)", sessionId, pi.dwProcessId);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        Log(L"console_wake: CreateProcessAsUserW failed %lu", GetLastError());
+    }
+    return ok != FALSE;
+}
+
 // ---------------- Агентская сессия ----------------
 
 // Контекст одного стрима (пара TCP↔WS-кадры). Владение — shared_ptr
@@ -860,6 +951,10 @@ private:
         } else if (type == "agent_close") {
             Log(L"ядро закрыло стрим %llu (%S)", sid, JsonExtractString(json, "reason").c_str());
             KillStream(sid);
+        } else if (type == "agent_console_wake") {
+            // Ш5 (console-any-state): юзер вошёл, приложение закрыто —
+            // поднять клиент в консольной сессии, ответить wake_result.
+            HandleConsoleWake(json);
         } else if (type == "pong") {
             // app-level heartbeat ответ — ничего не делаем
         }
@@ -898,6 +993,54 @@ private:
         // завершения всех захватов.
         std::thread([self = shared_from_this(), ctx] { self->StreamReader(ctx); }).detach();
         std::thread([self = shared_from_this(), ctx] { self->StreamWriter(ctx); }).detach();
+    }
+
+    // ---- Ш5: wake приложения в консольной сессии ----
+    // Порядок проверок задаёт ЧЕСТНЫЙ код ошибки (план Ш5: «нет вошедшего
+    // пользователя» ≠ «не удалось поднять»); ядро ждёт ответ ~10с — всё
+    // локальное и быстрое, в отдельный поток не выносим (как HandleDial).
+    void HandleConsoleWake(const std::string& json) {
+        const std::string sessionId = JsonExtractString(json, "session_id");
+
+        // 1) Есть ли вообще подключённая к физической консоли сессия.
+        DWORD console = WTSGetActiveConsoleSessionId();
+        if (console == 0xFFFFFFFF) {
+            Log(L"agent_console_wake %S: нет активной консольной сессии (ПК без вошедшего пользователя)",
+                sessionId.c_str());
+            SendConsoleWakeResult(sessionId, false, "no_user_session");
+            return;
+        }
+
+        // 2) Токен пользователя этой сессии (служба — LocalSystem, имеет
+        //    SE_TCB_NAME; отказ = сессия есть, вошедшего юзера нет).
+        HANDLE hToken = nullptr;
+        if (!WTSQueryUserToken(console, &hToken)) {
+            Log(L"agent_console_wake %S: WTSQueryUserToken(сессия %lu) failed %lu",
+                sessionId.c_str(), console, GetLastError());
+            SendConsoleWakeResult(sessionId, false, "no_user_token");
+            return;
+        }
+
+        // 3) Уже запущен в ЭТОЙ сессии — второй экземпляр не спавним.
+        if (AppRunningInSession(console)) {
+            CloseHandle(hToken);
+            Log(L"agent_console_wake %S: клиент уже запущен в сессии %lu",
+                sessionId.c_str(), console);
+            SendConsoleWakeResult(sessionId, true, "already_running");
+            return;
+        }
+
+        // 4) Спавн с --autoshare=<session_id> (авто-логин приложения).
+        const bool ok = SpawnAppInSession(hToken, console, Utf8ToWide(sessionId));
+        CloseHandle(hToken);
+        SendConsoleWakeResult(sessionId, ok, ok ? "launched" : "spawn_failed");
+    }
+
+    void SendConsoleWakeResult(const std::string& sessionId, bool spawned, const char* reason) {
+        // session_id — UUID, экранирование не требуется (как agent_key в Connect).
+        WsSendText("{\"type\":\"agent_console_wake_result\",\"session_id\":\"" + sessionId +
+                   "\",\"spawned\":" + (spawned ? "true" : "false") +
+                   ",\"reason\":\"" + std::string(reason) + "\"}");
     }
 
     // ---- бинарные кадры ядра → очередь стрима (TCP отправляет writer) ----

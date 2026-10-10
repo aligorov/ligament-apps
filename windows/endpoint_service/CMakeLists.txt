@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(ligament_endpoint endpoint_service.cpp)
-target_link_libraries(ligament_endpoint PRIVATE winhttp ws2_32 advapi32)
+# wtsapi32/userenv — Ш5 agent_console_wake (WTSQueryUserToken,
+# CreateEnvironmentBlock); стиль — как windows/service/CMakeLists.txt
+target_link_libraries(ligament_endpoint PRIVATE winhttp ws2_32 advapi32 wtsapi32 userenv)
 
 if(MSVC)
     # статический рантайм: служба не должна тянуть vcruntime.dll

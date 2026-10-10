@@ -38,6 +38,37 @@ int pointerDownButton(int buttons, bool rightModeForced) {
   return 0;
 }
 
+/// Ш4 (Д6): сигнал завершения сессии приходит в одном из двух видов —
+/// верхний data['type'] или нормализованный payload['type'] (как SDP).
+/// Матчится оба уровня. Чистая функция — покрыта юнит-тестами.
+bool isSessionTerminatedMessage(Map<String, dynamic> data) {
+  final payload = (data['data'] is Map<String, dynamic>)
+      ? data['data'] as Map<String, dynamic>
+      : const <String, dynamic>{};
+  final top = data['type']?.toString();
+  final inner = payload['type']?.toString();
+  return top == 'session_ended' ||
+      top == 'support_ended' ||
+      inner == 'session_ended' ||
+      inner == 'support_ended';
+}
+
+/// Ш3 (§4.3): статус соединения по стадийным признакам — «Трансляция
+/// активна» только при кадре И P2P; track без кадра остаётся промежуточным
+/// «Подключено (P2P)». Чистая функция — покрыта юнит-тестами.
+String consoleConnectionStatusKey(bool connected, bool frameReady) {
+  if (connected && frameReady) return 'stream_active';
+  if (connected) return 'p2p_connected';
+  return 'init';
+}
+
+/// Ш4: Failed/Closed — завершение через grace-таймер; Disconnected —
+/// временный статус (ICE restart должен работать), таймер не запускает.
+/// Чистая функция — покрыта юнит-тестами.
+bool pcStateRequiresGraceTermination(RTCPeerConnectionState state) =>
+    state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
+    state == RTCPeerConnectionState.RTCPeerConnectionStateClosed;
+
 class SupportOperatorScreen extends StatefulWidget {
   final String sessionId;
   final String? numberMatch;
@@ -75,10 +106,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   String? _currentNumberMatch;
   String _statusKey = 'init';
   String? _statusArg;
+  // Ш3 (§4.3): готовность консоли — независимые признаки. WS-открытие НЕ
+  // означает «подключено»: _isConnected поднимается только P2P/track,
+  // _frameReady — нативным onFirstFrameRendered (трек ≠ кадр).
+  bool _signalReady = false;
   bool _isConnected = false;
+  bool _frameReady = false;
   bool _isInputBlocked = false;
   bool _isControlEnabled = true;
   MouseClickMode _mouseClickMode = MouseClickMode.left;
+
+  /// Ш3: управление готово = DataChannel открыт И управление не выключено.
+  bool get _controlReady =>
+      _isControlEnabled &&
+      _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
+
+  /// Ш3: активна ошибка стадии с кнопкой «Повторить».
+  bool get _stageRetryActive =>
+      _statusKey == 'pc_no_offer' || _statusKey == 'no_first_frame';
 
   void _setStatus(String key, [String? arg]) {
     setState(() {
@@ -101,6 +146,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return strings.ownerScreenWaiting;
       case 'ended_by_server':
         return strings.sessionEndedByServer;
+      case 'session_ended':
+        return strings.sessionEndedByUser;
+      case 'pc_no_offer':
+        // Ш3: owner-режим ждёт автоматического ответа приложения хозяина —
+        // подсказываем проверить, что оно запущено.
+        return widget.ownerMode
+            ? strings.consoleOfferTimeoutOwner
+            : strings.consolePcNotResponding;
+      case 'no_first_frame':
+        return strings.consoleNoFirstFrame;
+      case 'stage_retry':
+        return strings.consoleStageReconnecting;
+      case 'pc_failed':
+        return strings.consolePcConnectionLost;
       case 'conn_error':
         return '${strings.connErrorPrefix} ${_statusArg ?? ''}';
       case 'requesting_access':
@@ -149,8 +208,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   /// Backoff реконнекта операторского WS (M-5).
   final ReconnectBackoff _wsBackoff = ReconnectBackoff();
   Timer? _wsReconnectTimer;
-  Timer? _ownerWaitTimer;
   Timer? _leaseTimer;
+
+  // Ш3: единая система стадийных таймеров (Д5). Отдельного owner-таймера
+  // больше нет — ожидание ответа хозяина ПК влито в offer-стадию.
+  static const Duration _offerStageTimeout = Duration(seconds: 20);
+  static const Duration _firstFrameTimeout = Duration(seconds: 15);
+  // Ш4: grace-окно перед завершением по Failed/Closed P2P.
+  static const Duration _pcGraceTimeout = Duration(seconds: 5);
+  Timer? _offerStageTimer;
+  Timer? _firstFrameStageTimer;
+  Timer? _pcGraceTimer;
 
   void _startLeaseRenewal() {
     _leaseTimer?.cancel();
@@ -165,14 +233,150 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         if (e.statusCode == 410 || e.statusCode == 404 || e.statusCode == 403 || e.code == 'session_ended') {
           _leaseTimer?.cancel();
           _leaseTimer = null;
+          // Ш4: lease 410/404/403 — единое завершение с корректным выходом
           if (mounted && !_isCleanedUp) {
-            _isControlEnabled = false;
-            _setStatus('ended_by_server');
-            _cleanupResources();
+            _onSessionTerminated('ended_by_server');
           }
         }
       } catch (_) {}
     });
+  }
+
+  /// Ш3: таймаут offer-стадии — после WS-open+request_offer нет offer/track.
+  /// Только owner-режим (Консоль ПК): в SOS перед offer лежит человеческая
+  /// стадия согласия без таймаута. ICE restart не мешает: таймер снимается
+  /// приходом offer/track, а re-request при рестарте его не перезапускает.
+  /// Guard — только жизненный цикл (Д5), готовность его НЕ гасит.
+  void _startOfferStageTimer() {
+    _offerStageTimer?.cancel();
+    _offerStageTimer = null;
+    if (!widget.ownerMode || _isCleanedUp) return;
+    _offerStageTimer = Timer(_offerStageTimeout, () {
+      if (!mounted || _isCleanedUp) return;
+      _setStatus('pc_no_offer');
+    });
+  }
+
+  void _cancelOfferStageTimer() {
+    _offerStageTimer?.cancel();
+    _offerStageTimer = null;
+  }
+
+  /// Ш3: таймаут первого кадра — после onTrack нет onFirstFrameRendered.
+  void _startFirstFrameStageTimer() {
+    _firstFrameStageTimer?.cancel();
+    _firstFrameStageTimer = null;
+    if (_isCleanedUp) return;
+    _firstFrameStageTimer = Timer(_firstFrameTimeout, () {
+      if (!mounted || _isCleanedUp) return;
+      // Страховка от потери нативного события: размеры текстуры обновились —
+      // кадры реально идут, считаем кадр полученным.
+      if (_remoteRenderer.videoWidth > 0 && _remoteRenderer.videoHeight > 0) {
+        _markFrameReady();
+        return;
+      }
+      _setStatus('no_first_frame');
+    });
+  }
+
+  void _cancelFirstFrameStageTimer() {
+    _firstFrameStageTimer?.cancel();
+    _firstFrameStageTimer = null;
+  }
+
+  void _cancelStageTimers() {
+    _cancelOfferStageTimer();
+    _cancelFirstFrameStageTimer();
+  }
+
+  /// Ш3: сброс стадийной готовности при переподключении (§4.3).
+  void _resetStageReadiness() {
+    _isConnected = false;
+    _frameReady = false;
+  }
+
+  /// Ш3: кадр реально отрисован — граница «изображение появилось».
+  void _markFrameReady() {
+    _cancelFirstFrameStageTimer();
+    if (!mounted || _isCleanedUp) return;
+    setState(() {
+      _frameReady = true;
+      if (_isConnected) {
+        _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
+        _statusArg = null;
+      }
+    });
+  }
+
+  /// Ш3: повтор зависшей стадии — повторный request_offer и перезапуск
+  /// стадийных таймеров; сигнальный канал потерян — реконнект WS.
+  void _retryConnectionStage() {
+    if (!mounted || _isCleanedUp) return;
+    _cancelStageTimers();
+    _setStatus('stage_retry');
+    if (_signalReady) {
+      _sendWsSignal({'type': 'request_offer'});
+      _startOfferStageTimer();
+    } else {
+      _wsReconnectTimer?.cancel();
+      try {
+        _wsChannel?.sink.close();
+      } catch (_) {}
+      _wsChannel = null;
+      _connectWebSocket();
+    }
+  }
+
+  /// Ш4: grace-таймер завершения по Failed/Closed; отменяется при
+  /// восстановлении (Connected) и перезапускается на Disconnected —
+  /// ICE restart должен успеть отработать.
+  void _schedulePcGraceTermination() {
+    if (!mounted || _isCleanedUp) return;
+    _pcGraceTimer?.cancel();
+    _pcGraceTimer = Timer(_pcGraceTimeout, () {
+      if (!mounted || _isCleanedUp) return;
+      _onSessionTerminated('pc_failed');
+    });
+  }
+
+  /// Ш4: единое завершение — полный teardown, корректный выход со страницы
+  /// (закрывая открытые диалоги/чаты) и уведомление. Повторный вызов
+  /// безопасен — guard по _isCleanedUp.
+  void _onSessionTerminated(String reasonKey) {
+    if (!mounted || _isCleanedUp) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final strings = context.stringsRead;
+    _pcGraceTimer?.cancel();
+    _pcGraceTimer = null;
+    _setStatus(reasonKey);
+    _isControlEnabled = false;
+    _cleanupResources();
+    // Закрыть маршруты поверх консоли (диалоги/чат/модалки), затем саму
+    // консоль: pop верхнего route оставлял бы открытый чат (Д6).
+    final consoleRoute = ModalRoute.of(context);
+    if (consoleRoute != null && !consoleRoute.isCurrent) {
+      Navigator.of(context).popUntil((r) => r == consoleRoute);
+    }
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+    messenger.showSnackBar(
+      SnackBar(
+        backgroundColor: const Color(0xFFEF4444),
+        content: Text(_terminationNotice(strings, reasonKey)),
+      ),
+    );
+  }
+
+  String _terminationNotice(AppStrings strings, String reasonKey) {
+    switch (reasonKey) {
+      case 'session_ended':
+        return strings.sessionEndedByUser;
+      case 'pc_failed':
+        return strings.consolePcConnectionLost;
+      default:
+        return strings.sessionEndedByServer;
+    }
   }
 
   final List<SupportChatMessage> _chatMessages = [];
@@ -268,25 +472,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _startLeaseRenewal();
     // Этап 2.4: в owner-режиме consent не нужен — цель стартует шаринг
     // сама по support_prompt(owner:true); number-match отсутствует.
+    // Ш3: ожидание ответа хозяина ПК покрывает единый offer-таймер,
+    // запускаемый при WS-open+request_offer.
     if (widget.ownerMode) {
       _setStatus('owner_waiting');
-      _ownerWaitTimer?.cancel();
-      _ownerWaitTimer = Timer(const Duration(seconds: 25), () {
-        if (!mounted || _isCleanedUp || _isConnected) return;
-        if (_statusKey == 'owner_waiting') {
-          final s = context.stringsRead;
-          _setStatus(
-            'conn_error',
-            s.isRu
-                ? 'Целевой ПК не ответил на запрос трансляции (проверьте, что приложение Ligament запущено на целевом ПК)'
-                : 'Target PC did not respond to stream request (ensure Ligament app is running on target PC)',
-          );
-        }
-      });
     } else {
       _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
     }
     await _remoteRenderer.initialize();
+    // Ш3 (Д5): граница «изображение появилось» — нативный колбэк первого
+    // кадра; трек ≠ кадр, чёрный экран больше не считается готовностью.
+    _remoteRenderer.onFirstFrameRendered = () {
+      _markFrameReady();
+    };
     _connectWebSocket();
     await _setupPeerConnection();
   }
@@ -332,30 +530,27 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _wsBackoff.reset();
         if (mounted) {
           setState(() {
-            _isConnected = true;
+            // Ш3 (Д5): WS-открытие — только сигнальный канал, НЕ «подключено»
+            _signalReady = true;
             if (_statusKey == 'disconnected') {
-              _statusKey = _remoteRenderer.srcObject != null ? 'stream_active' : 'init';
+              _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
               _statusArg = null;
             }
           });
         }
         _sendWsSignal({'type': 'request_offer'});
         _sendWsSignal({'type': 'screen_list'});
+        // Ш3: перезапуск стадийных таймеров (повторный request_offer ушёл).
+        _startOfferStageTimer();
+        if (!_frameReady && _remoteRenderer.srcObject != null) {
+          _startFirstFrameStageTimer();
+        }
       }).catchError((Object e) {
         debugPrint('support_operator: WS handshake не удался: $e');
         final str = e.toString();
         if (str.contains('409') || str.contains('invalid_transition')) {
-          _isCleanedUp = true;
-          _wsReconnectTimer?.cancel();
-          if (mounted) {
-            _setStatus('ended_by_server');
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                backgroundColor: const Color(0xFFEF4444),
-                content: Text(context.stringsRead.sessionEndedByServer),
-              ),
-            );
-          }
+          // Ш4: сервер закрыл сессию — единое завершение с выходом
+          _onSessionTerminated('ended_by_server');
         } else {
           _scheduleWsReconnect();
         }
@@ -369,8 +564,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
           if (_statusKey == 'ended_by_server') return;
+          // Ш3 (§4.3): при реконнекте WS стадийная готовность сбрасывается
+          _cancelStageTimers();
           setState(() {
-            _isConnected = false;
+            _signalReady = false;
+            _resetStageReadiness();
             _currentNumberMatch = null;
             _statusKey = 'disconnected';
             _statusArg = 'ws';
@@ -382,17 +580,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           if (!mounted || _isCleanedUp) return;
           final errStr = err.toString();
           if (errStr.contains('409') || errStr.contains('invalid_transition')) {
-            _isCleanedUp = true;
-            _wsReconnectTimer?.cancel();
-            _setStatus('ended_by_server');
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                backgroundColor: const Color(0xFFEF4444),
-                content: Text(context.stringsRead.sessionEndedByServer),
-              ),
-            );
+            // Ш4: сервер закрыл сессию — единое завершение с выходом
+            _onSessionTerminated('ended_by_server');
             return;
           }
+          _cancelStageTimers();
+          setState(() {
+            _signalReady = false;
+            _resetStageReadiness();
+          });
           _setStatus('conn_error', errStr);
           _scheduleWsReconnect();
         },
@@ -402,15 +598,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (mounted) {
         final errStr = e.toString();
         if (errStr.contains('409') || errStr.contains('invalid_transition')) {
-          _isCleanedUp = true;
-          _wsReconnectTimer?.cancel();
-          _setStatus('ended_by_server');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              backgroundColor: const Color(0xFFEF4444),
-              content: Text(context.stringsRead.sessionEndedByServer),
-            ),
-          );
+          // Ш4: сервер закрыл сессию — единое завершение с выходом
+          _onSessionTerminated('ended_by_server');
         } else {
           _setStatus('conn_error', errStr);
         }
@@ -485,21 +674,36 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _peerConnection!.onConnectionState = (state) {
       debugPrint('support_operator: connection state: $state');
       if (mounted) {
-        setState(() {
-          if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          // Ш4: восстановление отменяет grace-завершение
+          _pcGraceTimer?.cancel();
+          _pcGraceTimer = null;
+          setState(() {
             _isConnected = true;
             _currentNumberMatch = null;
-            _statusKey = 'p2p_connected';
+            _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
             _statusArg = null;
-          } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-              state == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
-              state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+          });
+        } else if (pcStateRequiresGraceTermination(state)) {
+          // Ш4 (Д6): Failed/Closed — завершение после grace-окна
+          setState(() {
             _isConnected = false;
             _currentNumberMatch = null;
             _statusKey = 'disconnected';
             _statusArg = state.name;
-          }
-        });
+          });
+          _schedulePcGraceTermination();
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+          // Ш4: Disconnected — временный статус, сессию НЕ завершаем;
+          // идущий grace-таймер перезапускаем, чтобы ICE restart успел.
+          setState(() {
+            _isConnected = false;
+            _currentNumberMatch = null;
+            _statusKey = 'disconnected';
+            _statusArg = state.name;
+          });
+          if (_pcGraceTimer != null) _schedulePcGraceTermination();
+        }
       }
     };
 
@@ -513,8 +717,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _peerConnection!.onTrack = (RTCTrackEvent event) async {
       debugPrint('support_operator: remote track received: ${event.track.kind}');
       if (mounted) {
-        _ownerWaitTimer?.cancel();
-        _ownerWaitTimer = null;
+        // Ш3: трек пришёл — offer-стадия пройдена (Д5: трек ≠ кадр)
+        _cancelOfferStageTimer();
         MediaStream? stream;
         if (event.streams.isNotEmpty) {
           stream = event.streams[0];
@@ -531,9 +735,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _remoteRenderer.srcObject = stream;
             _isConnected = true;
             _currentNumberMatch = null;
-            _statusKey = 'stream_active';
+            // Ш3: «Трансляция активна» — только после первого кадра
+            _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
             _statusArg = null;
           });
+          if (!_frameReady) _startFirstFrameStageTimer();
           _sendDataMessage({'type': 'screen_list'});
         }
       }
@@ -552,7 +758,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         if (mounted) {
           setState(() {
             _currentNumberMatch = null;
-            _isControlEnabled = true;
+            // Ш3 (§6 плана): открытый канал НЕ включает управление сам по
+            // себе — view_only остаётся без управления; _controlReady
+            // вычисляется из состояния канала и _isControlEnabled.
           });
         }
         _sendDataMessage({'type': 'screen_list'});
@@ -648,6 +856,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           }
 
           if (type == 'offer') {
+            // Ш3: offer пришёл — стадия пройдена, таймаут снимается
+            _cancelOfferStageTimer();
             final answer = await _peerConnection!.createAnswer({
               'offerToReceiveVideo': 1,
               'offerToReceiveAudio': 0,
@@ -669,13 +879,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         } else {
           await _peerConnection?.addCandidate(candidate);
         }
-      } else if (data['type'] == 'session_ended' || data['type'] == 'support_ended') {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(context.stringsRead.sessionEndedByUser)),
-          );
-          Navigator.of(context).pop();
-        }
+      } else if (isSessionTerminatedMessage(data)) {
+        // Ш4 (Д6): завершение матчится и в верхнем data['type'], и в
+        // нормализованном payload['type'] (как SDP)
+        _onSessionTerminated('session_ended');
       } else {
         final innerType = payload['type'] ?? data['type'];
         if (innerType != null && innerType != 'offer' && innerType != 'answer' && innerType != 'candidate') {
@@ -1237,13 +1444,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _cleanupResources() {
     if (_isCleanedUp) return;
     _isCleanedUp = true;
-    _ownerWaitTimer?.cancel();
-    _ownerWaitTimer = null;
+    // Ш3/Ш4: единая отмена стадийных и grace-таймеров
+    _cancelStageTimers();
+    _pcGraceTimer?.cancel();
+    _pcGraceTimer = null;
     _leaseTimer?.cancel();
     _leaseTimer = null;
 
     // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
     _releaseAllPointerButtons();
+
+    // Ш3/Ш4 (Д6): полный сброс признаков готовности
+    _signalReady = false;
+    _isConnected = false;
+    _frameReady = false;
+    _remoteRenderer.onFirstFrameRendered = null;
 
     try {
       _remoteRenderer.srcObject = null;
@@ -1440,7 +1655,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           Text(
                             _getStatusText(strings),
                             style: TextStyle(
-                              color: _isConnected ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
+                              // Ш3: «зелёный» статус — только P2P И кадр
+                              color: (_isConnected && _frameReady)
+                                  ? const Color(0xFF10B981)
+                                  : const Color(0xFFF59E0B),
                               fontSize: 10,
                             ),
                           ),
@@ -1870,33 +2088,73 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                 Text(
                                   _getStatusText(strings),
                                   style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                                  textAlign: TextAlign.center,
                                 ),
+                                // Ш3: повтор зависшей стадии подключения
+                                if (_stageRetryActive) ...[
+                                  const SizedBox(height: 16),
+                                  ElevatedButton.icon(
+                                    onPressed: _retryConnectionStage,
+                                    icon: const Icon(Icons.refresh, size: 16),
+                                    label: Text(strings.retry),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF0284C7),
+                                      foregroundColor: Colors.white,
+                                    ),
+                                  ),
+                                ],
                               ],
                             )
-                          : InteractiveViewer(
-                          scaleEnabled: _zoomMode == OperatorZoomMode.zoomIn,
-                          minScale: 1.0,
-                          maxScale: 3.0,
-                          child: MouseRegion(
-                            cursor: SystemMouseCursors.basic,
-                            child: Container(
-                              key: _videoKey,
-                              child: RTCVideoView(
-                                _remoteRenderer,
-                                objectFit: _zoomMode == OperatorZoomMode.fit
-                                    ? RTCVideoViewObjectFit.RTCVideoViewObjectFitContain
-                                    : RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                              ),
-                            ),
-                          ),
-                        ),
+                          : _statusKey == 'no_first_frame'
+                              // Ш3: трек есть, кадра нет — вместо чёрного экрана
+                              // понятная ошибка и повтор
+                              ? Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.videocam_off_outlined, size: 48, color: Color(0xFFF59E0B)),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      _getStatusText(strings),
+                                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    ElevatedButton.icon(
+                                      onPressed: _retryConnectionStage,
+                                      icon: const Icon(Icons.refresh, size: 16),
+                                      label: Text(strings.retry),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: const Color(0xFF0284C7),
+                                        foregroundColor: Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : InteractiveViewer(
+                                  scaleEnabled: _zoomMode == OperatorZoomMode.zoomIn,
+                                  minScale: 1.0,
+                                  maxScale: 3.0,
+                                  child: MouseRegion(
+                                    cursor: SystemMouseCursors.basic,
+                                    child: Container(
+                                      key: _videoKey,
+                                      child: RTCVideoView(
+                                        _remoteRenderer,
+                                        objectFit: _zoomMode == OperatorZoomMode.fit
+                                            ? RTCVideoViewObjectFit.RTCVideoViewObjectFitContain
+                                            : RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                 ),
               ),
             ),
           ),
 
           // Быстрая панель действий для оператора (скролл, режим клика, ввод текста)
-          if (_isConnected)
+          // Ш3: панель управления — только при готовом канале управления
+          if (_controlReady)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: const BoxDecoration(

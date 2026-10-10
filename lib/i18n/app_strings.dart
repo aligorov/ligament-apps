@@ -538,6 +538,15 @@ class AppStrings {
       ? 'Трансляция консоли этого ПК для вашего устройства ${device.isEmpty ? 'в сети' : '\u00AB$device\u00BB'}. Доступно только вам.'
       : 'This PC\'s console is streamed to your device ${device.isEmpty ? 'online' : '\u00AB$device\u00BB'}. Visible only to you.';
 
+  // --- Консоль ПК: стадии подключения и завершение (Ш3/Ш4 плана) ---
+  String get consolePcNotResponding => isRu ? 'Приложение на ПК не отвечает' : 'The application on the PC is not responding';
+  String get consoleOfferTimeoutOwner => isRu
+      ? 'Целевой ПК не ответил на запрос трансляции (проверьте, что приложение Ligament запущено на целевом ПК)'
+      : 'Target PC did not respond to the stream request (make sure the Ligament app is running on the target PC)';
+  String get consoleNoFirstFrame => isRu ? 'Видеопоток без изображения' : 'Video stream shows no picture';
+  String get consoleStageReconnecting => isRu ? 'Переподключение к трансляции…' : 'Reconnecting to the stream…';
+  String get consolePcConnectionLost => isRu ? 'Соединение с ПК потеряно' : 'Connection to the PC was lost';
+
   // --- Windows identity / SSO ---
   String identityMismatchBanner(String account, String windowsUser) => isRu
       ? '⚠️ Аккаунт $account, а за Windows-сессией $windowsUser. Администратор уведомлён.'
