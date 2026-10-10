@@ -113,9 +113,9 @@ HANDLE SystemTokenForSession(DWORD session) {
           &needed) || !IsWellKnownSid(
           reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid,
           WinLocalSystemSid)) return nullptr;
-  if (!EnablePrivilege(source.get(), SE_TCB_NAME) ||
-      !EnablePrivilege(source.get(), SE_ASSIGNPRIMARYTOKEN_NAME) ||
-      !EnablePrivilege(source.get(), SE_INCREASE_QUOTA_NAME)) return nullptr;
+  if (!EnablePrivilege(source.get(), L"SeTcbPrivilege") ||
+      !EnablePrivilege(source.get(), L"SeAssignPrimaryTokenPrivilege") ||
+      !EnablePrivilege(source.get(), L"SeIncreaseQuotaPrivilege")) return nullptr;
   HANDLE token = nullptr;
   if (!DuplicateTokenEx(source.get(), TOKEN_QUERY | TOKEN_DUPLICATE |
           TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
