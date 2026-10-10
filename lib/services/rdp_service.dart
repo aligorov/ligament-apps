@@ -1015,15 +1015,24 @@ Future<Process?> _startRdpClient({
   }
   if (Platform.isMacOS) {
     if (tempRdpFile == null) return null;
-    try {
-      return await Process.start('open', ['-a', 'Windows App', tempRdpFile.path]);
-    } catch (_) {
+    // A-37 (аудит 2026-10-10): утилита open завершается с exitCode > 0, если именованное приложение отсутствует.
+    // Проверяем результат перед переходом к fallback.
+    for (final appName in ['Windows App', 'Microsoft Remote Desktop']) {
       try {
-        return await Process.start('open', ['-a', 'Microsoft Remote Desktop', tempRdpFile.path]);
-      } catch (_) {
-        return await Process.start('open', [tempRdpFile.path]);
-      }
+        final probe = await Process.run('open', ['-a', appName, tempRdpFile.path]);
+        if (probe.exitCode == 0) {
+          return await Process.start('true', []);
+        }
+      } catch (_) {}
     }
+    // Fallback на стандартную ассоциацию .rdp
+    try {
+      final probeDefault = await Process.run('open', [tempRdpFile.path]);
+      if (probeDefault.exitCode == 0) {
+        return await Process.start('true', []);
+      }
+    } catch (_) {}
+    return null;
   }
   if (tempRdpFile != null) {
     try {

@@ -123,6 +123,8 @@ class InputInjector {
   // повышения и пропускают инъекции агента (см. input_block.cpp).
   int Function()? _nativeInstallBlock;
   int Function()? _nativeRemoveBlock;
+  void Function(int, bool)? _nativeSendUnicode;
+  void Function(int, bool)? _nativeSendVk;
 
   void _initMacCG() {
     if (kIsWeb || !Platform.isMacOS) return;
@@ -209,7 +211,7 @@ class InputInjector {
       _winGetMonitorInfo = _user32Lib!.lookupFunction<
           ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>),
           int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<_MONITORINFO>)>('GetMonitorInfoW');
-      // Нативный хелпер блокировки: экспорт из собственного exe
+      // Нативные хелперы блокировки и ввода: экспорт из собственного exe
       // (windows/runner/input_block.cpp, dllexport).
       try {
         final exe = ffi.DynamicLibrary.executable();
@@ -217,8 +219,12 @@ class InputInjector {
             'ligament_install_input_block');
         _nativeRemoveBlock = exe.lookupFunction<ffi.Int32 Function(), int Function()>(
             'ligament_remove_input_block');
+        _nativeSendUnicode = exe.lookupFunction<ffi.Void Function(ffi.Uint16, ffi.Bool), void Function(int, bool)>(
+            'ligament_send_unicode_char');
+        _nativeSendVk = exe.lookupFunction<ffi.Void Function(ffi.Uint16, ffi.Bool), void Function(int, bool)>(
+            'ligament_send_vk');
       } catch (e) {
-        debugPrint('input_injector: нативный блокировщик ввода недоступен: $e');
+        debugPrint('input_injector: нативные хелперы ввода/блокировки недоступны: $e');
       }
     } catch (e) {
       debugPrint('input_injector: ошибка загрузки user32.dll: $e');
@@ -628,8 +634,8 @@ class InputInjector {
     }
   }
 
-  /// Ввод клавиши (key down / up)
-  void keyAction({required String action, required String key, int? keyCode}) {
+  /// Ввод клавиши (key down / up) с поддержкой Unicode-символов (A-07)
+  void keyAction({required String action, required String key, int? keyCode, String? char}) {
     if (kIsWeb) return;
     final isDown = action == 'down';
 
@@ -644,14 +650,74 @@ class InputInjector {
         }
       }
     } else if (Platform.isWindows) {
+      // A-07 (аудит 2026-10-10): надёжный ввод символов (кириллица, знаки препинания)
+      // через аппаратный SendInput(KEYEVENTF_UNICODE).
+      final textChar = (char != null && char.isNotEmpty) ? char : ((key.length == 1) ? key : null);
+      final isNonControlChar = textChar != null && textChar.isNotEmpty && !_isControlKeyName(key);
+      if (isNonControlChar && _nativeSendUnicode != null) {
+        final codeUnit = textChar.codeUnitAt(0);
+        _nativeSendUnicode!(codeUnit, isDown);
+        return;
+      }
+
       final winCode = _mapToWinKeyCode(key, keyCode);
       if (winCode != 0) {
-        final flags = isDown ? 0 : 0x0002; // 0x0002 = KEYEVENTF_KEYUP
-        _winKeybdEvent?.call(winCode, 0, flags, 0);
+        if (_nativeSendVk != null) {
+          _nativeSendVk!(winCode, isDown);
+        } else {
+          final flags = isDown ? 0 : 0x0002; // 0x0002 = KEYEVENTF_KEYUP
+          _winKeybdEvent?.call(winCode, 0, flags, 0);
+        }
       }
     } else if (Platform.isLinux) {
       final act = isDown ? 'keydown' : 'keyup';
-      Process.run('xdotool', [act, key]);
+      final arg = (char != null && char.isNotEmpty) ? char : key;
+      Process.run('xdotool', [act, arg]);
+    }
+  }
+
+  bool _isControlKeyName(String key) {
+    final clean = _normalizeKeyName(key);
+    switch (clean) {
+      case 'enter':
+      case 'return':
+      case 'tab':
+      case 'backspace':
+      case 'delete':
+      case 'del':
+      case 'escape':
+      case 'esc':
+      case 'control':
+      case 'ctrl':
+      case 'controlleft':
+      case 'ctrlleft':
+      case 'controlright':
+      case 'ctrlright':
+      case 'alt':
+      case 'altleft':
+      case 'altright':
+      case 'shift':
+      case 'shiftleft':
+      case 'shiftright':
+      case 'meta':
+      case 'win':
+      case 'arrowleft':
+      case 'arrowright':
+      case 'arrowup':
+      case 'arrowdown':
+      case 'left':
+      case 'right':
+      case 'up':
+      case 'down':
+      case 'capslock':
+      case 'home':
+      case 'end':
+      case 'pageup':
+      case 'pagedown':
+      case 'insert':
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -760,6 +826,7 @@ class InputInjector {
           _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
           break;
         case 'ctrl_v':
+        case 'paste':
           final vkV = 'V'.codeUnitAt(0);
           _winKeybdEvent?.call(vkControl, 0, 0, 0);
           _winKeybdEvent?.call(vkV, 0, 0, 0);
@@ -847,6 +914,7 @@ class InputInjector {
           break;
         case 'ctrl_v':
         case 'cmd_v':
+        case 'paste':
           _postMacKey(55, true);
           _postMacKey(9, true);
           _postMacKey(9, false);
@@ -1039,11 +1107,15 @@ class InputInjector {
       case 'f11': return 0x7A;
       case 'f12': return 0x7B;
       default:
+        // A-07 (аудит 2026-10-10): виртуальные коды клавиш Windows — однобайтовые (0x01..0xFE).
+        // Символы кириллицы/Unicode (codeUnit > 127) НЕЛЬЗЯ передавать как VK — они обрабатываются через SendInput(KEYEVENTF_UNICODE).
         if (key.length == 1) {
-          return key.toUpperCase().codeUnitAt(0);
+          final cu = key.toUpperCase().codeUnitAt(0);
+          if (cu <= 127) return cu;
         }
         if (clean.length == 1) {
-          return clean.toUpperCase().codeUnitAt(0);
+          final cu = clean.toUpperCase().codeUnitAt(0);
+          if (cu <= 127) return cu;
         }
         return 0;
     }

@@ -74,7 +74,7 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
         serverUrl: auth.serverUrl,
       );
 
-      // Немедленно очищаем контроллер — секрет не задерживается в памяти UI
+      // Очищаем текстовый контроллер после передачи конфигурации для предотвращения отображения в UI
       _keyController.clear();
 
       if (mounted) {

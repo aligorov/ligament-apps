@@ -31,6 +31,10 @@ class LocalDetectService {
   HttpServer? _server;
   String? _deviceId;
 
+  /// A-04/A-05 (аудит 2026-10-10): колбэк доставки намерения запуска трансляции
+  /// от второго экземпляра или endpoint-службы.
+  void Function(String sessionId)? onAutoshare;
+
   bool get isRunning => _server != null;
 
   /// Поднять слушателя с текущим device_id сессии. Повторный вызов с тем же
@@ -73,7 +77,37 @@ class LocalDetectService {
     }
   }
 
-  void _handle(HttpRequest request) {
+  void _handle(HttpRequest request) async {
+    // A-04/A-05: Доставка намерения autoshare работающему экземпляру
+    if (request.uri.path == '/autoshare') {
+      if (request.method == 'POST') {
+        try {
+          final content = await utf8.decoder.bind(request).join();
+          final data = jsonDecode(content);
+          final sid = data is Map ? data['session_id']?.toString() : null;
+          if (sid != null && sid.isNotEmpty) {
+            onAutoshare?.call(sid);
+            final res = request.response;
+            res.statusCode = 200;
+            res.headers.set('Content-Type', 'application/json; charset=utf-8');
+            res.write(jsonEncode({'ok': true, 'session_id': sid}));
+            await res.close();
+            return;
+          }
+        } catch (e) {
+          debugPrint('local_detect: ошибка autoshare payload: $e');
+        }
+        final res = request.response;
+        res.statusCode = 400;
+        await res.close();
+        return;
+      }
+      final res = request.response;
+      res.statusCode = 405;
+      await res.close();
+      return;
+    }
+
     final reply = localDetectResponse(
       request.method,
       request.uri.path,
@@ -86,7 +120,7 @@ class LocalDetectService {
       if (reply.body.isNotEmpty) {
         res.write(reply.body);
       }
-      res.close();
+      await res.close();
     } catch (e) {
       debugPrint('local_detect: ошибка записи ответа: $e');
     }

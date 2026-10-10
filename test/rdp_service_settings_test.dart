@@ -127,7 +127,7 @@ void main() {
     expect(textField.controller?.text, isEmpty);
 
     expect(find.text('Служба успешно настроена'), findsOneWidget);
-    expect(find.text('Работает (в сети)'), findsOneWidget);
+    expect(find.text('Служба запущена'), findsOneWidget);
   });
 
   testWidgets('RdpServiceSettingsCard: отказ настройки показывает сообщение об ошибке прав',

@@ -30,6 +30,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _handleLogin() async {
+    if (_isLoading) return;
     final s = context.stringsRead;
     final username = _usernameController.text.trim();
     final password = _passwordController.text;
@@ -101,7 +102,8 @@ class _LoginScreenState extends State<LoginScreen> {
     if (msg.contains('bad_json')) {
       return s.errBadJson;
     }
-    return '${s.loginErrorPrefix}: $e';
+    debugPrint('login error: $e');
+    return '${s.loginErrorPrefix}: ${s.networkError}';
   }
 
   @override

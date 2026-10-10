@@ -20,6 +20,7 @@ class AppStrings {
   String get save => isRu ? 'Сохранить' : 'Save';
   String get delete => isRu ? 'Удалить' : 'Delete';
   String get error => isRu ? 'Ошибка' : 'Error';
+  String get networkError => isRu ? 'Ошибка сети' : 'Network error';
   String get success => isRu ? 'Успешно' : 'Success';
   String get loading => isRu ? 'Загрузка...' : 'Loading...';
   String get retry => isRu ? 'Повторить' : 'Retry';
@@ -164,7 +165,7 @@ class AppStrings {
 
   // --- History Screen ---
   String get historyTitle => isRu ? 'Журнал безопасности' : 'Security Log';
-  String get notYouTitle => isRu ? 'Это были не вы?' : 'Wasn\'t you?';
+  String get notYouTitle => isRu ? 'Это были не вы?' : 'Not you?';
   String get notYouSub => isRu
       ? 'Если вы заметили подозрительную активность входа, немедленно выйдите из приложения. Все активные сессии на данном устройстве будут заблокированы.'
       : 'If you notice suspicious login activity, log out immediately. All active sessions on this device will be revoked.';
@@ -466,7 +467,7 @@ class AppStrings {
       ? 'Нужна только если этот компьютер является удалённым рабочим местом (ПК), к которому подключаются другие. Для подключения к серверам по RDP настраивать эту службу не требуется.'
       : 'Only needed if this PC is a remote workstation host for inbound connections. Not required for connecting to terminal servers via RDP.';
   String get rdpServiceStatusLabel => isRu ? 'Состояние службы' : 'Service Status';
-  String get rdpServiceStatusRunning => isRu ? 'Работает (в сети)' : 'Running (Online)';
+  String get rdpServiceStatusRunning => isRu ? 'Служба запущена' : 'Service running';
   String get rdpServiceStatusStopped => isRu ? 'Остановлена' : 'Stopped';
   String get rdpServiceStatusNotInstalled => isRu ? 'Не установлена' : 'Not installed';
   String get rdpServiceStatusUnknown => isRu ? 'Не определено' : 'Unknown';

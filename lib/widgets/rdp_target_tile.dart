@@ -45,8 +45,7 @@ class RdpTargetTile extends StatelessWidget {
     final rdpAvailable = target['rdp_available'] != false;
     final rdpReason = target['rdp_reason']?.toString() ?? '';
 
-    final isServer = isTs || route == 'direct' || route == 'relay';
-    final effectiveOnline = isServer ? true : online;
+    final effectiveOnline = online;
 
     return Container(
       margin: margin ?? const EdgeInsets.only(bottom: 12),
@@ -369,6 +368,46 @@ class RdpTargetTile extends StatelessWidget {
         ),
       );
     }
+    if (rdpReason == 'target_disabled' || target['enabled'] == false) {
+      return Tooltip(
+        message: isRu ? 'Цель отключена администратором' : 'Target disabled by admin',
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+          ),
+          child: Text(
+            isRu ? 'Отключено' : 'Disabled',
+            maxLines: 1,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      );
+    }
+    if (rdpReason == 'policy_denied') {
+      return Tooltip(
+        message: isRu ? 'Доступ ограничен политикой безопасности' : 'Access denied by security policy',
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+          ),
+          child: Text(
+            isRu ? 'Запрещено политикой' : 'Policy denied',
+            maxLines: 1,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      );
+    }
     final isServer = isTs || route == 'direct' || route == 'relay';
     if (isServer && (!online || !rdpAvailable)) {
       return Tooltip(
@@ -403,26 +442,6 @@ class RdpTargetTile extends StatelessWidget {
           ),
           child: Text(
             s.rdpServiceOffline,
-            maxLines: 1,
-            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      );
-    }
-    if (rdpReason == 'target_disabled' || target['enabled'] == false) {
-      return Tooltip(
-        message: isRu ? 'Цель отключена администратором' : 'Target disabled by admin',
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F172A).withValues(alpha: 0.4),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-          ),
-          child: Text(
-            isRu ? 'Отключено' : 'Disabled',
             maxLines: 1,
             style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
             overflow: TextOverflow.ellipsis,

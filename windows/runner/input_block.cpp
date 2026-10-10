@@ -88,4 +88,22 @@ __declspec(dllexport) int ligament_remove_input_block(void) {
   return 0;
 }
 
+// A-07 (аудит 2026-10-10): надёжный ввод Unicode-символов (русская/кириллическая
+// раскладка, спецсимволы) через аппаратный SendInput(KEYEVENTF_UNICODE).
+__declspec(dllexport) void ligament_send_unicode_char(wchar_t ch, bool is_down) {
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  input.ki.wScan = ch;
+  input.ki.dwFlags = KEYEVENTF_UNICODE | (is_down ? 0 : KEYEVENTF_KEYUP);
+  SendInput(1, &input, sizeof(INPUT));
+}
+
+__declspec(dllexport) void ligament_send_vk(WORD vk, bool is_down) {
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  input.ki.wVk = vk;
+  input.ki.dwFlags = is_down ? 0 : KEYEVENTF_KEYUP;
+  SendInput(1, &input, sizeof(INPUT));
+}
+
 } // extern "C"

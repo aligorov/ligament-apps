@@ -138,6 +138,13 @@ class AuthState extends ChangeNotifier {
   /// на мобильных start/stop — no-op. Ошибка bind не роняет приложение.
   final LocalDetectService localDetect = LocalDetectService();
 
+  int _authEpoch = 0;
+
+  AuthState() {
+    // A-04/A-05: доставка намерения autoshare от службы или второго экземпляра
+    localDetect.onAutoshare = (sessionId) => requestAutoshare(sessionId);
+  }
+
   /// Токен сессии устройства хранится в безопасном хранилище
   /// (Keychain / Keystore / DPAPI / libsecret), а не в SharedPreferences.
   ///
@@ -1021,6 +1028,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _authEpoch++;
     _pollingTimer?.cancel();
     _pollingTimer = null;
     // Д8: ретрай регистрации машины не переживает разлогин.
@@ -1227,9 +1235,17 @@ class AuthState extends ChangeNotifier {
 
   /// Обновление профиля текущего пользователя (включая статус факторов 2FA)
   Future<void> refreshProfile() async {
-    if (api == null || !isLoggedIn) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || !isLoggedIn || expectedToken == null) return;
     try {
-      final p = await api!.getProfile();
+      final p = await client.getProfile();
+      // A-38 (аудит 2026-10-10): защита от гонки при logout/смене пользователя
+      if (_authEpoch != expectedEpoch || token != expectedToken || !isLoggedIn) {
+        debugPrint('auth_state: refreshProfile ответ проигнорирован — авторизация изменилась');
+        return;
+      }
       currentUser = p;
       notifyListeners();
     } catch (e) {
@@ -1439,6 +1455,7 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка отметки всех прочитанными: $e');
+      rethrow;
     }
   }
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -9,9 +10,25 @@ import 'package:tray_manager/tray_manager.dart';
 import 'services/auth_state.dart';
 import 'services/autoshare_service.dart';
 import 'services/deep_link_service.dart';
+import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
+
+Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
+  try {
+    final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 1500);
+    final req = await client.post('127.0.0.1', kLocalDetectPort, '/autoshare');
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({'session_id': sessionId}));
+    final res = await req.close();
+    final ok = res.statusCode == 200;
+    client.close();
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,10 +47,16 @@ void main(List<String> args) async {
   // само начнёт owner-трансляцию этой сессии (AuthState.requestAutoshare).
   final autoshareSessionId = kIsWeb ? null : autoshareSessionFromArgs(args);
 
-  // Single-instance для autoshare-запусков (план §8, риск «двойной
-  // запуск»): эксклюзивный файл-лок; если его уже держит другой
-  // экземпляр — этот запуск не обслуживает wake, выходим сразу.
+  // Single-instance для autoshare-запусков (план §8, A-04/A-05):
+  // сначала пытаемся передать намерение работающему экземпляру;
+  // если его нет — берём эксклюзивный файл-лок.
   if (autoshareSessionId != null) {
+    final delivered = await _tryForwardAutoshareToRunningInstance(autoshareSessionId);
+    if (delivered) {
+      debugPrint('main: autoshare-сессия успешно доставлена запущенному экземпляру — выходим');
+      exit(0);
+    }
+
     final singleInstance = AutoshareSingleInstance();
     final locked = await singleInstance.acquire();
     if (!locked) {

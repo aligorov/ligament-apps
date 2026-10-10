@@ -123,7 +123,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   /// Ш3: активна ошибка стадии с кнопкой «Повторить».
   bool get _stageRetryActive =>
-      _statusKey == 'pc_no_offer' || _statusKey == 'no_first_frame';
+      _statusKey == 'pc_no_offer' || _statusKey == 'pc_no_track' || _statusKey == 'no_first_frame';
 
   void _setStatus(String key, [String? arg]) {
     setState(() {
@@ -149,7 +149,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       case 'session_ended':
         return strings.sessionEndedByUser;
       case 'pc_no_offer':
-        // Ш3: owner-режим ждёт автоматического ответа приложения хозяина —
+      case 'pc_no_track':
+        // Ш3/A-06: owner-режим ждёт ответа приложения хозяина —
         // подсказываем проверить, что оно запущено.
         return widget.ownerMode
             ? strings.consoleOfferTimeoutOwner
@@ -213,12 +214,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   // Ш3: единая система стадийных таймеров (Д5). Отдельного owner-таймера
   // больше нет — ожидание ответа хозяина ПК влито в offer-стадию.
   static const Duration _offerStageTimeout = Duration(seconds: 20);
+  static const Duration _trackStageTimeout = Duration(seconds: 20);
   static const Duration _firstFrameTimeout = Duration(seconds: 15);
   // Ш4: grace-окно перед завершением по Failed/Closed P2P.
   static const Duration _pcGraceTimeout = Duration(seconds: 5);
   Timer? _offerStageTimer;
+  Timer? _trackStageTimer;
   Timer? _firstFrameStageTimer;
   Timer? _pcGraceTimer;
+
+  final Set<String> _pressedKeys = {};
 
   void _startLeaseRenewal() {
     _leaseTimer?.cancel();
@@ -262,6 +267,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _offerStageTimer = null;
   }
 
+  /// A-06 (аудит 2026-10-10): таймаут ожидания WebRTC track после получения offer
+  void _startTrackStageTimer() {
+    _trackStageTimer?.cancel();
+    _trackStageTimer = null;
+    if (_isCleanedUp) return;
+    _trackStageTimer = Timer(_trackStageTimeout, () {
+      if (!mounted || _isCleanedUp || _frameReady || _isConnected) return;
+      _setStatus('pc_no_track');
+    });
+  }
+
+  void _cancelTrackStageTimer() {
+    _trackStageTimer?.cancel();
+    _trackStageTimer = null;
+  }
+
   /// Ш3: таймаут первого кадра — после onTrack нет onFirstFrameRendered.
   void _startFirstFrameStageTimer() {
     _firstFrameStageTimer?.cancel();
@@ -286,13 +307,30 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _cancelStageTimers() {
     _cancelOfferStageTimer();
+    _cancelTrackStageTimer();
     _cancelFirstFrameStageTimer();
   }
 
-  /// Ш3: сброс стадийной готовности при переподключении (§4.3).
+  /// A-22 (аудит 2026-10-10): безопасное освобождение всех зажатых кнопок мыши и клавиш
+  void _releaseAllPressedInputs() {
+    for (final btn in _pointerDownButtons.values.toList()) {
+      _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': 0.0, 'y': 0.0});
+    }
+    _pointerDownButtons.clear();
+    for (final key in _pressedKeys.toList()) {
+      _sendDataMessage({'type': 'key_up', 'key': key});
+    }
+    _pressedKeys.clear();
+  }
+
+  bool get _isViewOnlySession => widget.sessionData['access_mode']?.toString() == 'view_only';
+
+  /// Ш3/A-20: сброс стадийной готовности при переподключении (§4.3).
   void _resetStageReadiness() {
     _isConnected = false;
     _frameReady = false;
+    _cancelStageTimers();
+    _releaseAllPressedInputs();
   }
 
   /// Ш3: кадр реально отрисован — граница «изображение появилось».
@@ -313,6 +351,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _retryConnectionStage() {
     if (!mounted || _isCleanedUp) return;
     _cancelStageTimers();
+    _resetStageReadiness();
     _setStatus('stage_retry');
     if (_signalReady) {
       _sendWsSignal({'type': 'request_offer'});
@@ -720,8 +759,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _peerConnection!.onTrack = (RTCTrackEvent event) async {
       debugPrint('support_operator: remote track received: ${event.track.kind}');
       if (mounted) {
-        // Ш3: трек пришёл — offer-стадия пройдена (Д5: трек ≠ кадр)
+        // Ш3/A-06: трек пришёл — offer/track стадии пройдены (Д5: трек ≠ кадр)
         _cancelOfferStageTimer();
+        _cancelTrackStageTimer();
         MediaStream? stream;
         if (event.streams.isNotEmpty) {
           stream = event.streams[0];
@@ -788,6 +828,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         setState(() {
           _screens = list.cast<Map<String, dynamic>>();
           _selectedScreenId = sel ?? (_screens.isNotEmpty ? _screens.first['id']?.toString() : null);
+        });
+      }
+    } else if (type == 'block_input_ack') {
+      final ack = data['blocked'] == true;
+      if (mounted) {
+        setState(() {
+          _isInputBlocked = ack;
         });
       }
     } else if (type == 'screen_lock_state') {
@@ -861,6 +908,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           if (type == 'offer') {
             // Ш3: offer пришёл — стадия пройдена, таймаут снимается
             _cancelOfferStageTimer();
+            // A-06 (аудит 2026-10-10): запускаем таймаут ожидания трека
+            _startTrackStageTimer();
             final answer = await _peerConnection!.createAnswer({
               'offerToReceiveVideo': 1,
               'offerToReceiveAudio': 0,
@@ -1161,22 +1210,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendDataMessage(Map<String, dynamic> msg) {
-    bool sent = false;
     if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode(msg)));
-        sent = true;
+        return;
       } catch (_) {}
     }
-    if (!sent) {
-      // WS-фоллбэк: если DataChannel еще не открыт или закрылся,
-      // пересылаем команду ввода или запрос экранов через WebSocket ядра
+    // A-17/A-18: вводные команды (мышь, клавиатура, hotkey, block_input)
+    // отправляются ТОЛЬКО через DataChannel (DTLS). Через WS fallback
+    // разрешены только информационные команды (screen_list, switch_screen).
+    final type = msg['type']?.toString();
+    if (type == 'screen_list' || type == 'switch_screen') {
       _sendWsSignal({'type': 'input_control', 'data': msg});
     }
   }
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
-    if (!_isControlEnabled) return;
+    if (!_controlReady) return;
     final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
@@ -1353,10 +1403,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _sendTextToRemote(String text) {
     if (text.isEmpty) return;
     _sendDataMessage({'type': 'clipboard_set', 'text': text});
+    // A-14 (аудит 2026-10-10): после установки буфера выполняем вставку (paste),
+    // чтобы текст вставился в активное поле ввода удалённого ПК,
+    // а чувствительный текст не дублируется в SnackBar целиком.
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (mounted && _controlReady) {
+        _sendDataMessage({'type': 'hotkey', 'action': 'paste'});
+      }
+    });
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(isRu ? 'Текст отправлен в буфер ПК клиента: "$text"' : 'Text sent to client clipboard: "$text"'),
+        content: Text(isRu ? 'Текст передан и вставлен на удалённом ПК' : 'Text sent and pasted to remote PC'),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -1552,18 +1610,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (confirm == true && mounted) {
       final auth = context.read<AuthState>();
       final sessId = widget.sessionId;
-      Navigator.of(context).pop();
+      _releaseAllPressedInputs();
       try {
-        auth.api?.endSupportSession(sessionId: sessId).timeout(
+        await auth.api?.endSupportSession(sessionId: sessId).timeout(
           const Duration(seconds: 2),
-          onTimeout: () => null,
         );
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('support_operator: endSupportSession error/timeout: $e');
+      }
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
     }
   }
 
   @override
   void dispose() {
+    _releaseAllPressedInputs();
     _chatMessagesNotifier.dispose();
     _keyboardFocus.dispose();
     // Чёрный экран после «назад» (инцидент console-any-state): корневая
@@ -1886,19 +1949,29 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   IconButton(
                     icon: Icon(
                       _isControlEnabled ? Icons.sports_esports : Icons.visibility,
-                      color: _isControlEnabled ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
+                      color: _isViewOnlySession
+                          ? const Color(0xFF64748B)
+                          : (_isControlEnabled ? const Color(0xFF10B981) : const Color(0xFF94A3B8)),
                       size: 20,
                     ),
-                    tooltip: _isControlEnabled ? strings.controlEnabledTooltip : strings.controlDisabledTooltip,
-                    onPressed: () {
-                      setState(() => _isControlEnabled = !_isControlEnabled);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(_isControlEnabled ? strings.controlEnabledNotice : strings.controlDisabledNotice),
-                          duration: const Duration(milliseconds: 800),
-                        ),
-                      );
-                    },
+                    tooltip: _isViewOnlySession
+                        ? (strings.isRu ? 'Режим только просмотр (управление запрещено)' : 'View-only mode (control disabled)')
+                        : (_isControlEnabled ? strings.controlEnabledTooltip : strings.controlDisabledTooltip),
+                    onPressed: _isViewOnlySession
+                        ? null
+                        : () {
+                            final next = !_isControlEnabled;
+                            if (!next) {
+                              _releaseAllPressedInputs();
+                            }
+                            setState(() => _isControlEnabled = next);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(_isControlEnabled ? strings.controlEnabledNotice : strings.controlDisabledNotice),
+                                duration: const Duration(milliseconds: 800),
+                              ),
+                            );
+                          },
                   ),
 
                   // Ввод текста на удаленный ПК
@@ -2011,13 +2084,25 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             child: Focus(
               focusNode: _keyboardFocus,
               autofocus: true,
+              onFocusChange: (hasFocus) {
+                if (!hasFocus) {
+                  _releaseAllPressedInputs();
+                }
+              },
               onKeyEvent: (node, event) {
-                if (!_isConnected || !_isControlEnabled) return KeyEventResult.ignored;
+                if (!_controlReady) return KeyEventResult.ignored;
                 final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
                 final keyLabel = event.logicalKey.keyLabel;
+                final character = event.character;
+                if (isDown) {
+                  _pressedKeys.add(keyLabel);
+                } else {
+                  _pressedKeys.remove(keyLabel);
+                }
                 _sendDataMessage({
                   'type': isDown ? 'key_down' : 'key_up',
                   'key': keyLabel,
+                  if (character != null && character.isNotEmpty) 'char': character,
                 });
                 return KeyEventResult.handled;
               },
@@ -2025,14 +2110,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerMove: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerDown: (ev) {
-                  if (!_isControlEnabled) return;
+                  if (!_controlReady) return;
                   _keyboardFocus.requestFocus();
                   final btn = pointerDownButton(ev.buttons, _mouseClickMode == MouseClickMode.right);
                   _pointerDownButtons[ev.pointer] = btn;
                   _sendPointerEvent('mouse_down', ev, btn);
                 },
                 onPointerUp: (ev) {
-                  if (!_isControlEnabled) return;
+                  if (!_controlReady) return;
                   // M-4: up шлёт кнопку из парного down (в up buttons == 0)
                   final btn = _pointerDownButtons.remove(ev.pointer) ?? 0;
                   _sendPointerEvent('mouse_up', ev, btn);
@@ -2042,12 +2127,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 },
                 onPointerCancel: (ev) {
                   final btn = _pointerDownButtons.remove(ev.pointer);
-                  if (btn != null && _isControlEnabled) {
+                  if (btn != null && _controlReady) {
                     _sendPointerEvent('mouse_up', ev, btn);
                   }
                 },
                 onPointerSignal: (signal) {
-                  if (!_isControlEnabled) return;
+                  if (!_controlReady) return;
                   if (signal is PointerScrollEvent) {
                     _sendDataMessage({'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
                   }

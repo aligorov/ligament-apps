@@ -424,14 +424,15 @@ class SupportService extends ChangeNotifier {
   Future<void> sendFile(File file) async {
     if (!await file.exists()) return;
     final filename = file.uri.pathSegments.last;
-    final bytes = await file.readAsBytes();
-    final totalSize = bytes.length;
+    final totalSize = await file.length();
 
     if (totalSize > _maxFileTransferBytes) {
       _addSystemMessage('⚠ Файл не отправлен: превышен лимит размера 50 МБ ($filename)');
       notifyListeners();
       return;
     }
+
+    final bytes = await file.readAsBytes();
 
     // M-3: файловые передачи идут ТОЛЬКО через DataChannel; HTTP-fallback
     // для file_* запрещен (см. _sendSignalOrData).
@@ -883,6 +884,8 @@ class SupportService extends ChangeNotifier {
     });
   }
 
+  DateTime? _localLeaseDeadline;
+
   void _cancelResilienceTimers() {
     _establishmentTimer?.cancel();
     _establishmentTimer = null;
@@ -892,12 +895,23 @@ class SupportService extends ChangeNotifier {
     _disconnectedTimer = null;
     _leaseWatchdogTimer?.cancel();
     _leaseWatchdogTimer = null;
+    _localLeaseDeadline = null;
   }
 
   void _startLeaseWatchdog() {
     _leaseWatchdogTimer?.cancel();
+    // A-03: локальный предельный срок аренды на хосте (монотонное время).
+    // При потере связи с сервером Core сессия принудительно прекращается.
+    _localLeaseDeadline = DateTime.now().add(const Duration(seconds: 60));
     _leaseWatchdogTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
       if (_state != SupportSessionState.active || _activeSessionId == null || _api == null) return;
+
+      if (_localLeaseDeadline != null && DateTime.now().isAfter(_localLeaseDeadline!)) {
+        debugPrint('support_service: local lease expired, stopping P2P (A-03)');
+        _failSession('Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
+        return;
+      }
+
       try {
         final sess = await _api!.getCurrentSupportSession();
         if (sess == null) {
@@ -907,9 +921,15 @@ class SupportService extends ChangeNotifier {
         final status = sess['status']?.toString();
         if (status == 'completed' || status == 'cancelled' || status == 'rejected') {
           _failSession('Сеанс удаленной помощи завершен сервером');
+          return;
         }
+        // Подтверждение аренды успешно получено — продлеваем локальный дедлайн
+        _localLeaseDeadline = DateTime.now().add(const Duration(seconds: 60));
       } catch (e) {
         debugPrint('support_service: lease watchdog check error: $e');
+        if (_localLeaseDeadline != null && DateTime.now().isAfter(_localLeaseDeadline!)) {
+          _failSession('Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
+        }
       }
     });
   }
@@ -1036,10 +1056,19 @@ class SupportService extends ChangeNotifier {
       }
 
       if (payload['type'] == 'input_control') {
+        // A-18 (аудит 2026-10-10): Ввод (клавиатура, мышь, hotkey, block_input)
+        // разрешён ТОЛЬКО через защищённый DataChannel (DTLS).
+        // Через серверный signaling разрешены только информационные команды
+        // (screen_list, switch_screen).
         final inputData = (payload['data'] is Map<String, dynamic>)
             ? payload['data'] as Map<String, dynamic>
             : payload;
-        _handleRemoteInput(inputData);
+        final subType = inputData['type']?.toString();
+        if (subType == 'screen_list' || subType == 'switch_screen') {
+          _handleRemoteInput(inputData);
+        } else {
+          debugPrint('support_service: отклонён input_control через signaling для $subType — разрешён только DataChannel');
+        }
         return;
       }
 
@@ -1521,12 +1550,14 @@ class SupportService extends ChangeNotifier {
         case 'key_up':
           final key = input['key']?.toString() ?? '';
           final code = (input['keyCode'] as num?)?.toInt();
+          final char = input['char']?.toString();
           final act = type == 'key_down' ? 'down' : 'up';
-          InputInjector.instance.keyAction(action: act, key: key, keyCode: code);
+          InputInjector.instance.keyAction(action: act, key: key, keyCode: code, char: char);
           break;
         case 'block_input':
           final blocked = input['blocked'] == true || input['enabled'] == true;
           InputInjector.instance.setInputBlocked(blocked);
+          _sendSignalOrData({'type': 'block_input_ack', 'blocked': blocked});
           break;
         case 'hotkey':
           final hotkey = (input['action'] ?? input['hotkey'] ?? input['key'])?.toString() ?? '';

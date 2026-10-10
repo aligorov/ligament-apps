@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:win32_registry/win32_registry.dart';
@@ -64,7 +65,7 @@ class RdpEndpointConfigService {
   /// Записывает ServerURL, RdpAgentKey, RdpAgentEnabled=1 в HKLM\SOFTWARE\Ligament\2FA
   /// и HKLM\SOFTWARE\Policies\Ligament\2FA (резервный ключ против затирания MSI),
   /// и запускает/перезапускает службу LigamentEndpointService.
-  /// Ключ передаётся строго в процесс и очищается вызывающей стороной.
+  /// Ключ передаётся через временный файл JSON и НЕ светится в argv (A-08, A-09).
   Future<bool> configureEndpointService({
     required String agentKey,
     String? serverUrl,
@@ -73,43 +74,92 @@ class RdpEndpointConfigService {
     final trimmedKey = agentKey.trim();
     if (trimmedKey.isEmpty) return false;
 
-    // Защита от инъекций спецсимволов командной строки
-    if (trimmedKey.contains('"') ||
-        trimmedKey.contains("'") ||
-        trimmedKey.contains('\n') ||
-        trimmedKey.contains('\r') ||
-        trimmedKey.contains(';')) {
+    // A-09 (аудит 2026-10-10): строгая валидация формата ключа и URL без интерполяции
+    final keyRegExp = RegExp(r'^[0-9a-fA-F\-]{36}:[0-9a-fA-F]{32,128}$');
+    if (!keyRegExp.hasMatch(trimmedKey)) {
+      debugPrint('rdp_endpoint_config_service: неверный формат agentKey');
       return false;
     }
 
-    try {
-      final commands = <String>[];
-      for (final root in [r'HKLM:\SOFTWARE\Ligament\2FA', r'HKLM:\SOFTWARE\Policies\Ligament\2FA']) {
-        commands.add('New-Item -Path "$root" -Force | Out-Null');
-        commands.add('Set-ItemProperty -Path "$root" -Name "RdpAgentKey" -Value "$trimmedKey" -Type String');
-        commands.add('Set-ItemProperty -Path "$root" -Name "RdpAgentEnabled" -Value 1 -Type DWord');
-        if (serverUrl != null && serverUrl.isNotEmpty) {
-          final sanitizedUrl = serverUrl.replaceAll('"', '').replaceAll("'", '').replaceAll(';', '');
-          commands.add('Set-ItemProperty -Path "$root" -Name "ServerURL" -Value "$sanitizedUrl" -Type String');
-        }
+    String? validServerUrl;
+    if (serverUrl != null && serverUrl.trim().isNotEmpty) {
+      final u = Uri.tryParse(serverUrl.trim());
+      if (u == null || !u.hasScheme || (u.scheme != 'http' && u.scheme != 'https') || u.host.isEmpty) {
+        debugPrint('rdp_endpoint_config_service: неверный формат serverUrl');
+        return false;
       }
-      // Запуск/перезапуск службы
-      commands.add('if (Get-Service "$_serviceName" -ErrorAction SilentlyContinue) { Restart-Service "$_serviceName" -ErrorAction SilentlyContinue }');
+      validServerUrl = u.toString();
+    }
 
-      final scriptBlock = commands.join('; ');
+    // A-08 / A-09 / A-10: Передача параметров через временный файл JSON, а не argv.
+    // Секрет не светится в журнале процессов или WMI Win32_Process.
+    // -PassThru гарантирует передачу реального ExitCode дочернего процесса.
+    final tempDir = Directory.systemTemp;
+    final randomSuffix = '${DateTime.now().microsecondsSinceEpoch}_$pid';
+    final tempCfgFile = File('${tempDir.path}\\ligament_cfg_$randomSuffix.json');
+    final tempScriptFile = File('${tempDir.path}\\ligament_apply_$randomSuffix.ps1');
+
+    try {
+      final payload = jsonEncode({
+        'key': trimmedKey,
+        'serverUrl': validServerUrl ?? '',
+      });
+      await tempCfgFile.writeAsString(payload, flush: true);
+
+      final psCode = '''
+\$ErrorActionPreference = 'Stop'
+\$cfgPath = '${tempCfgFile.path.replaceAll("'", "''")}'
+if (-not (Test-Path -LiteralPath \$cfgPath)) { exit 2 }
+try {
+  \$data = Get-Content -LiteralPath \$cfgPath -Raw | ConvertFrom-Json
+  Remove-Item -LiteralPath \$cfgPath -Force -ErrorAction SilentlyContinue
+  foreach (\$root in @('HKLM:\\SOFTWARE\\Ligament\\2FA', 'HKLM:\\SOFTWARE\\Policies\\Ligament\\2FA')) {
+    if (-not (Test-Path -LiteralPath \$root)) {
+      New-Item -Path \$root -Force | Out-Null
+    }
+    Set-ItemProperty -Path \$root -Name 'RdpAgentKey' -Value \$data.key -Type String
+    Set-ItemProperty -Path \$root -Name 'RdpAgentEnabled' -Value 1 -Type DWord
+    if (\$data.serverUrl -and \$data.serverUrl.Length -gt 0) {
+      Set-ItemProperty -Path \$root -Name 'ServerURL' -Value \$data.serverUrl -Type String
+    }
+  }
+  if (Get-Service -Name '$_serviceName' -ErrorAction SilentlyContinue) {
+    Restart-Service -Name '$_serviceName' -ErrorAction Stop
+  }
+  exit 0
+} catch {
+  exit 1
+}
+''';
+      await tempScriptFile.writeAsString(psCode, flush: true);
+
       final proc = await Process.run(
         'powershell',
         [
           '-NoProfile',
           '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
           '-Command',
-          'Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList \'-NoProfile -NonInteractive -Command "$scriptBlock"\'',
+          'Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList \'-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${tempScriptFile.path.replaceAll('"', '`"')}"\' | ForEach-Object { exit \$_.ExitCode }',
         ],
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 35));
 
       return proc.exitCode == 0;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('rdp_endpoint_config_service: ошибка настройки: $e');
       return false;
+    } finally {
+      if (await tempCfgFile.exists()) {
+        try {
+          await tempCfgFile.delete();
+        } catch (_) {}
+      }
+      if (await tempScriptFile.exists()) {
+        try {
+          await tempScriptFile.delete();
+        } catch (_) {}
+      }
     }
   }
 }

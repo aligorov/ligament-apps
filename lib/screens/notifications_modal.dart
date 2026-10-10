@@ -123,7 +123,20 @@ class NotificationsModal extends StatelessWidget {
                         IconButton(
                           icon: const Icon(Icons.done_all, size: 20, color: Color(0xFF38BDF8)),
                           tooltip: s.markAllRead,
-                          onPressed: () => auth.markAllNotificationsRead(),
+                          onPressed: () async {
+                            try {
+                              await auth.markAllNotificationsRead();
+                            } catch (_) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(s.networkError),
+                                    backgroundColor: const Color(0xFFEF4444),
+                                  ),
+                                );
+                              }
+                            }
+                          },
                         ),
                       IconButton(
                         icon: const Icon(Icons.refresh, size: 20, color: Color(0xFF94A3B8)),

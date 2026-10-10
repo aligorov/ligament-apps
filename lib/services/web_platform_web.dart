@@ -1,5 +1,5 @@
+// ignore_for_file: deprecated_member_use, dangling_library_doc_comments, avoid_web_libraries_in_flutter
 /// Web-реализация (PWA): UA и touch-точки браузера.
-// ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
 
 String webUserAgent() {

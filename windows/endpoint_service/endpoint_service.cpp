@@ -537,6 +537,51 @@ bool FindRunningAppSession(DWORD& outSessionId) {
     return found;
 }
 
+// A-04 (аудит 2026-10-10): Доставка намерения autoshare работающему приложению через loopback HTTP-порт 8757
+bool DeliverAutoshareToRunningApp(const std::string& sessionId) {
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return false;
+
+    DWORD tv = 2000;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+
+    sockaddr_in sa = {};
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(8757);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (connect(s, (sockaddr*)&sa, sizeof(sa)) != 0) {
+        closesocket(s);
+        return false;
+    }
+
+    std::string body = "{\"session_id\":\"" + sessionId + "\"}";
+    std::string req = "POST /autoshare HTTP/1.1\r\n"
+                      "Host: 127.0.0.1:8757\r\n"
+                      "Content-Type: application/json\r\n"
+                      "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                      "Connection: close\r\n\r\n" + body;
+
+    int sent = send(s, req.c_str(), (int)req.size(), 0);
+    if (sent != (int)req.size()) {
+        closesocket(s);
+        return false;
+    }
+
+    char buf[512] = {0};
+    int recvd = recv(s, buf, sizeof(buf) - 1, 0);
+    closesocket(s);
+
+    if (recvd > 0) {
+        buf[recvd] = 0;
+        if (strstr(buf, "200 OK") != nullptr || strstr(buf, "HTTP/1.1 200") != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Запуск приложения в пользовательской сессии (порт LaunchAppInSession из
 // service.cpp; hToken уже запрошен вызывающим через WTSQueryUserToken —
 // отдельный шаг с отдельным кодом ошибки no_user_token).
@@ -1030,13 +1075,26 @@ private:
     void HandleConsoleWake(const std::string& json) {
         const std::string sessionId = JsonExtractString(json, "session_id");
 
-        // 1) Уже запущен в любой сессии (включая консольную) — второй экземпляр не спавним.
+        // 1) Уже запущен в любой сессии — доставляем session_id через локальный IPC (A-04)
         DWORD runningSession = 0xFFFFFFFF;
         if (FindRunningAppSession(runningSession)) {
-            Log(L"agent_console_wake %S: клиент уже запущен в сессии %lu",
+            Log(L"agent_console_wake %S: клиент уже запущен в сессии %lu, доставляем через IPC",
                 sessionId.c_str(), runningSession);
-            SendConsoleWakeResult(sessionId, true, "already_running");
-            return;
+            if (DeliverAutoshareToRunningApp(sessionId)) {
+                Log(L"agent_console_wake %S: намерение успешно доставлено работающему приложению",
+                    sessionId.c_str());
+                SendConsoleWakeResult(sessionId, true, "delivered");
+                return;
+            }
+            Log(L"agent_console_wake %S: запущенное приложение в сессии %lu не ответило на IPC",
+                sessionId.c_str(), runningSession);
+            DWORD activeConsole = WTSGetActiveConsoleSessionId();
+            if (runningSession == activeConsole) {
+                // Приложение работает в текущей консоли, но не готово (на экране логина или зависло)
+                SendConsoleWakeResult(sessionId, false, "app_unresponsive_or_not_logged_in");
+                return;
+            }
+            // Если процесс в другой сессии, продолжаем попытку поднять в активной консольной сессии
         }
 
         // 2) Ищем токен пользователя: сначала в активной консольной сессии.

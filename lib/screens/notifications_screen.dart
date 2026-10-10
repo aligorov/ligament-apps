@@ -44,7 +44,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       if (_filter == 'telegram' && !source.contains('tg') && !source.contains('telegram')) {
         return false;
       }
-      if (_filter == 'system' && (source.contains('radius') || source.contains('tg') || source.contains('telegram'))) {
+      if (_filter == 'system' && (source.contains('radius') || source.contains('tg') || source.contains('telegram') || source.contains('security') || source.contains('alert'))) {
         return false;
       }
 
@@ -95,7 +95,20 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         actions: [
           if (unreadCount > 0)
             TextButton.icon(
-              onPressed: () => auth.markAllNotificationsRead(),
+              onPressed: () async {
+                try {
+                  await auth.markAllNotificationsRead();
+                } catch (_) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(s.networkError),
+                        backgroundColor: const Color(0xFFEF4444),
+                      ),
+                    );
+                  }
+                }
+              },
               icon: const Icon(Icons.done_all, size: 16, color: Color(0xFF38BDF8)),
               label: Text(
                 s.markAllRead,

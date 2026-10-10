@@ -150,12 +150,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 _statusTile(
                   s.backupCodesStatus,
-                  '${user['backup_remaining'] ?? 0} шт.',
+                  auth.isRu ? '${user['backup_remaining'] ?? 0} шт.' : '${user['backup_remaining'] ?? 0}',
                   (user['backup_remaining'] is int && (user['backup_remaining'] as int) > 0) ? Colors.greenAccent : Colors.amber,
                 ),
                 _statusTile(
                   s.passkeysStatus,
-                  '${user['passkey_count'] ?? 0} шт.',
+                  auth.isRu ? '${user['passkey_count'] ?? 0} шт.' : '${user['passkey_count'] ?? 0}',
                   (user['passkey_count'] is int && (user['passkey_count'] as int) > 0) ? Colors.greenAccent : Colors.grey,
                 ),
                 _statusTile(
@@ -214,28 +214,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: s.notifyLoginSuccess,
                   subtitle: auth.isRu ? 'Оповещать при входе с любого устройства' : 'Alert on login from any device',
                   value: auth.notificationSettings['login_success'] != false,
-                  onChanged: (val) {
+                  onChanged: (val) async {
                     final curr = auth.notificationSettings;
-                    auth.updateNotificationSettings(
-                      loginSuccess: val,
-                      loginDenied: curr['login_denied'] != false,
-                      notifyTG: curr['notify_tg'] != false,
-                      notifyEmail: curr['notify_email'] != false,
-                    );
+                    try {
+                      await auth.updateNotificationSettings(
+                        loginSuccess: val,
+                        loginDenied: curr['login_denied'] != false,
+                        notifyTG: curr['notify_tg'] != false,
+                        notifyEmail: curr['notify_email'] != false,
+                      );
+                    } catch (_) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(s.networkError),
+                            backgroundColor: const Color(0xFFEF4444),
+                          ),
+                        );
+                      }
+                    }
                   },
                 ),
                 _switchTile(
                   title: s.notifyLoginDenied,
                   subtitle: auth.isRu ? 'Оповещать об отклоненных попытках' : 'Alert on blocked / denied attempts',
                   value: auth.notificationSettings['login_denied'] != false,
-                  onChanged: (val) {
+                  onChanged: (val) async {
                     final curr = auth.notificationSettings;
-                    auth.updateNotificationSettings(
-                      loginSuccess: curr['login_success'] != false,
-                      loginDenied: val,
-                      notifyTG: curr['notify_tg'] != false,
-                      notifyEmail: curr['notify_email'] != false,
-                    );
+                    try {
+                      await auth.updateNotificationSettings(
+                        loginSuccess: curr['login_success'] != false,
+                        loginDenied: val,
+                        notifyTG: curr['notify_tg'] != false,
+                        notifyEmail: curr['notify_email'] != false,
+                      );
+                    } catch (_) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(s.networkError),
+                            backgroundColor: const Color(0xFFEF4444),
+                          ),
+                        );
+                      }
+                    }
                   },
                 ),
                 const Divider(color: Color(0xFF334155), height: 20),
@@ -245,14 +267,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ? (auth.isRu ? 'Канал подключен' : 'Channel connected')
                       : (auth.isRu ? 'Telegram не привязан' : 'Telegram not linked'),
                   value: auth.notificationSettings['notify_tg'] != false,
-                  onChanged: (val) {
+                  onChanged: (val) async {
                     final curr = auth.notificationSettings;
-                    auth.updateNotificationSettings(
-                      loginSuccess: curr['login_success'] != false,
-                      loginDenied: curr['login_denied'] != false,
-                      notifyTG: val,
-                      notifyEmail: curr['notify_email'] != false,
-                    );
+                    try {
+                      await auth.updateNotificationSettings(
+                        loginSuccess: curr['login_success'] != false,
+                        loginDenied: curr['login_denied'] != false,
+                        notifyTG: val,
+                        notifyEmail: curr['notify_email'] != false,
+                      );
+                    } catch (_) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(s.networkError),
+                            backgroundColor: const Color(0xFFEF4444),
+                          ),
+                        );
+                      }
+                    }
                   },
                 ),
                 const Divider(color: Color(0xFF334155), height: 20),
