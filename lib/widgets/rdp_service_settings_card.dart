@@ -69,31 +69,33 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
     });
 
     try {
-      final ok = await _service.configureEndpointService(
+      final result = await _service.configure(
         agentKey: key,
         serverUrl: auth.serverUrl,
       );
 
-      // Очищаем текстовый контроллер после передачи конфигурации для предотвращения отображения в UI
+      if (!mounted) return;
       _keyController.clear();
-
+      if (result == RdpEndpointConfigResult.success) {
+        setState(() {
+          _message = s.rdpServiceConfigSuccess;
+          _isSuccess = true;
+        });
+        await _refreshStatus();
+        // Обновляем список целей
+        await auth.loadRdpTargets();
+      } else {
+        setState(() {
+          _message = s.rdpServiceConfigurationError(result);
+          _isSuccess = false;
+        });
+      }
+    } catch (_) {
       if (mounted) {
-        if (ok) {
-          setState(() {
-            _message = s.rdpServiceConfigSuccess;
-            _isSuccess = true;
-          });
-          // Даем службе запуститься и проверяем статус
-          await Future.delayed(const Duration(seconds: 2));
-          await _refreshStatus();
-          // Обновляем список целей
-          await auth.loadRdpTargets();
-        } else {
-          setState(() {
-            _message = s.rdpServiceConfigError;
-            _isSuccess = false;
-          });
-        }
+        setState(() {
+          _message = s.rdpServiceConfigError;
+          _isSuccess = false;
+        });
       }
     } finally {
       if (mounted) {
@@ -145,16 +147,21 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
         children: [
           Row(
             children: [
-              const Icon(Icons.desktop_windows_outlined, color: Color(0xFF38BDF8), size: 20),
+              const Icon(Icons.desktop_windows_outlined,
+                  color: Color(0xFF38BDF8), size: 20),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   s.rdpServiceSettingsTitle,
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      fontSize: 14),
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF38BDF8)),
+                icon: const Icon(Icons.refresh,
+                    size: 18, color: Color(0xFF38BDF8)),
                 onPressed: _isLoading ? null : _refreshStatus,
                 tooltip: s.refresh,
               ),
@@ -166,13 +173,17 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
             style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
           ),
           const SizedBox(height: 12),
-          _infoRow(s.rdpServiceComputerName, _service.localHostname, Colors.white),
+          _infoRow(
+              s.rdpServiceComputerName, _service.localHostname, Colors.white),
           const SizedBox(height: 6),
           _infoRow(s.rdpServiceStatusLabel, statusText, statusColor),
           const SizedBox(height: 16),
           Text(
             s.rdpServiceAgentKeyLabel,
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFFCBD5E1)),
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFCBD5E1)),
           ),
           const SizedBox(height: 6),
           TextField(
@@ -190,13 +201,16 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
                 buttonItems: buttonItems,
               );
             },
-            style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
+            style: const TextStyle(
+                color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
             decoration: InputDecoration(
               hintText: s.rdpServiceAgentKeyHint,
-              hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+              hintStyle:
+                  const TextStyle(color: Color(0xFF64748B), fontSize: 13),
               filled: true,
               fillColor: const Color(0xFF0F172A),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
                 borderSide: const BorderSide(color: Color(0xFF334155)),
@@ -232,7 +246,9 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
               child: Row(
                 children: [
                   Icon(
-                    _isSuccess ? Icons.check_circle_outline : Icons.error_outline,
+                    _isSuccess
+                        ? Icons.check_circle_outline
+                        : Icons.error_outline,
                     size: 16,
                     color: _isSuccess ? Colors.greenAccent : Colors.redAccent,
                   ),
@@ -242,7 +258,8 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
                       _message!,
                       style: TextStyle(
                         fontSize: 12,
-                        color: _isSuccess ? Colors.greenAccent : Colors.redAccent,
+                        color:
+                            _isSuccess ? Colors.greenAccent : Colors.redAccent,
                       ),
                     ),
                   ),
@@ -260,7 +277,8 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
                   ? const SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
                     )
                   : const Icon(Icons.link, size: 18),
               label: Text(s.rdpServiceConnectThisPcBtn),
@@ -268,7 +286,8 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
                 backgroundColor: const Color(0xFF2563EB),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
               ),
             ),
           ),
@@ -281,10 +300,12 @@ class _RdpServiceSettingsCardState extends State<RdpServiceSettingsCard> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8))),
+        Text(label,
+            style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8))),
         Text(
           value,
-          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color),
+          style: TextStyle(
+              fontSize: 13, fontWeight: FontWeight.bold, color: color),
         ),
       ],
     );

@@ -40,7 +40,7 @@
 //
 // Конфигурация (реестр, приоритет Policies → локальный ключ, как CP и
 // GpoService): ServerURL (REG_SZ, пишется MSI AppServerUrlRegistry),
-// RdpAgentKey (REG_SZ «<uuid>:<hex>»), RdpAgentEnabled (DWORD, 0=пассивна),
+// RdpAgentKey (REG_SZ UUID bearer secret), RdpAgentEnabled (DWORD, 0=пассивна),
 // RdpAgentTargetPort (DWORD, default 3389), AllowSelfSigned / AllowHttp
 // (DWORD, только для изолированных тестовых стендов).
 //

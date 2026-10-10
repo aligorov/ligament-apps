@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:ligament_authenticator/api/client.dart';
 import 'package:ligament_authenticator/services/service_console_host.dart';
 
@@ -38,13 +39,45 @@ class _FakeCapture implements ServiceConsoleCapture {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('lease передаётся native bridge числом, а не Map', () async {
+    const channel = MethodChannel('ligament/service_console');
+    MethodCall? received;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      received = call;
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await updateServiceConsoleInputLease(30000);
+    expect(received?.method, 'lease');
+    expect(received?.arguments, 30000);
+  });
+
   group('serviceConsolePipeFromArgs', () {
+    test('принимает 32 hex-символа, которые выдаёт Windows-служба', () {
+      const pipe = r'\\.\pipe\LigamentConsole-0123456789abcdef0123456789abcdef';
+      expect(serviceConsolePipeFromArgs(['--service-console=$pipe']), pipe);
+    });
+
+    test('не допускает повторный флаг и посторонний путь', () {
+      const flag =
+          r'--service-console=\\.\pipe\LigamentConsole-0123456789abcdef0123456789abcdef';
+      expect(() => serviceConsolePipeFromArgs([flag, flag]),
+          throwsFormatException);
+      expect(() => serviceConsolePipeFromArgs(['$flag/other']),
+          throwsFormatException);
+    });
+
     test('извлекает валидный pipe', () {
       final pipe = serviceConsolePipeFromArgs([
         '--other-flag',
         r'--service-console=\\.\pipe\LigamentConsole-12345678-1234-1234-1234-123456789abc',
       ]);
-      expect(pipe, r'\\.\pipe\LigamentConsole-12345678-1234-1234-1234-123456789abc');
+      expect(pipe,
+          r'\\.\pipe\LigamentConsole-12345678-1234-1234-1234-123456789abc');
     });
 
     test('возвращает null если флага нет', () {
@@ -53,7 +86,8 @@ void main() {
 
     test('бросает FormatException если uuid невалиден', () {
       expect(
-        () => serviceConsolePipeFromArgs([r'--service-console=\\.\pipe\LigamentConsole-invalid-uuid']),
+        () => serviceConsolePipeFromArgs(
+            [r'--service-console=\\.\pipe\LigamentConsole-invalid-uuid']),
         throwsFormatException,
       );
     });
@@ -94,7 +128,8 @@ void main() {
 
       lease.update(5000);
       expect(lease.isLive, isTrue);
-      expect(lease.remainingMilliseconds, 5000 - ServiceConsoleLease.safetyMarginMilliseconds);
+      expect(lease.remainingMilliseconds,
+          5000 - ServiceConsoleLease.safetyMarginMilliseconds);
 
       fakeTime += 4800; // превысили deadline (5000 - 250 = 4750)
       expect(lease.isLive, isFalse);
@@ -116,7 +151,8 @@ void main() {
         },
       );
 
-      controller.receive('{"type":"console_ready","session_id":"12345678-1234-1234-1234-123456789abc","access_mode":"full_control","lease_remaining_ms":30000,"ice_servers":[]}');
+      controller.receive(
+          '{"type":"console_ready","session_id":"12345678-1234-1234-1234-123456789abc","access_mode":"full_control","lease_remaining_ms":30000,"ice_servers":[]}');
 
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(capture.started, isTrue);
@@ -124,7 +160,8 @@ void main() {
       expect(stopReason, isNull);
 
       // сигнал от сервера пересылается в capture
-      controller.receive('{"type":"signal","signal":{"type":"offer","sdp":"fake"}}');
+      controller
+          .receive('{"type":"signal","signal":{"type":"offer","sdp":"fake"}}');
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(capture.signals.length, 1);
       expect(capture.signals.first['type'], 'offer');

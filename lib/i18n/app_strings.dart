@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/rdp_endpoint_config_service.dart';
 
 class AppStrings {
   final String languageCode;
@@ -464,8 +465,8 @@ class AppStrings {
   // --- Настройки: RDP-служба (Хост удалённого доступа, §8) ---
   String get rdpServiceSettingsTitle => isRu ? 'Служба доступа к этому ПК (Agent)' : 'Host Access Service (Agent)';
   String get rdpServiceSettingsDesc => isRu
-      ? 'Нужна только если этот компьютер является удалённым рабочим местом (ПК), к которому подключаются другие. Для подключения к серверам по RDP настраивать эту службу не требуется.'
-      : 'Only needed if this PC is a remote workstation host for inbound connections. Not required for connecting to terminal servers via RDP.';
+      ? 'Обеспечивает доступ к консоли этого Windows-ПК при закрытом приложении Ligament. Для подключения к другим компьютерам службу настраивать не требуется.'
+      : 'Provides console access to this Windows PC while the Ligament app is closed. Not required for connecting to other computers.';
   String get rdpServiceStatusLabel => isRu ? 'Состояние службы' : 'Service Status';
   String get rdpServiceStatusRunning => isRu ? 'Служба запущена' : 'Service running';
   String get rdpServiceStatusStopped => isRu ? 'Остановлена' : 'Stopped';
@@ -475,7 +476,18 @@ class AppStrings {
   String get rdpServiceAgentKeyHint => isRu ? 'Вставьте выданный ключ' : 'Enter provided agent key';
   String get rdpServiceConnectThisPcBtn => isRu ? 'Подключить этот ПК' : 'Connect this PC';
   String get rdpServiceConfigSuccess => isRu ? 'Служба успешно настроена' : 'Service configured successfully';
-  String get rdpServiceConfigError => isRu ? 'Ошибка настройки (требуются права администратора)' : 'Configuration failed (admin rights required)';
+  String get rdpServiceConfigError => isRu ? 'Не удалось настроить службу' : 'Service configuration failed';
+  String rdpServiceConfigurationError(RdpEndpointConfigResult result) => switch (result) {
+    RdpEndpointConfigResult.invalidKey => isRu ? 'Неверный ключ подключения: вставьте agent_key, выданный сервером' : 'Invalid connection key: enter the agent_key issued by the server',
+    RdpEndpointConfigResult.invalidServerUrl => isRu ? 'Некорректный адрес сервера или HTTP не разрешён политикой' : 'Invalid server URL or HTTP is not allowed by policy',
+    RdpEndpointConfigResult.serviceNotInstalled => isRu ? 'Служба не установлена. Установите Windows-клиент через MSI' : 'Service not installed. Install the Windows client using MSI',
+    RdpEndpointConfigResult.serviceDisabled => isRu ? 'Служба отключена в Windows. Включите LigamentEndpointService и повторите настройку' : 'Service disabled in Windows. Enable LigamentEndpointService and retry',
+    RdpEndpointConfigResult.serviceStartFailed => isRu ? 'Настройки сохранены, но служба не запустилась. Проверьте журнал LigamentEndpointService' : 'Settings saved, but the service did not start. Check the LigamentEndpointService log',
+    RdpEndpointConfigResult.registryWriteFailed => isRu ? 'Не удалось сохранить и проверить настройки службы в реестре' : 'Could not save and verify service registry settings',
+    RdpEndpointConfigResult.permissionDenied => isRu ? 'Настройка не разрешена: подтвердите запрос UAC с правами администратора' : 'Configuration denied: approve UAC with administrator privileges',
+    RdpEndpointConfigResult.timedOut => isRu ? 'Время настройки истекло. Проверьте состояние службы и повторите попытку' : 'Configuration timed out. Check service status and retry',
+    _ => rdpServiceConfigError,
+  };
   String get rdpServiceEmptyKey => isRu ? 'Введите ключ подключения' : 'Enter connection key';
   String get rdpServiceComputerName => isRu ? 'Имя компьютера' : 'Computer Name';
   String get rdpServiceAdminNotice => isRu
@@ -542,8 +554,8 @@ class AppStrings {
   // --- Консоль ПК: стадии подключения и завершение (Ш3/Ш4 плана) ---
   String get consolePcNotResponding => isRu ? 'Приложение на ПК не отвечает' : 'The application on the PC is not responding';
   String get consoleOfferTimeoutOwner => isRu
-      ? 'Целевой ПК не ответил на запрос трансляции (проверьте, что приложение Ligament запущено на целевом ПК)'
-      : 'Target PC did not respond to the stream request (make sure the Ligament app is running on the target PC)';
+      ? 'Целевой ПК не начал трансляцию. Проверьте доступность компьютера и службу LigamentEndpointService на Windows'
+      : 'Target PC did not start streaming. Check connectivity and LigamentEndpointService on Windows';
   String get consoleNoFirstFrame => isRu ? 'Видеопоток без изображения' : 'Video stream shows no picture';
   String get consoleStageReconnecting => isRu ? 'Переподключение к трансляции…' : 'Reconnecting to the stream…';
   String get consolePcConnectionLost => isRu ? 'Соединение с ПК потеряно' : 'Connection to the PC was lost';

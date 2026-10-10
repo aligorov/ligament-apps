@@ -50,9 +50,9 @@
                       Type="raw" />
     </Property>
     <!-- RDPAGENTKEY: ключ endpoint-службы RDP Access Gateway (формат
-         «<endpoint_uuid>:<agent_key_hex>», выдаётся админом при создании
+         UUID bearer secret, выдаётся админом при создании
          agent-endpoint в 2fa). msiexec /i Ligament-2FA-Windows-x64.msi
-         RDPAGENTKEY=<uuid>:<hex> — значение уходит в
+         RDPAGENTKEY=<uuid> — значение уходит в
          HKLM\SOFTWARE\Ligament\2FA\RdpAgentKey (EndpointServiceComponent),
          службу читает его при старте. Не задан на CLI — считывается
          существующий ключ из реестра, предотвращая затирание при обновлении.

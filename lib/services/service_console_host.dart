@@ -9,15 +9,25 @@ import '../api/client.dart';
 import 'support_service.dart';
 
 const _serviceConsoleChannel = MethodChannel('ligament/service_console');
+
+Future<void> updateServiceConsoleInputLease(int remainingMilliseconds) =>
+    _serviceConsoleChannel.invokeMethod<void>('lease', remainingMilliseconds);
 final _consoleUuid = RegExp(
   r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+  caseSensitive: false,
+);
+// ConsoleHostProcess::NewPipeName uses 16 random bytes encoded as 32 hex
+// characters. Keep UUID names compatible with earlier workers and tests.
+final _consolePipeId = RegExp(
+  r'^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$',
   caseSensitive: false,
 );
 
 /// A pipe name is an address, never a credential. Native code verifies that
 /// this pipe belongs to the LocalSystem service before reading its contents.
 String? serviceConsolePipeFromArgs(List<String> args) {
-  final flags = args.where((arg) => arg.startsWith('--service-console')).toList();
+  final flags =
+      args.where((arg) => arg.startsWith('--service-console')).toList();
   if (flags.isEmpty) return null;
   const option = '--service-console=';
   const prefix = r'\\.\pipe\LigamentConsole-';
@@ -26,7 +36,7 @@ String? serviceConsolePipeFromArgs(List<String> args) {
   }
   final pipe = flags.single.substring(option.length);
   if (!pipe.startsWith(prefix) ||
-      !_consoleUuid.hasMatch(pipe.substring(prefix.length))) {
+      !_consolePipeId.hasMatch(pipe.substring(prefix.length))) {
     throw const FormatException('Invalid service console pipe');
   }
   return pipe;
@@ -51,15 +61,22 @@ class ServiceConsoleBootstrap {
     final session = decoded['session_id'];
     final server = decoded['server_url'];
     final token = decoded['host_token'];
-    if (session is! String || !_consoleUuid.hasMatch(session) ||
-        server is! String || token is! String ||
-        token.length < 32 || token.length > 4096 ||
+    if (session is! String ||
+        !_consoleUuid.hasMatch(session) ||
+        server is! String ||
+        token is! String ||
+        token.length < 32 ||
+        token.length > 4096 ||
         token.contains(RegExp(r'\s'))) {
       throw const FormatException('Invalid service bootstrap');
     }
     final uri = Uri.tryParse(server);
-    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty ||
-        uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment) {
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment) {
       throw const FormatException('Invalid service server URL');
     }
     return ServiceConsoleBootstrap(
@@ -70,10 +87,10 @@ class ServiceConsoleBootstrap {
   }
 
   Uri get websocketUrl => serverUrl.replace(
-    scheme: 'wss',
-    path: '${serverUrl.path.replaceFirst(RegExp(r'/+$'), '')}'
-        '/api/v1/endpoint/console/$sessionId/ws',
-  );
+        scheme: 'wss',
+        path: '${serverUrl.path.replaceFirst(RegExp(r'/+$'), '')}'
+            '/api/v1/endpoint/console/$sessionId/ws',
+      );
 }
 
 /// A monotonic deadline cannot be extended by changing the Windows clock.
@@ -232,8 +249,10 @@ class ServiceConsoleController {
     }
     // The service token authorizes media signaling only, never files or chat.
     final type = signal['type']?.toString() ?? '';
-    if (type.startsWith('file_') || type.startsWith('clipboard_') ||
-        type == 'chat_message' || type == 'input_control') {
+    if (type.startsWith('file_') ||
+        type.startsWith('clipboard_') ||
+        type == 'chat_message' ||
+        type == 'input_control') {
       throw StateError('service_signal_not_allowed');
     }
     send({'type': 'signal', 'signal': signal});
@@ -262,8 +281,7 @@ class ServiceConsoleController {
 }
 
 class _ServiceConsoleApi extends ApiClient {
-  _ServiceConsoleApi(this.controller, this.iceServers)
-      : super(baseUrl: '');
+  _ServiceConsoleApi(this.controller, this.iceServers) : super(baseUrl: '');
 
   final ServiceConsoleController controller;
   final List<Map<String, dynamic>> iceServers;
@@ -275,7 +293,9 @@ class _ServiceConsoleApi extends ApiClient {
   Future<Map<String, dynamic>> getConfig() async => {'ice_servers': iceServers};
 
   @override
-  Future<List<Map<String, dynamic>>> getSupportMessages(String sessionId) async => [];
+  Future<List<Map<String, dynamic>>> getSupportMessages(
+          String sessionId) async =>
+      [];
 
   @override
   Future<Map<String, dynamic>?> getCurrentSupportSession() async =>
@@ -287,15 +307,18 @@ class _ServiceConsoleApi extends ApiClient {
   Future<void> sendSupportSignal({
     required String sessionId,
     required Map<String, dynamic> signal,
-  }) async => controller.sendSignal(sessionId, signal);
+  }) async =>
+      controller.sendSignal(sessionId, signal);
 }
 
 class _WebRtcServiceCapture implements ServiceConsoleCapture {
   _WebRtcServiceCapture() {
     _service = SupportService(
       serviceHost: true,
-      serviceInput: (input) => _serviceConsoleChannel.invokeMethod<void>('input', input),
-      serviceReleaseInput: () => _serviceConsoleChannel.invokeMethod<void>('releaseInput'),
+      serviceInput: (input) =>
+          _serviceConsoleChannel.invokeMethod<void>('input', input),
+      serviceReleaseInput: () =>
+          _serviceConsoleChannel.invokeMethod<void>('releaseInput'),
     );
     _service.addListener(() {
       if (_service.state == SupportSessionState.ended) _onFailure?.call();
@@ -353,9 +376,7 @@ Future<void> runServiceConsoleHost(String pipe) async {
     sessionId: bootstrap.sessionId,
     capture: _WebRtcServiceCapture(),
     send: (frame) => socket.add(jsonEncode(frame)),
-    onLease: (remaining) => _serviceConsoleChannel.invokeMethod<void>(
-      'lease', {'remaining_ms': remaining},
-    ),
+    onLease: updateServiceConsoleInputLease,
     onStopped: (reason) async {
       debugPrint('service_console: stopped ($reason)');
       unawaited(socket.close());

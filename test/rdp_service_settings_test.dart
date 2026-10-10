@@ -30,7 +30,7 @@ class FakeRdpEndpointConfigService extends RdpEndpointConfigService {
   }
 
   @override
-  Future<bool> configureEndpointService({
+  Future<RdpEndpointConfigResult> configure({
     required String agentKey,
     String? serverUrl,
   }) async {
@@ -38,9 +38,9 @@ class FakeRdpEndpointConfigService extends RdpEndpointConfigService {
     lastServerUrl = serverUrl;
     if (configSuccess) {
       status = RdpEndpointServiceStatus.running;
-      return true;
+      return RdpEndpointConfigResult.success;
     }
-    return false;
+    return RdpEndpointConfigResult.permissionDenied;
   }
 }
 
@@ -64,7 +64,8 @@ void main() {
     );
   }
 
-  testWidgets('RdpServiceSettingsCard: отображает статус, имя ПК и скрытое поле ключа',
+  testWidgets(
+      'RdpServiceSettingsCard: отображает статус, имя ПК и скрытое поле ключа',
       (tester) async {
     final fakeService = FakeRdpEndpointConfigService(
       status: RdpEndpointServiceStatus.stopped,
@@ -99,7 +100,8 @@ void main() {
     expect(fakeService.lastConfiguredKey, isNull);
   });
 
-  testWidgets('RdpServiceSettingsCard: успешная настройка очищает ключ и переключает статус',
+  testWidgets(
+      'RdpServiceSettingsCard: успешная настройка очищает ключ и переключает статус',
       (tester) async {
     final fakeService = FakeRdpEndpointConfigService(
       status: RdpEndpointServiceStatus.stopped,
@@ -130,7 +132,8 @@ void main() {
     expect(find.text('Служба запущена'), findsOneWidget);
   });
 
-  testWidgets('RdpServiceSettingsCard: отказ настройки показывает сообщение об ошибке прав',
+  testWidgets(
+      'RdpServiceSettingsCard: отказ настройки показывает сообщение об ошибке прав',
       (tester) async {
     final fakeService = FakeRdpEndpointConfigService(
       status: RdpEndpointServiceStatus.stopped,
@@ -148,6 +151,9 @@ void main() {
     await tester.tap(btnFinder);
     await tester.pumpAndSettle();
 
-    expect(find.text('Ошибка настройки (требуются права администратора)'), findsOneWidget);
+    expect(
+        find.text(
+            'Настройка не разрешена: подтвердите запрос UAC с правами администратора'),
+        findsOneWidget);
   });
 }
