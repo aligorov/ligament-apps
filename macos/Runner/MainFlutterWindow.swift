@@ -10,15 +10,20 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
-    let redraw = { [weak self] (_: Notification) in
-      self?.triggerMetalRedraw()
-    }
-    NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: self, queue: .main, using: redraw)
-    NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: self, queue: .main, using: redraw)
-    NotificationCenter.default.addObserver(forName: NSWindow.didDeminiaturizeNotification, object: self, queue: .main, using: redraw)
-    NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main, using: redraw)
+    NotificationCenter.default.addObserver(self, selector: #selector(onWindowFocusOrActivation), name: NSWindow.didBecomeKeyNotification, object: self)
+    NotificationCenter.default.addObserver(self, selector: #selector(onWindowFocusOrActivation), name: NSWindow.didBecomeMainNotification, object: self)
+    NotificationCenter.default.addObserver(self, selector: #selector(onWindowFocusOrActivation), name: NSWindow.didDeminiaturizeNotification, object: self)
+    NotificationCenter.default.addObserver(self, selector: #selector(onWindowFocusOrActivation), name: NSApplication.didBecomeActiveNotification, object: nil)
 
     super.awakeFromNib()
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+  }
+
+  @objc private func onWindowFocusOrActivation() {
+    triggerMetalRedraw()
   }
 
   override func orderFront(_ sender: Any?) {
