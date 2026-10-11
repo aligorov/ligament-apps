@@ -160,6 +160,30 @@ FileAssemblyResult assembleFileChunks(
   return FileAssemblyResult.success(bytes);
 }
 
+/// Разрешение уникального пути файла с предотвращением коллизий (name (1).ext) (B2.3).
+/// [fileExists] опционально передается для юнит-тестирования без обращения к файловой системе.
+String resolveNonCollidingFilePath(
+  String dirPath,
+  String filename, {
+  bool Function(String path)? fileExists,
+}) {
+  final exists = fileExists ?? (p) => File(p).existsSync();
+  final safeName = filename.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+  final separator = Platform.pathSeparator;
+  final directPath = '$dirPath$separator$safeName';
+  if (!exists(directPath)) return directPath;
+
+  final dotIndex = safeName.lastIndexOf('.');
+  final baseName = dotIndex > 0 ? safeName.substring(0, dotIndex) : safeName;
+  final ext = dotIndex > 0 ? safeName.substring(dotIndex) : '';
+  int index = 1;
+  while (true) {
+    final candidate = '$dirPath$separator$baseName ($index)$ext';
+    if (!exists(candidate)) return candidate;
+    index++;
+  }
+}
+
 enum SupportSessionState {
   idle,
   requested,
@@ -224,6 +248,7 @@ class SupportService extends ChangeNotifier {
     'mouse_click', 'click', 'wheel', 'mouse_wheel', 'key_down', 'key_up',
     'block_input', 'hotkey', 'text_input', 'clipboard_set', 'clipboard_get',
     'session_ended', 'support_ended', 'console_end',
+    'video_quality', 'reboot',
   }.contains(type);
 
   int _captureEpoch = 0;
@@ -462,7 +487,11 @@ class SupportService extends ChangeNotifier {
     }
   }
 
-  Future<void> sendFile(File file) async {
+  Future<void> sendFile(
+    File file, {
+    void Function(int sentBytes, int totalBytes)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
     if (!await file.exists()) return;
     final filename = file.uri.pathSegments.last;
     final totalSize = await file.length();
@@ -501,6 +530,18 @@ class SupportService extends ChangeNotifier {
       });
 
       for (int i = 0; i < totalChunks; i++) {
+        if (isCancelled?.call() == true) {
+          _sendSignalOrData({
+            'type': 'file_reject',
+            'transfer_id': transferId,
+            'filename': filename,
+            'reason': 'cancelled_by_sender',
+          });
+          _addSystemMessage('⚠ Передача файла "$filename" отменена');
+          notifyListeners();
+          return;
+        }
+
         final start = i * chunkSize;
         final end = (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
         final chunkBytes = bytes.sublist(start, end);
@@ -512,6 +553,7 @@ class SupportService extends ChangeNotifier {
           'chunk_index': i,
           'data': b64,
         });
+        onProgress?.call(end, totalSize);
         if (i % 10 == 0) {
           await Future.delayed(const Duration(milliseconds: 15));
         }
@@ -539,6 +581,7 @@ class SupportService extends ChangeNotifier {
   }
 
   Future<void> _saveReceivedFile(_ActiveFileDownload dl, Uint8List bytes) async {
+    String? targetPath;
     try {
       final downloadsPath = await _resolveDownloadsDir();
 
@@ -547,11 +590,25 @@ class SupportService extends ChangeNotifier {
         await dir.create(recursive: true);
       }
 
-      final safeName = dl.filename.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-      final targetPath = '${dir.path}${Platform.pathSeparator}$safeName';
-      final file = File(targetPath);
+      // B2.3: Защита от конфликта имён (автопереименование name (1).ext)
+      targetPath = resolveNonCollidingFilePath(dir.path, dl.filename);
+      final safeName = targetPath.split(Platform.pathSeparator).last;
 
-      await file.writeAsBytes(bytes, flush: true);
+      // B2.2: Атомарная запись (сначала в .part, затем переименование)
+      final partPath = '$targetPath.part';
+      final partFile = File(partPath);
+      await partFile.writeAsBytes(bytes, flush: true);
+      await partFile.rename(targetPath);
+
+      // B2.1: Mark-of-the-Web (Zone.Identifier=3) на Windows
+      if (!kIsWeb && Platform.isWindows) {
+        try {
+          final zoneFile = File('$targetPath:Zone.Identifier');
+          await zoneFile.writeAsString('[ZoneTransfer]\r\nZoneId=3\r\n');
+        } catch (e) {
+          debugPrint('support_service: ошибка записи Zone.Identifier: $e');
+        }
+      }
 
       final item = ReceivedFileItem(
         id: dl.id,
@@ -577,6 +634,14 @@ class SupportService extends ChangeNotifier {
       _sendFileAck(dl.id, ok: true);
     } catch (e) {
       debugPrint('support_service: ошибка сохранения переданного файла: $e');
+      if (targetPath != null) {
+        try {
+          final partFile = File('$targetPath.part');
+          if (await partFile.exists()) {
+            await partFile.delete();
+          }
+        } catch (_) {}
+      }
       _sendFileAck(dl.id, ok: false);
     }
   }
@@ -875,10 +940,11 @@ class SupportService extends ChangeNotifier {
     }
   }
 
-  /// m-6: приоритет разрешения над частотой кадров и целевой битрейт ~2.5 Мбит
-  /// для видеопотока экрана (текст/1С должны оставаться читаемыми при
-  /// просадке канала).
-  Future<void> _applyVideoSenderTuning() async {
+  int? _currentVideoBitrate;
+
+  /// Применение битрейта к видео-потоку (B3.3).
+  Future<void> _applyVideoBitrate(int bitrate) async {
+    _currentVideoBitrate = bitrate;
     final pc = _peerConnection;
     if (pc == null) return;
     try {
@@ -888,16 +954,24 @@ class SupportService extends ChangeNotifier {
         final params = sender.parameters;
         final encodings = params.encodings;
         if (encodings != null && encodings.isNotEmpty) {
-          encodings.first.maxBitrate = 2500000; // ~2.5 Мбит/с
+          encodings.first.maxBitrate = bitrate;
           params.encodings = encodings;
         }
         params.degradationPreference = RTCDegradationPreference.MAINTAIN_RESOLUTION;
         await sender.setParameters(params);
+        debugPrint('support_service: применен битрейт видео $bitrate bps');
         break;
       }
     } catch (e) {
       debugPrint('support_service: tuning видео-сендера не применился: $e');
     }
+  }
+
+  /// m-6: приоритет разрешения над частотой кадров и целевой битрейт ~2.5 Мбит
+  /// для видеопотока экрана (текст/1С должны оставаться читаемыми при
+  /// просадке канала).
+  Future<void> _applyVideoSenderTuning() async {
+    await _applyVideoBitrate(_currentVideoBitrate ?? 2500000);
   }
 
   /// Создание и отправка SDP Offer тем же сигнальным путём (HTTP-гейт).
@@ -1601,6 +1675,26 @@ class SupportService extends ChangeNotifier {
       _addSystemMessage('⚠ Файл "$filename" не доставлен: $reason');
       notifyListeners();
       return;
+    } else if (type == 'video_quality') {
+      final quality = input['quality']?.toString() ?? 'balanced';
+      final int bitrate;
+      switch (quality) {
+        case 'best':
+          bitrate = 4000000;
+          break;
+        case 'low':
+          bitrate = 800000;
+          break;
+        case 'balanced':
+        default:
+          bitrate = (input['bitrate'] as num?)?.toInt() ?? 2500000;
+          break;
+      }
+      _applyVideoBitrate(bitrate);
+      return;
+    } else if (type == 'reboot') {
+      _handleRemoteReboot();
+      return;
     }
 
     if (serviceHost) {
@@ -1702,6 +1796,23 @@ class SupportService extends ChangeNotifier {
         _lastInputError = now;
         _sendSignalOrData({'type': 'input_error', 'command': type, 'reason': e.toString()});
       }
+    }
+  }
+
+  void _handleRemoteReboot() {
+    debugPrint('support_service: получен сигнал reboot от оператора');
+    try {
+      if (!kIsWeb && Platform.isWindows) {
+        Process.run('shutdown', ['/r', '/t', '5', '/f', '/c', 'Reboot requested by remote operator']);
+      } else if (!kIsWeb && Platform.isLinux) {
+        Process.run('systemctl', ['reboot']).catchError((_) {
+          return Process.run('shutdown', ['-r', 'now']);
+        });
+      } else if (!kIsWeb && Platform.isMacOS) {
+        Process.run('shutdown', ['-r', 'now']);
+      }
+    } catch (e) {
+      debugPrint('support_service: ошибка выполнения reboot: $e');
     }
   }
 

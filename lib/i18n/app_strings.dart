@@ -329,6 +329,44 @@ class AppStrings {
   String get gbUnit => isRu ? 'ГБ' : 'GB';
   String get chatTitle => isRu ? 'Чат' : 'Chat';
 
+  // --- Console Buttons & File Transfer (Release B) ---
+  String get consoleFiles => isRu ? 'Файлы' : 'Files';
+  String get consoleFilesTooltip => isRu ? 'Передача файлов (DataChannel)' : 'File Transfer (DataChannel)';
+  String get consoleFilesTitle => isRu ? 'Передача файлов' : 'File Transfer';
+  String get consoleFilesSendBtn => isRu ? 'Выбрать файл для отправки' : 'Select file to send';
+  String get consoleFilesEmpty => isRu ? 'Нет активных или недавних передач' : 'No active or recent transfers';
+  String get consoleFilesDisabledService => isRu ? 'Файлы недоступны, пока на ПК не запущено приложение' : 'Files unavailable until application is running on remote PC';
+  String get consoleFilesDisabledViewOnly => isRu ? 'Передача файлов недоступна в режиме только просмотра' : 'File transfer is disabled in view-only mode';
+  String get consoleFilesRequireDataChannel => isRu ? 'Передача файлов требует прямого соединения (DataChannel)' : 'File transfer requires direct DataChannel connection';
+  String get consoleFileLimitExceeded => isRu ? 'Файл превышает лимит 50 МБ' : 'File exceeds 50 MB limit';
+  String get consoleFileAlreadyTransferring => isRu ? 'Уже выполняется передача другого файла' : 'Another file transfer is already in progress';
+  String get consoleFilesDestinationHint => isRu ? 'Файлы сохраняются в Загрузки → LigamentSupport' : 'Files are saved to Downloads → LigamentSupport';
+  String get consoleFileSending => isRu ? 'Отправка...' : 'Sending...';
+  String get consoleFileWaitingAck => isRu ? 'Ожидание подтверждения от ПК...' : 'Waiting for confirmation from PC...';
+  String get consoleFileSavedSuccess => isRu ? 'Сохранено на удалённом ПК ✅' : 'Saved on remote PC ✅';
+  String get consoleFileTransferFailed => isRu ? 'Ошибка передачи' : 'Transfer failed';
+  String get consoleFileCancelled => isRu ? 'Передача отменена' : 'Transfer cancelled';
+  String get consoleFileCancelTooltip => isRu ? 'Отменить передачу' : 'Cancel transfer';
+  String get consoleFileIncoming => isRu ? 'Входящий файл' : 'Incoming file';
+  String get consoleFileOutgoing => isRu ? 'Исходящий файл' : 'Outgoing file';
+
+  String get consoleFullscreen => isRu ? 'Во весь экран' : 'Full Screen';
+  String get consoleExitFullscreen => isRu ? 'Выйти из полноэкранного режима' : 'Exit Full Screen';
+  String get consoleCtrlAltDelTooltip => 'Ctrl+Alt+Del';
+  String get consoleVideoQuality => isRu ? 'Качество видео' : 'Video Quality';
+  String get consoleQualityBest => isRu ? 'Высокое (4 Мбит/с)' : 'High (4 Mbps)';
+  String get consoleQualityBalanced => isRu ? 'Среднее (2.5 Мбит/с)' : 'Balanced (2.5 Mbps)';
+  String get consoleQualityLow => isRu ? 'Низкое (800 Кбит/с)' : 'Low (800 Kbps)';
+  String get consoleRebootTooltip => isRu ? 'Перезагрузить ПК' : 'Reboot PC';
+  String get rebootConfirmTitle => isRu ? 'Перезагрузить удалённый компьютер?' : 'Reboot remote computer?';
+  String get rebootConfirmBody => isRu ? 'Удаленный компьютер будет перезагружен. Текущий сеанс связи будет завершен.' : 'Remote computer will be restarted. Current session will be ended.';
+  String get rebootConfirmBtn => isRu ? 'Перезагрузить' : 'Reboot';
+  String get endAndLockWorkstation => isRu ? 'Заблокировать и завершить' : 'Lock & End session';
+  String get consoleScreenshotTooltip => isRu ? 'Сделать скриншот экрана' : 'Take screenshot';
+  String get screenshotSaved => isRu ? 'Скриншот сохранён' : 'Screenshot saved';
+  String get connectionStats => isRu ? 'Статистика соединения' : 'Connection Stats';
+
+
   // --- Settings Screen ---
   String get settingsTitle => isRu ? 'Безопасность и профиль' : 'Security & Profile';
   String get userFallback => isRu ? 'Пользователь' : 'User';

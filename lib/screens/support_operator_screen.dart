@@ -2,9 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
+import 'package:crypto/crypto.dart' as crypto;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:intl/intl.dart';
@@ -30,6 +34,33 @@ enum OperatorZoomMode {
 enum MouseClickMode {
   left,
   right,
+}
+
+/// Состояние передачи файла в консоли оператора (Release B, B1.1).
+class _ConsoleFileTransfer {
+  final String id;
+  final String filename;
+  final int totalSize;
+  final bool isOutgoing;
+  int transferredBytes;
+  double progress; // 0.0 .. 1.0
+  String status; // 'sending', 'receiving', 'waiting_ack', 'completed', 'error', 'cancelled'
+  String? errorMessage;
+  bool isCancelled;
+  final DateTime timestamp;
+
+  _ConsoleFileTransfer({
+    required this.id,
+    required this.filename,
+    required this.totalSize,
+    required this.isOutgoing,
+    this.status = 'sending',
+    DateTime? timestamp,
+  })  : transferredBytes = 0,
+        progress = 0.0,
+        errorMessage = null,
+        isCancelled = false,
+        timestamp = timestamp ?? DateTime.now();
 }
 
 /// Кнопка мыши для протокола агента (0 — левая, 1 — средняя, 2 — правая)
@@ -149,6 +180,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   double? _lastSentNormY;
   int _dataMessageErrorCount = 0;
   bool _transportErrorBannerVisible = false;
+
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final GlobalKey _screenshotBoundaryKey = GlobalKey();
+  bool _isFullScreen = false;
+  String _videoQuality = 'balanced';
+  final List<_ConsoleFileTransfer> _fileTransfers = [];
+  bool _isSendingFile = false;
+  _ConsoleFileTransfer? _currentSendingTransfer;
+  Completer<bool>? _currentFileAckCompleter;
+  final Map<String, Map<String, dynamic>> _incomingFileChunks = {};
 
   bool get _isDataChannelActive =>
       _dataChannel != null &&
@@ -380,6 +421,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   bool get _isViewOnlySession =>
       widget.sessionData['access_mode']?.toString() == 'view_only';
+
+  bool get _isServiceHostSession =>
+      widget.sessionData['service_host'] == true ||
+      widget.sessionData['is_service'] == true ||
+      widget.sessionData['serviceHost'] == true ||
+      widget.sessionData['headless'] == true;
+
+  bool get _canSendFiles =>
+      !_isServiceHostSession &&
+      !_isViewOnlySession &&
+      _isDataChannelActive &&
+      !_isSendingFile;
 
   /// Ш3/A-20: сброс стадийной готовности при переподключении (§4.3).
   void _resetStageReadiness() {
@@ -1043,6 +1096,54 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           }
         }
       } catch (_) {}
+    } else if (type == 'file_ack') {
+      final transferId = data['transfer_id']?.toString() ?? '';
+      final ok = data['ok'] == true;
+      if (_currentSendingTransfer?.id == transferId &&
+          _currentFileAckCompleter != null &&
+          !_currentFileAckCompleter!.isCompleted) {
+        _currentFileAckCompleter!.complete(ok);
+      }
+      if (mounted) {
+        setState(() {
+          for (final t in _fileTransfers) {
+            if (t.id == transferId) {
+              t.status = ok ? 'completed' : 'error';
+              if (!ok) {
+                t.errorMessage = context.stringsRead.consoleFileTransferFailed;
+              }
+              break;
+            }
+          }
+        });
+      }
+    } else if (type == 'file_reject') {
+      final transferId = data['transfer_id']?.toString() ?? '';
+      final reason = data['reason']?.toString() ?? '';
+      if (_currentSendingTransfer?.id == transferId &&
+          _currentFileAckCompleter != null &&
+          !_currentFileAckCompleter!.isCompleted) {
+        _currentFileAckCompleter!.complete(false);
+      }
+      if (mounted) {
+        setState(() {
+          for (final t in _fileTransfers) {
+            if (t.id == transferId) {
+              t.status = 'error';
+              t.errorMessage = reason.isNotEmpty
+                  ? reason
+                  : context.stringsRead.consoleFileTransferFailed;
+              break;
+            }
+          }
+        });
+      }
+    } else if (type == 'file_start') {
+      _handleIncomingFileStart(data);
+    } else if (type == 'file_chunk') {
+      _handleIncomingFileChunk(data);
+    } else if (type == 'file_end') {
+      _handleIncomingFileEnd(data);
     }
   }
 
@@ -1868,7 +1969,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _endSession() async {
     final strings = context.stringsRead;
-    final confirm = await showDialog<bool>(
+    final action = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
@@ -1880,11 +1981,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
+            onPressed: () => Navigator.of(ctx).pop(null),
             child: Text(strings.cancel),
           ),
+          if (_controlReady && !_isViewOnlySession)
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(ctx).pop('lock_and_end'),
+              icon: const Icon(Icons.lock, size: 14),
+              label: Text(strings.endAndLockWorkstation),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF38BDF8),
+                side: const BorderSide(color: Color(0xFF38BDF8)),
+              ),
+            ),
           ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
+            onPressed: () => Navigator.of(ctx).pop('end'),
             style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFEF4444)),
             child: Text(strings.endSession),
@@ -1893,7 +2004,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       ),
     );
 
-    if (confirm == true && mounted) {
+    if ((action == 'end' || action == 'lock_and_end') && mounted) {
+      if (action == 'lock_and_end') {
+        _sendHotkey('win_l');
+        await Future.delayed(const Duration(milliseconds: 300));
+        if (!mounted) return;
+      }
       final auth = context.read<AuthState>();
       final sessId = widget.sessionId;
       final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
@@ -1934,6 +2050,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   void dispose() {
     _releaseAllPressedInputs();
+    if (_isFullScreen && !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        windowManager.setFullScreen(false);
+      } catch (_) {}
+    }
     _chatMessagesNotifier.dispose();
     _keyboardFocus.dispose();
     _videoTransform.dispose();
@@ -1958,6 +2079,903 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } catch (_) {}
     }
     super.dispose();
+  }
+
+  // --- Release B Helper Methods ---
+
+  Future<void> _toggleFullScreen() async {
+    if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) return;
+    try {
+      final next = !_isFullScreen;
+      await windowManager.setFullScreen(next);
+      if (mounted) setState(() => _isFullScreen = next);
+    } catch (e) {
+      debugPrint('support_operator_screen: fullScreen error: $e');
+    }
+  }
+
+  void _setVideoQuality(String quality) {
+    setState(() => _videoQuality = quality);
+    final int bitrate;
+    switch (quality) {
+      case 'best':
+        bitrate = 4000000;
+        break;
+      case 'low':
+        bitrate = 800000;
+        break;
+      case 'balanced':
+      default:
+        bitrate = 2500000;
+        break;
+    }
+    _sendDataMessage({
+      'type': 'video_quality',
+      'quality': quality,
+      'bitrate': bitrate,
+    });
+    if (mounted) {
+      final label = quality == 'best'
+          ? context.stringsRead.consoleQualityBest
+          : (quality == 'low'
+              ? context.stringsRead.consoleQualityLow
+              : context.stringsRead.consoleQualityBalanced);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${context.stringsRead.consoleVideoQuality}: $label'),
+        duration: const Duration(seconds: 1),
+      ));
+    }
+  }
+
+  void _confirmReboot() {
+    final strings = context.stringsRead;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Row(
+          children: [
+            const Icon(Icons.restart_alt, color: Color(0xFFEF4444)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                strings.rebootConfirmTitle,
+                style: const TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          strings.rebootConfirmBody,
+          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(strings.cancel, style: const TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _sendDataMessage({'type': 'reboot'});
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(strings.isRu
+                    ? 'Команда перезагрузки отправлена'
+                    : 'Reboot command sent'),
+              ));
+            },
+            child: Text(strings.rebootConfirmBtn),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _takeScreenshot() async {
+    final strings = context.stringsRead;
+    try {
+      final boundary = _screenshotBoundaryKey.currentContext?.findRenderObject()
+          as RenderRepaintBoundary?;
+      if (boundary == null) return;
+      final image = await boundary.toImage();
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return;
+      final bytes = byteData.buffer.asUint8List();
+
+      final String dirPath;
+      if (!kIsWeb && Platform.isWindows) {
+        final profile =
+            Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
+        dirPath = '$profile\\Downloads';
+      } else if (!kIsWeb && (Platform.isMacOS || Platform.isLinux)) {
+        final home = Platform.environment['HOME'] ?? '/tmp';
+        dirPath = '$home/Downloads';
+      } else {
+        dirPath = '/tmp';
+      }
+
+      final dir = Directory(dirPath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final pcName = widget.sessionData['device_name'] ?? 'remote';
+      final safePcName =
+          pcName.toString().replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      final filePath =
+          '$dirPath${Platform.pathSeparator}Screenshot_${safePcName}_$timestamp.png';
+      final file = File(filePath);
+      await file.writeAsBytes(bytes, flush: true);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('${strings.screenshotSaved}: $filePath'),
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    } catch (e) {
+      debugPrint('support_operator_screen: screenshot error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('${strings.error}: $e'),
+        ));
+      }
+    }
+  }
+
+  Future<void> _showConnectionStatsDialog() async {
+    final pc = _peerConnection;
+    if (pc == null) return;
+
+    List<StatsReport>? reports;
+    try {
+      reports = await pc.getStats();
+    } catch (e) {
+      debugPrint('support_operator_screen: getStats error: $e');
+    }
+
+    String rtt = '—';
+    String fps = '—';
+    String bitrate = '—';
+    String packetsLost = '—';
+    String resolution =
+        '${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}';
+    String transportType =
+        _isDataChannelActive ? 'DataChannel (P2P)' : 'WebSocket';
+
+    if (reports != null) {
+      for (final r in reports) {
+        final values = r.values;
+        if (r.type == 'inbound-rtp' && values['kind'] == 'video') {
+          if (values['framesPerSecond'] != null) {
+            fps = '${values['framesPerSecond']} fps';
+          }
+          if (values['packetsLost'] != null) {
+            packetsLost = '${values['packetsLost']}';
+          }
+          if (values['bytesReceived'] != null) {
+            final bytes =
+                num.tryParse(values['bytesReceived'].toString()) ?? 0;
+            bitrate = '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+          }
+        }
+        if (r.type == 'candidate-pair' &&
+            (values['state'] == 'succeeded' ||
+                values['nominated'] == true ||
+                values['selected'] == true)) {
+          if (values['currentRoundTripTime'] != null) {
+            final seconds =
+                num.tryParse(values['currentRoundTripTime'].toString()) ?? 0;
+            rtt = '${(seconds * 1000).toStringAsFixed(0)} ms';
+          } else if (values['roundTripTime'] != null) {
+            final seconds =
+                num.tryParse(values['roundTripTime'].toString()) ?? 0;
+            rtt = '${(seconds * 1000).toStringAsFixed(0)} ms';
+          }
+        }
+      }
+    }
+
+    if (!mounted) return;
+    final strings = context.stringsRead;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Row(
+          children: [
+            const Icon(Icons.analytics_outlined, color: Color(0xFF38BDF8)),
+            const SizedBox(width: 8),
+            Text(strings.connectionStats,
+                style: const TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildStatRow(
+                strings.isRu ? 'Транспорт:' : 'Transport:', transportType),
+            _buildStatRow(strings.isRu ? 'Задержка (RTT):' : 'Latency (RTT):', rtt),
+            _buildStatRow(
+                strings.isRu ? 'Частота кадров (FPS):' : 'Framerate (FPS):', fps),
+            _buildStatRow(
+                strings.isRu ? 'Разрешение видео:' : 'Video Resolution:',
+                resolution),
+            _buildStatRow(
+                strings.isRu ? 'Потери пакетов:' : 'Packets Lost:', packetsLost),
+            _buildStatRow(
+                strings.isRu ? 'Получено данных:' : 'Data Received:', bitrate),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(strings.close,
+                style: const TextStyle(color: Color(0xFF38BDF8))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label,
+              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+          Text(value,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  Future<void> _pickAndSendFile() async {
+    final strings = context.stringsRead;
+    if (_isSendingFile) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(strings.consoleFileAlreadyTransferring),
+      ));
+      return;
+    }
+    if (!_isDataChannelActive) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(strings.consoleFilesRequireDataChannel),
+      ));
+      return;
+    }
+
+    try {
+      final result = await FilePicker.platform.pickFiles(allowMultiple: false);
+      final filePath = result?.files.single.path;
+      if (filePath == null || filePath.isEmpty) return;
+      final file = File(filePath);
+      if (!await file.exists()) return;
+
+      final totalSize = await file.length();
+      if (totalSize > 50 * 1024 * 1024) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(strings.consoleFileLimitExceeded),
+          ));
+        }
+        return;
+      }
+
+      await _sendFileViaDataChannel(file);
+    } catch (e) {
+      debugPrint('support_operator_screen: pick file error: $e');
+    }
+  }
+
+  Future<void> _sendFileViaDataChannel(File file) async {
+    final strings = context.stringsRead;
+    final filename = file.uri.pathSegments.last;
+    final totalSize = await file.length();
+    final bytes = await file.readAsBytes();
+    final checksum = crypto.sha256.convert(bytes).toString();
+
+    const chunkSize = 32768; // 32 KB
+    final totalChunks = (totalSize / chunkSize).ceil();
+    final transferId = 'file_${DateTime.now().millisecondsSinceEpoch}';
+
+    final transferItem = _ConsoleFileTransfer(
+      id: transferId,
+      filename: filename,
+      totalSize: totalSize,
+      isOutgoing: true,
+      status: 'sending',
+    );
+
+    setState(() {
+      _isSendingFile = true;
+      _currentSendingTransfer = transferItem;
+      _fileTransfers.insert(0, transferItem);
+    });
+
+    _currentFileAckCompleter = Completer<bool>();
+
+    try {
+      _sendDataMessage({
+        'type': 'file_start',
+        'transfer_id': transferId,
+        'filename': filename,
+        'size': totalSize,
+        'total_chunks': totalChunks,
+        'checksum': checksum,
+        'sender': 'operator',
+      });
+
+      for (int i = 0; i < totalChunks; i++) {
+        if (transferItem.isCancelled) {
+          _sendDataMessage({
+            'type': 'file_reject',
+            'transfer_id': transferId,
+            'filename': filename,
+            'reason': 'cancelled_by_operator',
+          });
+          setState(() {
+            transferItem.status = 'cancelled';
+          });
+          return;
+        }
+
+        final start = i * chunkSize;
+        final end =
+            (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
+        final chunkBytes = bytes.sublist(start, end);
+        final b64 = base64Encode(chunkBytes);
+
+        _sendDataMessage({
+          'type': 'file_chunk',
+          'transfer_id': transferId,
+          'chunk_index': i,
+          'data': b64,
+        });
+
+        if (mounted) {
+          setState(() {
+            transferItem.transferredBytes = end;
+            transferItem.progress =
+                totalSize > 0 ? (end / totalSize) : 1.0;
+          });
+        }
+
+        if (i % 10 == 0) {
+          await Future.delayed(const Duration(milliseconds: 15));
+        }
+      }
+
+      _sendDataMessage({
+        'type': 'file_end',
+        'transfer_id': transferId,
+        'checksum': checksum,
+      });
+
+      setState(() {
+        transferItem.status = 'waiting_ack';
+      });
+
+      final ok = await _currentFileAckCompleter!.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => false,
+      );
+
+      if (mounted) {
+        setState(() {
+          transferItem.status = ok ? 'completed' : 'error';
+          transferItem.errorMessage =
+              ok ? null : strings.consoleFileTransferFailed;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(ok
+              ? '${strings.consoleFileSavedSuccess}: $filename'
+              : '${strings.consoleFileTransferFailed}: $filename'),
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    } catch (e) {
+      debugPrint('support_operator_screen: send file error: $e');
+      if (mounted) {
+        setState(() {
+          transferItem.status = 'error';
+          transferItem.errorMessage = e.toString();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('${strings.consoleFileTransferFailed}: $e'),
+        ));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSendingFile = false;
+          _currentSendingTransfer = null;
+        });
+      }
+    }
+  }
+
+  void _cancelActiveFileTransfer(_ConsoleFileTransfer transfer) {
+    if (transfer == _currentSendingTransfer) {
+      transfer.isCancelled = true;
+      setState(() {
+        transfer.status = 'cancelled';
+        _isSendingFile = false;
+        _currentSendingTransfer = null;
+      });
+    }
+  }
+
+  void _handleIncomingFileStart(Map<String, dynamic> data) {
+    final transferId =
+        data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
+    final filename = data['filename']?.toString() ?? 'remote_file';
+    final totalSize = (data['size'] as num?)?.toInt() ?? 0;
+    final totalChunks = (data['total_chunks'] as num?)?.toInt() ?? 1;
+    final checksum = data['checksum']?.toString();
+
+    if (transferId.isEmpty) return;
+
+    final item = _ConsoleFileTransfer(
+      id: transferId,
+      filename: filename,
+      totalSize: totalSize,
+      isOutgoing: false,
+      status: 'receiving',
+    );
+
+    _incomingFileChunks[transferId] = {
+      'filename': filename,
+      'size': totalSize,
+      'total_chunks': totalChunks,
+      'checksum': checksum,
+      'chunks': <int, List<int>>{},
+    };
+
+    if (mounted) {
+      setState(() {
+        _fileTransfers.insert(0, item);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${context.stringsRead.consoleFileIncoming}: $filename'),
+        duration: const Duration(seconds: 2),
+      ));
+    }
+  }
+
+  void _handleIncomingFileChunk(Map<String, dynamic> data) {
+    final transferId =
+        data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
+    final chunkIndex = (data['chunk_index'] as num?)?.toInt() ?? 0;
+    final base64Data = data['data']?.toString() ?? '';
+    final record = _incomingFileChunks[transferId];
+    if (record == null || base64Data.isEmpty) return;
+
+    try {
+      final bytes = base64Decode(base64Data);
+      final chunks = record['chunks'] as Map<int, List<int>>;
+      chunks[chunkIndex] = bytes;
+
+      final totalChunks = record['total_chunks'] as int;
+
+      if (mounted) {
+        setState(() {
+          for (final t in _fileTransfers) {
+            if (t.id == transferId) {
+              t.transferredBytes += bytes.length;
+              t.progress =
+                  totalChunks > 0 ? (chunks.length / totalChunks) : 0.0;
+              break;
+            }
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('support_operator_screen: chunk decode error: $e');
+    }
+  }
+
+  Future<void> _handleIncomingFileEnd(Map<String, dynamic> data) async {
+    final transferId =
+        data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
+    final record = _incomingFileChunks.remove(transferId);
+    if (record == null) return;
+
+    final filename = record['filename'] as String;
+    final totalSize = record['size'] as int;
+    final totalChunks = record['total_chunks'] as int;
+    final checksum =
+        data['checksum']?.toString() ?? record['checksum'] as String?;
+    final chunks = record['chunks'] as Map<int, List<int>>;
+
+    final result = assembleFileChunks(
+      chunks,
+      totalChunks,
+      expectedSize: totalSize > 0 ? totalSize : null,
+      expectedChecksum: checksum,
+    );
+
+    if (!result.isOk) {
+      _sendDataMessage(
+          {'type': 'file_ack', 'transfer_id': transferId, 'ok': false});
+      if (mounted) {
+        setState(() {
+          for (final t in _fileTransfers) {
+            if (t.id == transferId) {
+              t.status = 'error';
+              t.errorMessage = 'Checksum or size mismatch';
+              break;
+            }
+          }
+        });
+      }
+      return;
+    }
+
+    try {
+      final String dirPath;
+      if (!kIsWeb && Platform.isWindows) {
+        final profile =
+            Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
+        dirPath = '$profile\\Downloads\\LigamentSupport';
+      } else if (!kIsWeb && (Platform.isMacOS || Platform.isLinux)) {
+        final home = Platform.environment['HOME'] ?? '/tmp';
+        dirPath = '$home/Downloads/LigamentSupport';
+      } else {
+        dirPath = '/tmp/LigamentSupport';
+      }
+
+      final dir = Directory(dirPath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+
+      final targetPath = resolveNonCollidingFilePath(dir.path, filename);
+      final partPath = '$targetPath.part';
+      final partFile = File(partPath);
+      await partFile.writeAsBytes(result.bytes!, flush: true);
+      await partFile.rename(targetPath);
+
+      _sendDataMessage(
+          {'type': 'file_ack', 'transfer_id': transferId, 'ok': true});
+
+      if (mounted) {
+        setState(() {
+          for (final t in _fileTransfers) {
+            if (t.id == transferId) {
+              t.status = 'completed';
+              t.progress = 1.0;
+              break;
+            }
+          }
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              '${context.stringsRead.consoleFileSavedSuccess}: $targetPath'),
+          duration: const Duration(seconds: 4),
+        ));
+      }
+    } catch (e) {
+      debugPrint('support_operator_screen: save incoming file error: $e');
+      _sendDataMessage(
+          {'type': 'file_ack', 'transfer_id': transferId, 'ok': false});
+      if (mounted) {
+        setState(() {
+          for (final t in _fileTransfers) {
+            if (t.id == transferId) {
+              t.status = 'error';
+              t.errorMessage = e.toString();
+              break;
+            }
+          }
+        });
+      }
+    }
+  }
+
+  Widget _buildFilesDrawer(AppStrings strings) {
+    return Drawer(
+      backgroundColor: const Color(0xFF1E293B),
+      child: SafeArea(
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFF334155))),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.folder_open,
+                      color: Color(0xFF38BDF8), size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      strings.consoleFilesTitle,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            if (_isServiceHostSession)
+              Container(
+                margin: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEF4444).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFEF4444)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline,
+                        color: Color(0xFFEF4444), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        strings.consoleFilesDisabledService,
+                        style: const TextStyle(color: Colors.white, fontSize: 11),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if (_isViewOnlySession)
+              Container(
+                margin: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFF59E0B)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.visibility,
+                        color: Color(0xFFF59E0B), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        strings.consoleFilesDisabledViewOnly,
+                        style: const TextStyle(color: Colors.white, fontSize: 11),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if (!_isDataChannelActive)
+              Container(
+                margin: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFF59E0B)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cable, color: Color(0xFFF59E0B), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        strings.consoleFilesRequireDataChannel,
+                        style: const TextStyle(color: Colors.white, fontSize: 11),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: _canSendFiles ? _pickAndSendFile : null,
+                    icon: _isSendingFile
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.upload_file, size: 18),
+                    label: Text(
+                      _isSendingFile
+                          ? strings.consoleFileSending
+                          : strings.consoleFilesSendBtn,
+                      style: const TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0284C7),
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: const Color(0xFF334155),
+                      disabledForegroundColor: const Color(0xFF64748B),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    strings.consoleFilesDestinationHint,
+                    style:
+                        const TextStyle(color: Color(0xFF64748B), fontSize: 10),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Color(0xFF334155), height: 1),
+            Expanded(
+              child: _fileTransfers.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.folder_shared_outlined,
+                              size: 40, color: Color(0xFF475569)),
+                          const SizedBox(height: 8),
+                          Text(
+                            strings.consoleFilesEmpty,
+                            style: const TextStyle(
+                                color: Color(0xFF64748B), fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(12),
+                      itemCount: _fileTransfers.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (ctx, idx) {
+                        final t = _fileTransfers[idx];
+                        return _buildFileTransferCard(t, strings);
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFileTransferCard(_ConsoleFileTransfer t, AppStrings strings) {
+    Color statusColor;
+    String statusText;
+    switch (t.status) {
+      case 'completed':
+        statusColor = const Color(0xFF10B981);
+        statusText = strings.consoleFileSavedSuccess;
+        break;
+      case 'waiting_ack':
+        statusColor = const Color(0xFFF59E0B);
+        statusText = strings.consoleFileWaitingAck;
+        break;
+      case 'cancelled':
+        statusColor = const Color(0xFF64748B);
+        statusText = strings.consoleFileCancelled;
+        break;
+      case 'error':
+        statusColor = const Color(0xFFEF4444);
+        statusText = t.errorMessage ?? strings.consoleFileTransferFailed;
+        break;
+      case 'sending':
+      case 'receiving':
+      default:
+        statusColor = const Color(0xFF38BDF8);
+        statusText =
+            '${(t.progress * 100).toStringAsFixed(0)}% (${_formatFileSize(t.transferredBytes)} / ${_formatFileSize(t.totalSize)})';
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF334155)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                t.isOutgoing ? Icons.upload : Icons.download,
+                size: 16,
+                color: const Color(0xFF38BDF8),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  t.filename,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if ((t.status == 'sending' || t.status == 'receiving') &&
+                  t == _currentSendingTransfer)
+                IconButton(
+                  icon: const Icon(Icons.cancel,
+                      size: 16, color: Color(0xFFEF4444)),
+                  tooltip: strings.consoleFileCancelTooltip,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () => _cancelActiveFileTransfer(t),
+                ),
+            ],
+          ),
+          if (t.status == 'sending' || t.status == 'receiving') ...[
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: t.progress,
+                minHeight: 4,
+                backgroundColor: const Color(0xFF334155),
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(Color(0xFF38BDF8)),
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  statusText,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Text(
+                _formatFileSize(t.totalSize),
+                style: const TextStyle(color: Color(0xFF64748B), fontSize: 10),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1990,6 +3008,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
 
     return Scaffold(
+      key: _scaffoldKey,
+      endDrawer: _buildFilesDrawer(strings),
       backgroundColor: const Color(0xFF0B0F19),
       body: Column(
         children: [
@@ -2200,6 +3220,84 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     ],
                   ),
 
+                  // Полноэкранный режим (B3.1)
+                  IconButton(
+                    icon: Icon(
+                      _isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                      color: _isFullScreen
+                          ? const Color(0xFF38BDF8)
+                          : Colors.white,
+                      size: 20,
+                    ),
+                    tooltip: _isFullScreen
+                        ? strings.consoleExitFullscreen
+                        : strings.consoleFullscreen,
+                    onPressed: _toggleFullScreen,
+                  ),
+
+                  // Качество видео (B3.3)
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.high_quality,
+                        color: Color(0xFF38BDF8), size: 20),
+                    tooltip: strings.consoleVideoQuality,
+                    color: const Color(0xFF1E293B),
+                    initialValue: _videoQuality,
+                    itemBuilder: (ctx) => [
+                      PopupMenuItem(
+                        value: 'best',
+                        child: Row(
+                          children: [
+                            Icon(
+                              _videoQuality == 'best'
+                                  ? Icons.check
+                                  : Icons.circle_outlined,
+                              size: 14,
+                              color: const Color(0xFF38BDF8),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(strings.consoleQualityBest,
+                                style: const TextStyle(color: Colors.white)),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'balanced',
+                        child: Row(
+                          children: [
+                            Icon(
+                              _videoQuality == 'balanced'
+                                  ? Icons.check
+                                  : Icons.circle_outlined,
+                              size: 14,
+                              color: const Color(0xFF38BDF8),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(strings.consoleQualityBalanced,
+                                style: const TextStyle(color: Colors.white)),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'low',
+                        child: Row(
+                          children: [
+                            Icon(
+                              _videoQuality == 'low'
+                                  ? Icons.check
+                                  : Icons.circle_outlined,
+                              size: 14,
+                              color: const Color(0xFF38BDF8),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(strings.consoleQualityLow,
+                                style: const TextStyle(color: Colors.white)),
+                          ],
+                        ),
+                      ),
+                    ],
+                    onSelected: _setVideoQuality,
+                  ),
+
                   // Блокировка ввода
                   IconButton(
                     icon: Icon(
@@ -2299,6 +3397,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     onSelected: _sendHotkey,
                   ),
 
+                  // Быстрая кнопка Ctrl+Alt+Del (B3.2)
+                  IconButton(
+                    icon: const Icon(Icons.security,
+                        color: Color(0xFFF59E0B), size: 18),
+                    tooltip: 'Ctrl+Alt+Del',
+                    onPressed: _controlReady
+                        ? () => _sendHotkey('ctrl_alt_del')
+                        : null,
+                  ),
+
                   // Буфер обмена
                   PopupMenuButton<String>(
                     enabled: _controlReady,
@@ -2320,6 +3428,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       if (val == 'send') _sendLocalClipboardToRemote();
                       if (val == 'get') _requestRemoteClipboard();
                     },
+                  ),
+
+                  // Снимок экрана удаленного ПК (B3.6)
+                  IconButton(
+                    icon: const Icon(Icons.camera_alt_outlined,
+                        color: Color(0xFF38BDF8), size: 18),
+                    tooltip: strings.consoleScreenshotTooltip,
+                    onPressed: _frameReady ? _takeScreenshot : null,
                   ),
 
                   // Чат с пользователем (скрыт для владельца консоли ПК)
@@ -2432,6 +3548,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ),
                     ),
 
+                  // Статистика соединения (B3.7)
+                  IconButton(
+                    icon: const Icon(Icons.speed,
+                        color: Color(0xFF38BDF8), size: 18),
+                    tooltip: strings.connectionStats,
+                    onPressed: _isConnected ? _showConnectionStatsDialog : null,
+                  ),
+
                   // Переключатель управления / просмотра
                   IconButton(
                     icon: Icon(
@@ -2530,6 +3654,28 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                     ),
+
+                  // Файлы (B1.1)
+                  IconButton(
+                    icon: Badge(
+                      isLabelVisible: _isSendingFile,
+                      smallSize: 8,
+                      child: const Icon(Icons.folder_outlined,
+                          color: Color(0xFF38BDF8), size: 20),
+                    ),
+                    tooltip: strings.consoleFilesTooltip,
+                    onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+                  ),
+
+                  // Перезагрузка удаленного ПК (B3.4)
+                  IconButton(
+                    icon: const Icon(Icons.restart_alt,
+                        color: Color(0xFFF59E0B), size: 20),
+                    tooltip: strings.consoleRebootTooltip,
+                    onPressed: (_controlReady && !_isViewOnlySession)
+                        ? _confirmReboot
+                        : null,
+                  ),
 
                   // Кнопка завершения сеанса
                   ElevatedButton.icon(
@@ -2815,12 +3961,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                         },
                                         child: MouseRegion(
                                           cursor: SystemMouseCursors.basic,
-                                          child: Container(
-                                            key: _videoKey,
-                                            child: RTCVideoView(
-                                              _remoteRenderer,
-                                              objectFit: RTCVideoViewObjectFit
-                                                  .RTCVideoViewObjectFitContain,
+                                          child: RepaintBoundary(
+                                            key: _screenshotBoundaryKey,
+                                            child: Container(
+                                              key: _videoKey,
+                                              child: RTCVideoView(
+                                                _remoteRenderer,
+                                                objectFit: RTCVideoViewObjectFit
+                                                    .RTCVideoViewObjectFitContain,
+                                              ),
                                             ),
                                           ),
                                         ),

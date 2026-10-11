@@ -225,7 +225,7 @@ class ServiceConsoleBridge::InputWorker {
   bool Enqueue(const EncodableMap& input) {
     const auto type = String(input, "type");
     static const std::set<std::string> allowed = {"mouse_move", "mouse_down", "mouse_up", "mouse_click",
-      "click", "wheel", "mouse_wheel", "key_down", "key_up", "hotkey", "text_input", "block_input", "clipboard_probe"};
+      "click", "wheel", "mouse_wheel", "key_down", "key_up", "hotkey", "text_input", "block_input", "clipboard_probe", "reboot"};
     if (!allowed.count(type)) return false;
     if (type == "text_input" && String(input, "text").size() > 16384) return false;
     const auto* ack_value = Find(input, "ack");
@@ -450,6 +450,20 @@ class ServiceConsoleBridge::InputWorker {
       return true;
     }
     if (type == "hotkey") { Hotkey(input); return true; }
+    if (type == "reboot") {
+      HANDLE token = nullptr;
+      if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+        TOKEN_PRIVILEGES tp;
+        if (LookupPrivilegeValueW(nullptr, SE_SHUTDOWN_NAME, &tp.Privileges[0].Luid)) {
+          tp.PrivilegeCount = 1;
+          tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+          AdjustTokenPrivileges(token, FALSE, &tp, 0, nullptr, nullptr);
+        }
+        CloseHandle(token);
+      }
+      InitiateSystemShutdownExW(nullptr, nullptr, 5, TRUE, TRUE, SHTDN_REASON_MAJOR_OPERATINGSYSTEM | SHTDN_REASON_MINOR_RECONFIG);
+      return true;
+    }
     if (type == "key_down" || type == "key_up") {
       const bool down = type == "key_down";
       auto text = Wide(String(input, "char"));
