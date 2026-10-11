@@ -418,11 +418,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     });
   }
 
+  bool _sessionTerminatedHandled = false;
+
   /// Ш4: единое завершение — полный teardown, корректный выход со страницы
   /// (закрывая открытые диалоги/чаты) и уведомление. Повторный вызов
-  /// безопасен — guard по _isCleanedUp.
+  /// безопасен — guard по _sessionTerminatedHandled.
   void _onSessionTerminated(String reasonKey) {
-    if (!mounted || _isCleanedUp) return;
+    if (!mounted || _sessionTerminatedHandled) return;
+    _sessionTerminatedHandled = true;
     final messenger = ScaffoldMessenger.of(context);
     final strings = context.stringsRead;
     _cancelStageTimers();
@@ -497,14 +500,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             ? _previousWindowSize!
             : const Size(440, 720);
         await windowManager.setMinimumSize(const Size(380, 600));
+        await Future.delayed(const Duration(milliseconds: 50));
         await windowManager.setSize(targetSize);
-        if (!kIsWeb && Platform.isMacOS) {
-          // Metal layer redraw trigger
-          await windowManager
-              .setSize(Size(targetSize.width, targetSize.height + 1));
-          await Future.delayed(const Duration(milliseconds: 25));
-          await windowManager.setSize(targetSize);
-        }
+        WidgetsBinding.instance.scheduleFrame();
       } catch (_) {}
     }
   }
@@ -867,6 +865,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       debugPrint('support_operator: ice connection state: $state');
       if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
         _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
+      } else if (state == RTCIceConnectionState.RTCIceConnectionStateClosed) {
+        _onSessionTerminated('session_ended');
+      } else if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+        _schedulePcGraceTermination();
       }
     };
 
@@ -1712,17 +1714,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     // Поэтому srcObject=null синхронно (стоп кадров), а renderer на macOS не уничтожаем,
     // сохраняя зарегистрированную Metal текстуру.
     void disposeNative() {
-      if (kIsWeb || !Platform.isMacOS) {
-        try {
-          _remoteRenderer.dispose();
-        } catch (_) {}
-      }
+      try {
+        _remoteRenderer.dispose();
+      } catch (_) {}
       try {
         pc?.dispose();
       } catch (_) {}
     }
 
-    Future.delayed(const Duration(milliseconds: 350), disposeNative);
+    Future.delayed(const Duration(milliseconds: 500), disposeNative);
   }
 
   void _endSession() async {

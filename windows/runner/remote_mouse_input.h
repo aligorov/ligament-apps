@@ -12,9 +12,10 @@ struct Win32RemoteMouseApi {
 
 template <typename Api = Win32RemoteMouseApi>
 bool SendRemoteMouse(DWORD flags, DWORD data = 0, LONG dx = 0, LONG dy = 0) {
-  // Old helpers could leave ClipCursor active after a forced service stop.
-  // The authenticated operator must be able to move without toggling Block.
-  if ((flags & MOUSEEVENTF_MOVE) && !Api::Clip(nullptr)) return false;
+  // Best-effort release of legacy cursor confinement; never reject input if Clip fails.
+  if (flags & MOUSEEVENTF_MOVE) {
+    Api::Clip(nullptr);
+  }
   INPUT input{};
   input.type = INPUT_MOUSE;
   input.mi.dx = dx;
@@ -26,8 +27,8 @@ bool SendRemoteMouse(DWORD flags, DWORD data = 0, LONG dx = 0, LONG dy = 0) {
 
 template <typename Api = Win32RemoteMouseApi>
 bool SetRemoteMouseBlocked(bool desired, bool& blocked) {
-  // ClipCursor constrains injected events too. Clear old versions' 1x1 clip.
-  if (!Api::Clip(nullptr)) return false;
+  // Best-effort release of legacy cursor confinement.
+  Api::Clip(nullptr);
   if (blocked == desired) return true;
   if (!Api::Block(desired ? TRUE : FALSE)) return false;
   blocked = desired;

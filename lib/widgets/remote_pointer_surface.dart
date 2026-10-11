@@ -37,10 +37,12 @@ class RemotePointerSurface extends StatelessWidget {
 
   void _pointer(String action, PointerEvent event, int button) {
     if (!enabled) return;
-    final box = videoKey.currentContext?.findRenderObject();
-    if (box is! RenderBox || !box.hasSize || box.size.isEmpty) return;
-    final video = videoSize();
-    if (video.isEmpty) return;
+    final box = videoKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize || box.size.isEmpty) return;
+    final rawVideo = videoSize();
+    final video = (rawVideo.width > 0 && rawVideo.height > 0)
+        ? rawVideo
+        : const Size(1920, 1080);
     final local = box.globalToLocal(event.position);
     final fitted = applyBoxFit(BoxFit.contain, video, box.size).destination;
     final frame = Alignment.center.inscribe(fitted, Offset.zero & box.size);
@@ -66,10 +68,12 @@ class RemotePointerSurface extends StatelessWidget {
           focus();
           // Ignore a down in letterboxing before recording a held button.
           final button = remoteMouseButton(event.buttons, rightMode);
-          final box = videoKey.currentContext?.findRenderObject();
-          if (box is! RenderBox || !box.hasSize) return;
-          final video = videoSize();
-          if (video.isEmpty || box.size.isEmpty) return;
+          final box = videoKey.currentContext?.findRenderObject() as RenderBox?;
+          if (box == null || !box.hasSize || box.size.isEmpty) return;
+          final rawVideo = videoSize();
+          final video = (rawVideo.width > 0 && rawVideo.height > 0)
+              ? rawVideo
+              : const Size(1920, 1080);
           final fitted =
               applyBoxFit(BoxFit.contain, video, box.size).destination;
           final frame =

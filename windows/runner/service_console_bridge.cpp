@@ -278,6 +278,7 @@ class ServiceConsoleBridge::InputWorker {
     const double ny = std::clamp(Number(input, "y"), 0.0, 1.0);
     const int target_x = x + static_cast<int>(std::round(nx * (width > 1 ? width - 1 : 1)));
     const int target_y = y + static_cast<int>(std::round(ny * (height > 1 ? height - 1 : 1)));
+    SetCursorPos(target_x, target_y);
     const LONG dx = RemoteMouseAxis(target_x, vx, vw);
     const LONG dy = RemoteMouseAxis(target_y, vy, vh);
     last_dx_ = dx;

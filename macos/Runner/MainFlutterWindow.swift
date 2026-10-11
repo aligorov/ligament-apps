@@ -54,15 +54,6 @@ class MainFlutterWindow: NSWindow {
       self.contentView?.needsDisplay = true
       self.contentViewController?.view.needsLayout = true
       self.contentViewController?.view.layer?.setNeedsDisplay()
-      let f = self.frame
-      self.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height + 1), display: true)
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-        guard let self = self else { return }
-        self.setFrame(f, display: true)
-        self.contentView?.needsDisplay = true
-        self.contentViewController?.view.needsLayout = true
-        self.contentViewController?.view.layer?.setNeedsDisplay()
-      }
     }
   }
 }

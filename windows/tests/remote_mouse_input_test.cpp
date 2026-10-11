@@ -5,13 +5,17 @@
 
 struct FakeWindows {
   static inline std::vector<INPUT> sent;
-  static inline bool reject_send = false, reject_block = false, confined = true;
+  static inline bool reject_send = false, reject_block = false, reject_clip = false, confined = true;
   static UINT Send(INPUT* input) {
     sent.push_back(*input);
     return reject_send ? 0 : 1;
   }
   static BOOL Block(BOOL) { return reject_block ? FALSE : TRUE; }
-  static BOOL Clip(const RECT* rect) { confined = rect != nullptr; return TRUE; }
+  static BOOL Clip(const RECT* rect) {
+    if (reject_clip) return FALSE;
+    confined = rect != nullptr;
+    return TRUE;
+  }
 };
 void Check(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
@@ -36,6 +40,10 @@ int main() {
     FakeWindows::confined = true;  // Simulate an old helper killed before cleanup.
     Check(SendRemoteMouse<FakeWindows>(base), "move rejected after upgrade");
     Check(!FakeWindows::confined, "legacy confinement survived a remote move");
+    FakeWindows::reject_clip = true;
+    Check(SendRemoteMouse<FakeWindows>(base), "move must not fail when ClipCursor returns FALSE");
+    Check(SetRemoteMouseBlocked<FakeWindows>(true, blocked), "block must not fail when ClipCursor returns FALSE");
+    FakeWindows::reject_clip = false;
     FakeWindows::reject_send = true;
     Check(!SendRemoteMouse<FakeWindows>(base), "SendInput failure hidden");
     FakeWindows::reject_block = true;

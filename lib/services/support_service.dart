@@ -1757,6 +1757,9 @@ class SupportService extends ChangeNotifier {
           await dc.close().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
         } catch (_) {}
       }
+      try {
+        _sendSignalOrData({'type': 'session_ended'});
+      } catch (_) {}
 
       // 3. Закрываем PeerConnection ПЕРЕД остановкой треков, чтобы остановить RTP sender threads в libwebrtc
       final pc = _peerConnection;
@@ -1797,7 +1800,12 @@ class SupportService extends ChangeNotifier {
       debugPrint('support_service: ошибка при stopScreenSharing: $e');
     } finally {
       _isStopping = false;
-      if (!serviceHost) InputInjector.instance.setInputBlocked(false);
+      if (serviceHost) {
+        try {
+          serviceReleaseInput?.call();
+        } catch (_) {}
+      }
+      InputInjector.instance.setInputBlocked(false);
     }
   }
 
