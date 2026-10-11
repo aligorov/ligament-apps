@@ -72,6 +72,19 @@ class ApiClient {
     return h;
   }
 
+  /// Версии приложений (сервер v0.8.175+): текущая устройства против
+  /// последнего релиза GitHub + ссылка обновления. null — сервер старый
+  /// или сети нет: подсветка обновления просто не появляется.
+  Future<Map<String, dynamic>?> getAppVersion() async {
+    try {
+      final res = await _get(_cleanUrl('/api/v1/app/version'), headers: _headers());
+      if (res.statusCode == 200) {
+        return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   /// Определение внешнего IP-адреса через эндпоинт сервера 2FA
   Future<Map<String, dynamic>> getMyIP() async {
     try {

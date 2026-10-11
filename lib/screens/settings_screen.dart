@@ -17,6 +17,9 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  // Обновление приложения (v1.1.49+): latest с сервера, когда есть.
+  Map<String, dynamic>? _appUpdate;
+
   @override
   void initState() {
     super.initState();
@@ -24,8 +27,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         context.read<AuthState>().refreshProfile();
         context.read<AuthState>().refreshRelays();
+        _checkAppUpdate();
       }
     });
+  }
+
+  Future<void> _checkAppUpdate() async {
+    final client = context.read<AuthState>().api;
+    if (client == null) return;
+    final v = await client.getAppVersion();
+    if (!mounted || v == null) return;
+    if (v['update_available'] == true) {
+      setState(() => _appUpdate = v);
+    }
   }
 
   @override
@@ -766,6 +780,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'Ligament 2FA v$appVersion',
                   style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.bold),
                 ),
+                if (_appUpdate != null) ...[
+                  const SizedBox(height: 6),
+                  TextButton.icon(
+                    onPressed: () async {
+                      final url = Uri.tryParse('${_appUpdate!['release_url'] ?? ''}');
+                      if (url != null && url.isScheme('https')) {
+                        await launchUrl(url, mode: LaunchMode.externalApplication);
+                      }
+                    },
+                    icon: const Icon(Icons.system_update_alt, size: 14, color: Color(0xFF38BDF8)),
+                    label: Text(
+                      '${s.updateAvailablePrefix} ${_appUpdate!['latest'] ?? ''} — ${s.updateOpen}',
+                      style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12),
+                    ),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 4),
                 Text(
                   s.platformCorporate(isMac ? "macOS" : (isWin ? "Windows" : (isLin ? "Linux" : "Mobile"))),

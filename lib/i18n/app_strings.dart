@@ -369,6 +369,10 @@ class AppStrings {
 
   // --- Settings Screen ---
   String get settingsTitle => isRu ? 'Безопасность и профиль' : 'Security & Profile';
+
+  // Обновление приложения (v1.1.49+): /api/v1/app/version.
+  String get updateAvailablePrefix => isRu ? 'Доступна версия' : 'Version available';
+  String get updateOpen => isRu ? 'Обновить' : 'Update';
   String get userFallback => isRu ? 'Пользователь' : 'User';
   String userRole(String r) => isRu ? 'Роль: $r' : 'Role: $r';
   String serverUrl(String u) => isRu ? 'Сервер: $u' : 'Server: $u';
