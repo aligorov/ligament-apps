@@ -726,8 +726,7 @@ class InputInjector {
   /// Windows: низкоуровневые хуки WH_KEYBOARD_LL/WH_MOUSE_LL — работают БЕЗ
   /// прав администратора (BlockInput молча отказывает в юзер-процессе) и
   /// пропускают инъекции самого агента (LLKHF/LLMHF_INJECTED), чтобы инженер
-  /// сохранял управление. ClipCursor+BlockInput остаются как усиление (для
-  /// процессов с правами).
+  /// сохранял управление. Курсор не ограничиваем: это блокирует и удалённую мышь.
   void setInputBlocked(bool blocked) {
     if (kIsWeb) return;
     try {
@@ -737,16 +736,9 @@ class InputInjector {
           debugPrint('input_injector: install_input_block rc=$rc '
               '(0=LL-хуки активны, -1=хуки не встали, -2=исключение)');
 
-          // Дополнительно: курсор в точку 0,0 (без прав) и BlockInput
-          // (сработает только при повышенных правах процесса).
-          final rect = calloc<_RECT>();
-          rect.ref.left = 0;
-          rect.ref.top = 0;
-          rect.ref.right = 1;
-          rect.ref.bottom = 1;
-          _winClipCursor?.call(rect);
-          calloc.free(rect);
-          _winBlockInput?.call(1);
+          // LL hooks reject physical input and pass injected mouse events.
+          // A 1x1 ClipCursor also traps the operator's SendInput/SetCursorPos.
+          _winClipCursor?.call(ffi.Pointer.fromAddress(0));
         } else {
           _nativeRemoveBlock?.call();
           _winClipCursor?.call(ffi.Pointer.fromAddress(0));

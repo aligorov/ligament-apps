@@ -1,4 +1,5 @@
 #include "service_console_bridge.h"
+#include "remote_mouse_input.h"
 
 #include <windows.h>
 #include <flutter/standard_method_codec.h>
@@ -128,17 +129,6 @@ void SendKey(WORD key, bool down, bool unicode = false) {
       key == VK_NEXT || (key >= VK_LEFT && key <= VK_DOWN))) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
   SendInput(1, &input, sizeof(input));
 }
-void SendMouse(DWORD flags, DWORD data = 0, LONG dx = 0, LONG dy = 0) {
-  INPUT input{};
-  input.type = INPUT_MOUSE;
-  input.mi.dx = dx;
-  input.mi.dy = dy;
-  input.mi.dwFlags = flags;
-  input.mi.mouseData = data;
-  if (!SendInput(1, &input, sizeof(input))) {
-    mouse_event(flags, dx, dy, data, 0);
-  }
-}
 std::wstring DesktopName(HDESK desktop) {
   if (!desktop) return {};
   wchar_t name[256]{};
@@ -210,12 +200,14 @@ class ServiceConsoleBridge::InputWorker {
       "click", "wheel", "mouse_wheel", "key_down", "key_up", "hotkey", "text_input", "block_input", "clipboard_probe"};
     if (!allowed.count(type)) return false;
     if (type == "text_input" && String(input, "text").size() > 16384) return false;
-    auto done = (type == "block_input" || type == "clipboard_probe") ? std::make_shared<std::promise<bool>>() : nullptr;
+    const auto* ack_value = Find(input, "ack");
+    const auto* ack = ack_value ? std::get_if<bool>(ack_value) : nullptr;
+    auto done = ((ack && *ack) || type == "block_input" || type == "clipboard_probe" || type == "mouse_down" || type == "mouse_up" || type == "mouse_click" || type == "click" || type == "wheel" || type == "mouse_wheel") ? std::make_shared<std::promise<bool>>() : nullptr;
     auto completion = done ? done->get_future() : std::future<bool>();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (stopped_ || Clock::now() >= deadline_) return false;
-      if (type == "mouse_move" && !queue_.empty() && String(queue_.back().input, "type") == type) {
+      if (type == "mouse_move" && !done && !queue_.empty() && !queue_.back().done && String(queue_.back().input, "type") == type) {
         queue_.back().input = input;
       } else {
         if (queue_.size() >= 256) { queue_.clear(); release_ = true; ready_.notify_one(); return false; }
@@ -240,31 +232,25 @@ class ServiceConsoleBridge::InputWorker {
     for (WORD key : keys_) SendKey(key, false);
     for (WORD key : unicode_) SendKey(key, false, true);
     const DWORD base = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-    if (buttons_ & 1) SendMouse(MOUSEEVENTF_LEFTUP | base, 0, last_dx_, last_dy_);
-    if (buttons_ & 2) SendMouse(MOUSEEVENTF_MIDDLEUP | base, 0, last_dx_, last_dy_);
-    if (buttons_ & 4) SendMouse(MOUSEEVENTF_RIGHTUP | base, 0, last_dx_, last_dy_);
+    if (buttons_ & 1) SendRemoteMouse(MOUSEEVENTF_LEFTUP | base, 0, last_dx_, last_dy_);
+    if (buttons_ & 2) SendRemoteMouse(MOUSEEVENTF_MIDDLEUP | base, 0, last_dx_, last_dy_);
+    if (buttons_ & 4) SendRemoteMouse(MOUSEEVENTF_RIGHTUP | base, 0, last_dx_, last_dy_);
     keys_.clear(); unicode_.clear(); unicode_keys_.clear(); buttons_ = 0;
   }
   bool AttachInputDesktop() {
-    HDESK current = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_HOOKCONTROL | DESKTOP_JOURNALRECORD | DESKTOP_JOURNALPLAYBACK);
-    if (!current) current = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
-    if (!current) return true;
+    HDESK current = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
+    if (!current) return false;
     const auto name = DesktopName(current);
-    if (name.empty() || (desktop_ && name == desktop_name_)) {
-      CloseDesktop(current);
-      return true;
-    }
-    ReleasePressed(false);
-    if (SetThreadDesktop(current)) {
-      if (desktop_ && desktop_ != original_desktop_) CloseDesktop(desktop_);
-      desktop_ = current;
-      desktop_name_ = name;
-    } else {
-      CloseDesktop(current);
-    }
+    if (name.empty()) { CloseDesktop(current); return false; }
+    if (desktop_ && name == desktop_name_) { CloseDesktop(current); return true; }
+    ReleasePressed();
+    if (!SetThreadDesktop(current)) { CloseDesktop(current); return false; }
+    if (desktop_ && desktop_ != original_desktop_) CloseDesktop(desktop_);
+    desktop_ = current;
+    desktop_name_ = name;
     return true;
   }
-  void Move(const EncodableMap& input) {
+  bool Move(const EncodableMap& input) {
     int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -292,19 +278,11 @@ class ServiceConsoleBridge::InputWorker {
     const double ny = std::clamp(Number(input, "y"), 0.0, 1.0);
     const int target_x = x + static_cast<int>(std::round(nx * (width > 1 ? width - 1 : 1)));
     const int target_y = y + static_cast<int>(std::round(ny * (height > 1 ? height - 1 : 1)));
-    SetCursorPos(target_x, target_y);
-    const LONG dx = static_cast<LONG>(std::round((target_x - vx) * 65535.0 / (vw > 1 ? vw - 1 : 1)));
-    const LONG dy = static_cast<LONG>(std::round((target_y - vy) * 65535.0 / (vh > 1 ? vh - 1 : 1)));
+    const LONG dx = RemoteMouseAxis(target_x, vx, vw);
+    const LONG dy = RemoteMouseAxis(target_y, vy, vh);
     last_dx_ = dx;
     last_dy_ = dy;
-    INPUT event{};
-    event.type = INPUT_MOUSE;
-    event.mi.dx = dx;
-    event.mi.dy = dy;
-    event.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-    if (!SendInput(1, &event, sizeof(event))) {
-      mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, dx, dy, 0, 0);
-    }
+    return SendRemoteMouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0, dx, dy);
   }
   void Hotkey(const EncodableMap& input) {
     auto action = String(input, "action");
@@ -344,7 +322,7 @@ class ServiceConsoleBridge::InputWorker {
     for (WORD key : combo) SendKey(key, true);
     for (auto key = combo.rbegin(); key != combo.rend(); ++key) SendKey(*key, false);
   }
-  void Execute(const EncodableMap& input) {
+  bool Execute(const EncodableMap& input) {
     const auto type = String(input, "type");
     if (type == "text_input") {
       ReleasePressed(false);
@@ -359,25 +337,22 @@ class ServiceConsoleBridge::InputWorker {
           SendKey(static_cast<WORD>(ch), false, true);
         }
       }
-      return;
+      return true;
     }
-    if (type == "mouse_move") { Move(input); return; }
+    if (type == "mouse_move") return Move(input);
     if (type == "mouse_down" || type == "mouse_up" || type == "mouse_click" || type == "click") {
-      Move(input);
+      if (!Move(input)) return false;
       const int button = std::clamp(static_cast<int>(Number(input, "button")), 0, 2);
-      const DWORD down[] = {MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_RIGHTDOWN};
-      const DWORD up[] = {MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTUP};
-      const DWORD base = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-      if (type != "mouse_up") { SendMouse(down[button] | base, 0, last_dx_, last_dy_); buttons_ |= 1 << button; }
-      if (type != "mouse_down") { SendMouse(up[button] | base, 0, last_dx_, last_dy_); buttons_ &= ~(1 << button); }
-      return;
+      const DWORD base = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+      if (type != "mouse_up") { if (!SendRemoteMouse(RemoteMouseButton(button, true) | base, 0, last_dx_, last_dy_)) return false; buttons_ |= 1 << button; }
+      if (type != "mouse_down") { if (!SendRemoteMouse(RemoteMouseButton(button, false) | base, 0, last_dx_, last_dy_)) return false; buttons_ &= ~(1 << button); }
+      return true;
     }
     if (type == "wheel" || type == "mouse_wheel") {
       const double delta = std::clamp(Number(input, "deltaY"), -12000.0, 12000.0);
-      SendMouse(MOUSEEVENTF_WHEEL, static_cast<DWORD>(static_cast<LONG>(-delta)), last_dx_, last_dy_);
-      return;
+      return SendRemoteMouse(MOUSEEVENTF_WHEEL, static_cast<DWORD>(static_cast<LONG>(-delta)), last_dx_, last_dy_);
     }
-    if (type == "hotkey") { Hotkey(input); return; }
+    if (type == "hotkey") { Hotkey(input); return true; }
     if (type == "key_down" || type == "key_up") {
       const bool down = type == "key_down";
       auto text = Wide(String(input, "char"));
@@ -388,9 +363,9 @@ class ServiceConsoleBridge::InputWorker {
         if (text_down != unicode_keys_.end()) {
           for (wchar_t ch : text_down->second) { SendKey(static_cast<WORD>(ch), false, true); unicode_.erase(static_cast<WORD>(ch)); }
           unicode_keys_.erase(text_down);
-          return;
+          return true;
         }
-        if (keys_.erase(physical_key)) { SendKey(physical_key, false); return; }
+        if (keys_.erase(physical_key)) { SendKey(physical_key, false); return true; }
       }
       const bool modifier = keys_.count(VK_CONTROL) || keys_.count(VK_LCONTROL) || keys_.count(VK_RCONTROL) || keys_.count(VK_MENU) || keys_.count(VK_LMENU) || keys_.count(VK_RMENU) || keys_.count(VK_LWIN) || keys_.count(VK_RWIN);
       if (!modifier && (text.size() == 1 || text.size() == 2) && text[0] > 127) {
@@ -402,11 +377,12 @@ class ServiceConsoleBridge::InputWorker {
         }
       } else {
         const WORD key = VirtualKey(input);
-        if (!key) return;
+        if (!key) return true;
         SendKey(key, down);
         if (down) keys_.insert(key); else keys_.erase(key);
       }
     }
+    return true;
   }
   void Run() {
     original_desktop_ = GetThreadDesktop(GetCurrentThreadId());
@@ -426,10 +402,12 @@ class ServiceConsoleBridge::InputWorker {
       }
       if (release) ReleasePressed();
       if (!queued.input.empty()) {
-        AttachInputDesktop();
+        const bool attached = AttachInputDesktop();
         const auto type = String(queued.input, "type");
-        bool ok = true;
-        if (type == "block_input") {
+        bool ok = attached;
+        if (!attached) {
+          // Report desktop access failure instead of pretending input ran.
+        } else if (type == "block_input") {
           bool want_blocked = false;
           bool has_val = false;
           if (const auto* value = Find(queued.input, "blocked")) {
@@ -445,24 +423,14 @@ class ServiceConsoleBridge::InputWorker {
             }
           }
           if (has_val) {
-            if (want_blocked) {
-              BlockInput(TRUE);
-              RECT r{0, 0, 1, 1};
-              ClipCursor(&r);
-              blocked_ = true;
-              ok = true;
-            } else {
-              ClipCursor(nullptr);
-              BlockInput(FALSE);
-              blocked_ = false;
-              ok = true;
-            }
+            ok = SetRemoteMouseBlocked(want_blocked, blocked_);
           }
         } else if (type == "clipboard_probe") {
           ok = desktop_name_.empty() || desktop_name_ == L"Default";
         } else {
-          Execute(queued.input);
+          ok = Execute(queued.input);
         }
+        if (!ok) ReleasePressed();
         if (queued.done) queued.done->set_value(ok);
       }
     }

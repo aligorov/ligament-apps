@@ -227,6 +227,8 @@ class SupportService extends ChangeNotifier {
   }.contains(type);
 
   int _captureEpoch = 0;
+  DateTime _lastMouseCheck = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastInputError = DateTime.fromMillisecondsSinceEpoch(0);
 
   void _requireCaptureEpoch(int epoch) {
     if (epoch != _captureEpoch || _isStopping) {
@@ -804,6 +806,7 @@ class SupportService extends ChangeNotifier {
               'audio': false,
               'video': {
                 'deviceId': {'exact': selectedSource.id},
+                'cursor': 'always',
               },
             }).timeout(captureTimeout);
           } catch (_) {
@@ -813,6 +816,7 @@ class SupportService extends ChangeNotifier {
                 'audio': false,
                 'video': {
                   'deviceId': selectedSource.id,
+                  'cursor': 'always',
                 },
               }).timeout(captureTimeout);
             } catch (_) {
@@ -1280,6 +1284,7 @@ class SupportService extends ChangeNotifier {
           'audio': false,
           'video': {
             'deviceId': {'exact': screenId},
+            'cursor': 'always',
           },
         });
       } catch (_) {
@@ -1287,6 +1292,7 @@ class SupportService extends ChangeNotifier {
           'audio': false,
           'video': {
             'deviceId': screenId,
+            'cursor': 'always',
           },
         });
       }
@@ -1601,8 +1607,12 @@ class SupportService extends ChangeNotifier {
       final inject = serviceInput;
       if (inject == null) return;
       try {
+        final now = DateTime.now();
+        final checkMouse = type == 'mouse_move' && now.difference(_lastMouseCheck).inMilliseconds >= 500;
+        if (checkMouse) _lastMouseCheck = now;
         await inject({
           ...input,
+          if (checkMouse) 'ack': true,
           'type': type,
           if (_currentScreenRect != null)
             'screen_rect': _currentScreenRect!.toJson(),
@@ -1615,7 +1625,11 @@ class SupportService extends ChangeNotifier {
           _sendSignalOrData({'type': 'block_input_ack', 'blocked': false, 'error': 'input_rejected'});
           return;
         }
-        await _failSession('Служба не смогла выполнить удалённый ввод');
+        final now = DateTime.now();
+        if (now.difference(_lastInputError).inSeconds >= 3) {
+          _lastInputError = now;
+          _sendSignalOrData({'type': 'input_error', 'command': type, 'reason': 'windows_input_rejected'});
+        }
       }
       return;
     }

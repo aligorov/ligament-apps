@@ -26,6 +26,17 @@ jobs:
           choco install wixtoolset -y
           echo "C:\Program Files (x86)\WiX Toolset v3.11\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Test remote console input
+        shell: pwsh
+        run: |
+          flutter pub get
+          flutter test test/remote_pointer_surface_test.dart test/service_console_input_test.dart test/remote_keyboard_test.dart test/screen_mapping_test.dart
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter remote input tests failed' }
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /DNOMINMAX windows\tests\remote_mouse_input_test.cpp /Fe:remote_mouse_input_test.exe user32.lib && remote_mouse_input_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Native remote mouse tests failed' }
+
       - name: Build Windows Application and MSI
         shell: pwsh
         run: |

@@ -314,18 +314,17 @@ class _ServiceConsoleApi extends ApiClient {
       controller.sendSignal(sessionId, signal);
 }
 
+Future<void> sendServiceConsoleInput(Map<String, dynamic> input) async {
+  final accepted =
+      await _serviceConsoleChannel.invokeMethod<bool>('input', input);
+  if (accepted != true) throw StateError('Remote input rejected');
+}
+
 class _WebRtcServiceCapture implements ServiceConsoleCapture {
   _WebRtcServiceCapture() {
     _service = SupportService(
       serviceHost: true,
-      serviceInput: (input) async {
-        final accepted =
-            await _serviceConsoleChannel.invokeMethod<bool>('input', input);
-        final type = input['type']?.toString();
-        if (accepted != true && type == 'block_input') {
-          throw StateError('Remote input rejected');
-        }
-      },
+      serviceInput: sendServiceConsoleInput,
       serviceReleaseInput: () =>
           _serviceConsoleChannel.invokeMethod<void>('releaseInput'),
     );

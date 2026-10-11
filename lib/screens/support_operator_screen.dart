@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -14,6 +13,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../api/client.dart';
+import '../widgets/remote_pointer_surface.dart';
 import '../services/remote_keyboard.dart';
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
@@ -34,11 +34,8 @@ enum MouseClickMode {
 /// Кнопка мыши для протокола агента (0 — левая, 1 — средняя, 2 — правая)
 /// по полю buttons из PointerDownEvent с учетом принудительного режима ПКМ.
 /// Чистая функция — покрыта юнит-тестами (M-4).
-int pointerDownButton(int buttons, bool rightModeForced) {
-  if (rightModeForced || (buttons & kSecondaryMouseButton) != 0 || buttons == kSecondaryButton) return 2;
-  if ((buttons & kMiddleMouseButton) != 0) return 1;
-  return 0;
-}
+int pointerDownButton(int buttons, bool rightModeForced) =>
+    remoteMouseButton(buttons, rightModeForced);
 
 /// Ш4 (Д6): сигнал завершения сессии приходит в одном из видов —
 /// верхний data['type'], нормализованный payload['type'] (как SDP) или signal['type'].
@@ -127,6 +124,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
     return _instanceRenderer;
   }
+
   late final RTCVideoRenderer _instanceRenderer = RTCVideoRenderer();
   RTCPeerConnection? _peerConnection;
   RTCDataChannel? _dataChannel;
@@ -502,7 +500,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         await windowManager.setSize(targetSize);
         if (!kIsWeb && Platform.isMacOS) {
           // Metal layer redraw trigger
-          await windowManager.setSize(Size(targetSize.width, targetSize.height + 1));
+          await windowManager
+              .setSize(Size(targetSize.width, targetSize.height + 1));
           await Future.delayed(const Duration(milliseconds: 25));
           await windowManager.setSize(targetSize);
         }
@@ -683,7 +682,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         onDone: () {
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
-          if (_statusKey == 'ended_by_server' || _statusKey == 'session_ended') return;
+          if (_statusKey == 'ended_by_server' || _statusKey == 'session_ended') {
+            return;
+          }
           _cancelStageTimers();
           final auth = _auth ?? context.read<AuthState>();
           auth.api?.getCurrentSupportSession().then((session) {
@@ -955,6 +956,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _selectedScreenId = sel ??
               (_screens.isNotEmpty ? _screens.first['id']?.toString() : null);
         });
+      }
+    } else if (type == 'input_error') {
+      if (mounted) {
+        setState(() => _isInputBlocked = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(context.stringsRead.isRu
+              ? 'Windows отклонила удалённый ввод. Проверьте службу и доступ к рабочему столу.'
+              : 'Windows rejected remote input. Check the service and desktop access.'),
+        ));
       }
     } else if (type == 'clipboard_error') {
       if (mounted) {
@@ -1416,72 +1426,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     try {
       _sendWsSignal({'type': 'input_control', 'data': msg});
     } catch (_) {}
-  }
-
-  void _sendPointerEvent(String action, PointerEvent event, int button) {
-    if (!_controlReady) return;
-    final renderBox =
-        _videoKey.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox == null) return;
-
-    final localPos = renderBox.globalToLocal(event.position);
-    final size = renderBox.size;
-    if (size.width <= 0 || size.height <= 0) return;
-
-    double videoW = _remoteRenderer.videoWidth.toDouble();
-    double videoH = _remoteRenderer.videoHeight.toDouble();
-    if (videoW <= 0) videoW = 1920;
-    if (videoH <= 0) videoH = 1080;
-
-    final containerW = size.width;
-    final containerH = size.height;
-    final videoAspect = videoW / videoH;
-    final containerAspect = containerW / containerH;
-
-    double renderW = containerW;
-    double renderH = containerH;
-    double offsetX = 0.0;
-    double offsetY = 0.0;
-
-    {
-      if (containerAspect > videoAspect) {
-        // Черные полосы по бокам (left / right)
-        renderW = containerH * videoAspect;
-        offsetX = (containerW - renderW) / 2.0;
-      } else {
-        // Черные полосы сверху / снизу (top / bottom)
-        renderH = containerW / videoAspect;
-        offsetY = (containerH - renderH) / 2.0;
-      }
-    }
-
-    final relX = (localPos.dx - offsetX) / renderW;
-    final relY = (localPos.dy - offsetY) / renderH;
-
-    final isOutside = relX < 0.0 || relX > 1.0 || relY < 0.0 || relY > 1.0;
-
-    // Щелчки по чёрным полосам вокруг изображения игнорировать (не начинать нажатие вне экрана).
-    // Но отпускание (mouse_up) ОБЯЗАНО отправляться с clamp-координатами, чтобы не допустить залипания кнопки.
-    if (isOutside && action != 'mouse_up') {
-      // Если ни одна кнопка не зажата, игнорируем обычное перемещение вне кадра
-      if (_pointerDownButtons.isEmpty) {
-        return;
-      }
-    }
-
-    final normX = relX.clamp(0.0, 1.0);
-    final normY = relY.clamp(0.0, 1.0);
-
-    if (action == 'move') {
-      _sendDataMessage({'type': 'mouse_move', 'x': normX, 'y': normY});
-    } else {
-      _sendDataMessage({
-        'type': action,
-        'button': button,
-        'x': normX,
-        'y': normY,
-      });
-    }
   }
 
   void _showTextInputDialog() {
@@ -2492,40 +2436,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 _sendDataMessage(_remoteKeyboard.message(event));
                 return KeyEventResult.handled;
               },
-              child: Listener(
-                behavior: HitTestBehavior.opaque,
-                onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
-                onPointerMove: (ev) => _sendPointerEvent('move', ev, 0),
-                onPointerDown: (ev) {
-                  if (!_controlReady) return;
-                  _keyboardFocus.requestFocus();
-                  final btn = pointerDownButton(
-                      ev.buttons, _mouseClickMode == MouseClickMode.right);
-                  _pointerDownButtons[ev.pointer] = btn;
-                  _sendPointerEvent('mouse_down', ev, btn);
-                },
-                onPointerUp: (ev) {
-                  if (!_controlReady) return;
-                  // M-4: up шлёт кнопку из парного down (в up buttons == 0)
-                  final btn = _pointerDownButtons.remove(ev.pointer) ?? 0;
-                  _sendPointerEvent('mouse_up', ev, btn);
-                  if (_mouseClickMode == MouseClickMode.right) {
-                    setState(() => _mouseClickMode = MouseClickMode.left);
-                  }
-                },
-                onPointerCancel: (ev) {
-                  final btn = _pointerDownButtons.remove(ev.pointer);
-                  if (btn != null && _controlReady) {
-                    _sendPointerEvent('mouse_up', ev, btn);
-                  }
-                },
-                onPointerSignal: (signal) {
-                  if (!_controlReady) return;
-                  if (signal is PointerScrollEvent) {
-                    _sendDataMessage(
-                        {'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
-                  }
-                },
+              child: RemotePointerSurface(
+                videoKey: _videoKey,
+                videoSize: () => Size(_remoteRenderer.videoWidth.toDouble(),
+                    _remoteRenderer.videoHeight.toDouble()),
+                enabled: _controlReady,
+                rightMode: _mouseClickMode == MouseClickMode.right,
+                trackpadScroll: _zoomMode != OperatorZoomMode.zoomIn,
+                pressedButtons: _pointerDownButtons,
+                send: _sendDataMessage,
+                focus: _keyboardFocus.requestFocus,
+                rightClickComplete: () =>
+                    setState(() => _mouseClickMode = MouseClickMode.left),
                 child: Center(
                   child: _isChatOnly
                       ? Column(
