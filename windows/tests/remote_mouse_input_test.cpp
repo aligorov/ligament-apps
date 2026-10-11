@@ -33,6 +33,9 @@ int main() {
     }
     Check(SendRemoteMouse<FakeWindows>(MOUSEEVENTF_WHEEL, static_cast<DWORD>(-120)), "wheel rejected");
     Check(static_cast<LONG>(FakeWindows::sent.back().mi.mouseData) == -120, "wheel sign lost");
+    FakeWindows::confined = true;  // Simulate an old helper killed before cleanup.
+    Check(SendRemoteMouse<FakeWindows>(base), "move rejected after upgrade");
+    Check(!FakeWindows::confined, "legacy confinement survived a remote move");
     FakeWindows::reject_send = true;
     Check(!SendRemoteMouse<FakeWindows>(base), "SendInput failure hidden");
     FakeWindows::reject_block = true;

@@ -487,6 +487,7 @@ class InputInjector {
       _postMacMouseEvent(5, px.toDouble(), py.toDouble(), 0); // 5 = kCGEventMouseMoved
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY);
+      _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
       final virt = getVirtualDesktopRect();
       final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
@@ -542,6 +543,7 @@ class InputInjector {
       }
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY);
+      _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
       final virt = getVirtualDesktopRect();
       final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);

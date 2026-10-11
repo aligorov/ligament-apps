@@ -12,6 +12,9 @@ struct Win32RemoteMouseApi {
 
 template <typename Api = Win32RemoteMouseApi>
 bool SendRemoteMouse(DWORD flags, DWORD data = 0, LONG dx = 0, LONG dy = 0) {
+  // Old helpers could leave ClipCursor active after a forced service stop.
+  // The authenticated operator must be able to move without toggling Block.
+  if ((flags & MOUSEEVENTF_MOVE) && !Api::Clip(nullptr)) return false;
   INPUT input{};
   input.type = INPUT_MOUSE;
   input.mi.dx = dx;
