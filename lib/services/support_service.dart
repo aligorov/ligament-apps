@@ -1708,7 +1708,9 @@ class SupportService extends ChangeNotifier {
           ...input,
           if (checkMouse) 'ack': true,
           'type': type,
-          if (_currentScreenRect != null)
+          if (input['screen_rect'] != null)
+            'screen_rect': input['screen_rect']
+          else if (_currentScreenRect != null)
             'screen_rect': _currentScreenRect!.toJson(),
         });
         if (type == 'block_input') {
@@ -1752,7 +1754,10 @@ class SupportService extends ChangeNotifier {
         case 'mouse_move':
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
           final y = (input['y'] as num?)?.toDouble() ?? 0.0;
-          InputInjector.instance.moveMouse(x, y);
+          final explicitRect = input['screen_rect'] is Map
+              ? ScreenRect.fromJson(Map<String, dynamic>.from(input['screen_rect'] as Map))
+              : null;
+          InputInjector.instance.moveMouse(x, y, screenRect: explicitRect);
           break;
         case 'mouse_down':
         case 'mouse_up':
@@ -1762,7 +1767,10 @@ class SupportService extends ChangeNotifier {
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
           final y = (input['y'] as num?)?.toDouble() ?? 0.0;
           final act = type == 'mouse_down' ? 'down' : (type == 'mouse_up' ? 'up' : 'click');
-          InputInjector.instance.mouseAction(action: act, button: btn, normX: x, normY: y);
+          final explicitRect = input['screen_rect'] is Map
+              ? ScreenRect.fromJson(Map<String, dynamic>.from(input['screen_rect'] as Map))
+              : null;
+          InputInjector.instance.mouseAction(action: act, button: btn, normX: x, normY: y, screenRect: explicitRect);
           break;
         case 'wheel':
         case 'mouse_wheel':

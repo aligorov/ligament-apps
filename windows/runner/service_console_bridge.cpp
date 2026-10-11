@@ -163,7 +163,14 @@ WORD VirtualKey(const EncodableMap& input) {
     if (end && *end == 0 && n >= 1 && n <= 24) return static_cast<WORD>(VK_F1 + n - 1);
   }
   if (key.size() == 1) {
-    const SHORT vk = VkKeyScanW(static_cast<WCHAR>(static_cast<unsigned char>(key[0])));
+    const char ch = key[0];
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+      return static_cast<WORD>(toupper(static_cast<unsigned char>(ch)));
+    }
+    if (ch >= '0' && ch <= '9') {
+      return static_cast<WORD>(ch);
+    }
+    const SHORT vk = VkKeyScanW(static_cast<WCHAR>(static_cast<unsigned char>(ch)));
     if (vk != -1) return static_cast<WORD>(LOBYTE(vk));
   }
   return 0;
@@ -430,23 +437,43 @@ class ServiceConsoleBridge::InputWorker {
     if (type == "mouse_move") return Move(input);
     if (type == "mouse_down" || type == "mouse_up" || type == "mouse_click" || type == "click") {
       Move(input);
-      const int button = std::clamp(static_cast<int>(Number(input, "button")), 0, 2);
-      const DWORD down[] = {MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_RIGHTDOWN};
-      const DWORD up[] = {MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTUP};
+      const int button = std::clamp(static_cast<int>(Number(input, "button")), 0, 4);
+      DWORD down_flag = MOUSEEVENTF_LEFTDOWN;
+      DWORD up_flag = MOUSEEVENTF_LEFTUP;
+      DWORD mouse_data = 0;
+      if (button == 1) {
+        down_flag = MOUSEEVENTF_MIDDLEDOWN;
+        up_flag = MOUSEEVENTF_MIDDLEUP;
+      } else if (button == 2) {
+        down_flag = MOUSEEVENTF_RIGHTDOWN;
+        up_flag = MOUSEEVENTF_RIGHTUP;
+      } else if (button == 3) {
+        down_flag = MOUSEEVENTF_XDOWN;
+        up_flag = MOUSEEVENTF_XUP;
+        mouse_data = XBUTTON1;
+      } else if (button == 4) {
+        down_flag = MOUSEEVENTF_XDOWN;
+        up_flag = MOUSEEVENTF_XUP;
+        mouse_data = XBUTTON2;
+      }
       const DWORD base = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
       if (type != "mouse_up") {
-        SendMouse(down[button] | base, 0, last_dx_, last_dy_);
+        SendMouse(down_flag | base, mouse_data, last_dx_, last_dy_);
         buttons_ |= 1 << button;
       }
       if (type != "mouse_down") {
-        SendMouse(up[button] | base, 0, last_dx_, last_dy_);
+        SendMouse(up_flag | base, mouse_data, last_dx_, last_dy_);
         buttons_ &= ~(1 << button);
       }
       return true;
     }
     if (type == "wheel" || type == "mouse_wheel") {
-      const double delta = std::clamp(Number(input, "deltaY"), -12000.0, 12000.0);
-      SendMouse(MOUSEEVENTF_WHEEL, static_cast<DWORD>(static_cast<LONG>(-delta)));
+      const double raw_delta = Number(input, "deltaY");
+      if (raw_delta != 0.0) {
+        const int ticks = std::clamp(static_cast<int>(std::round(std::abs(raw_delta) / 20.0)), 1, 10);
+        const LONG win_delta = raw_delta > 0 ? -ticks * 120 : ticks * 120;
+        SendMouse(MOUSEEVENTF_WHEEL, static_cast<DWORD>(win_delta));
+      }
       return true;
     }
     if (type == "hotkey") { Hotkey(input); return true; }
@@ -488,7 +515,15 @@ class ServiceConsoleBridge::InputWorker {
         }
       } else {
         const WORD key = VirtualKey(input);
-        if (!key) return true;
+        if (!key) {
+          // C6: если VkKeyScanW == -1 и нет модификатора, отправляем как KEYEVENTF_UNICODE
+          if (!modifier && text.size() == 1) {
+            const auto wch = static_cast<WORD>(text[0]);
+            SendKey(wch, down, true);
+            if (down) unicode_.insert(wch); else unicode_.erase(wch);
+          }
+          return true;
+        }
         SendKey(key, down);
         if (down) keys_.insert(key); else keys_.erase(key);
       }

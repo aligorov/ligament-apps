@@ -59,6 +59,13 @@ class ScreenRect {
   factory ScreenRect.fromLTRB(int left, int top, int right, int bottom) =>
       ScreenRect(left, top, right - left, bottom - top);
 
+  factory ScreenRect.fromJson(Map<String, dynamic> json) => ScreenRect(
+        (json['x'] as num?)?.toInt() ?? 0,
+        (json['y'] as num?)?.toInt() ?? 0,
+        (json['width'] as num? ?? json['w'] as num?)?.toInt() ?? 0,
+        (json['height'] as num? ?? json['h'] as num?)?.toInt() ?? 0,
+      );
+
   int get right => x + width;
   int get bottom => y + height;
 
@@ -125,6 +132,8 @@ class InputInjector {
   int Function()? _nativeRemoveBlock;
   void Function(int, bool)? _nativeSendUnicode;
   void Function(int, bool)? _nativeSendVk;
+  int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
+      _nativeGetMonitorRectByIndex;
 
   void _initMacCG() {
     if (kIsWeb || !Platform.isMacOS) return;
@@ -223,6 +232,10 @@ class InputInjector {
             'ligament_send_unicode_char');
         _nativeSendVk = exe.lookupFunction<ffi.Void Function(ffi.Uint16, ffi.Bool), void Function(int, bool)>(
             'ligament_send_vk');
+        _nativeGetMonitorRectByIndex = exe.lookupFunction<
+            ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
+            int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
+            'ligament_get_monitor_rect_by_index');
       } catch (e) {
         debugPrint('input_injector: нативные хелперы ввода/блокировки недоступны: $e');
       }
@@ -411,7 +424,28 @@ class InputInjector {
         }
       }
 
-      // Разрешение по индексу монитора (0 -> Primary, 1 -> Secondary)
+      // C4: Разрешение по индексу монитора через нативный EnumDisplayMonitors (для 3+ мониторов)
+      if (_nativeGetMonitorRectByIndex != null && handles.isNotEmpty) {
+        final l = calloc<ffi.Int32>();
+        final t = calloc<ffi.Int32>();
+        final r = calloc<ffi.Int32>();
+        final b = calloc<ffi.Int32>();
+        try {
+          final rc = _nativeGetMonitorRectByIndex!(handles.first, l, t, r, b);
+          if (rc == 0 && r.value > l.value && b.value > t.value) {
+            return ScreenRect.fromLTRB(l.value, t.value, r.value, b.value);
+          }
+        } catch (_) {
+          // фолбэк на эвристику
+        } finally {
+          calloc.free(l);
+          calloc.free(t);
+          calloc.free(r);
+          calloc.free(b);
+        }
+      }
+
+      // Эвристическое разрешение по индексу монитора (0 -> Primary, 1 -> Secondary)
       final index = handles.first;
       final (pw, ph) = getScreenSize();
       if (index == 0) {
@@ -455,10 +489,10 @@ class InputInjector {
   }
 
   /// Абсолютные координаты в виртуальном рабочем столе из нормализованных 0..1
-  /// координат оператора: маппинг в геометрию активного монитора, при её
-  /// отсутствии — в primary (прежнее поведение).
-  (int, int) absoluteFromNorm(double normX, double normY) {
-    final rect = _activeMonitorRect ?? _fallbackInputRect();
+  /// координат оператора: приоритет явного screenRect, затем активного монитора,
+  /// при их отсутствии — в primary (прежнее поведение).
+  (int, int) absoluteFromNorm(double normX, double normY, {ScreenRect? screenRect}) {
+    final rect = screenRect ?? _activeMonitorRect ?? _fallbackInputRect();
     return mapNormToRect(normX, normY, rect);
   }
 
@@ -481,12 +515,12 @@ class InputInjector {
   }
 
   /// Перемещение курсора мыши в абсолютные координаты 0..1 относительно
-  /// активного транслируемого монитора.
-  void moveMouse(double normX, double normY) {
+  /// целевого экрана (или активного транслируемого монитора).
+  void moveMouse(double normX, double normY, {ScreenRect? screenRect}) {
     if (kIsWeb) return;
 
     if (Platform.isMacOS) {
-      final (px, py) = absoluteFromNorm(normX, normY);
+      final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
       final pt = calloc<_CGPoint>();
       pt.ref.x = px.toDouble();
       pt.ref.y = py.toDouble();
@@ -494,7 +528,7 @@ class InputInjector {
       calloc.free(pt);
       _postMacMouseEvent(5, px.toDouble(), py.toDouble(), 0); // 5 = kCGEventMouseMoved
     } else if (Platform.isWindows) {
-      final (px, py) = absoluteFromNorm(normX, normY);
+      final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
       _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
       final virt = getVirtualDesktopRect();
@@ -505,7 +539,7 @@ class InputInjector {
       const mouseEventfVirtualDesk = 0x4000;
       _winMouseEvent?.call(mouseEventfMove | mouseEventfAbsolute | mouseEventfVirtualDesk, normVx, normVy, 0, 0);
     } else if (Platform.isLinux) {
-      final (px, py) = absoluteFromNorm(normX, normY);
+      final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
       Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
     }
   }
@@ -515,12 +549,13 @@ class InputInjector {
   final Set<int> _pressedMacKeyCodes = <int>{};
   double _lastNormX = 0.5;
   double _lastNormY = 0.5;
+  ScreenRect? _lastScreenRect;
 
   /// Безопасный сброс всех зажатых кнопок мыши и клавиш (A2.3)
   void releaseAllPressed() {
     if (kIsWeb) return;
     for (final btn in _pressedMouseButtons.toList()) {
-      mouseAction(action: 'up', button: btn, normX: _lastNormX, normY: _lastNormY);
+      mouseAction(action: 'up', button: btn, normX: _lastNormX, normY: _lastNormY, screenRect: _lastScreenRect);
     }
     _pressedMouseButtons.clear();
     if (Platform.isWindows) {
@@ -548,16 +583,18 @@ class InputInjector {
     }
   }
 
-  /// Нажатие или отпускание кнопки мыши (0: Left, 1: Middle, 2: Right)
+  /// Нажатие или отпускание кнопки мыши (0: Left, 1: Middle, 2: Right, 3: XButton1, 4: XButton2)
   void mouseAction({
     required String action, // 'down' | 'up' | 'click'
     required int button,
     required double normX,
     required double normY,
+    ScreenRect? screenRect,
   }) {
     if (kIsWeb) return;
     _lastNormX = normX;
     _lastNormY = normY;
+    _lastScreenRect = screenRect;
     if (action == 'down') {
       _pressedMouseButtons.add(button);
     } else if (action == 'up') {
@@ -565,7 +602,7 @@ class InputInjector {
     }
 
     if (Platform.isMacOS) {
-      final (px, py) = absoluteFromNorm(normX, normY);
+      final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
       final pt = calloc<_CGPoint>();
       pt.ref.x = px.toDouble();
       pt.ref.y = py.toDouble();
@@ -584,6 +621,14 @@ class InputInjector {
         eventDown = 25; // kCGEventOtherMouseDown
         eventUp = 26;   // kCGEventOtherMouseUp
         mouseBtn = 2;   // kCGMouseButtonCenter
+      } else if (button == 3) {
+        eventDown = 25;
+        eventUp = 26;
+        mouseBtn = 3;   // XBUTTON1 / back
+      } else if (button == 4) {
+        eventDown = 25;
+        eventUp = 26;
+        mouseBtn = 4;   // XBUTTON2 / forward
       }
 
       if (action == 'down') {
@@ -595,7 +640,7 @@ class InputInjector {
         _postMacMouseEvent(eventUp, px.toDouble(), py.toDouble(), mouseBtn);
       }
     } else if (Platform.isWindows) {
-      final (px, py) = absoluteFromNorm(normX, normY);
+      final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
       _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
       final virt = getVirtualDesktopRect();
@@ -611,9 +656,12 @@ class InputInjector {
       const rightUp = 0x0010;
       const midDown = 0x0020;
       const midUp = 0x0040;
+      const xDown = 0x0080;
+      const xUp = 0x0100;
 
       int flagDown = leftDown;
       int flagUp = leftUp;
+      int mouseData = 0;
 
       if (button == 2) {
         flagDown = rightDown;
@@ -621,20 +669,28 @@ class InputInjector {
       } else if (button == 1) {
         flagDown = midDown;
         flagUp = midUp;
+      } else if (button == 3) {
+        flagDown = xDown;
+        flagUp = xUp;
+        mouseData = 1; // XBUTTON1
+      } else if (button == 4) {
+        flagDown = xDown;
+        flagUp = xUp;
+        mouseData = 2; // XBUTTON2
       }
 
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, mouseData, 0);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, mouseData, 0);
       } else {
-        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
-        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, mouseData, 0);
+        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, mouseData, 0);
       }
     } else if (Platform.isLinux) {
-      final (px, py) = absoluteFromNorm(normX, normY);
+      final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
       _ensureLinuxPointerAt(px, py);
-      final btnStr = button == 2 ? '3' : (button == 1 ? '2' : '1');
+      final btnStr = button == 2 ? '3' : (button == 1 ? '2' : (button == 3 ? '8' : (button == 4 ? '9' : '1')));
       if (action == 'down') {
         Process.run('xdotool', ['mousedown', btnStr]);
       } else if (action == 'up') {
@@ -665,6 +721,14 @@ class InputInjector {
     }
   }
 
+  /// Квантование wheel delta для Windows (WHEEL_DELTA = 120, C5)
+  @visibleForTesting
+  static int quantizeWindowsWheelDelta(double deltaY) {
+    if (deltaY == 0.0) return 0;
+    final ticks = (deltaY.abs() / 20.0).round().clamp(1, 10);
+    return deltaY > 0 ? -ticks * 120 : ticks * 120;
+  }
+
   /// Прокрутка колеса мыши
   void mouseWheel(double deltaY) {
     if (kIsWeb) return;
@@ -681,8 +745,10 @@ class InputInjector {
         _cfRelease!(ev);
       }
     } else if (Platform.isWindows) {
-      final dy = (-deltaY * 40).round();
-      _winMouseEvent?.call(0x0800, 0, 0, dy, 0); // 0x0800 = MOUSEEVENTF_WHEEL
+      final dy = quantizeWindowsWheelDelta(deltaY);
+      if (dy != 0) {
+        _winMouseEvent?.call(0x0800, 0, 0, dy, 0); // 0x0800 = MOUSEEVENTF_WHEEL
+      }
     } else if (Platform.isLinux) {
       final click = deltaY > 0 ? '5' : '4';
       Process.run('xdotool', ['click', click]);

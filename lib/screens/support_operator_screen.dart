@@ -180,6 +180,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   double? _lastSentNormY;
   int _dataMessageErrorCount = 0;
   bool _transportErrorBannerVisible = false;
+  DateTime? _lastMouseMoveTime;
+  Timer? _pendingMouseMoveTimer;
+  double? _pendingMouseMoveX;
+  double? _pendingMouseMoveY;
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final GlobalKey _screenshotBoundaryKey = GlobalKey();
@@ -264,6 +268,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   List<Map<String, dynamic>> _screens = [];
   String? _selectedScreenId;
+
+  Map<String, dynamic>? get _currentSelectedScreenRect {
+    if (_screens.isNotEmpty && _selectedScreenId != null) {
+      final found = _screens.firstWhere(
+        (s) => s['id']?.toString() == _selectedScreenId,
+        orElse: () => const {},
+      );
+      if (found['rect'] is Map) {
+        return Map<String, dynamic>.from(found['rect'] as Map);
+      }
+    }
+    return null;
+  }
 
   int _cpuPercent = 0;
   bool _cpuWarning = false;
@@ -406,8 +423,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _releaseAllPressedInputs() {
     final rx = _lastSentNormX ?? 0.5;
     final ry = _lastSentNormY ?? 0.5;
+    final selectedRect = _currentSelectedScreenRect;
     for (final btn in _pointerDownButtons.values.toList()) {
-      _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': rx, 'y': ry});
+      _sendDataMessage({
+        'type': 'mouse_up',
+        'button': btn,
+        'x': rx,
+        'y': ry,
+        if (selectedRect != null) 'screen_rect': selectedRect,
+      });
     }
     _pointerDownButtons.clear();
     for (final key in _pressedKeys.toList()) {
@@ -1566,6 +1590,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   bool _isOutsideVideo(Offset globalPos) {
+    if (!_frameReady || _remoteRenderer.videoWidth <= 0 || _remoteRenderer.videoHeight <= 0) return true;
+
     final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return false;
 
@@ -1573,10 +1599,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final size = renderBox.size;
     if (size.width <= 0 || size.height <= 0) return false;
 
-    double videoW = _remoteRenderer.videoWidth.toDouble();
-    double videoH = _remoteRenderer.videoHeight.toDouble();
-    if (videoW <= 0) videoW = 1920;
-    if (videoH <= 0) videoH = 1080;
+    final videoW = _remoteRenderer.videoWidth.toDouble();
+    final videoH = _remoteRenderer.videoHeight.toDouble();
 
     final containerW = size.width;
     final containerH = size.height;
@@ -1588,14 +1612,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     double offsetX = 0.0;
     double offsetY = 0.0;
 
-    if (_zoomMode == OperatorZoomMode.fit) {
-      if (containerAspect > videoAspect) {
-        renderW = containerH * videoAspect;
-        offsetX = (containerW - renderW) / 2.0;
-      } else {
-        renderH = containerW / videoAspect;
-        offsetY = (containerH - renderH) / 2.0;
-      }
+    // C1: Always-contain aspect ratio letterboxing (v1.1.42 math)
+    if (containerAspect > videoAspect) {
+      renderW = containerH * videoAspect;
+      offsetX = (containerW - renderW) / 2.0;
+    } else {
+      renderH = containerW / videoAspect;
+      offsetY = (containerH - renderH) / 2.0;
     }
 
     final relX = (localPos.dx - offsetX) / renderW;
@@ -1604,7 +1627,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
-    if (!_controlReady) return;
+    if (!_controlReady || !_frameReady || _remoteRenderer.videoWidth <= 0 || _remoteRenderer.videoHeight <= 0) return;
     final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
@@ -1612,10 +1635,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final size = renderBox.size;
     if (size.width <= 0 || size.height <= 0) return;
 
-    double videoW = _remoteRenderer.videoWidth.toDouble();
-    double videoH = _remoteRenderer.videoHeight.toDouble();
-    if (videoW <= 0) videoW = 1920;
-    if (videoH <= 0) videoH = 1080;
+    final videoW = _remoteRenderer.videoWidth.toDouble();
+    final videoH = _remoteRenderer.videoHeight.toDouble();
 
     final containerW = size.width;
     final containerH = size.height;
@@ -1627,16 +1648,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     double offsetX = 0.0;
     double offsetY = 0.0;
 
-    if (_zoomMode == OperatorZoomMode.fit) {
-      if (containerAspect > videoAspect) {
-        // Черные полосы по бокам (left / right)
-        renderW = containerH * videoAspect;
-        offsetX = (containerW - renderW) / 2.0;
-      } else {
-        // Черные полосы сверху / снизу (top / bottom)
-        renderH = containerW / videoAspect;
-        offsetY = (containerH - renderH) / 2.0;
-      }
+    // C1: Always-contain aspect ratio letterboxing (v1.1.42 math)
+    if (containerAspect > videoAspect) {
+      // Черные полосы по бокам (left / right)
+      renderW = containerH * videoAspect;
+      offsetX = (containerW - renderW) / 2.0;
+    } else {
+      // Черные полосы сверху / снизу (top / bottom)
+      renderH = containerW / videoAspect;
+      offsetY = (containerH - renderH) / 2.0;
     }
 
     final relX = (localPos.dx - offsetX) / renderW;
@@ -1647,7 +1667,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     // Щелчки по чёрным полосам вокруг изображения игнорировать (не начинать нажатие вне экрана).
     // Но отпускание (mouse_up) ОБЯЗАНО отправляться с clamp-координатами, чтобы не допустить залипания кнопки.
     if (isOutside && action != 'mouse_up') {
-      // Если ни одна кнопка не зажата, игнорируем обычное перемещение вне кадра
       if (_pointerDownButtons.isEmpty) {
         return;
       }
@@ -1657,15 +1676,55 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final normY = relY.clamp(0.0, 1.0);
     _lastSentNormX = normX;
     _lastSentNormY = normY;
+    final selectedRect = _currentSelectedScreenRect;
 
     if (action == 'move' || action == 'mouse_move') {
-      _sendDataMessage({'type': 'mouse_move', 'x': normX, 'y': normY});
+      final now = DateTime.now();
+      _pendingMouseMoveX = normX;
+      _pendingMouseMoveY = normY;
+      final elapsed = _lastMouseMoveTime == null
+          ? 1000
+          : now.difference(_lastMouseMoveTime!).inMilliseconds;
+
+      if (elapsed >= 16) {
+        _lastMouseMoveTime = now;
+        _pendingMouseMoveTimer?.cancel();
+        _pendingMouseMoveTimer = null;
+        _sendDataMessage({
+          'type': 'mouse_move',
+          'x': normX,
+          'y': normY,
+          if (selectedRect != null) 'screen_rect': selectedRect,
+        });
+      } else {
+        if (_pendingMouseMoveTimer == null) {
+          final remaining = 16 - elapsed;
+          _pendingMouseMoveTimer = Timer(Duration(milliseconds: remaining > 0 ? remaining : 1), () {
+            _pendingMouseMoveTimer = null;
+            if (_pendingMouseMoveX != null && _pendingMouseMoveY != null && _controlReady) {
+              _lastMouseMoveTime = DateTime.now();
+              final rect = _currentSelectedScreenRect;
+              _sendDataMessage({
+                'type': 'mouse_move',
+                'x': _pendingMouseMoveX!,
+                'y': _pendingMouseMoveY!,
+                if (rect != null) 'screen_rect': rect,
+              });
+            }
+          });
+        }
+      }
     } else {
+      // При нажатии/отпускании кнопки немедленно сбрасываем ожидающее перемещение
+      _pendingMouseMoveTimer?.cancel();
+      _pendingMouseMoveTimer = null;
+      _lastMouseMoveTime = DateTime.now();
       _sendDataMessage({
         'type': action,
         'button': button,
         'x': normX,
         'y': normY,
+        if (selectedRect != null) 'screen_rect': selectedRect,
       });
     }
   }
@@ -1801,7 +1860,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       return;
     }
     _sendDataMessage({'type': 'text_input', 'text': text});
-    _sendDataMessage({'type': 'clipboard_set', 'text': text});
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -2049,6 +2107,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   @override
   void dispose() {
+    _pendingMouseMoveTimer?.cancel();
+    _pendingMouseMoveTimer = null;
     _releaseAllPressedInputs();
     if (_isFullScreen && !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
@@ -3761,20 +3821,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               onKeyEvent: (node, event) {
                 if (!_controlReady) return KeyEventResult.ignored;
                 final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
-                final keyLabel = event.logicalKey.keyLabel;
-                final character = event.character;
-                if (isDown) {
-                  _pressedKeys.add(keyLabel);
-                } else {
-                  _pressedKeys.remove(keyLabel);
-                }
                 final msg = _remoteKeyboard.message(event);
-                _sendDataMessage({
-                  ...msg,
-                  'type': isDown ? 'key_down' : 'key_up',
-                  'key': keyLabel,
-                  if (character != null && character.isNotEmpty) 'char': character,
-                });
+                final keyIdent = msg['key']?.toString() ?? event.logicalKey.keyLabel;
+                if (isDown) {
+                  _pressedKeys.add(keyIdent);
+                } else {
+                  _pressedKeys.remove(keyIdent);
+                }
+                _sendDataMessage(msg);
                 return KeyEventResult.handled;
               },
               child: Listener(

@@ -4,6 +4,8 @@ import 'package:flutter/widgets.dart';
 int remoteMouseButton(int buttons, bool rightMode) {
   if (rightMode || (buttons & kSecondaryMouseButton) != 0) return 2;
   if ((buttons & kMiddleMouseButton) != 0) return 1;
+  if ((buttons & kBackMouseButton) != 0) return 3;
+  if ((buttons & kForwardMouseButton) != 0) return 4;
   return 0;
 }
 

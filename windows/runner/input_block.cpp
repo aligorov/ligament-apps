@@ -106,4 +106,39 @@ __declspec(dllexport) void ligament_send_vk(WORD vk, bool is_down) {
   SendInput(1, &input, sizeof(INPUT));
 }
 
+// C4 (Релиз C): честный резолвинг 3+ мониторов на Windows через EnumDisplayMonitors.
+__declspec(dllexport) int ligament_get_monitor_rect_by_index(int index, int* out_l, int* out_t, int* out_r, int* out_b) {
+  if (!out_l || !out_t || !out_r || !out_b) return -1;
+  struct EnumContext {
+    int target_index;
+    int current_index;
+    RECT rect;
+    bool found;
+  } ctx{index, 0, {}, false};
+
+  EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR hMon, HDC, LPRECT, LPARAM data) -> BOOL {
+    auto* c = reinterpret_cast<EnumContext*>(data);
+    if (c->current_index == c->target_index) {
+      MONITORINFO mi{};
+      mi.cbSize = sizeof(mi);
+      if (GetMonitorInfoW(hMon, &mi)) {
+        c->rect = mi.rcMonitor;
+        c->found = true;
+        return FALSE;
+      }
+    }
+    c->current_index++;
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&ctx));
+
+  if (ctx.found) {
+    *out_l = ctx.rect.left;
+    *out_t = ctx.rect.top;
+    *out_r = ctx.rect.right;
+    *out_b = ctx.rect.bottom;
+    return 0;
+  }
+  return -1;
+}
+
 } // extern "C"
