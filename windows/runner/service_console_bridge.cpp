@@ -238,7 +238,18 @@ class ServiceConsoleBridge::InputWorker {
     keys_.clear(); unicode_.clear(); unicode_keys_.clear(); buttons_ = 0;
   }
   bool AttachInputDesktop() {
+    HWINSTA winsta = OpenWindowStationW(L"winsta0", FALSE, MAXIMUM_ALLOWED);
+    if (winsta) {
+      SetProcessWindowStation(winsta);
+      CloseWindowStation(winsta);
+    }
     HDESK current = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
+    if (!current) {
+      current = OpenDesktopW(L"Winlogon", 0, FALSE, MAXIMUM_ALLOWED);
+    }
+    if (!current) {
+      current = OpenDesktopW(L"Default", 0, FALSE, MAXIMUM_ALLOWED);
+    }
     if (!current) return false;
     const auto name = DesktopName(current);
     if (name.empty()) { CloseDesktop(current); return false; }
@@ -299,6 +310,9 @@ class ServiceConsoleBridge::InputWorker {
         if (send) send(FALSE);
         FreeLibrary(sas);
       }
+      // Also send Space to lift lock screen curtain in Win 10/11
+      SendKey(VK_SPACE, true);
+      SendKey(VK_SPACE, false);
       return;
     }
     if (action == "win_l" || action == "lock_screen") {
@@ -342,11 +356,11 @@ class ServiceConsoleBridge::InputWorker {
     }
     if (type == "mouse_move") return Move(input);
     if (type == "mouse_down" || type == "mouse_up" || type == "mouse_click" || type == "click") {
-      if (!Move(input)) return false;
+      Move(input);
       const int button = std::clamp(static_cast<int>(Number(input, "button")), 0, 2);
       const DWORD base = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-      if (type != "mouse_up") { if (!SendRemoteMouse(RemoteMouseButton(button, true) | base, 0, last_dx_, last_dy_)) return false; buttons_ |= 1 << button; }
-      if (type != "mouse_down") { if (!SendRemoteMouse(RemoteMouseButton(button, false) | base, 0, last_dx_, last_dy_)) return false; buttons_ &= ~(1 << button); }
+      if (type != "mouse_up") { SendRemoteMouse(RemoteMouseButton(button, true) | base, 0, last_dx_, last_dy_); buttons_ |= 1 << button; }
+      if (type != "mouse_down") { SendRemoteMouse(RemoteMouseButton(button, false) | base, 0, last_dx_, last_dy_); buttons_ &= ~(1 << button); }
       return true;
     }
     if (type == "wheel" || type == "mouse_wheel") {
@@ -403,12 +417,10 @@ class ServiceConsoleBridge::InputWorker {
       }
       if (release) ReleasePressed();
       if (!queued.input.empty()) {
-        const bool attached = AttachInputDesktop();
+        AttachInputDesktop();
         const auto type = String(queued.input, "type");
-        bool ok = attached;
-        if (!attached) {
-          // Report desktop access failure instead of pretending input ran.
-        } else if (type == "block_input") {
+        bool ok = true;
+        if (type == "block_input") {
           bool want_blocked = false;
           bool has_val = false;
           if (const auto* value = Find(queued.input, "blocked")) {

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -259,6 +260,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Timer? _pcGraceTimer;
 
   final RemoteKeyboard _remoteKeyboard = RemoteKeyboard();
+  final Set<String> _pressedKeys = {};
 
   void _startLeaseRenewal() {
     _leaseTimer?.cancel();
@@ -357,6 +359,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': 0.0, 'y': 0.0});
     }
     _pointerDownButtons.clear();
+    for (final key in _pressedKeys.toList()) {
+      _sendDataMessage({'type': 'key_up', 'key': key});
+    }
+    _pressedKeys.clear();
     for (final message in _remoteKeyboard.releaseAll()) {
       _sendDataMessage(message);
     }
@@ -1430,6 +1436,71 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } catch (_) {}
   }
 
+  void _sendPointerEvent(String action, PointerEvent event, int button) {
+    if (!_controlReady) return;
+    final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+
+    final localPos = renderBox.globalToLocal(event.position);
+    final size = renderBox.size;
+    if (size.width <= 0 || size.height <= 0) return;
+
+    double videoW = _remoteRenderer.videoWidth.toDouble();
+    double videoH = _remoteRenderer.videoHeight.toDouble();
+    if (videoW <= 0) videoW = 1920;
+    if (videoH <= 0) videoH = 1080;
+
+    final containerW = size.width;
+    final containerH = size.height;
+    final videoAspect = videoW / videoH;
+    final containerAspect = containerW / containerH;
+
+    double renderW = containerW;
+    double renderH = containerH;
+    double offsetX = 0.0;
+    double offsetY = 0.0;
+
+    if (_zoomMode == OperatorZoomMode.fit) {
+      if (containerAspect > videoAspect) {
+        // Черные полосы по бокам (left / right)
+        renderW = containerH * videoAspect;
+        offsetX = (containerW - renderW) / 2.0;
+      } else {
+        // Черные полосы сверху / снизу (top / bottom)
+        renderH = containerW / videoAspect;
+        offsetY = (containerH - renderH) / 2.0;
+      }
+    }
+
+    final relX = (localPos.dx - offsetX) / renderW;
+    final relY = (localPos.dy - offsetY) / renderH;
+
+    final isOutside = relX < 0.0 || relX > 1.0 || relY < 0.0 || relY > 1.0;
+
+    // Щелчки по чёрным полосам вокруг изображения игнорировать (не начинать нажатие вне экрана).
+    // Но отпускание (mouse_up) ОБЯЗАНО отправляться с clamp-координатами, чтобы не допустить залипания кнопки.
+    if (isOutside && action != 'mouse_up') {
+      // Если ни одна кнопка не зажата, игнорируем обычное перемещение вне кадра
+      if (_pointerDownButtons.isEmpty) {
+        return;
+      }
+    }
+
+    final normX = relX.clamp(0.0, 1.0);
+    final normY = relY.clamp(0.0, 1.0);
+
+    if (action == 'move' || action == 'mouse_move') {
+      _sendDataMessage({'type': 'mouse_move', 'x': normX, 'y': normY});
+    } else {
+      _sendDataMessage({
+        'type': action,
+        'button': button,
+        'x': normX,
+        'y': normY,
+      });
+    }
+  }
+
   void _showTextInputDialog() {
     final controller = TextEditingController();
     final strings = context.stringsRead;
@@ -1561,6 +1632,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       return;
     }
     _sendDataMessage({'type': 'text_input', 'text': text});
+    _sendDataMessage({'type': 'clipboard_set', 'text': text});
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -2433,21 +2505,61 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               },
               onKeyEvent: (node, event) {
                 if (!_controlReady) return KeyEventResult.ignored;
-                _sendDataMessage(_remoteKeyboard.message(event));
+                final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
+                final keyLabel = event.logicalKey.keyLabel;
+                final character = event.character;
+                if (isDown) {
+                  _pressedKeys.add(keyLabel);
+                } else {
+                  _pressedKeys.remove(keyLabel);
+                }
+                final msg = _remoteKeyboard.message(event);
+                _sendDataMessage({
+                  ...msg,
+                  'type': isDown ? 'key_down' : 'key_up',
+                  'key': keyLabel,
+                  if (character != null && character.isNotEmpty) 'char': character,
+                });
                 return KeyEventResult.handled;
               },
-              child: RemotePointerSurface(
-                videoKey: _videoKey,
-                videoSize: () => Size(_remoteRenderer.videoWidth.toDouble(),
-                    _remoteRenderer.videoHeight.toDouble()),
-                enabled: _controlReady,
-                rightMode: _mouseClickMode == MouseClickMode.right,
-                trackpadScroll: _zoomMode != OperatorZoomMode.zoomIn,
-                pressedButtons: _pointerDownButtons,
-                send: _sendDataMessage,
-                focus: _keyboardFocus.requestFocus,
-                rightClickComplete: () =>
-                    setState(() => _mouseClickMode = MouseClickMode.left),
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
+                onPointerMove: (ev) => _sendPointerEvent('move', ev, 0),
+                onPointerDown: (ev) {
+                  if (!_controlReady) return;
+                  _keyboardFocus.requestFocus();
+                  final btn = pointerDownButton(ev.buttons, _mouseClickMode == MouseClickMode.right);
+                  _pointerDownButtons[ev.pointer] = btn;
+                  _sendPointerEvent('mouse_down', ev, btn);
+                },
+                onPointerUp: (ev) {
+                  if (!_controlReady) return;
+                  // M-4: up шлёт кнопку из парного down (в up buttons == 0)
+                  final btn = _pointerDownButtons.remove(ev.pointer) ?? 0;
+                  _sendPointerEvent('mouse_up', ev, btn);
+                  if (_mouseClickMode == MouseClickMode.right) {
+                    setState(() => _mouseClickMode = MouseClickMode.left);
+                  }
+                },
+                onPointerCancel: (ev) {
+                  final btn = _pointerDownButtons.remove(ev.pointer);
+                  if (btn != null && _controlReady) {
+                    _sendPointerEvent('mouse_up', ev, btn);
+                  }
+                },
+                onPointerPanZoomUpdate: (ev) {
+                  if (!_controlReady) return;
+                  if (_zoomMode != OperatorZoomMode.zoomIn && ev.panDelta.dy != 0) {
+                    _sendDataMessage({'type': 'wheel', 'deltaY': -ev.panDelta.dy});
+                  }
+                },
+                onPointerSignal: (signal) {
+                  if (!_controlReady) return;
+                  if (signal is PointerScrollEvent) {
+                    _sendDataMessage({'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
+                  }
+                },
                 child: Center(
                   child: _isChatOnly
                       ? Column(
