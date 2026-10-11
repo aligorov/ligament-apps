@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../api/client.dart';
 import '../i18n/app_strings.dart';
@@ -176,6 +179,17 @@ class RdpActions {
           ),
         ),
       );
+      if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+        try {
+          await windowManager.setMinimumSize(const Size(380, 600));
+          await windowManager.setSize(const Size(440, 720));
+          if (Platform.isMacOS) {
+            await windowManager.setSize(const Size(440, 721));
+            await Future.delayed(const Duration(milliseconds: 25));
+            await windowManager.setSize(const Size(440, 720));
+          }
+        } catch (_) {}
+      }
     } catch (e) {
       if (!context.mounted) return;
       _popOwnerScreenProgress(context);

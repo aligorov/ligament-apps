@@ -35,26 +35,45 @@ enum MouseClickMode {
 /// по полю buttons из PointerDownEvent с учетом принудительного режима ПКМ.
 /// Чистая функция — покрыта юнит-тестами (M-4).
 int pointerDownButton(int buttons, bool rightModeForced) {
-  if (rightModeForced || buttons == kSecondaryButton) return 2;
-  if (buttons == kMiddleMouseButton) return 1;
+  if (rightModeForced || (buttons & kSecondaryMouseButton) != 0 || buttons == kSecondaryButton) return 2;
+  if ((buttons & kMiddleMouseButton) != 0) return 1;
   return 0;
 }
 
-/// Ш4 (Д6): сигнал завершения сессии приходит в одном из двух видов —
-/// верхний data['type'] или нормализованный payload['type'] (как SDP).
-/// Матчится оба уровня. Чистая функция — покрыта юнит-тестами.
+/// Ш4 (Д6): сигнал завершения сессии приходит в одном из видов —
+/// верхний data['type'], нормализованный payload['type'] (как SDP) или signal['type'].
+/// Матчится по всем уровням. Чистая функция — покрыта юнит-тестами.
 bool isSessionTerminatedMessage(Map<String, dynamic> data) {
   final payload = (data['data'] is Map<String, dynamic>)
       ? data['data'] as Map<String, dynamic>
-      : const <String, dynamic>{};
+      : ((data['signal'] is Map<String, dynamic>)
+          ? data['signal'] as Map<String, dynamic>
+          : const <String, dynamic>{});
   final top = data['type']?.toString();
   final inner = payload['type']?.toString();
+  final action = data['action']?.toString() ?? payload['action']?.toString();
+  final status = data['status']?.toString() ?? payload['status']?.toString();
+  final reason = data['reason']?.toString() ?? payload['reason']?.toString();
   return top == 'session_ended' ||
       top == 'support_ended' ||
       top == 'console_end' ||
+      top == 'console_error' ||
+      top == 'session_closed' ||
+      top == 'session_terminated' ||
       inner == 'session_ended' ||
       inner == 'support_ended' ||
-      inner == 'console_end';
+      inner == 'console_end' ||
+      inner == 'console_error' ||
+      inner == 'session_closed' ||
+      inner == 'session_terminated' ||
+      action == 'end' ||
+      action == 'close' ||
+      status == 'ended' ||
+      status == 'closed' ||
+      reason == 'session_ended' ||
+      reason == 'session_closed' ||
+      reason == 'ended_by_server' ||
+      reason == 'server_ended';
 }
 
 /// Ш3 (§4.3): статус соединения по стадийным признакам — «Трансляция
@@ -100,7 +119,15 @@ class SupportOperatorScreen extends StatefulWidget {
 }
 
 class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
-  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
+  static RTCVideoRenderer? _sharedMacOSRenderer;
+
+  RTCVideoRenderer get _remoteRenderer {
+    if (!kIsWeb && Platform.isMacOS) {
+      return _sharedMacOSRenderer ??= RTCVideoRenderer();
+    }
+    return _instanceRenderer;
+  }
+  late final RTCVideoRenderer _instanceRenderer = RTCVideoRenderer();
   RTCPeerConnection? _peerConnection;
   RTCDataChannel? _dataChannel;
   WebSocketChannel? _wsChannel;
@@ -120,10 +147,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool _isControlEnabled = true;
   MouseClickMode _mouseClickMode = MouseClickMode.left;
 
-  /// Ш3: управление готово = DataChannel открыт И управление не выключено.
+  /// Управление готово = управление включено И (DataChannel открыт ИЛИ готов WS signaling / P2P).
   bool get _controlReady =>
       _isControlEnabled &&
-      _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
+      ((_dataChannel != null &&
+              _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) ||
+          _signalReady ||
+          _isConnected);
 
   /// Ш3: активна ошибка стадии с кнопкой «Повторить».
   bool get _stageRetryActive =>
@@ -405,7 +435,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _setStatus(reasonKey);
     _isControlEnabled = false;
     _cleanupResources();
-    _restoreWindowSize(delay: const Duration(milliseconds: 300));
+    _restoreWindowSize();
     // Закрыть маршруты поверх консоли (диалоги/чат/модалки), затем саму
     // консоль: pop верхнего route оставлял бы открытый чат (Д6).
     final consoleRoute = ModalRoute.of(context);
@@ -444,7 +474,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (!kIsWeb &&
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
-        _previousWindowSize = await windowManager.getSize();
+        final current = await windowManager.getSize();
+        if (current.width <= 600 && current.height <= 850) {
+          _previousWindowSize = current;
+        }
         await windowManager.setMinimumSize(const Size(800, 600));
         await windowManager.setSize(const Size(1280, 820));
         await windowManager.setResizable(true);
@@ -452,16 +485,27 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  Future<void> _restoreWindowSize({Duration? delay}) async {
+  bool _windowSizeRestored = false;
+
+  Future<void> _restoreWindowSize() async {
+    if (_windowSizeRestored) return;
+    _windowSizeRestored = true;
     if (!kIsWeb &&
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
-        if (delay != null) {
-          await Future.delayed(delay);
-        }
-        final targetSize = _previousWindowSize ?? const Size(440, 720);
+        final targetSize = (_previousWindowSize != null &&
+                _previousWindowSize!.width <= 600 &&
+                _previousWindowSize!.height <= 850)
+            ? _previousWindowSize!
+            : const Size(440, 720);
         await windowManager.setMinimumSize(const Size(380, 600));
         await windowManager.setSize(targetSize);
+        if (!kIsWeb && Platform.isMacOS) {
+          // Metal layer redraw trigger
+          await windowManager.setSize(Size(targetSize.width, targetSize.height + 1));
+          await Future.delayed(const Duration(milliseconds: 25));
+          await windowManager.setSize(targetSize);
+        }
       } catch (_) {}
     }
   }
@@ -540,7 +584,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } else {
       _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
     }
-    await _remoteRenderer.initialize();
+    if (!kIsWeb && Platform.isMacOS) {
+      if (_sharedMacOSRenderer == null) {
+        _sharedMacOSRenderer = RTCVideoRenderer();
+        await _sharedMacOSRenderer!.initialize();
+      }
+    } else {
+      await _instanceRenderer.initialize();
+    }
     // Ш3 (Д5): граница «изображение появилось» — нативный колбэк первого
     // кадра; трек ≠ кадр, чёрный экран больше не считается готовностью.
     _remoteRenderer.onFirstFrameRendered = () {
@@ -611,9 +662,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         }
       }).catchError((Object e) {
         debugPrint('support_operator: WS handshake не удался: $e');
-        final str = e.toString();
-        if (str.contains('409') || str.contains('invalid_transition')) {
-          // Ш4: сервер закрыл сессию — единое завершение с выходом
+        final str = e.toString().toLowerCase();
+        if (str.contains('409') ||
+            str.contains('410') ||
+            str.contains('404') ||
+            str.contains('403') ||
+            str.contains('session_ended') ||
+            str.contains('not_found') ||
+            str.contains('invalid_transition')) {
           _onSessionTerminated('ended_by_server');
         } else {
           _scheduleWsReconnect();
@@ -627,24 +683,49 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         onDone: () {
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
-          if (_statusKey == 'ended_by_server') return;
-          // Ш3 (§4.3): при реконнекте WS стадийная готовность сбрасывается
+          if (_statusKey == 'ended_by_server' || _statusKey == 'session_ended') return;
           _cancelStageTimers();
-          setState(() {
-            _signalReady = false;
-            _resetStageReadiness();
-            _currentNumberMatch = null;
-            _statusKey = 'disconnected';
-            _statusArg = 'ws';
+          final auth = _auth ?? context.read<AuthState>();
+          auth.api?.getCurrentSupportSession().then((session) {
+            if (!mounted || _isCleanedUp) return;
+            if (session == null ||
+                session['status'] == 'ended' ||
+                session['status'] == 'closed') {
+              _onSessionTerminated('ended_by_server');
+            } else {
+              setState(() {
+                _signalReady = false;
+                _resetStageReadiness();
+                _currentNumberMatch = null;
+                _statusKey = 'disconnected';
+                _statusArg = 'ws';
+              });
+              _scheduleWsReconnect();
+            }
+          }).catchError((_) {
+            if (mounted && !_isCleanedUp) {
+              setState(() {
+                _signalReady = false;
+                _resetStageReadiness();
+                _currentNumberMatch = null;
+                _statusKey = 'disconnected';
+                _statusArg = 'ws';
+              });
+              _scheduleWsReconnect();
+            }
           });
-          _scheduleWsReconnect();
         },
         onError: (err) {
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
-          final errStr = err.toString();
-          if (errStr.contains('409') || errStr.contains('invalid_transition')) {
-            // Ш4: сервер закрыл сессию — единое завершение с выходом
+          final errStr = err.toString().toLowerCase();
+          if (errStr.contains('409') ||
+              errStr.contains('410') ||
+              errStr.contains('404') ||
+              errStr.contains('403') ||
+              errStr.contains('session_ended') ||
+              errStr.contains('not_found') ||
+              errStr.contains('invalid_transition')) {
             _onSessionTerminated('ended_by_server');
             return;
           }
@@ -653,19 +734,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _signalReady = false;
             _resetStageReadiness();
           });
-          _setStatus('conn_error', errStr);
+          _setStatus('conn_error', err.toString());
           _scheduleWsReconnect();
         },
         cancelOnError: true,
       );
     } catch (e) {
       if (mounted) {
-        final errStr = e.toString();
-        if (errStr.contains('409') || errStr.contains('invalid_transition')) {
-          // Ш4: сервер закрыл сессию — единое завершение с выходом
+        final errStr = e.toString().toLowerCase();
+        if (errStr.contains('409') ||
+            errStr.contains('410') ||
+            errStr.contains('404') ||
+            errStr.contains('403') ||
+            errStr.contains('session_ended') ||
+            errStr.contains('not_found') ||
+            errStr.contains('invalid_transition')) {
           _onSessionTerminated('ended_by_server');
         } else {
-          _setStatus('conn_error', errStr);
+          _setStatus('conn_error', e.toString());
         }
       }
     }
@@ -749,8 +835,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
             _statusArg = null;
           });
-        } else if (pcStateRequiresGraceTermination(state)) {
-          // Ш4 (Д6): Failed/Closed — завершение после grace-окна
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+          _onSessionTerminated('session_ended');
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           setState(() {
             _isConnected = false;
             _currentNumberMatch = null;
@@ -822,19 +911,25 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _setupDataChannel(RTCDataChannel channel) {
     _dataChannel = channel;
-    channel.onDataChannelState = (state) {
+    void handleState(RTCDataChannelState state) {
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
         if (mounted) {
           setState(() {
             _currentNumberMatch = null;
-            // Ш3 (§6 плана): открытый канал НЕ включает управление сам по
-            // себе — view_only остаётся без управления; _controlReady
-            // вычисляется из состояния канала и _isControlEnabled.
           });
         }
         _sendDataMessage({'type': 'screen_list'});
+      } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
+        if (mounted) {
+          setState(() {});
+        }
       }
-    };
+    }
+
+    channel.onDataChannelState = handleState;
+    if (channel.state == RTCDataChannelState.RTCDataChannelOpen) {
+      handleState(RTCDataChannelState.RTCDataChannelOpen);
+    }
 
     channel.onMessage = (RTCDataChannelMessage msg) {
       if (msg.isBinary) return;
@@ -1317,13 +1412,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return;
       } catch (_) {}
     }
-    // A-17/A-18: вводные команды (мышь, клавиатура, hotkey, block_input)
-    // отправляются ТОЛЬКО через DataChannel (DTLS). Через WS fallback
-    // разрешены только информационные команды (screen_list, switch_screen).
-    final type = msg['type']?.toString();
-    if (type == 'screen_list' || type == 'switch_screen') {
+    // Fallback to signaling channel for full cross-platform / NAT / PWA compatibility
+    try {
       _sendWsSignal({'type': 'input_control', 'data': msg});
-    }
+    } catch (_) {}
   }
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
@@ -1673,22 +1765,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     // Освобождение нативных текстур рендерера и WebRTC-соединения.
     // На macOS: unregister текстуры (renderer.dispose) во время pop-анимации/resize
     // ловит raster-поток Flutter на живом кадре -> дедлок (черный экран).
-    // Поэтому srcObject=null синхронно (стоп кадров), а нативный dispose рендерера
-    // на macOS откладываем на 3 секунды, когда raster-поток уже гарантированно спокоен.
+    // Поэтому srcObject=null синхронно (стоп кадров), а renderer на macOS не уничтожаем,
+    // сохраняя зарегистрированную Metal текстуру.
     void disposeNative() {
-      try {
-        _remoteRenderer.dispose();
-      } catch (_) {}
+      if (kIsWeb || !Platform.isMacOS) {
+        try {
+          _remoteRenderer.dispose();
+        } catch (_) {}
+      }
       try {
         pc?.dispose();
       } catch (_) {}
     }
 
-    if (!kIsWeb && Platform.isMacOS) {
-      Future.delayed(const Duration(seconds: 3), disposeNative);
-    } else {
-      Future.delayed(const Duration(milliseconds: 350), disposeNative);
-    }
+    Future.delayed(const Duration(milliseconds: 350), disposeNative);
   }
 
   void _endSession() async {
@@ -1724,6 +1814,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
       _releaseAllPressedInputs();
       try {
+        if (_dataChannel != null &&
+            _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+          _dataChannel!.send(
+              RTCDataChannelMessage(jsonEncode({'type': 'session_ended'})));
+        }
+      } catch (_) {}
+      try {
+        _sendWsSignal({'type': 'session_ended'});
+      } catch (_) {}
+      try {
         // Оператор SOS бьёт в operator-маршрут (app-токен + роль инженера):
         // прежний /app/.../end для него всегда 403 — сессия не закрывалась.
         if (isOwner) {
@@ -1741,7 +1841,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         debugPrint('support_operator: endSupportSession error/timeout: $e');
       }
       if (mounted) {
-        Navigator.of(context).pop();
+        _onSessionTerminated('session_ended');
       }
     }
   }
@@ -1753,7 +1853,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _keyboardFocus.dispose();
     _videoTransform.dispose();
     _cleanupResources();
-    _restoreWindowSize(delay: const Duration(milliseconds: 300));
+    _restoreWindowSize();
     final auth = _auth;
     final sessId = widget.sessionId;
     if (auth != null && auth.api != null && sessId.isNotEmpty) {
@@ -2080,6 +2180,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                   ? 'Заблокировать Windows (Win+L)'
                                   : 'Lock Windows (Win+L)',
                               style: const TextStyle(color: Colors.white))),
+                      const PopupMenuItem(
+                          value: 'ctrl_alt_del',
+                          child: Text('Ctrl+Alt+Del',
+                              style: TextStyle(color: Colors.white))),
                       PopupMenuItem(
                           value: 'task_mgr',
                           child: Text(
@@ -2551,6 +2655,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                 )
                               : InteractiveViewer(
                                   transformationController: _videoTransform,
+                                  panEnabled:
+                                      _zoomMode == OperatorZoomMode.zoomIn,
                                   scaleEnabled:
                                       _zoomMode == OperatorZoomMode.zoomIn,
                                   minScale: 1.0,

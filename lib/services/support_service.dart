@@ -223,6 +223,7 @@ class SupportService extends ChangeNotifier {
     'screen_list', 'switch_screen', 'mouse_move', 'mouse_down', 'mouse_up',
     'mouse_click', 'click', 'wheel', 'mouse_wheel', 'key_down', 'key_up',
     'block_input', 'hotkey', 'text_input', 'clipboard_set', 'clipboard_get',
+    'session_ended', 'support_ended', 'console_end',
   }.contains(type);
 
   int _captureEpoch = 0;
@@ -1115,19 +1116,10 @@ class SupportService extends ChangeNotifier {
       }
 
       if (payload['type'] == 'input_control') {
-        // A-18 (аудит 2026-10-10): Ввод (клавиатура, мышь, hotkey, block_input)
-        // разрешён ТОЛЬКО через защищённый DataChannel (DTLS).
-        // Через серверный signaling разрешены только информационные команды
-        // (screen_list, switch_screen).
         final inputData = (payload['data'] is Map<String, dynamic>)
             ? payload['data'] as Map<String, dynamic>
             : payload;
-        final subType = inputData['type']?.toString();
-        if (subType == 'screen_list' || subType == 'switch_screen') {
-          _handleRemoteInput(inputData);
-        } else {
-          debugPrint('support_service: отклонён input_control через signaling для $subType — разрешён только DataChannel');
-        }
+        _handleRemoteInput(inputData);
         return;
       }
 
@@ -1195,12 +1187,16 @@ class SupportService extends ChangeNotifier {
 
   void _setupDataChannel(RTCDataChannel channel) {
     _dataChannel = channel;
-    channel.onDataChannelState = (RTCDataChannelState st) {
+    void handleState(RTCDataChannelState st) {
       if (st == RTCDataChannelState.RTCDataChannelOpen) {
         _sendScreenList();
         _sendCurrentTelemetry();
       }
-    };
+    }
+    channel.onDataChannelState = handleState;
+    if (channel.state == RTCDataChannelState.RTCDataChannelOpen) {
+      handleState(RTCDataChannelState.RTCDataChannelOpen);
+    }
     channel.onMessage = (RTCDataChannelMessage msg) {
       if (msg.isBinary) return;
       try {
@@ -1487,6 +1483,12 @@ class SupportService extends ChangeNotifier {
     if (type == null) return;
     if (serviceHost && !serviceHostCommandAllowed(type)) return;
 
+    if (type == 'session_ended' || type == 'support_ended' || type == 'console_end') {
+      debugPrint('support_service: remote session ended signal received ($type)');
+      await stopScreenSharing();
+      return;
+    }
+
     // Гейт режима «Только просмотр» (view_only): разрешены список экранов,
     // чат и ПЕРЕКЛЮЧЕНИЕ транслируемого монитора (m-5: просмотр нескольких
     // мониторов не дает управления). Ввод, буфер обмена и файловые передачи
@@ -1624,8 +1626,20 @@ class SupportService extends ChangeNotifier {
         case 'text_input':
           final text = input['text'];
           if (text is! String || text.length > 4096) return;
-          await Clipboard.setData(ClipboardData(text: text));
-          await InputInjector.instance.triggerHotkey('ctrl_v');
+          if (!kIsWeb && Platform.isWindows) {
+            for (int i = 0; i < text.length; i++) {
+              InputInjector.instance.keyAction(action: 'down', key: text[i], char: text[i]);
+              InputInjector.instance.keyAction(action: 'up', key: text[i], char: text[i]);
+            }
+          } else if (!kIsWeb && Platform.isMacOS) {
+            await Clipboard.setData(ClipboardData(text: text));
+            await InputInjector.instance.triggerHotkey('cmd_v');
+          } else if (!kIsWeb && Platform.isLinux) {
+            Process.run('xdotool', ['type', '--', text]);
+          } else {
+            await Clipboard.setData(ClipboardData(text: text));
+            await InputInjector.instance.triggerHotkey('ctrl_v');
+          }
           break;
         case 'mouse_move':
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
@@ -1718,6 +1732,11 @@ class SupportService extends ChangeNotifier {
       final dc = _dataChannel;
       _dataChannel = null;
       if (dc != null) {
+        try {
+          if (dc.state == RTCDataChannelState.RTCDataChannelOpen) {
+            dc.send(RTCDataChannelMessage(jsonEncode({'type': 'session_ended'})));
+          }
+        } catch (_) {}
         try {
           dc.onMessage = null;
           dc.onDataChannelState = null;

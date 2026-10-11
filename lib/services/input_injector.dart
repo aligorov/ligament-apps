@@ -881,11 +881,62 @@ class InputInjector {
         case 'win_key':
         case 'spotlight':
         case 'cmd_space':
-          // Cmd + Space (Spotlight)
+        case 'win_space':
+          // Cmd + Space (Spotlight / переключение языка ввода)
           _postMacKey(55, true); // Cmd
           _postMacKey(49, true); // Space
           _postMacKey(49, false);
           _postMacKey(55, false);
+          break;
+        case 'alt_shift':
+          // Option + Shift
+          _postMacKey(58, true); // Option
+          _postMacKey(56, true); // Shift
+          _postMacKey(56, false);
+          _postMacKey(58, false);
+          break;
+        case 'ctrl_shift':
+          // Control + Shift
+          _postMacKey(59, true); // Control
+          _postMacKey(56, true); // Shift
+          _postMacKey(56, false);
+          _postMacKey(59, false);
+          break;
+        case 'win_l':
+        case 'lock_screen':
+          // Control + Command + Q (Блокировка экрана на macOS)
+          _postMacKey(59, true); // Control
+          _postMacKey(55, true); // Command
+          _postMacKey(12, true); // Q
+          _postMacKey(12, false);
+          _postMacKey(55, false);
+          _postMacKey(59, false);
+          break;
+        case 'win_r':
+          // Cmd + Space как быстрый аналог Выполнить на macOS
+          _postMacKey(55, true);
+          _postMacKey(49, true);
+          _postMacKey(49, false);
+          _postMacKey(55, false);
+          break;
+        case 'win_d':
+          // F11 (Показать рабочий стол)
+          _postMacKey(103, true);
+          _postMacKey(103, false);
+          break;
+        case 'win_e':
+          // Открыть Finder (Cmd + Option + Space)
+          _postMacKey(55, true);
+          _postMacKey(58, true);
+          _postMacKey(49, true);
+          _postMacKey(49, false);
+          _postMacKey(58, false);
+          _postMacKey(55, false);
+          break;
+        case 'win_x':
+          // F3 (Mission Control)
+          _postMacKey(160, true);
+          _postMacKey(160, false);
           break;
         case 'task_mgr':
         case 'ctrl_alt_del':
@@ -939,6 +990,32 @@ class InputInjector {
           _postMacKey(53, true);
           _postMacKey(53, false);
           break;
+      }
+    } else if (Platform.isLinux) {
+      const keyMap = {
+        'win_key': 'Super_L',
+        'win_space': 'Super+space',
+        'alt_shift': 'Alt+Shift',
+        'ctrl_shift': 'Ctrl+Shift',
+        'win_r': 'Super+r',
+        'win_d': 'Super+d',
+        'win_e': 'Super+e',
+        'win_x': 'Super+x',
+        'win_l': 'Super+l',
+        'task_mgr': 'Ctrl+Shift+Escape',
+        'ctrl_alt_del': 'Ctrl+Alt+Delete',
+        'ctrl_shift_esc': 'Ctrl+Shift+Escape',
+        'alt_tab': 'Alt+Tab',
+        'alt_f4': 'Alt+F4',
+        'ctrl_c': 'Ctrl+c',
+        'ctrl_v': 'Ctrl+v',
+        'paste': 'Ctrl+v',
+        'ctrl_a': 'Ctrl+a',
+        'esc': 'Escape',
+      };
+      final combo = keyMap[hotkey];
+      if (combo != null) {
+        Process.run('xdotool', ['key', combo]);
       }
     }
   }

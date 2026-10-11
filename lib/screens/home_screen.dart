@@ -396,7 +396,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final numberMatch = res['number_match']?.toString();
 
       if (mounted) {
-        Navigator.of(context).push(
+        await Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => SupportOperatorScreen(
               sessionId: sessId,
@@ -405,6 +405,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         );
+        if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+          try {
+            await windowManager.setMinimumSize(const Size(380, 600));
+            await windowManager.setSize(const Size(440, 720));
+            if (Platform.isMacOS) {
+              await windowManager.setSize(const Size(440, 721));
+              await Future.delayed(const Duration(milliseconds: 25));
+              await windowManager.setSize(const Size(440, 720));
+            }
+          } catch (_) {}
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -421,10 +432,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _showQueueChatModal(BuildContext context, AuthState auth, Map<String, dynamic> sess) {
+  void _showQueueChatModal(BuildContext context, AuthState auth, Map<String, dynamic> sess) async {
     final sessId = sess['id']?.toString();
     if (sessId == null) return;
-    Navigator.of(context).push(
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SupportOperatorScreen(
           sessionId: sessId,
@@ -433,6 +444,17 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        await windowManager.setMinimumSize(const Size(380, 600));
+        await windowManager.setSize(const Size(440, 720));
+        if (Platform.isMacOS) {
+          await windowManager.setSize(const Size(440, 721));
+          await Future.delayed(const Duration(milliseconds: 25));
+          await windowManager.setSize(const Size(440, 720));
+        }
+      } catch (_) {}
+    }
   }
 
   @override

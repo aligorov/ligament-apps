@@ -274,6 +274,9 @@ class ServiceConsoleController {
 
   Future<void> _finishStop(String reason) async {
     try {
+      await _serviceConsoleChannel.invokeMethod<void>('releaseInput');
+    } catch (_) {}
+    try {
       await capture.stop().timeout(const Duration(seconds: 2));
     } catch (_) {}
     await onStopped(reason);

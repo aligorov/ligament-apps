@@ -254,6 +254,13 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
       }
       await windowManager.show();
       await windowManager.focus();
+      if (!kIsWeb && Platform.isMacOS) {
+        // Force CAMetalLayer redraw pass after unhiding on macOS
+        final size = await windowManager.getSize();
+        await windowManager.setSize(Size(size.width, size.height + 1));
+        await Future.delayed(const Duration(milliseconds: 25));
+        await windowManager.setSize(size);
+      }
     } catch (e) {
       debugPrint('tray: ошибка восстановления окна: $e');
     }
