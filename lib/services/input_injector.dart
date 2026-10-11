@@ -418,11 +418,19 @@ class InputInjector {
         return ScreenRect(0, 0, pw, ph);
       }
       final virt = getVirtualDesktopRect();
-      if (index == 1 && virt.width > pw) {
-        if (virt.x < 0) {
-          return ScreenRect(virt.x, virt.y, -virt.x, virt.height);
-        } else {
-          return ScreenRect(pw, virt.y, virt.width - pw, virt.height);
+      if (index == 1) {
+        if (virt.width > pw) {
+          if (virt.x < 0) {
+            return ScreenRect(virt.x, virt.y, -virt.x, virt.height);
+          } else {
+            return ScreenRect(pw, virt.y, virt.width - pw, virt.height);
+          }
+        } else if (virt.height > ph) {
+          if (virt.y < 0) {
+            return ScreenRect(virt.x, virt.y, virt.width, -virt.y);
+          } else {
+            return ScreenRect(virt.x, ph, virt.width, virt.height - ph);
+          }
         }
       }
       return ScreenRect(0, 0, pw, ph);
@@ -489,13 +497,8 @@ class InputInjector {
       final (px, py) = absoluteFromNorm(normX, normY);
       _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
-      final virt = getVirtualDesktopRect();
-      final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
-      final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
       const mouseEventfMove = 0x0001;
-      const mouseEventfAbsolute = 0x8000;
-      const mouseEventfVirtualDesk = 0x4000;
-      _winMouseEvent?.call(mouseEventfMove | mouseEventfAbsolute | mouseEventfVirtualDesk, normVx, normVy, 0, 0);
+      _winMouseEvent?.call(mouseEventfMove, 0, 0, 0, 0);
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);
       Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
@@ -545,12 +548,6 @@ class InputInjector {
       final (px, py) = absoluteFromNorm(normX, normY);
       _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
-      final virt = getVirtualDesktopRect();
-      final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
-      final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
-      const mouseEventfAbsolute = 0x8000;
-      const mouseEventfVirtualDesk = 0x4000;
-      const baseFlags = mouseEventfAbsolute | mouseEventfVirtualDesk;
 
       const leftDown = 0x0002;
       const leftUp = 0x0004;
@@ -571,12 +568,12 @@ class InputInjector {
       }
 
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
       } else {
-        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
-        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
       }
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);
@@ -869,6 +866,17 @@ class InputInjector {
           _winKeybdEvent?.call(vkEscape, 0, 0, 0);
           _winKeybdEvent?.call(vkEscape, 0, keyUp, 0);
           break;
+        case 'enter':
+        case 'return':
+          const vkReturn = 0x0D;
+          _winKeybdEvent?.call(vkReturn, 0, 0, 0);
+          _winKeybdEvent?.call(vkReturn, 0, keyUp, 0);
+          break;
+        case 'space':
+          const vkSpace = 0x20;
+          _winKeybdEvent?.call(vkSpace, 0, 0, 0);
+          _winKeybdEvent?.call(vkSpace, 0, keyUp, 0);
+          break;
       }
     } else if (Platform.isMacOS) {
       switch (hotkey) {
@@ -984,6 +992,15 @@ class InputInjector {
           _postMacKey(53, true);
           _postMacKey(53, false);
           break;
+        case 'enter':
+        case 'return':
+          _postMacKey(36, true);
+          _postMacKey(36, false);
+          break;
+        case 'space':
+          _postMacKey(49, true);
+          _postMacKey(49, false);
+          break;
       }
     } else if (Platform.isLinux) {
       const keyMap = {
@@ -1006,6 +1023,9 @@ class InputInjector {
         'paste': 'Ctrl+v',
         'ctrl_a': 'Ctrl+a',
         'esc': 'Escape',
+        'enter': 'Return',
+        'return': 'Return',
+        'space': 'space',
       };
       final combo = keyMap[hotkey];
       if (combo != null) {

@@ -1789,6 +1789,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         _remoteRenderer.dispose();
       } catch (_) {}
+      _sharedMacOSRenderer = null;
       try {
         pc?.dispose();
       } catch (_) {}

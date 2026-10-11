@@ -254,6 +254,17 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
       }
       await windowManager.show();
       await windowManager.focus();
+      // macOS: Metal CALayer может остаться чёрным после hide/show.
+      // Джиг размера окна +1px принуждает Flutter raster thread
+      // выдать новый кадр на обновлённый CAMetalLayer.
+      if (!kIsWeb && Platform.isMacOS) {
+        try {
+          final sz = await windowManager.getSize();
+          await windowManager.setSize(Size(sz.width + 1, sz.height));
+          await Future.delayed(const Duration(milliseconds: 50));
+          await windowManager.setSize(sz);
+        } catch (_) {}
+      }
       WidgetsBinding.instance.scheduleFrame();
       if (mounted) setState(() {});
     } catch (e) {

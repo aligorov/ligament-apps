@@ -54,6 +54,8 @@ class MainFlutterWindow: NSWindow {
       self.contentView?.needsDisplay = true
       self.contentViewController?.view.needsLayout = true
       self.contentViewController?.view.layer?.setNeedsDisplay()
+      self.contentViewController?.view.displayIfNeeded()
+      self.displayIfNeeded()
     }
   }
 }
