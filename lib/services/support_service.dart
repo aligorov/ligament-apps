@@ -1697,6 +1697,11 @@ class SupportService extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('support_service: ошибка выполнения ввода: $e');
+      final now = DateTime.now();
+      if (now.difference(_lastInputError).inSeconds >= 3) {
+        _lastInputError = now;
+        _sendSignalOrData({'type': 'input_error', 'command': type, 'reason': e.toString()});
+      }
     }
   }
 
@@ -1716,6 +1721,7 @@ class SupportService extends ChangeNotifier {
         } catch (_) {}
       } else {
         InputInjector.instance.setInputBlocked(false);
+        InputInjector.instance.releaseAllPressed();
       }
       _setWakelock(false);
 
@@ -1806,6 +1812,7 @@ class SupportService extends ChangeNotifier {
         } catch (_) {}
       }
       InputInjector.instance.setInputBlocked(false);
+      InputInjector.instance.releaseAllPressed();
     }
   }
 

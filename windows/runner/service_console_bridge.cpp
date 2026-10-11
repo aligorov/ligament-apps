@@ -170,6 +170,11 @@ WORD VirtualKey(const EncodableMap& input) {
 }
 }  // namespace
 
+struct QueuedInput {
+  EncodableMap input;
+  std::shared_ptr<std::promise<bool>> done;
+};
+
 class ServiceConsoleBridge::InputWorker {
  public:
   InputWorker() : deadline_(Clock::now() + std::chrono::seconds(60)), thread_([this] { Run(); }) {}
@@ -180,21 +185,35 @@ class ServiceConsoleBridge::InputWorker {
       queue_.clear();
     }
     ready_.notify_one();
-    thread_.join();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+    if (winsta_) {
+      CloseWindowStation(winsta_);
+      winsta_ = nullptr;
+    }
   }
   void Lease(int64_t ms) {
     std::lock_guard<std::mutex> lock(mutex_);
     deadline_ = Clock::now() + std::chrono::milliseconds(std::clamp<int64_t>(ms, 0, 65000));
     ready_.notify_one();
   }
-  void SendMouse(DWORD flags, DWORD data = 0) {
-    ClipCursor(nullptr);
-    mouse_event(flags, 0, 0, data, 0);
+  bool SendMouse(DWORD flags, DWORD data = 0, LONG dx = 0, LONG dy = 0) {
+    if (flags & MOUSEEVENTF_MOVE) {
+      ClipCursor(nullptr);
+    }
     INPUT input{};
     input.type = INPUT_MOUSE;
+    input.mi.dx = dx;
+    input.mi.dy = dy;
     input.mi.dwFlags = flags;
     input.mi.mouseData = data;
-    SendInput(1, &input, sizeof(input));
+    if (SendInput(1, &input, sizeof(input)) == 1) {
+      return true;
+    }
+    // Fallback if SendInput failed (e.g. UIPI or desktop restriction)
+    mouse_event(flags, dx, dy, data, 0);
+    return true;
   }
   void Release() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -209,19 +228,29 @@ class ServiceConsoleBridge::InputWorker {
       "click", "wheel", "mouse_wheel", "key_down", "key_up", "hotkey", "text_input", "block_input", "clipboard_probe"};
     if (!allowed.count(type)) return false;
     if (type == "text_input" && String(input, "text").size() > 16384) return false;
+    const auto* ack_value = Find(input, "ack");
+    const auto* ack = ack_value ? std::get_if<bool>(ack_value) : nullptr;
+    auto done = (ack && *ack) ? std::make_shared<std::promise<bool>>() : nullptr;
+    auto completion = done ? done->get_future() : std::future<bool>();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (stopped_) return false;
       deadline_ = Clock::now() + std::chrono::seconds(60);
-      if (type == "mouse_move" && !queue_.empty() && String(queue_.back(), "type") == type) {
-        queue_.back() = input;
+      if (type == "mouse_move" && !done && !queue_.empty() && !queue_.back().done && String(queue_.back().input, "type") == type) {
+        queue_.back().input = input;
       } else {
         if (queue_.size() >= 512) { queue_.clear(); release_ = true; ready_.notify_one(); return false; }
-        queue_.push_back(input);
+        queue_.push_back({input, done});
       }
       ready_.notify_one();
     }
-    return true;
+    if (!done) return true;
+    try {
+      if (completion.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready) {
+        return completion.get();
+      }
+    } catch (...) {}
+    return false;
   }
  private:
   void ReleasePressed(bool unblock = true) {
@@ -232,15 +261,18 @@ class ServiceConsoleBridge::InputWorker {
     }
     for (WORD key : keys_) SendKey(key, false);
     for (WORD key : unicode_) SendKey(key, false, true);
-    if (buttons_ & 1) SendMouse(MOUSEEVENTF_LEFTUP);
-    if (buttons_ & 2) SendMouse(MOUSEEVENTF_MIDDLEUP);
-    if (buttons_ & 4) SendMouse(MOUSEEVENTF_RIGHTUP);
+    const DWORD base = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    if (buttons_ & 1) SendMouse(MOUSEEVENTF_LEFTUP | base, 0, last_dx_, last_dy_);
+    if (buttons_ & 2) SendMouse(MOUSEEVENTF_MIDDLEUP | base, 0, last_dx_, last_dy_);
+    if (buttons_ & 4) SendMouse(MOUSEEVENTF_RIGHTUP | base, 0, last_dx_, last_dy_);
     keys_.clear(); unicode_.clear(); unicode_keys_.clear(); buttons_ = 0;
   }
   bool AttachInputDesktop() {
-    HWINSTA winsta = OpenWindowStationW(L"winsta0", FALSE, MAXIMUM_ALLOWED);
-    if (winsta) {
-      SetProcessWindowStation(winsta);
+    if (!winsta_) {
+      winsta_ = OpenWindowStationW(L"winsta0", FALSE, MAXIMUM_ALLOWED);
+      if (winsta_) {
+        SetProcessWindowStation(winsta_);
+      }
     }
     HDESK current = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
     if (!current) {
@@ -254,7 +286,10 @@ class ServiceConsoleBridge::InputWorker {
     if (name.empty()) { CloseDesktop(current); return false; }
     if (desktop_ && name == desktop_name_) { CloseDesktop(current); return true; }
     ReleasePressed();
-    SetThreadDesktop(current);
+    if (!SetThreadDesktop(current)) {
+      CloseDesktop(current);
+      return false;
+    }
     if (desktop_ && desktop_ != original_desktop_) CloseDesktop(desktop_);
     desktop_ = current;
     desktop_name_ = name;
@@ -300,28 +335,37 @@ class ServiceConsoleBridge::InputWorker {
         found_rect = true;
       }
     }
-    if (width <= 1 || height <= 1) {
-      x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-      y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-      width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-      height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (vw <= 1 || vh <= 1) {
+      vx = 0; vy = 0;
+      vw = GetSystemMetrics(SM_CXSCREEN);
+      vh = GetSystemMetrics(SM_CYSCREEN);
+      if (vw <= 1) vw = 1920;
+      if (vh <= 1) vh = 1080;
     }
-    if (width <= 1) width = 1920;
-    if (height <= 1) height = 1080;
+    if (!found_rect || width <= 1 || height <= 1) {
+      x = vx; y = vy; width = vw; height = vh;
+    }
 
     const double nx = std::clamp(Number(input, "x"), 0.0, 1.0);
     const double ny = std::clamp(Number(input, "y"), 0.0, 1.0);
-    const int target_x = x + static_cast<int>(std::round(nx * (width - 1)));
-    const int target_y = y + static_cast<int>(std::round(ny * (height - 1)));
+    const int target_x = x + static_cast<int>(std::round(nx * (width > 1 ? width - 1 : 1)));
+    const int target_y = y + static_cast<int>(std::round(ny * (height > 1 ? height - 1 : 1)));
 
+    // Фикс 1.1.41: снятие клипа перед перемещением
+    ClipCursor(nullptr);
+    // Страховка SetCursorPos до абсолютного хода
     SetCursorPos(target_x, target_y);
-    mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, 0);
 
-    INPUT in{};
-    in.type = INPUT_MOUSE;
-    in.mi.dwFlags = MOUSEEVENTF_MOVE;
-    SendInput(1, &in, sizeof(in));
-    return true;
+    const LONG dx = RemoteMouseAxis(target_x, vx, vw);
+    const LONG dy = RemoteMouseAxis(target_y, vy, vh);
+    last_dx_ = dx;
+    last_dy_ = dy;
+
+    return SendMouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0, dx, dy);
   }
   void Hotkey(const EncodableMap& input) {
     auto action = String(input, "action");
@@ -389,8 +433,15 @@ class ServiceConsoleBridge::InputWorker {
       const int button = std::clamp(static_cast<int>(Number(input, "button")), 0, 2);
       const DWORD down[] = {MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_RIGHTDOWN};
       const DWORD up[] = {MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTUP};
-      if (type != "mouse_up") { SendMouse(down[button]); buttons_ |= 1 << button; }
-      if (type != "mouse_down") { SendMouse(up[button]); buttons_ &= ~(1 << button); }
+      const DWORD base = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+      if (type != "mouse_up") {
+        SendMouse(down[button] | base, 0, last_dx_, last_dy_);
+        buttons_ |= 1 << button;
+      }
+      if (type != "mouse_down") {
+        SendMouse(up[button] | base, 0, last_dx_, last_dy_);
+        buttons_ &= ~(1 << button);
+      }
       return true;
     }
     if (type == "wheel" || type == "mouse_wheel") {
@@ -435,7 +486,7 @@ class ServiceConsoleBridge::InputWorker {
     desktop_ = original_desktop_;
     desktop_name_ = DesktopName(original_desktop_);
     for (;;) {
-      EncodableMap input;
+      QueuedInput q;
       bool release = false;
       {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -447,36 +498,46 @@ class ServiceConsoleBridge::InputWorker {
           queue_.clear();
           deadline_ = Clock::time_point{};
         } else if (!queue_.empty()) {
-          input = std::move(queue_.front());
+          q = std::move(queue_.front());
           queue_.pop_front();
         }
       }
       if (release) ReleasePressed();
-      if (!input.empty()) {
-        AttachInputDesktop();
-        const auto type = String(input, "type");
-        if (type == "block_input") {
-          bool want_blocked = false;
-          if (const auto* value = Find(input, "blocked")) {
-            if (const auto* b = std::get_if<bool>(value)) want_blocked = *b;
-            else if (const auto* i = std::get_if<int32_t>(value)) want_blocked = (*i != 0);
-            else if (const auto* i = std::get_if<int64_t>(value)) want_blocked = (*i != 0);
+      if (!q.input.empty()) {
+        bool ok = AttachInputDesktop();
+        const auto type = String(q.input, "type");
+        if (ok) {
+          if (type == "block_input") {
+            bool want_blocked = false;
+            if (const auto* value = Find(q.input, "blocked")) {
+              if (const auto* b = std::get_if<bool>(value)) want_blocked = *b;
+              else if (const auto* i = std::get_if<int32_t>(value)) want_blocked = (*i != 0);
+              else if (const auto* i = std::get_if<int64_t>(value)) want_blocked = (*i != 0);
+            }
+            ok = SetRemoteMouseBlocked(want_blocked, blocked_);
+          } else {
+            ok = Execute(q.input);
           }
-          SetRemoteMouseBlocked(want_blocked, blocked_);
-        } else {
-          Execute(input);
+        }
+        if (q.done) {
+          try { q.done->set_value(ok); } catch (...) {}
         }
       }
     }
     ReleasePressed();
     if (original_desktop_) SetThreadDesktop(original_desktop_);
     if (desktop_ && desktop_ != original_desktop_) CloseDesktop(desktop_);
+    if (winsta_) {
+      CloseWindowStation(winsta_);
+      winsta_ = nullptr;
+    }
   }
   std::mutex mutex_;
   std::condition_variable ready_;
-  std::deque<EncodableMap> queue_;
+  std::deque<QueuedInput> queue_;
   Clock::time_point deadline_{Clock::now() + std::chrono::seconds(60)};
   bool stopped_ = false, release_ = false;
+  HWINSTA winsta_ = nullptr;
   HDESK original_desktop_ = nullptr, desktop_ = nullptr;
   std::wstring desktop_name_;
   LONG last_dx_ = 0, last_dy_ = 0;

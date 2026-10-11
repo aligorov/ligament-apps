@@ -145,6 +145,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool _isInputBlocked = false;
   bool _isControlEnabled = true;
   MouseClickMode _mouseClickMode = MouseClickMode.left;
+  double? _lastSentNormX;
+  double? _lastSentNormY;
+  int _dataMessageErrorCount = 0;
+  bool _transportErrorBannerVisible = false;
+
+  bool get _isDataChannelActive =>
+      _dataChannel != null &&
+      _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen;
 
   /// Управление готово = управление включено И (DataChannel открыт ИЛИ готов WS signaling / P2P).
   bool get _controlReady =>
@@ -353,10 +361,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _cancelFirstFrameStageTimer();
   }
 
-  /// A-22 (аудит 2026-10-10): безопасное освобождение всех зажатых кнопок мыши и клавиш
+  /// A-22 (аудит 2026-10-10) / A4.2: безопасное освобождение всех зажатых кнопок мыши и клавиш
   void _releaseAllPressedInputs() {
+    final rx = _lastSentNormX ?? 0.5;
+    final ry = _lastSentNormY ?? 0.5;
     for (final btn in _pointerDownButtons.values.toList()) {
-      _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': 0.0, 'y': 0.0});
+      _sendDataMessage({'type': 'mouse_up', 'button': btn, 'x': rx, 'y': ry});
     }
     _pointerDownButtons.clear();
     for (final key in _pressedKeys.toList()) {
@@ -1423,17 +1433,73 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendDataMessage(Map<String, dynamic> msg) {
-    if (_dataChannel != null &&
-        _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+    bool sent = false;
+    if (_isDataChannelActive) {
       try {
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode(msg)));
-        return;
+        sent = true;
       } catch (_) {}
     }
-    // Fallback to signaling channel for full cross-platform / NAT / PWA compatibility
-    try {
-      _sendWsSignal({'type': 'input_control', 'data': msg});
-    } catch (_) {}
+    if (!sent) {
+      // Fallback to signaling channel for full cross-platform / NAT / PWA compatibility
+      try {
+        if (_wsChannel != null) {
+          _sendWsSignal({'type': 'input_control', 'data': msg});
+          sent = true;
+        }
+      } catch (_) {}
+    }
+    if (sent) {
+      if (_dataMessageErrorCount > 0) {
+        _dataMessageErrorCount = 0;
+        if (_transportErrorBannerVisible && mounted) {
+          setState(() => _transportErrorBannerVisible = false);
+        }
+      }
+    } else {
+      _dataMessageErrorCount++;
+      if (_dataMessageErrorCount >= 10 && !_transportErrorBannerVisible && mounted) {
+        setState(() => _transportErrorBannerVisible = true);
+      }
+    }
+  }
+
+  bool _isOutsideVideo(Offset globalPos) {
+    final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return false;
+
+    final localPos = renderBox.globalToLocal(globalPos);
+    final size = renderBox.size;
+    if (size.width <= 0 || size.height <= 0) return false;
+
+    double videoW = _remoteRenderer.videoWidth.toDouble();
+    double videoH = _remoteRenderer.videoHeight.toDouble();
+    if (videoW <= 0) videoW = 1920;
+    if (videoH <= 0) videoH = 1080;
+
+    final containerW = size.width;
+    final containerH = size.height;
+    final videoAspect = videoW / videoH;
+    final containerAspect = containerW / containerH;
+
+    double renderW = containerW;
+    double renderH = containerH;
+    double offsetX = 0.0;
+    double offsetY = 0.0;
+
+    if (_zoomMode == OperatorZoomMode.fit) {
+      if (containerAspect > videoAspect) {
+        renderW = containerH * videoAspect;
+        offsetX = (containerW - renderW) / 2.0;
+      } else {
+        renderH = containerW / videoAspect;
+        offsetY = (containerH - renderH) / 2.0;
+      }
+    }
+
+    final relX = (localPos.dx - offsetX) / renderW;
+    final relY = (localPos.dy - offsetY) / renderH;
+    return relX < 0.0 || relX > 1.0 || relY < 0.0 || relY > 1.0;
   }
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
@@ -1488,6 +1554,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     final normX = relX.clamp(0.0, 1.0);
     final normY = relY.clamp(0.0, 1.0);
+    _lastSentNormX = normX;
+    _lastSentNormY = normY;
 
     if (action == 'move' || action == 'mouse_move') {
       _sendDataMessage({'type': 'mouse_move', 'x': normX, 'y': normY});
@@ -2324,6 +2392,46 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ],
                     ),
 
+                  // Индикатор транспорта (A3.2): DataChannel (P2P) vs WS (Релей)
+                  if (_isConnected)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Tooltip(
+                        message: _isDataChannelActive
+                            ? (strings.isRu
+                                ? 'Канал управления: DataChannel (прямой P2P)'
+                                : 'Control channel: DataChannel (direct P2P)')
+                            : (strings.isRu
+                                ? 'Канал управления: WebSocket (через сервер)'
+                                : 'Control channel: WebSocket (relayed)'),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: _isDataChannelActive
+                                ? const Color(0xFF065F46)
+                                : const Color(0xFF78350F),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: _isDataChannelActive
+                                  ? const Color(0xFF10B981)
+                                  : const Color(0xFFF59E0B),
+                            ),
+                          ),
+                          child: Text(
+                            _isDataChannelActive ? 'P2P' : 'WS',
+                            style: TextStyle(
+                              color: _isDataChannelActive
+                                  ? const Color(0xFF34D399)
+                                  : const Color(0xFFFBBF24),
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
                   // Переключатель управления / просмотра
                   IconButton(
                     icon: Icon(
@@ -2530,14 +2638,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 onPointerDown: (ev) {
                   if (!_controlReady) return;
                   _keyboardFocus.requestFocus();
+                  // A4.3: проверка letterbox до записи кнопки в map
+                  if (_isOutsideVideo(ev.position)) return;
                   final btn = pointerDownButton(ev.buttons, _mouseClickMode == MouseClickMode.right);
                   _pointerDownButtons[ev.pointer] = btn;
                   _sendPointerEvent('mouse_down', ev, btn);
                 },
                 onPointerUp: (ev) {
-                  if (!_controlReady) return;
-                  // M-4: up шлёт кнопку из парного down (в up buttons == 0)
+                  // A4.1: сначала удаляем из map, чтобы не утекало при !_controlReady
                   final btn = _pointerDownButtons.remove(ev.pointer) ?? 0;
+                  if (!_controlReady) return;
                   _sendPointerEvent('mouse_up', ev, btn);
                   if (_mouseClickMode == MouseClickMode.right) {
                     setState(() => _mouseClickMode = MouseClickMode.left);
@@ -2688,29 +2798,135 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                     ),
                                   ],
                                 )
-                              : InteractiveViewer(
-                                  transformationController: _videoTransform,
-                                  panEnabled:
-                                      _zoomMode == OperatorZoomMode.zoomIn,
-                                  scaleEnabled:
-                                      _zoomMode == OperatorZoomMode.zoomIn,
-                                  minScale: 1.0,
-                                  maxScale: 8.0,
-                                  onInteractionEnd: (_) {
-                                    _zoomScale = _videoTransform.value
-                                        .getMaxScaleOnAxis();
-                                  },
-                                  child: MouseRegion(
-                                    cursor: SystemMouseCursors.basic,
-                                    child: Container(
-                                      key: _videoKey,
-                                      child: RTCVideoView(
-                                        _remoteRenderer,
-                                        objectFit: RTCVideoViewObjectFit
-                                            .RTCVideoViewObjectFitContain,
+                              : Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: InteractiveViewer(
+                                        transformationController: _videoTransform,
+                                        panEnabled:
+                                            _zoomMode == OperatorZoomMode.zoomIn,
+                                        scaleEnabled:
+                                            _zoomMode == OperatorZoomMode.zoomIn,
+                                        minScale: 1.0,
+                                        maxScale: 8.0,
+                                        onInteractionEnd: (_) {
+                                          _zoomScale = _videoTransform.value
+                                              .getMaxScaleOnAxis();
+                                        },
+                                        child: MouseRegion(
+                                          cursor: SystemMouseCursors.basic,
+                                          child: Container(
+                                            key: _videoKey,
+                                            child: RTCVideoView(
+                                              _remoteRenderer,
+                                              objectFit: RTCVideoViewObjectFit
+                                                  .RTCVideoViewObjectFitContain,
+                                            ),
+                                          ),
+                                        ),
                                       ),
                                     ),
-                                  ),
+                                    // Бейдж «только просмотр» (A3.3)
+                                    if (_isViewOnlySession || !_isControlEnabled)
+                                      Positioned(
+                                        top: 10,
+                                        right: 10,
+                                        child: IgnorePointer(
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 10, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xCC0F172A),
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                              border: Border.all(
+                                                  color: const Color(0xFFF59E0B)),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.visibility,
+                                                    size: 14,
+                                                    color: Color(0xFFF59E0B)),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  strings.isRu
+                                                      ? 'Только просмотр'
+                                                      : 'View Only',
+                                                  style: const TextStyle(
+                                                    color: Color(0xFFF59E0B),
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    // Баннер недоступности канала управления (A3.1)
+                                    if (_transportErrorBannerVisible)
+                                      Positioned(
+                                        top: 10,
+                                        left: 10,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 10, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xEE7F1D1D),
+                                            borderRadius:
+                                                BorderRadius.circular(6),
+                                            border: Border.all(
+                                                color: const Color(0xFFEF4444)),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(
+                                                  Icons.warning_amber_rounded,
+                                                  size: 16,
+                                                  color: Colors.white),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                strings.isRu
+                                                    ? 'Канал управления не отвечает'
+                                                    : 'Control channel unreachable',
+                                                style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 11,
+                                                    fontWeight:
+                                                        FontWeight.bold),
+                                              ),
+                                              const SizedBox(width: 10),
+                                              GestureDetector(
+                                                onTap: () {
+                                                  setState(() {
+                                                    _dataMessageErrorCount = 0;
+                                                    _transportErrorBannerVisible =
+                                                        false;
+                                                  });
+                                                  _sendWsSignal(
+                                                      {'type': 'ping'});
+                                                },
+                                                child: Text(
+                                                  strings.isRu
+                                                      ? 'Повторить'
+                                                      : 'Retry',
+                                                  style: const TextStyle(
+                                                    color: Color(0xFFFDE047),
+                                                    fontSize: 11,
+                                                    fontWeight:
+                                                        FontWeight.bold,
+                                                    decoration: TextDecoration
+                                                        .underline,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 ),
                 ),
               ),

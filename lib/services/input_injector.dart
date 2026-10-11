@@ -497,11 +497,54 @@ class InputInjector {
       final (px, py) = absoluteFromNorm(normX, normY);
       _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
+      final virt = getVirtualDesktopRect();
+      final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
+      final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
       const mouseEventfMove = 0x0001;
-      _winMouseEvent?.call(mouseEventfMove, 0, 0, 0, 0);
+      const mouseEventfAbsolute = 0x8000;
+      const mouseEventfVirtualDesk = 0x4000;
+      _winMouseEvent?.call(mouseEventfMove | mouseEventfAbsolute | mouseEventfVirtualDesk, normVx, normVy, 0, 0);
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);
       Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
+    }
+  }
+
+  final Set<int> _pressedMouseButtons = <int>{};
+  final Set<int> _pressedWinKeyCodes = <int>{};
+  final Set<int> _pressedMacKeyCodes = <int>{};
+  double _lastNormX = 0.5;
+  double _lastNormY = 0.5;
+
+  /// Безопасный сброс всех зажатых кнопок мыши и клавиш (A2.3)
+  void releaseAllPressed() {
+    if (kIsWeb) return;
+    for (final btn in _pressedMouseButtons.toList()) {
+      mouseAction(action: 'up', button: btn, normX: _lastNormX, normY: _lastNormY);
+    }
+    _pressedMouseButtons.clear();
+    if (Platform.isWindows) {
+      for (final vk in _pressedWinKeyCodes.toList()) {
+        if (_nativeSendVk != null) {
+          _nativeSendVk!(vk, false);
+        } else {
+          _winKeybdEvent?.call(vk, 0, 0x0002, 0);
+        }
+      }
+      _pressedWinKeyCodes.clear();
+      _winClipCursor?.call(ffi.Pointer.fromAddress(0));
+    } else if (Platform.isMacOS) {
+      for (final code in _pressedMacKeyCodes.toList()) {
+        if (_cgEventCreateKeyboardEvent != null && _cgEventPost != null && _cfRelease != null) {
+          final ev = _cgEventCreateKeyboardEvent!(ffi.Pointer.fromAddress(0), code, false);
+          if (ev.address != 0) {
+            _cgEventPost!(0, ev);
+            _cgEventPost!(1, ev);
+            _cfRelease!(ev);
+          }
+        }
+      }
+      _pressedMacKeyCodes.clear();
     }
   }
 
@@ -513,6 +556,13 @@ class InputInjector {
     required double normY,
   }) {
     if (kIsWeb) return;
+    _lastNormX = normX;
+    _lastNormY = normY;
+    if (action == 'down') {
+      _pressedMouseButtons.add(button);
+    } else if (action == 'up') {
+      _pressedMouseButtons.remove(button);
+    }
 
     if (Platform.isMacOS) {
       final (px, py) = absoluteFromNorm(normX, normY);
@@ -548,6 +598,12 @@ class InputInjector {
       final (px, py) = absoluteFromNorm(normX, normY);
       _winClipCursor?.call(ffi.Pointer.fromAddress(0));
       _winSetCursorPos?.call(px, py);
+      final virt = getVirtualDesktopRect();
+      final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
+      final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
+      const mouseEventfAbsolute = 0x8000;
+      const mouseEventfVirtualDesk = 0x4000;
+      const baseFlags = mouseEventfAbsolute | mouseEventfVirtualDesk;
 
       const leftDown = 0x0002;
       const leftUp = 0x0004;
@@ -568,12 +624,12 @@ class InputInjector {
       }
 
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
       } else {
-        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
-        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, 0, 0);
+        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, 0, 0);
       }
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY);
@@ -641,6 +697,11 @@ class InputInjector {
     if (Platform.isMacOS) {
       final macCode = _mapToMacKeyCode(key, keyCode);
       if (macCode != null && _cgEventCreateKeyboardEvent != null && _cgEventPost != null && _cfRelease != null) {
+        if (isDown) {
+          _pressedMacKeyCodes.add(macCode);
+        } else {
+          _pressedMacKeyCodes.remove(macCode);
+        }
         final ev = _cgEventCreateKeyboardEvent!(ffi.Pointer.fromAddress(0), macCode, isDown);
         if (ev.address != 0) {
           _cgEventPost!(0, ev); // 0 = kCGHIDEventTap
@@ -661,6 +722,11 @@ class InputInjector {
 
       final winCode = _mapToWinKeyCode(key, keyCode);
       if (winCode != 0) {
+        if (isDown) {
+          _pressedWinKeyCodes.add(winCode);
+        } else {
+          _pressedWinKeyCodes.remove(winCode);
+        }
         if (_nativeSendVk != null) {
           _nativeSendVk!(winCode, isDown);
         } else {
