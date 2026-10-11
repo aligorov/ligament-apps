@@ -74,6 +74,10 @@ void main() {
       expect(SupportService.serviceHostCommandAllowed('text_input'), isTrue);
       expect(SupportService.serviceHostCommandAllowed('hotkey'), isTrue);
       expect(SupportService.serviceHostCommandAllowed('block_input'), isTrue);
+      expect(SupportService.serviceHostCommandAllowed('file_start'), isTrue);
+      expect(SupportService.serviceHostCommandAllowed('file_chunk'), isTrue);
+      expect(SupportService.serviceHostCommandAllowed('file_end'), isTrue);
+      expect(SupportService.serviceHostCommandAllowed('file_reject'), isTrue);
     });
 
     test('serviceHostCommandAllowed rejects arbitrary or dangerous commands', () {

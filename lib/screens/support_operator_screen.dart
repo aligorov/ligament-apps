@@ -446,14 +446,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool get _isViewOnlySession =>
       widget.sessionData['access_mode']?.toString() == 'view_only';
 
-  bool get _isServiceHostSession =>
-      widget.sessionData['service_host'] == true ||
-      widget.sessionData['is_service'] == true ||
-      widget.sessionData['serviceHost'] == true ||
-      widget.sessionData['headless'] == true;
-
   bool get _canSendFiles =>
-      !_isServiceHostSession &&
       !_isViewOnlySession &&
       _isDataChannelActive &&
       !_isSendingFile;
@@ -2787,30 +2780,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 ],
               ),
             ),
-            if (_isServiceHostSession)
-              Container(
-                margin: const EdgeInsets.all(12),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEF4444).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFEF4444)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.info_outline,
-                        color: Color(0xFFEF4444), size: 18),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        strings.consoleFilesDisabledService,
-                        style: const TextStyle(color: Colors.white, fontSize: 11),
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else if (_isViewOnlySession)
+            if (_isViewOnlySession)
               Container(
                 margin: const EdgeInsets.all(12),
                 padding: const EdgeInsets.all(10),

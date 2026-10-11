@@ -20,15 +20,16 @@ void main() {
       'block_input',
       'text_input',
       'clipboard_set',
-      'clipboard_get'
+      'clipboard_get',
+      'file_start',
+      'file_chunk',
+      'file_end',
+      'file_reject',
     ]) {
       expect(SupportService.serviceHostCommandAllowed(command), isTrue,
           reason: command);
     }
     for (final command in [
-      'file_start',
-      'file_chunk',
-      'file_end',
       'shell',
       'chat_message'
     ]) {

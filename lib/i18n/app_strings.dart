@@ -342,8 +342,8 @@ class AppStrings {
   String get consoleFileAlreadyTransferring => isRu ? 'Уже выполняется передача другого файла' : 'Another file transfer is already in progress';
   String get consoleFilesDestinationHint => isRu ? 'Файлы сохраняются в Загрузки → LigamentSupport' : 'Files are saved to Downloads → LigamentSupport';
   String get consoleFileSending => isRu ? 'Отправка...' : 'Sending...';
-  String get consoleFileWaitingAck => isRu ? 'Ожидание подтверждения от ПК...' : 'Waiting for confirmation from PC...';
-  String get consoleFileSavedSuccess => isRu ? 'Сохранено на удалённом ПК ✅' : 'Saved on remote PC ✅';
+  String get consoleFileWaitingAck => isRu ? 'Сохранение файла на ПК...' : 'Saving file on remote PC...';
+  String get consoleFileSavedSuccess => isRu ? 'Файл сохранён на ПК ✅' : 'File saved on remote PC ✅';
   String get consoleFileTransferFailed => isRu ? 'Ошибка передачи' : 'Transfer failed';
   String get consoleFileCancelled => isRu ? 'Передача отменена' : 'Transfer cancelled';
   String get consoleFileCancelTooltip => isRu ? 'Отменить передачу' : 'Cancel transfer';

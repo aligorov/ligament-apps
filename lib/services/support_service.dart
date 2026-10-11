@@ -249,6 +249,7 @@ class SupportService extends ChangeNotifier {
     'block_input', 'hotkey', 'text_input', 'clipboard_set', 'clipboard_get',
     'session_ended', 'support_ended', 'console_end',
     'video_quality', 'reboot',
+    'file_start', 'file_chunk', 'file_end', 'file_reject',
   }.contains(type);
 
   int _captureEpoch = 0;
@@ -678,8 +679,48 @@ class SupportService extends ChangeNotifier {
       return '${appDir.path}${Platform.pathSeparator}LigamentSupport';
     }
     if (Platform.isWindows) {
-      final profile = Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
-      return '$profile\\Downloads\\LigamentSupport';
+      final profile = Platform.environment['USERPROFILE'] ?? '';
+      final isSystemProfile = profile.isEmpty ||
+          profile.toLowerCase().contains('systemprofile') ||
+          profile.toLowerCase().startsWith('c:\\windows');
+
+      if (isSystemProfile) {
+        // Процесс запущен под учетной записью SYSTEM (фоновая служба консоли).
+        // Проверяем наличие профилей реальных пользователей в C:\Users\
+        try {
+          final usersDir = Directory('C:\\Users');
+          if (usersDir.existsSync()) {
+            final userFolders = usersDir
+                .listSync()
+                .whereType<Directory>()
+                .map((d) => d.path)
+                .where((p) {
+                  final name = p.split(Platform.pathSeparator).last.toLowerCase();
+                  return name != 'default' &&
+                      name != 'default user' &&
+                      name != 'public' &&
+                      name != 'all users';
+                })
+                .toList();
+
+            for (final userPath in userFolders) {
+              final dlDir = Directory('$userPath\\Downloads');
+              if (dlDir.existsSync()) {
+                return '$userPath\\Downloads\\LigamentSupport';
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('support_service: ошибка поиска папки Downloads пользователя: $e');
+        }
+
+        // Надежный fallback для службы: Общие загрузки (Public Downloads)
+        final publicDir = Platform.environment['PUBLIC'] ?? 'C:\\Users\\Public';
+        return '$publicDir\\Downloads\\LigamentSupport';
+      }
+
+      final targetProfile = profile.isNotEmpty ? profile : 'C:\\Users\\Default';
+      return '$targetProfile\\Downloads\\LigamentSupport';
     }
     if (Platform.isMacOS || Platform.isLinux) {
       final home = Platform.environment['HOME'] ?? '/tmp';
