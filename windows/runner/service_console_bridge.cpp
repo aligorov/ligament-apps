@@ -1,6 +1,16 @@
 #include "service_console_bridge.h"
 #include "remote_mouse_input.h"
 
+// Инцидент 2026-10-12 (SOS win-win): BlockInput в сервисном пути глотал
+// и инъекции ДРУГИХ процессов (а Ctrl+Alt+Del не блокирует никогда) —
+// оператор терял управление при включённой блокировке. LL-хуки
+// (input_block.cpp, экспорт того же exe) гасят только физический ввод и
+// пропускают инъекции (LLKHF/LLMHF_INJECTED) — семантика GUI-пути.
+extern "C" {
+__declspec(dllexport) int ligament_install_input_block(void);
+__declspec(dllexport) int ligament_remove_input_block(void);
+}
+
 #include <windows.h>
 #include <flutter/standard_method_codec.h>
 
@@ -263,7 +273,8 @@ class ServiceConsoleBridge::InputWorker {
   void ReleasePressed(bool unblock = true) {
     if (unblock && blocked_) {
       ClipCursor(nullptr);
-      BlockInput(FALSE);
+      BlockInput(FALSE); // шлейф старого пути; безвреден
+      ligament_remove_input_block();
       blocked_ = false;
     }
     for (WORD key : keys_) SendKey(key, false);
@@ -563,7 +574,10 @@ class ServiceConsoleBridge::InputWorker {
               else if (const auto* i = std::get_if<int32_t>(value)) want_blocked = (*i != 0);
               else if (const auto* i = std::get_if<int64_t>(value)) want_blocked = (*i != 0);
             }
-            ok = SetRemoteMouseBlocked(want_blocked, blocked_);
+            ok = want_blocked
+                     ? (ligament_install_input_block() == 0)
+                     : (ligament_remove_input_block() == 0);
+            if (ok) blocked_ = want_blocked;
           } else {
             ok = Execute(q.input);
           }

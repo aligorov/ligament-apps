@@ -134,6 +134,11 @@ class InputInjector {
   void Function(int, bool)? _nativeSendVk;
   int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
       _nativeGetMonitorRectByIndex;
+  // Инцидент 2026-10-12 («перепутаны дисплеи»): rect по индексу УСТРОЙСТВА
+  // (EnumDisplayDevices) — в этом порядке desktopCapturer нумерует "screen:N";
+  // порядок EnumDisplayMonitors на 2+ мониторах иной.
+  int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
+      _nativeGetMonitorRectByDeviceIndex;
 
   void _initMacCG() {
     if (kIsWeb || !Platform.isMacOS) return;
@@ -236,6 +241,10 @@ class InputInjector {
             ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
             int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
             'ligament_get_monitor_rect_by_index');
+        _nativeGetMonitorRectByDeviceIndex = exe.lookupFunction<
+            ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
+            int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
+            'ligament_get_monitor_rect_by_device_index');
       } catch (e) {
         debugPrint('input_injector: нативные хелперы ввода/блокировки недоступны: $e');
       }
@@ -421,6 +430,28 @@ class InputInjector {
           // невалидный handle
         } finally {
           calloc.free(mi);
+        }
+      }
+
+      // Инцидент 2026-10-12: сначала индекс УСТРОЙСТВА — именно так
+      // нумерует источники desktopCapturer ("screen:N" = EnumDisplayDevices).
+      if (_nativeGetMonitorRectByDeviceIndex != null && handles.isNotEmpty) {
+        final l = calloc<ffi.Int32>();
+        final t = calloc<ffi.Int32>();
+        final r = calloc<ffi.Int32>();
+        final b = calloc<ffi.Int32>();
+        try {
+          final rc = _nativeGetMonitorRectByDeviceIndex!(handles.first, l, t, r, b);
+          if (rc == 0 && r.value > l.value && b.value > t.value) {
+            return ScreenRect.fromLTRB(l.value, t.value, r.value, b.value);
+          }
+        } catch (_) {
+          // фолбэк ниже
+        } finally {
+          calloc.free(l);
+          calloc.free(t);
+          calloc.free(r);
+          calloc.free(b);
         }
       }
 

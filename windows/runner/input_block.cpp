@@ -13,6 +13,7 @@
 // управление машиной.
 
 #include <windows.h>
+#include <wchar.h>
 #include <atomic>
 
 namespace {
@@ -46,6 +47,12 @@ LRESULT CALLBACK MouseLLProc(int n_code, WPARAM w_param, LPARAM l_param) {
 }
 
 DWORD WINAPI InputBlockThread(LPVOID) {
+  // Инцидент 2026-10-12 (SOS win-win): без приоритета хук-поток голодал
+  // под нагрузкой (видео-декод рядом) — LowLevelHooksTimeout выбрасывал
+  // ВСЁ: и физический ввод пользователя, и инъекции оператора; Ctrl+Alt+Del
+  // (SAS) проходил мимо хуков. Высший приоритет — proc тривиален (atomic +
+  // return), задержек не даёт.
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
   g_kbd_hook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardLLProc, nullptr, 0);
   g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, MouseLLProc, nullptr, 0);
   if (g_ready != nullptr) SetEvent(g_ready);
@@ -139,6 +146,45 @@ __declspec(dllexport) int ligament_get_monitor_rect_by_index(int index, int* out
     return 0;
   }
   return -1;
+}
+
+// Инцидент 2026-10-12 (SOS win-win, «перепутаны дисплеи»): id источника
+// desktopCapturer ("screen:N") нумеруется в порядке EnumDisplayDevices,
+// а прежний резолвинг шёл по индексу EnumDisplayMonitors — порядки
+// различаются на 2+ мониторах, мышь оператора попадала на соседний экран.
+// Здесь: EnumDisplayDevices(N) → DeviceName → ищем HMONITOR с тем же
+// именем (MONITORINFOEXW.szDevice) → честный rect виртуального стола.
+__declspec(dllexport) int ligament_get_monitor_rect_by_device_index(int device_index, int* out_l, int* out_t, int* out_r, int* out_b) {
+  if (!out_l || !out_t || !out_r || !out_b) return -1;
+  DISPLAY_DEVICEW dd{};
+  dd.cb = sizeof(dd);
+  if (!EnumDisplayDevicesW(nullptr, static_cast<DWORD>(device_index), &dd, 0)) return -1;
+  if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) return -1;
+
+  struct Ctx {
+    const wchar_t* want;
+    RECT rect;
+    bool found;
+  } ctx{dd.DeviceName, {}, false};
+
+  EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR hMon, HDC, LPRECT, LPARAM data) -> BOOL {
+    auto* c = reinterpret_cast<Ctx*>(data);
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(hMon, &mi) && wcscmp(mi.szDevice, c->want) == 0) {
+      c->rect = mi.rcMonitor;
+      c->found = true;
+      return FALSE;
+    }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&ctx));
+
+  if (!ctx.found) return -1;
+  *out_l = ctx.rect.left;
+  *out_t = ctx.rect.top;
+  *out_r = ctx.rect.right;
+  *out_b = ctx.rect.bottom;
+  return 0;
 }
 
 } // extern "C"
