@@ -23,7 +23,8 @@ class NotificationPopupDialog extends StatelessWidget {
         notification['subject']?.toString() ??
         (isRu ? 'Новое уведомление' : 'New Notification');
     final body = notification['body']?.toString() ?? '';
-    final source = (notification['source']?.toString() ?? 'system').toLowerCase();
+    final topic = (notification['topic']?.toString() ?? notification['source']?.toString() ?? 'system').trim();
+    final imageUrl = (notification['image_url']?.toString() ?? notification['image']?.toString() ?? '').trim();
 
     DateTime? createdAt;
     final rawCreated = notification['created_at']?.toString() ?? notification['timestamp']?.toString();
@@ -37,26 +38,43 @@ class NotificationPopupDialog extends StatelessWidget {
     Color iconColor = const Color(0xFF38BDF8);
     Color iconBg = const Color(0xFF0284C7).withValues(alpha: 0.2);
 
-    if (source.contains('radius')) {
+    final normTopic = topic.toLowerCase();
+    if (normTopic.contains('radius')) {
       iconData = Icons.router_outlined;
       iconColor = const Color(0xFFF59E0B);
       iconBg = const Color(0xFFF59E0B).withValues(alpha: 0.2);
-    } else if (source.contains('tg') || source.contains('telegram')) {
+    } else if (normTopic.contains('tg') || normTopic.contains('telegram')) {
       iconData = Icons.send_rounded;
       iconColor = const Color(0xFF38BDF8);
       iconBg = const Color(0xFF0284C7).withValues(alpha: 0.2);
-    } else if (source.contains('email') || source.contains('mail')) {
+    } else if (normTopic.contains('ha') || normTopic.contains('homeassistant')) {
+      iconData = Icons.home_rounded;
+      iconColor = const Color(0xFF06B6D4);
+      iconBg = const Color(0xFF06B6D4).withValues(alpha: 0.2);
+    } else if (normTopic.contains('mikrotik')) {
+      iconData = Icons.dns_rounded;
+      iconColor = const Color(0xFF3B82F6);
+      iconBg = const Color(0xFF3B82F6).withValues(alpha: 0.2);
+    } else if (normTopic.contains('frigate') || normTopic.contains('cam')) {
+      iconData = Icons.videocam_rounded;
+      iconColor = const Color(0xFFF97316);
+      iconBg = const Color(0xFFF97316).withValues(alpha: 0.2);
+    } else if (normTopic.contains('email') || normTopic.contains('mail')) {
       iconData = Icons.mail_outline_rounded;
       iconColor = const Color(0xFFA78BFA);
       iconBg = const Color(0xFF8B5CF6).withValues(alpha: 0.2);
-    } else if (source.contains('app') || source.contains('push')) {
+    } else if (normTopic.contains('app') || normTopic.contains('push')) {
       iconData = Icons.smartphone_rounded;
       iconColor = const Color(0xFF10B981);
       iconBg = const Color(0xFF10B981).withValues(alpha: 0.2);
-    } else if (source.contains('security') || source.contains('alert')) {
+    } else if (normTopic.contains('security') || normTopic.contains('alert')) {
       iconData = Icons.security_rounded;
       iconColor = const Color(0xFFEF4444);
       iconBg = const Color(0xFFEF4444).withValues(alpha: 0.2);
+    } else if (normTopic != 'system') {
+      iconData = Icons.label_important_outline_rounded;
+      iconColor = const Color(0xFFA855F7);
+      iconBg = const Color(0xFFA855F7).withValues(alpha: 0.2);
     }
 
     return AlertDialog(
@@ -105,7 +123,7 @@ class NotificationPopupDialog extends StatelessWidget {
                         border: Border.all(color: const Color(0xFF334155)),
                       ),
                       child: Text(
-                        source.toUpperCase(),
+                        topic.toUpperCase(),
                         style: TextStyle(
                           color: iconColor,
                           fontSize: 9,
@@ -145,6 +163,52 @@ class NotificationPopupDialog extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Divider(color: Color(0xFF334155), height: 16),
+              if (imageUrl.isNotEmpty) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 280),
+                    child: Image.network(
+                      imageUrl,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      errorBuilder: (ctx, err, stack) => Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFF334155)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.broken_image_outlined, size: 18, color: Color(0xFF64748B)),
+                            const SizedBox(width: 8),
+                            Text(
+                              isRu ? 'Не удалось загрузить изображение' : 'Image load failed',
+                              style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      loadingBuilder: (ctx, child, progress) {
+                        if (progress == null) return child;
+                        return Container(
+                          height: 140,
+                          color: const Color(0xFF0F172A),
+                          child: const Center(
+                            child: SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF38BDF8)),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(14),

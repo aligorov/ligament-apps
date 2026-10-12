@@ -102,7 +102,7 @@ void main() {
       expect(find.text('Центр уведомлений'), findsOneWidget);
       expect(find.text('Успешный вход через RADIUS'), findsOneWidget);
       expect(find.text('Пользователь test_user вошел в корпоративную сеть'), findsOneWidget);
-      expect(find.text('RADIUS'), findsOneWidget);
+      expect(find.text('RADIUS'), findsNWidgets(2)); // Чип фильтра и бейдж карточки
       expect(find.byIcon(Icons.done_all), findsOneWidget);
     });
   });

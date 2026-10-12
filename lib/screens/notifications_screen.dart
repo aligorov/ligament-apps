@@ -32,19 +32,37 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final allNotifications = auth.notifications;
     final unreadCount = auth.unreadNotificationsCount;
 
+    // Динамический сбор уникальных тем и подсчет сообщений
+    String getTopic(Map<String, dynamic> item) {
+      final t = (item['topic']?.toString() ?? item['source']?.toString() ?? 'system').trim();
+      return t.isEmpty ? 'system' : t;
+    }
+
+    String topicLabel(String key) {
+      final lower = key.toLowerCase();
+      if (lower == 'security') return isRu ? 'Безопасность' : 'Security';
+      if (lower == 'radius') return 'RADIUS';
+      if (lower == 'tg' || lower == 'telegram') return 'Telegram';
+      if (lower == 'ha' || lower == 'homeassistant') return 'Home Assistant';
+      if (lower == 'mikrotik') return 'MikroTik';
+      if (lower == 'frigate') return 'Frigate';
+      if (lower == 'system') return isRu ? 'Системные' : 'System';
+      return key.toUpperCase();
+    }
+
+    final Map<String, int> topicCounts = {};
+    final Map<String, String> topicLabels = {};
+    for (final item in allNotifications) {
+      final key = getTopic(item);
+      final lower = key.toLowerCase();
+      topicCounts[lower] = (topicCounts[lower] ?? 0) + 1;
+      topicLabels.putIfAbsent(lower, () => topicLabel(key));
+    }
+
     // Фильтрация
     final filtered = allNotifications.where((item) {
-      final source = (item['source']?.toString() ?? 'system').toLowerCase();
-      if (_filter == 'security' && !source.contains('security') && !source.contains('alert')) {
-        return false;
-      }
-      if (_filter == 'radius' && !source.contains('radius')) {
-        return false;
-      }
-      if (_filter == 'telegram' && !source.contains('tg') && !source.contains('telegram')) {
-        return false;
-      }
-      if (_filter == 'system' && (source.contains('radius') || source.contains('tg') || source.contains('telegram') || source.contains('security') || source.contains('alert'))) {
+      final itemTopic = getTopic(item).toLowerCase();
+      if (_filter != 'all' && itemTopic != _filter.toLowerCase()) {
         return false;
       }
 
@@ -164,7 +182,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 ),
               ),
             ),
-            // Фильтры по категориям
+            // Динамические фильтры по темам сообщений
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               color: const Color(0xFF1E293B).withValues(alpha: 0.6),
@@ -173,39 +191,16 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 child: Row(
                   children: [
                     _filterChip('all', isRu ? 'Все' : 'All', allNotifications.length),
-                    const SizedBox(width: 8),
-                    _filterChip(
-                      'security',
-                      isRu ? 'Безопасность' : 'Security',
-                      allNotifications.where((n) {
-                        final s = (n['source']?.toString() ?? '').toLowerCase();
-                        return s.contains('security') || s.contains('alert');
-                      }).length,
-                    ),
-                    const SizedBox(width: 8),
-                    _filterChip(
-                      'radius',
-                      'RADIUS',
-                      allNotifications.where((n) => (n['source']?.toString() ?? '').toLowerCase().contains('radius')).length,
-                    ),
-                    const SizedBox(width: 8),
-                    _filterChip(
-                      'telegram',
-                      'Telegram',
-                      allNotifications.where((n) {
-                        final s = (n['source']?.toString() ?? '').toLowerCase();
-                        return s.contains('tg') || s.contains('telegram');
-                      }).length,
-                    ),
-                    const SizedBox(width: 8),
-                    _filterChip(
-                      'system',
-                      isRu ? 'Системные' : 'System',
-                      allNotifications.where((n) {
-                        final s = (n['source']?.toString() ?? '').toLowerCase();
-                        return !s.contains('radius') && !s.contains('tg') && !s.contains('telegram');
-                      }).length,
-                    ),
+                    ...topicCounts.keys.map((k) {
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: _filterChip(
+                          k,
+                          topicLabels[k] ?? k.toUpperCase(),
+                          topicCounts[k] ?? 0,
+                        ),
+                      );
+                    }),
                   ],
                 ),
               ),
@@ -334,7 +329,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final isRead = item['is_read'] == true || item['read_at'] != null;
     final subject = item['subject']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
     final body = item['body']?.toString() ?? '';
-    final source = (item['source']?.toString() ?? 'system').toLowerCase();
+    final topic = (item['topic']?.toString() ?? item['source']?.toString() ?? 'system').trim();
+    final source = (item['source']?.toString() ?? topic).toLowerCase();
+    final imageUrl = (item['image_url']?.toString() ?? item['image']?.toString() ?? '').trim();
 
     DateTime? createdAt;
     final rawCreated = item['created_at']?.toString();
@@ -349,26 +346,43 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     Color iconColor = const Color(0xFF38BDF8);
     Color iconBg = const Color(0xFF0284C7).withValues(alpha: 0.15);
 
-    if (source.contains('radius')) {
+    final normTopic = topic.toLowerCase();
+    if (normTopic.contains('radius')) {
       iconData = Icons.router_outlined;
       iconColor = const Color(0xFFF59E0B);
       iconBg = const Color(0xFFF59E0B).withValues(alpha: 0.15);
-    } else if (source.contains('tg') || source.contains('telegram')) {
+    } else if (normTopic.contains('tg') || normTopic.contains('telegram')) {
       iconData = Icons.send_rounded;
       iconColor = const Color(0xFF38BDF8);
       iconBg = const Color(0xFF0284C7).withValues(alpha: 0.15);
-    } else if (source.contains('email') || source.contains('mail')) {
+    } else if (normTopic.contains('ha') || normTopic.contains('homeassistant')) {
+      iconData = Icons.home_rounded;
+      iconColor = const Color(0xFF06B6D4);
+      iconBg = const Color(0xFF06B6D4).withValues(alpha: 0.15);
+    } else if (normTopic.contains('mikrotik')) {
+      iconData = Icons.dns_rounded;
+      iconColor = const Color(0xFF3B82F6);
+      iconBg = const Color(0xFF3B82F6).withValues(alpha: 0.15);
+    } else if (normTopic.contains('frigate') || normTopic.contains('cam')) {
+      iconData = Icons.videocam_rounded;
+      iconColor = const Color(0xFFF97316);
+      iconBg = const Color(0xFFF97316).withValues(alpha: 0.15);
+    } else if (normTopic.contains('email') || normTopic.contains('mail')) {
       iconData = Icons.mail_outline_rounded;
       iconColor = const Color(0xFFA78BFA);
       iconBg = const Color(0xFF8B5CF6).withValues(alpha: 0.15);
-    } else if (source.contains('app') || source.contains('push')) {
+    } else if (normTopic.contains('app') || normTopic.contains('push')) {
       iconData = Icons.smartphone_rounded;
       iconColor = const Color(0xFF10B981);
       iconBg = const Color(0xFF10B981).withValues(alpha: 0.15);
-    } else if (source.contains('security') || source.contains('alert')) {
+    } else if (normTopic.contains('security') || normTopic.contains('alert')) {
       iconData = Icons.security_rounded;
       iconColor = const Color(0xFFEF4444);
       iconBg = const Color(0xFFEF4444).withValues(alpha: 0.15);
+    } else if (normTopic != 'system') {
+      iconData = Icons.label_important_outline_rounded;
+      iconColor = const Color(0xFFA855F7);
+      iconBg = const Color(0xFFA855F7).withValues(alpha: 0.15);
     }
 
     return InkWell(
@@ -382,6 +396,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               'title': subject,
               'body': body,
               'source': source,
+              'topic': topic,
+              'image_url': imageUrl,
               'created_at': rawCreated,
             },
           ),
@@ -458,6 +474,35 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                       ),
                     ),
                   ],
+                  if (imageUrl.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 200),
+                        child: Image.network(
+                          imageUrl,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                          errorBuilder: (ctx, err, stack) => const SizedBox.shrink(),
+                          loadingBuilder: (ctx, child, progress) {
+                            if (progress == null) return child;
+                            return Container(
+                              height: 100,
+                              color: const Color(0xFF0F172A),
+                              child: const Center(
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF38BDF8)),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -469,7 +514,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           border: Border.all(color: const Color(0xFF334155)),
                         ),
                         child: Text(
-                          source.toUpperCase(),
+                          topic.toUpperCase(),
                           style: TextStyle(
                             color: iconColor,
                             fontSize: 9,

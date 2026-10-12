@@ -5,7 +5,7 @@ import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 
 /// Модальное окно / панель «Центр уведомлений» (Notification Inbox)
-class NotificationsModal extends StatelessWidget {
+class NotificationsModal extends StatefulWidget {
   const NotificationsModal({super.key});
 
   /// Показывает адаптивный центр уведомлений
@@ -19,12 +19,50 @@ class NotificationsModal extends StatelessWidget {
   }
 
   @override
+  State<NotificationsModal> createState() => _NotificationsModalState();
+}
+
+class _NotificationsModalState extends State<NotificationsModal> {
+  String _filter = 'all';
+
+  @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
     final s = context.strings;
     final isRu = auth.isRu;
     final notifications = auth.notifications;
     final unreadCount = auth.unreadNotificationsCount;
+
+    String getTopic(Map<String, dynamic> item) {
+      final t = (item['topic']?.toString() ?? item['source']?.toString() ?? 'system').trim();
+      return t.isEmpty ? 'system' : t;
+    }
+
+    String topicLabel(String key) {
+      final lower = key.toLowerCase();
+      if (lower == 'security') return isRu ? 'Безопасность' : 'Security';
+      if (lower == 'radius') return 'RADIUS';
+      if (lower == 'tg' || lower == 'telegram') return 'Telegram';
+      if (lower == 'ha' || lower == 'homeassistant') return 'Home Assistant';
+      if (lower == 'mikrotik') return 'MikroTik';
+      if (lower == 'frigate') return 'Frigate';
+      if (lower == 'system') return isRu ? 'Системные' : 'System';
+      return key.toUpperCase();
+    }
+
+    final Map<String, int> topicCounts = {};
+    final Map<String, String> topicLabels = {};
+    for (final item in notifications) {
+      final key = getTopic(item);
+      final lower = key.toLowerCase();
+      topicCounts[lower] = (topicCounts[lower] ?? 0) + 1;
+      topicLabels.putIfAbsent(lower, () => topicLabel(key));
+    }
+
+    final filtered = notifications.where((item) {
+      if (_filter == 'all') return true;
+      return getTopic(item).toLowerCase() == _filter.toLowerCase();
+    }).toList();
 
     final screenHeight = MediaQuery.of(context).size.height;
     final screenWidth = MediaQuery.of(context).size.width;
@@ -153,19 +191,44 @@ class NotificationsModal extends StatelessWidget {
                 ),
                 const Divider(color: Color(0xFF1E293B), height: 1),
 
+                // Динамическая строка чипсов по темам сообщений
+                if (notifications.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    color: const Color(0xFF1E293B).withValues(alpha: 0.4),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _filterChip('all', isRu ? 'Все' : 'All', notifications.length),
+                          ...topicCounts.keys.map((k) {
+                            return Padding(
+                              padding: const EdgeInsets.only(left: 8),
+                              child: _filterChip(
+                                k,
+                                topicLabels[k] ?? k.toUpperCase(),
+                                topicCounts[k] ?? 0,
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    ),
+                  ),
+
                 // Содержимое
                 Expanded(
-                  child: notifications.isEmpty
+                  child: filtered.isEmpty
                       ? _buildEmptyState(context, s)
                       : RefreshIndicator(
                           onRefresh: () => auth.loadNotifications(),
                           color: const Color(0xFF38BDF8),
                           child: ListView.separated(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            itemCount: notifications.length,
+                            itemCount: filtered.length,
                             separatorBuilder: (_, __) => const SizedBox(height: 10),
                             itemBuilder: (ctx, index) {
-                              final item = notifications[index];
+                              final item = filtered[index];
                               return _buildNotificationCard(ctx, auth, item, isRu);
                             },
                           ),
@@ -174,6 +237,55 @@ class NotificationsModal extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _filterChip(String filterKey, String label, int count) {
+    final isSelected = _filter == filterKey;
+    return InkWell(
+      onTap: () => setState(() => _filter = filterKey),
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF0284C7) : const Color(0xFF0F172A),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF38BDF8) : const Color(0xFF334155),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? Colors.white : const Color(0xFF94A3B8),
+                fontSize: 11,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+            if (count > 0) ...[
+              const SizedBox(width: 5),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.white.withValues(alpha: 0.25) : const Color(0xFF1E293B),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '$count',
+                  style: TextStyle(
+                    color: isSelected ? Colors.white : const Color(0xFF64748B),
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -238,7 +350,8 @@ class NotificationsModal extends StatelessWidget {
     final isRead = item['is_read'] == true || item['read_at'] != null;
     final subject = item['subject']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
     final body = item['body']?.toString() ?? '';
-    final source = (item['source']?.toString() ?? 'system').toLowerCase();
+    final topic = (item['topic']?.toString() ?? item['source']?.toString() ?? 'system').trim();
+    final imageUrl = (item['image_url']?.toString() ?? item['image']?.toString() ?? '').trim();
     final status = item['status']?.toString() ?? '';
 
     DateTime? createdAt;
@@ -254,26 +367,43 @@ class NotificationsModal extends StatelessWidget {
     Color iconColor = const Color(0xFF38BDF8);
     Color iconBg = const Color(0xFF0284C7).withValues(alpha: 0.15);
 
-    if (source.contains('radius')) {
+    final normTopic = topic.toLowerCase();
+    if (normTopic.contains('radius')) {
       iconData = Icons.router_outlined;
       iconColor = const Color(0xFFF59E0B);
       iconBg = const Color(0xFFF59E0B).withValues(alpha: 0.15);
-    } else if (source.contains('tg') || source.contains('telegram')) {
+    } else if (normTopic.contains('tg') || normTopic.contains('telegram')) {
       iconData = Icons.send_rounded;
       iconColor = const Color(0xFF38BDF8);
       iconBg = const Color(0xFF0284C7).withValues(alpha: 0.15);
-    } else if (source.contains('email') || source.contains('mail')) {
+    } else if (normTopic.contains('ha') || normTopic.contains('homeassistant')) {
+      iconData = Icons.home_rounded;
+      iconColor = const Color(0xFF06B6D4);
+      iconBg = const Color(0xFF06B6D4).withValues(alpha: 0.15);
+    } else if (normTopic.contains('mikrotik')) {
+      iconData = Icons.dns_rounded;
+      iconColor = const Color(0xFF3B82F6);
+      iconBg = const Color(0xFF3B82F6).withValues(alpha: 0.15);
+    } else if (normTopic.contains('frigate') || normTopic.contains('cam')) {
+      iconData = Icons.videocam_rounded;
+      iconColor = const Color(0xFFF97316);
+      iconBg = const Color(0xFFF97316).withValues(alpha: 0.15);
+    } else if (normTopic.contains('email') || normTopic.contains('mail')) {
       iconData = Icons.mail_outline_rounded;
       iconColor = const Color(0xFFA78BFA);
       iconBg = const Color(0xFF8B5CF6).withValues(alpha: 0.15);
-    } else if (source.contains('app') || source.contains('push')) {
+    } else if (normTopic.contains('app') || normTopic.contains('push')) {
       iconData = Icons.smartphone_rounded;
       iconColor = const Color(0xFF10B981);
       iconBg = const Color(0xFF10B981).withValues(alpha: 0.15);
-    } else if (source.contains('security') || source.contains('alert')) {
+    } else if (normTopic.contains('security') || normTopic.contains('alert')) {
       iconData = Icons.security_rounded;
       iconColor = const Color(0xFFEF4444);
       iconBg = const Color(0xFFEF4444).withValues(alpha: 0.15);
+    } else if (normTopic != 'system') {
+      iconData = Icons.label_important_outline_rounded;
+      iconColor = const Color(0xFFA855F7);
+      iconBg = const Color(0xFFA855F7).withValues(alpha: 0.15);
     }
 
     return InkWell(
@@ -351,10 +481,39 @@ class NotificationsModal extends StatelessWidget {
                       ),
                     ),
                   ],
+                  if (imageUrl.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 180),
+                        child: Image.network(
+                          imageUrl,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                          errorBuilder: (ctx, err, stack) => const SizedBox.shrink(),
+                          loadingBuilder: (ctx, child, progress) {
+                            if (progress == null) return child;
+                            return Container(
+                              height: 100,
+                              color: const Color(0xFF0F172A),
+                              child: const Center(
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF38BDF8)),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      // Бейдж источника
+                      // Бейдж темы/источника
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
@@ -363,9 +522,9 @@ class NotificationsModal extends StatelessWidget {
                           border: Border.all(color: const Color(0xFF334155)),
                         ),
                         child: Text(
-                          source.toUpperCase(),
-                          style: const TextStyle(
-                            color: Color(0xFF94A3B8),
+                          topic.toUpperCase(),
+                          style: TextStyle(
+                            color: iconColor,
                             fontSize: 9,
                             fontWeight: FontWeight.bold,
                             letterSpacing: 0.5,
