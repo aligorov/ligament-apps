@@ -4,16 +4,9 @@
 # Ligament2FAService. 2FA входа (RDP/консоль) ВЫКЛЮЧЕНА по умолчанию —
 # включается политикой (см. итоговую сводку скрипта).
 #
-# Запуск в PowerShell (от Администратора):
-#   .\scripts\install-latest.ps1
-#
-# С проверкой целостности артефакта по хэшу из примечаний к релизу:
-#   .\scripts\install-latest.ps1 -ExpectedSha256 <hex-64>
-#   (или через переменную окружения LIGAMENT_EXPECTED_SHA256 — то же самое)
-#
-# Однострочный запуск напрямую из сети:
-#   irm https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1 | iex
-# ==============================================================================
+# Run this reviewed LOCAL script with a SHA256 and publisher certificate
+# thumbprint obtained through a trusted channel independent of the download.
+# No network bootstrap is executed. CI test artifacts require -AllowUnsigned.
 
 [CmdletBinding()]
 param (
@@ -25,32 +18,28 @@ param (
     [string]$Version = "latest",
 
     # Ожидаемый SHA256 MSI-артефакта (64 hex-символа, из примечаний к
-    # релизу). Если задан — хэш скачанного файла сверяется ДО запуска
+    # релизу). Обязателен — хэш скачанного файла сверяется ДО запуска
     # установки; несовпадение = жёсткий отказ (A-5, аудит 2026-10-12).
-    [string]$ExpectedSha256 = "",
+    [Parameter(Mandatory=$true)]
+    [ValidatePattern("^[0-9a-fA-F]{64}$")]
+    [string]$ExpectedSha256,
+
+    [string]$ExpectedPublisherThumbprint = "",
 
     [switch]$Silent,
 
-    # Разрешить установку компонентов БЕЗ цифровой подписи (CI/тест).
+    # Разрешить установку компонентов БЕЗ цифровой подписи (только CI/тест).
     # Битая/отозванная подпись блокируется всегда.
-    [switch]$AllowUnsigned,
+    [switch]$AllowUnsigned
 
-    # Включить RDP Credential Provider в составе MSI (в msiexec передаётся
-    # включается всегда. По умолчанию RDP-провайдер НЕ ставится.
 )
 
-# 1. Проверка прав Администратора и авто-элевация
-# A-5: -ExpectedSha256 можно задать и переменной окружения
-# LIGAMENT_EXPECTED_SHA256 (проброс из install-latest.bat / CI).
-if (-not $ExpectedSha256 -and $env:LIGAMENT_EXPECTED_SHA256) {
-    $ExpectedSha256 = $env:LIGAMENT_EXPECTED_SHA256
+if (-not $PSCommandPath) { throw "Run a trusted local script file; network execution is unsupported." }
+$ExpectedSha256 = $ExpectedSha256.Trim().ToLowerInvariant()
+if (-not $AllowUnsigned -and $ExpectedPublisherThumbprint -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "A trusted publisher certificate thumbprint is required."
 }
-if ($ExpectedSha256) {
-    $ExpectedSha256 = $ExpectedSha256.Trim().ToLowerInvariant()
-    if ($ExpectedSha256 -notmatch '^[0-9a-f]{64}$') {
-        throw "Некорректный -ExpectedSha256 / LIGAMENT_EXPECTED_SHA256: ожидается 64 hex-символа, получено: '$ExpectedSha256'"
-    }
-}
+$ExpectedPublisherThumbprint = $ExpectedPublisherThumbprint.ToUpperInvariant()
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -61,14 +50,9 @@ if (-not $isAdmin) {
         if ($ServerURL) { $argsList += " -ServerURL `"$ServerURL`"" }
         if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
         if ($ExpectedSha256) { $argsList += " -ExpectedSha256 `"$ExpectedSha256`"" }
+        if ($ExpectedPublisherThumbprint) { $argsList += " -ExpectedPublisherThumbprint $ExpectedPublisherThumbprint" }
         if ($Silent) { $argsList += " -Silent" }
         if ($AllowUnsigned) { $argsList += " -AllowUnsigned" }
-    } else {
-        $cmd = "irm 'https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1?v=$(Get-Random)' | iex"
-        if ($ExpectedSha256) {
-            $cmd = "`$env:LIGAMENT_EXPECTED_SHA256 = '$ExpectedSha256'; $cmd"
-        }
-        $argsList = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
     }
     Start-Process powershell -Verb RunAs -ArgumentList $argsList
     exit
@@ -91,6 +75,9 @@ function Assert-ArtifactTrusted {
     $sig = Get-AuthenticodeSignature -FilePath $Path
     switch ($sig.Status) {
         'Valid' {
+            if (-not $ExpectedPublisherThumbprint -or $sig.SignerCertificate.Thumbprint -ne $ExpectedPublisherThumbprint) {
+                throw "Publisher certificate does not match the trusted pin."
+            }
             Write-Host " [OK] Подпись $Label действительна ($($sig.SignerCertificate.Subject))" -ForegroundColor Green
             return
         }
@@ -98,11 +85,6 @@ function Assert-ArtifactTrusted {
             if ($AllowUnsigned) {
                 Write-Host " [!] $Label НЕ ПОДПИСАН — продолжаю по ключу -AllowUnsigned" -ForegroundColor Yellow
                 return
-            }
-            if (-not $Silent) {
-                Write-Host " [!] $Label не имеет цифровой подписи." -ForegroundColor Yellow
-                $answer = (Read-Host "Ставить неподписанный компонент? Введите YES для подтверждения").Trim()
-                if ($answer -eq 'YES') { return }
             }
             throw "Отказ: $Label без Authenticode-подписи. Подпишите артефакты или используйте -AllowUnsigned (не для продакшена)."
         }

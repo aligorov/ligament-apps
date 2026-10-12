@@ -1242,12 +1242,7 @@ class AuthState extends ChangeNotifier {
     } catch (e) {
       debugPrint(
           'auth_state: ошибка secure storage для machine_public_key: $e');
-      // Деградация: не ломаем регистрацию машины — используем легаси-
-      // значение из prefs, НЕ удаляя его (миграция повторится позже).
-      if (legacyKey != null && legacyKey.isNotEmpty) {
-        _machinePublicKey = legacyKey;
-        return legacyKey;
-      }
+      _machinePublicKey = null;
       rethrow; // upstream registerRdpMachineAndInstance поймает и ретрайнет
     }
   }

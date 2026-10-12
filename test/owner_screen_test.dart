@@ -293,6 +293,53 @@ void main() {
       }
     });
 
+    test('machine identity fails closed when secure storage is unavailable',
+        () async {
+      SharedPreferences.setMockInitialValues(
+          {'machine_public_key': 'legacy-id'});
+      const channel =
+          MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'storage_unavailable');
+      });
+      final auth = AuthState();
+      addTearDown(auth.dispose);
+      await expectLater(
+          auth.ensureMachinePublicKey(), throwsA(isA<PlatformException>()));
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('machine_public_key'), 'legacy-id');
+      // A failure must not populate the in-memory cache with the legacy identity.
+      await expectLater(
+          auth.ensureMachinePublicKey(), throwsA(isA<PlatformException>()));
+    });
+
+    test(
+        'machine identity migration writes secure storage before deleting legacy',
+        () async {
+      SharedPreferences.setMockInitialValues(
+          {'machine_public_key': 'legacy-id'});
+      String? stored;
+      const channel =
+          MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'read') return stored;
+        if (call.method == 'write') {
+          final prefs = await SharedPreferences.getInstance();
+          expect(prefs.getString('machine_public_key'), 'legacy-id');
+          stored = (call.arguments as Map)['value'] as String;
+        }
+        return null;
+      });
+      final auth = AuthState();
+      addTearDown(auth.dispose);
+      expect(await auth.ensureMachinePublicKey(), 'legacy-id');
+      expect(stored, 'legacy-id');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.containsKey('machine_public_key'), isFalse);
+    });
+
     Future<(AuthState, _MockState, HttpServer)> startApp() async {
       final st = _MockState();
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
