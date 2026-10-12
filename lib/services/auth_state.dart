@@ -70,7 +70,8 @@ Map<String, dynamic> normalizeBrowserSsoPrompt(Map<String, dynamic> raw) {
 /// наша — точное совпадение machine/device разрешает self-консоль
 /// (подключение к своему ПК с той же машины, инцидент 2026-10-10).
 bool ownerScreenPromptTargetsThisDevice(
-    Map<String, dynamic> prompt, String? ownDeviceId, [String? registeredMachineId]) {
+    Map<String, dynamic> prompt, String? ownDeviceId,
+    [String? registeredMachineId]) {
   // Точное совпадение по машине (обе стороны непусты) — приоритетная
   // адресация: machine_id переживает ротацию device_id (Д7) и покрывает
   // self-консоль (viewer и цель на одной машине).
@@ -83,7 +84,8 @@ bool ownerScreenPromptTargetsThisDevice(
     return true;
   }
   final target = prompt['target_device_id']?.toString();
-  final deviceMatch = target != null && target.isNotEmpty && target == ownDeviceId;
+  final deviceMatch =
+      target != null && target.isNotEmpty && target == ownDeviceId;
   if (deviceMatch) {
     return true;
   }
@@ -292,7 +294,9 @@ class AuthState extends ChangeNotifier {
   String? activeRelayEndpoint;
   String? activeRelayName;
   bool get isUsingRelay => activeRelayEndpoint != null;
-  String get connectionStatusText => isOnline ? (isUsingRelay ? 'Online ($activeRelayName)' : 'Online') : 'Offline';
+  String get connectionStatusText => isOnline
+      ? (isUsingRelay ? 'Online ($activeRelayName)' : 'Online')
+      : 'Offline';
 
   Map<String, dynamic>? activePrompt;
   Map<String, dynamic>? activeSupportPrompt;
@@ -407,7 +411,10 @@ class AuthState extends ChangeNotifier {
     );
 
     final autoAllowed = prompt['auto_allowed'] == true;
-    if (autoAllowed && _browserSsoAutoApprove && browserSsoHasTicket && browserSsoMachineOk) {
+    if (autoAllowed &&
+        _browserSsoAutoApprove &&
+        browserSsoHasTicket &&
+        browserSsoMachineOk) {
       await resolveBrowserSso(true, silent: true, prompt: prompt);
       return;
     }
@@ -440,7 +447,8 @@ class AuthState extends ChangeNotifier {
     if (api == null) return;
     final useApprove = approve && browserSsoHasTicket && browserSsoMachineOk;
     if (approve && !useApprove) {
-      debugPrint('auth_state: browser_sso approve без живого билета — отправляем deny');
+      debugPrint(
+          'auth_state: browser_sso approve без живого билета — отправляем deny');
     }
     try {
       await api!.browserSsoDecision(
@@ -476,11 +484,15 @@ class AuthState extends ChangeNotifier {
 
   String? get engineerBadge {
     if (isAdmin) return isRu ? '👑 Администратор' : '👑 Administrator';
-    if (isITEngineer && is1CEngineer) return isRu ? '🛠 IT / 1С-инженер' : '🛠 IT / 1C Engineer';
+    if (isITEngineer && is1CEngineer) {
+      return isRu ? '🛠 IT / 1С-инженер' : '🛠 IT / 1C Engineer';
+    }
     if (is1CEngineer) return isRu ? '📊 1С-инженер' : '📊 1C Engineer';
     if (isITEngineer) return isRu ? '🖥 IT-инженер' : '🖥 IT Engineer';
     if (supportRoles.isNotEmpty) {
-      return isRu ? '🛠 Инженер (${supportRoles.join(", ")})' : '🛠 Engineer (${supportRoles.join(", ")})';
+      return isRu
+          ? '🛠 Инженер (${supportRoles.join(", ")})'
+          : '🛠 Engineer (${supportRoles.join(", ")})';
     }
     return null;
   }
@@ -517,7 +529,8 @@ class AuthState extends ChangeNotifier {
     if (savedLocale != null && savedLocale.isNotEmpty) {
       _localeCode = savedLocale.toLowerCase().startsWith('en') ? 'en' : 'ru';
     } else {
-      final sysLang = PlatformDispatcher.instance.locale.languageCode.toLowerCase();
+      final sysLang =
+          PlatformDispatcher.instance.locale.languageCode.toLowerCase();
       _localeCode = sysLang.startsWith('en') ? 'en' : 'ru';
     }
 
@@ -549,7 +562,8 @@ class AuthState extends ChangeNotifier {
           break;
       }
       if (configError != null) {
-        debugPrint('auth_state: GPO ServerURL отклонён валидатором — URL не используется');
+        debugPrint(
+            'auth_state: GPO ServerURL отклонён валидатором — URL не используется');
       }
     } else {
       final saved = prefs.getString('server_url');
@@ -563,7 +577,8 @@ class AuthState extends ChangeNotifier {
           configError = isRu
               ? 'Сохранённый адрес сервера отклонён проверкой безопасности. Укажите https-адрес заново.'
               : 'Saved server URL failed the security check. Please re-enter the https URL.';
-          debugPrint('auth_state: сохранённый server_url отклонён валидатором — URL не используется');
+          debugPrint(
+              'auth_state: сохранённый server_url отклонён валидатором — URL не используется');
         }
       }
     }
@@ -576,7 +591,8 @@ class AuthState extends ChangeNotifier {
       try {
         final decoded = jsonDecode(cachedRelaysRaw);
         if (decoded is List) {
-          relays = decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          relays =
+              decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
         }
       } catch (_) {}
     } else {
@@ -615,7 +631,8 @@ class AuthState extends ChangeNotifier {
         // Этап D «умный 2FA»: восстанавливаем локальный детект по device_id,
         // сохранённому при логине (сессия устройства живёт и через рестарт
         // приложения, пока не был logout).
-        final savedDeviceId = prefs.getString(LocalDetectService.kDeviceIdPrefKey);
+        final savedDeviceId =
+            prefs.getString(LocalDetectService.kDeviceIdPrefKey);
         if (savedDeviceId != null && savedDeviceId.isNotEmpty) {
           _ownDeviceId = savedDeviceId;
           unawaited(localDetect.start(savedDeviceId));
@@ -627,7 +644,8 @@ class AuthState extends ChangeNotifier {
         // входа в Windows) — тихо, любой сбой не влияет на работу.
         unawaited(presentSsoTicket());
       } catch (e) {
-        debugPrint('auth_state: токен недействителен или сервер недоступен: $e');
+        debugPrint(
+            'auth_state: токен недействителен или сервер недоступен: $e');
         // Если ошибка 401, сбрасываем токен
         if (e is ApiException && e.statusCode == 401) {
           await logout();
@@ -665,7 +683,10 @@ class AuthState extends ChangeNotifier {
     final isNew = activePrompt == null ||
         activePrompt!['challenge_id']?.toString() != cid;
     activePrompt = prompt;
-    if (cid != null && cid.isNotEmpty && isNew && !_alertedChallengeIds.contains(cid)) {
+    if (cid != null &&
+        cid.isNotEmpty &&
+        isNew &&
+        !_alertedChallengeIds.contains(cid)) {
       _alertedChallengeIds.add(cid);
       final clientIp = prompt['client_ip'] ?? prompt['ip'] ?? '—';
       final hostIp = prompt['host_ip'];
@@ -673,7 +694,9 @@ class AuthState extends ChangeNotifier {
       final sName = prompt['service'] ?? 'Ligament 2FA';
       final who = prompt['who'] ?? (isRu ? 'Сотрудник' : 'Employee');
       final host = prompt['host']?.toString();
-      final pcPart = (host != null && host.isNotEmpty) ? (isRu ? ' · Имя ПК: $host' : ' · PC: $host') : '';
+      final pcPart = (host != null && host.isNotEmpty)
+          ? (isRu ? ' · Имя ПК: $host' : ' · PC: $host')
+          : '';
       alert.triggerAlert(
         title: isRu ? 'Запрос на вход: $sName' : 'Login Request: $sName',
         body: '$who$pcPart (IP: $ipText)',
@@ -704,7 +727,8 @@ class AuthState extends ChangeNotifier {
     };
 
     ws.onNotification = (msg) {
-      final title = msg['title']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
+      final title =
+          msg['title']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
       final body = msg['body']?.toString() ?? '';
       final notifId = msg['id']?.toString();
 
@@ -790,14 +814,24 @@ class AuthState extends ChangeNotifier {
     ws.onSupportIncoming = (msg) {
       if (isEngineer) {
         loadSupportQueue();
-        final session = (msg['session'] is Map) ? Map<String, dynamic>.from(msg['session'] as Map) : msg;
-        final clientName = session['display_name'] ?? session['employee_name'] ?? session['username'] ?? msg['display_name'] ?? (isRu ? 'Пользователь' : 'User');
+        final session = (msg['session'] is Map)
+            ? Map<String, dynamic>.from(msg['session'] as Map)
+            : msg;
+        final clientName = session['display_name'] ??
+            session['employee_name'] ??
+            session['username'] ??
+            msg['display_name'] ??
+            (isRu ? 'Пользователь' : 'User');
         final category = session['category'] ?? msg['category'];
         final catTitle = category == '1c' ? '1C' : 'IT';
-        final problemSummary = session['problem_summary'] ?? msg['problem_summary'] ?? '';
-        final sessionId = session['id'] ?? session['session_id'] ?? msg['session_id'];
+        final problemSummary =
+            session['problem_summary'] ?? msg['problem_summary'] ?? '';
+        final sessionId =
+            session['id'] ?? session['session_id'] ?? msg['session_id'];
         alert.triggerAlert(
-          title: isRu ? 'Новое SOS-обращение: $catTitle' : 'New SOS Ticket: $catTitle',
+          title: isRu
+              ? 'Новое SOS-обращение: $catTitle'
+              : 'New SOS Ticket: $catTitle',
           body: '$clientName: $problemSummary',
           challengeId: sessionId?.toString(),
         );
@@ -854,7 +888,10 @@ class AuthState extends ChangeNotifier {
         continue;
       }
       final uri = Uri.tryParse(candidate);
-      if (uri == null || !uri.hasScheme || uri.scheme != 'https' || uri.host.isEmpty) {
+      if (uri == null ||
+          !uri.hasScheme ||
+          uri.scheme != 'https' ||
+          uri.host.isEmpty) {
         debugPrint('auth_state: relay "$candidate" отклонён: требуется https');
         continue;
       }
@@ -916,7 +953,8 @@ class AuthState extends ChangeNotifier {
   Future<void> login(String username, String password, [String? code]) async {
     final base = serverUrl;
     if (base == null || base.isEmpty) {
-      throw Exception(isRu ? 'Не указан адрес сервера' : 'Server address is required');
+      throw Exception(
+          isRu ? 'Не указан адрес сервера' : 'Server address is required');
     }
     // Раньше здесь было `api!.login(...)`: logout() обнуляет api, а экран
     // входа этого момента не переживает — получали «Null check operator
@@ -937,7 +975,8 @@ class AuthState extends ChangeNotifier {
     if (kIsWeb) {
       // PWA: честная платформа по UA (web-ios/web-android/web) — строка
       // устройства рождается правильной, без ожидания телеметрии-лечения.
-      platform = detectWebPlatform(webUserAgent(), maxTouchPoints: webMaxTouchPoints());
+      platform = detectWebPlatform(webUserAgent(),
+          maxTouchPoints: webMaxTouchPoints());
     } else {
       try {
         if (Platform.isWindows) {
@@ -976,7 +1015,8 @@ class AuthState extends ChangeNotifier {
     try {
       initialPosture = await telemetry.collectPosture();
     } catch (e) {
-      debugPrint('auth_state: телеметрия при входе не собрана, продолжаем без неё: $e');
+      debugPrint(
+          'auth_state: телеметрия при входе не собрана, продолжаем без неё: $e');
     }
 
     final resp = await client.login(
@@ -1015,7 +1055,8 @@ class AuthState extends ChangeNotifier {
     // Этап D «умный 2FA»: сервер выдаёт сессии устройства device_id
     // (appLoginResponse.DeviceID) — по нему он отличает вход, начатый с
     // этого же ПК. Сохраняем для восстановления после рестарта.
-    final deviceId = resp['device_id']?.toString() ?? resp['deviceId']?.toString();
+    final deviceId =
+        resp['device_id']?.toString() ?? resp['deviceId']?.toString();
     if (deviceId != null && deviceId.isNotEmpty) {
       _ownDeviceId = deviceId;
       await prefs.setString(LocalDetectService.kDeviceIdPrefKey, deviceId);
@@ -1159,23 +1200,56 @@ class AuthState extends ChangeNotifier {
   /// Регистрация машины доступа и экземпляра сессии (Sharer/Viewer), запуск heartbeat (V01)
   /// Стабильный ключ установки для идентичности машины (rdp_machines.
   /// machine_public_key): 32 случайных байт hex, генерируется один раз и
-  /// живёт в SharedPreferences до удаления установки. См. комментарий
-  /// в registerRdpMachineAndInstance.
+  /// живёт в защищённом хранилище (flutter_secure_storage) до удаления
+  /// установки. См. комментарий в registerRdpMachineAndInstance.
   String? _machinePublicKey;
+
+  /// Ключ и в легаси-prefs (до A-10), и в secure storage — одинаковый.
+  static const String _machinePublicKeyKey = 'machine_public_key';
   Future<String> ensureMachinePublicKey() async {
     final cached = _machinePublicKey;
     if (cached != null && cached.isNotEmpty) return cached;
-    final prefs = await SharedPreferences.getInstance();
-    var key = prefs.getString('machine_public_key');
-    if (key == null || key.isEmpty) {
-      final rnd = math.Random.secure();
-      key = List<int>.generate(32, (_) => rnd.nextInt(256))
-          .map((b) => b.toRadixString(16).padLeft(2, '0'))
-          .join();
-      await prefs.setString('machine_public_key', key);
+    // A-10 (аудит 2026-10-12): ключ — идентификатор машины, сервер держит
+    // на нём ON CONFLICT-пиннинг. Раньше лежал в SharedPreferences открытым
+    // текстом → локальный пользователь мог подменить идентичность машины.
+    // Теперь храним во flutter_secure_storage; при загрузке мигрируем
+    // старое plaintext-значение (само значение НЕ меняем — сервер считает
+    // его идентификатором) и удаляем копию из prefs.
+    String? legacyKey;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      legacyKey = prefs.getString(_machinePublicKeyKey);
+      var key = await _secureStorage.read(key: _machinePublicKeyKey);
+      if (key == null || key.isEmpty) {
+        if (legacyKey != null && legacyKey.isNotEmpty) {
+          // Миграция со старых версий: переносим существующее значение,
+          // чтобы машина не «размножилась» на сервере новым ключом.
+          await _secureStorage.write(
+              key: _machinePublicKeyKey, value: legacyKey);
+          key = legacyKey;
+        } else {
+          final rnd = math.Random.secure();
+          key = List<int>.generate(32, (_) => rnd.nextInt(256))
+              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+              .join();
+          await _secureStorage.write(key: _machinePublicKeyKey, value: key);
+        }
+      }
+      // Значение уверенно живёт в secure storage — убираем plaintext-копию.
+      await prefs.remove(_machinePublicKeyKey);
+      _machinePublicKey = key;
+      return key;
+    } catch (e) {
+      debugPrint(
+          'auth_state: ошибка secure storage для machine_public_key: $e');
+      // Деградация: не ломаем регистрацию машины — используем легаси-
+      // значение из prefs, НЕ удаляя его (миграция повторится позже).
+      if (legacyKey != null && legacyKey.isNotEmpty) {
+        _machinePublicKey = legacyKey;
+        return legacyKey;
+      }
+      rethrow; // upstream registerRdpMachineAndInstance поймает и ретрайнет
     }
-    _machinePublicKey = key;
-    return key;
   }
 
   Future<void> registerRdpMachineAndInstance() async {
@@ -1207,7 +1281,8 @@ class AuthState extends ChangeNotifier {
         _registeredMachineId = mResp['machine_id'].toString();
       }
 
-      final canShare = !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+      final canShare = !kIsWeb &&
+          (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
       String? userSid;
       if (!kIsWeb && Platform.isWindows) {
         final winIdent = WindowsIdentity.instance.collect();
@@ -1239,8 +1314,11 @@ class AuthState extends ChangeNotifier {
   void _scheduleMachineRetryIfNeeded() {
     if (_machineRetryTimer != null) return; // попытка уже запланирована
     if (!isLoggedIn) return;
-    if (_registeredMachineId != null && _registeredMachineId!.isNotEmpty) return;
-    _machineRetryTimer = Timer(machineRetryFirstDelay, _retryMachineRegistration);
+    if (_registeredMachineId != null && _registeredMachineId!.isNotEmpty) {
+      return;
+    }
+    _machineRetryTimer =
+        Timer(machineRetryFirstDelay, _retryMachineRegistration);
   }
 
   /// Одна итерация ретрая: повторить регистрацию (если id всё ещё нет) и
@@ -1253,9 +1331,12 @@ class AuthState extends ChangeNotifier {
       await registerRdpMachineAndInstance();
     }
     if (!isLoggedIn) return; // logout во время запроса
-    if (_registeredMachineId != null && _registeredMachineId!.isNotEmpty) return;
+    if (_registeredMachineId != null && _registeredMachineId!.isNotEmpty) {
+      return;
+    }
     _machineRetryTimer?.cancel();
-    _machineRetryTimer = Timer(machineRetryNextDelay, _retryMachineRegistration);
+    _machineRetryTimer =
+        Timer(machineRetryNextDelay, _retryMachineRegistration);
   }
 
   void _startRdpHeartbeat() {
@@ -1279,8 +1360,11 @@ class AuthState extends ChangeNotifier {
     try {
       final p = await client.getProfile();
       // A-38 (аудит 2026-10-10): защита от гонки при logout/смене пользователя
-      if (_authEpoch != expectedEpoch || token != expectedToken || !isLoggedIn) {
-        debugPrint('auth_state: refreshProfile ответ проигнорирован — авторизация изменилась');
+      if (_authEpoch != expectedEpoch ||
+          token != expectedToken ||
+          !isLoggedIn) {
+        debugPrint(
+            'auth_state: refreshProfile ответ проигнорирован — авторизация изменилась');
         return;
       }
       currentUser = p;
@@ -1296,7 +1380,9 @@ class AuthState extends ChangeNotifier {
     try {
       final cfg = await api!.getConfig();
       if (cfg['relays'] is List) {
-        relays = (cfg['relays'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        relays = (cfg['relays'] as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
       } else {
         relays = [];
       }
@@ -1342,8 +1428,11 @@ class AuthState extends ChangeNotifier {
   /// Подключение инженера к удаленной сессии пользователя
   Future<Map<String, dynamic>> connectToSupportSession(String sessionId) async {
     if (api == null) throw Exception('API не инициализирован');
-    final adminName = currentUser?['display_name'] ?? currentUser?['username'] ?? 'Инженер поддержки';
-    final res = await api!.connectToSupport(sessionId: sessionId, adminName: adminName);
+    final adminName = currentUser?['display_name'] ??
+        currentUser?['username'] ??
+        'Инженер поддержки';
+    final res =
+        await api!.connectToSupport(sessionId: sessionId, adminName: adminName);
     await loadSupportQueue();
     return res;
   }
@@ -1359,8 +1448,8 @@ class AuthState extends ChangeNotifier {
       pendingChallenges = all.where((c) {
         final id = c['id']?.toString();
         if (id == null || _resolvedChallengeIds.contains(id)) return false;
-        final isBrowserSso =
-            c['type']?.toString() == 'browser_sso' || c['purpose']?.toString() == 'browser_sso';
+        final isBrowserSso = c['type']?.toString() == 'browser_sso' ||
+            c['purpose']?.toString() == 'browser_sso';
         if (isBrowserSso) {
           browserSso.add(c);
           return false;
@@ -1394,8 +1483,8 @@ class AuthState extends ChangeNotifier {
         // один раз, и перегенерация кнопок каждые 4с недопустима. Сама
         // модалка это поле для того же challenge_id не перечитывает
         // (отсчёт локальный), значение — для внешних потребителей.
-        final fresh = pendingChallenges
-            .firstWhere((c) => c['id']?.toString() == activeId)['expires_in_seconds'];
+        final fresh = pendingChallenges.firstWhere(
+            (c) => c['id']?.toString() == activeId)['expires_in_seconds'];
         if (fresh != null && activePrompt != null) {
           activePrompt!['expires_in_seconds'] = fresh;
         }
@@ -1407,11 +1496,15 @@ class AuthState extends ChangeNotifier {
         final meta = first['metadata'] as Map<String, dynamic>? ?? {};
         final clientIp = meta['client_ip']?.toString();
         final hostIp = meta['host_ip']?.toString();
-        final serviceName = meta['service']?.toString() ?? first['purpose']?.toString() ?? '2FA Login';
+        final serviceName = meta['service']?.toString() ??
+            first['purpose']?.toString() ??
+            '2FA Login';
         _surfacePrompt({
           'challenge_id': first['id'],
           'who': meta['username'] ?? currentUser?['username'],
-          'ip': (clientIp != null && clientIp.isNotEmpty) ? clientIp : (meta['ip'] ?? '—'),
+          'ip': (clientIp != null && clientIp.isNotEmpty)
+              ? clientIp
+              : (meta['ip'] ?? '—'),
           'client_ip': clientIp,
           'host_ip': hostIp,
           'host': meta['host'],
@@ -1453,7 +1546,9 @@ class AuthState extends ChangeNotifier {
     try {
       final list = await api!.getNotifications();
       notifications = list;
-      unreadNotificationsCount = list.where((n) => n['is_read'] != true && n['read_at'] == null).length;
+      unreadNotificationsCount = list
+          .where((n) => n['is_read'] != true && n['read_at'] == null)
+          .length;
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки уведомлений: $e');
@@ -1472,7 +1567,9 @@ class AuthState extends ChangeNotifier {
           break;
         }
       }
-      unreadNotificationsCount = notifications.where((n) => n['is_read'] != true && n['read_at'] == null).length;
+      unreadNotificationsCount = notifications
+          .where((n) => n['is_read'] != true && n['read_at'] == null)
+          .length;
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка отметки прочитанным: $e');
@@ -1537,7 +1634,8 @@ class AuthState extends ChangeNotifier {
             localizedReason: isRu
                 ? 'Подтвердите вход в корпоративную систему с помощью Passkey / биометрии'
                 : 'Confirm sign-in with Passkey / biometrics',
-            options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+            options: const AuthenticationOptions(
+                biometricOnly: false, stickyAuth: true),
           );
           if (!didAuth) {
             throw Exception(isRu
@@ -1560,7 +1658,8 @@ class AuthState extends ChangeNotifier {
               localizedReason: isRu
                   ? 'Подтвердите вход в корпоративную систему с помощью биометрии'
                   : 'Confirm login with biometrics',
-              options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+              options: const AuthenticationOptions(
+                  biometricOnly: false, stickyAuth: true),
             );
             if (!didAuth) {
               throw Exception(isRu
@@ -1569,7 +1668,9 @@ class AuthState extends ChangeNotifier {
             }
             passkeyVerified = true;
           }
-        } else if (!kIsWeb && (Platform.isMacOS || Platform.isWindows) && (code == null || code.isEmpty)) {
+        } else if (!kIsWeb &&
+            (Platform.isMacOS || Platform.isWindows) &&
+            (code == null || code.isEmpty)) {
           // Десктоп-аутентификация при подтверждении без TOTP-кода:
           // пробуем вызвать системный Passkey (Touch ID / Windows Hello)
           try {
@@ -1579,7 +1680,8 @@ class AuthState extends ChangeNotifier {
                 localizedReason: isRu
                     ? 'Подтвердите вход в корпоративную систему (Touch ID / Windows Hello)'
                     : 'Confirm sign-in with Touch ID / Windows Hello',
-                options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+                options: const AuthenticationOptions(
+                    biometricOnly: false, stickyAuth: true),
               );
               if (didAuth) {
                 passkeyVerified = true;
@@ -1677,7 +1779,8 @@ class AuthState extends ChangeNotifier {
     final sessionId = prompt['session_id']?.toString() ?? '';
     if (sessionId.isEmpty || api == null) return;
 
-    if (!ownerScreenPromptTargetsThisDevice(prompt, _ownDeviceId, _registeredMachineId)) {
+    if (!ownerScreenPromptTargetsThisDevice(
+        prompt, _ownDeviceId, _registeredMachineId)) {
       debugPrint(
           'auth_state: owner-экран адресован другому устройству — игнорируем');
       return;
@@ -1710,8 +1813,10 @@ class AuthState extends ChangeNotifier {
 
     // Платформенный гейт: транслировать экран может только десктоп
     // (getDisplayMedia на мобильных/web недоступен — там только просмотр).
-    if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
-      debugPrint('auth_state: owner-экран проигнорирован: платформа не может быть целью');
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      debugPrint(
+          'auth_state: owner-экран проигнорирован: платформа не может быть целью');
       return;
     }
 
@@ -1733,7 +1838,8 @@ class AuthState extends ChangeNotifier {
     // сразу увидел завершение, а не молчание.
     if (support.state == SupportSessionState.connecting ||
         support.state == SupportSessionState.active) {
-      debugPrint('auth_state: завершаем предыдущую сессию ${support.activeSessionId} для подключения новой owner-сессии $sessionId');
+      debugPrint(
+          'auth_state: завершаем предыдущую сессию ${support.activeSessionId} для подключения новой owner-сессии $sessionId');
       try {
         await support.stopScreenSharing();
       } catch (e) {
@@ -1818,7 +1924,8 @@ class AuthState extends ChangeNotifier {
         localizedReason: isRu
             ? 'Подтвердите разрешение удаленного доступа к экрану'
             : 'Authorize remote screen sharing access',
-        options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+        options:
+            const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
       );
       if (!didAuth) {
         throw Exception(isRu
@@ -1840,7 +1947,8 @@ class AuthState extends ChangeNotifier {
           localizedReason: isRu
               ? 'Подтвердите разрешение удаленного доступа к экрану'
               : 'Authorize remote screen sharing access',
-          options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+          options: const AuthenticationOptions(
+              biometricOnly: false, stickyAuth: true),
         );
         if (!didAuth) {
           throw Exception(isRu
@@ -1895,9 +2003,9 @@ class AuthState extends ChangeNotifier {
       if (sessId != null && api != null) {
         try {
           await api!.endSupportSession(sessionId: sessId).timeout(
-            const Duration(milliseconds: 1500),
-            onTimeout: () => null,
-          );
+                const Duration(milliseconds: 1500),
+                onTimeout: () => null,
+              );
         } catch (e) {
           debugPrint('auth_state: ошибка завершения сессии поддержки: $e');
         }
@@ -1961,7 +2069,8 @@ class AuthState extends ChangeNotifier {
                 ? (isRu ? '1С-поддержка' : '1C Support')
                 : (isRu ? 'IT-служба' : 'IT Helpdesk');
             alert.triggerAlert(
-              title: isRu ? 'Удаленная помощь: $cat' : 'Remote Assistance: $cat',
+              title:
+                  isRu ? 'Удаленная помощь: $cat' : 'Remote Assistance: $cat',
               body: isRu
                   ? 'Инженер готов подключиться к экрану. Подтвердите контрольное число.'
                   : 'Engineer is ready to connect. Confirm the number match.',
@@ -1982,7 +2091,10 @@ class AuthState extends ChangeNotifier {
             );
             notifyListeners();
           }
-        } else if (status == 'ended' || status == 'rejected' || status == 'completed' || status == 'cancelled') {
+        } else if (status == 'ended' ||
+            status == 'rejected' ||
+            status == 'completed' ||
+            status == 'cancelled') {
           if (support.state != SupportSessionState.idle) {
             await support.stopScreenSharing();
           }
@@ -1998,7 +2110,8 @@ class AuthState extends ChangeNotifier {
           await support.stopScreenSharing();
           activeSupportPrompt = null;
           notifyListeners();
-        } else if (support.state == SupportSessionState.authorizing && activeSupportPrompt == null) {
+        } else if (support.state == SupportSessionState.authorizing &&
+            activeSupportPrompt == null) {
           await support.stopScreenSharing();
           notifyListeners();
         }

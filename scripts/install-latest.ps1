@@ -7,6 +7,10 @@
 # Запуск в PowerShell (от Администратора):
 #   .\scripts\install-latest.ps1
 #
+# С проверкой целостности артефакта по хэшу из примечаний к релизу:
+#   .\scripts\install-latest.ps1 -ExpectedSha256 <hex-64>
+#   (или через переменную окружения LIGAMENT_EXPECTED_SHA256 — то же самое)
+#
 # Однострочный запуск напрямую из сети:
 #   irm https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1 | iex
 # ==============================================================================
@@ -20,6 +24,11 @@ param (
 
     [string]$Version = "latest",
 
+    # Ожидаемый SHA256 MSI-артефакта (64 hex-символа, из примечаний к
+    # релизу). Если задан — хэш скачанного файла сверяется ДО запуска
+    # установки; несовпадение = жёсткий отказ (A-5, аудит 2026-10-12).
+    [string]$ExpectedSha256 = "",
+
     [switch]$Silent,
 
     # Разрешить установку компонентов БЕЗ цифровой подписи (CI/тест).
@@ -31,6 +40,18 @@ param (
 )
 
 # 1. Проверка прав Администратора и авто-элевация
+# A-5: -ExpectedSha256 можно задать и переменной окружения
+# LIGAMENT_EXPECTED_SHA256 (проброс из install-latest.bat / CI).
+if (-not $ExpectedSha256 -and $env:LIGAMENT_EXPECTED_SHA256) {
+    $ExpectedSha256 = $env:LIGAMENT_EXPECTED_SHA256
+}
+if ($ExpectedSha256) {
+    $ExpectedSha256 = $ExpectedSha256.Trim().ToLowerInvariant()
+    if ($ExpectedSha256 -notmatch '^[0-9a-f]{64}$') {
+        throw "Некорректный -ExpectedSha256 / LIGAMENT_EXPECTED_SHA256: ожидается 64 hex-символа, получено: '$ExpectedSha256'"
+    }
+}
+
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "[!] Требуются права Администратора. Запуск от имени Администратора..." -ForegroundColor Yellow
@@ -39,10 +60,14 @@ if (-not $isAdmin) {
         if ($Component -ne "Interactive") { $argsList += " -Component $Component" }
         if ($ServerURL) { $argsList += " -ServerURL `"$ServerURL`"" }
         if ($Version -ne "latest") { $argsList += " -Version `"$Version`"" }
+        if ($ExpectedSha256) { $argsList += " -ExpectedSha256 `"$ExpectedSha256`"" }
         if ($Silent) { $argsList += " -Silent" }
         if ($AllowUnsigned) { $argsList += " -AllowUnsigned" }
     } else {
         $cmd = "irm 'https://raw.githubusercontent.com/aligorov/ligament-apps/main/scripts/install-latest.ps1?v=$(Get-Random)' | iex"
+        if ($ExpectedSha256) {
+            $cmd = "`$env:LIGAMENT_EXPECTED_SHA256 = '$ExpectedSha256'; $cmd"
+        }
         $argsList = "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
     }
     Start-Process powershell -Verb RunAs -ArgumentList $argsList
@@ -172,6 +197,18 @@ try {
         Write-Host "URL: $MsiUrl" -ForegroundColor Gray
         Invoke-WebRequest -Uri $MsiUrl -OutFile $LocalMsi -UseBasicParsing
         Write-Host " [OK] Загружено: $LocalMsi ($([math]::Round((Get-Item $LocalMsi).Length / 1MB, 2)) МБ)" -ForegroundColor Green
+
+        # A-5 (аудит 2026-10-12): пиннинг целостности артефакта хэшем.
+        # Сверяем ДО любых действий с системой (подпись, msiexec) —
+        # несовпадение означает подмену/другую сборку: жёсткий отказ.
+        if ($ExpectedSha256) {
+            Write-Host "`nПроверка SHA256 артефакта..." -ForegroundColor Yellow
+            $actual = (Get-FileHash -FilePath $LocalMsi -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $ExpectedSha256) {
+                throw "Отказ: SHA256 артефакта НЕ СОВПАДАЕТ.`n  ожидался: $ExpectedSha256`n  получен:  $actual`nФайл подменён либо это другая сборка. Уточните хэш в примечаниях к релизу $tag."
+            }
+            Write-Host " [OK] SHA256 совпадает: $actual" -ForegroundColor Green
+        }
 
         Write-Host "`nПроверка цифровой подписи MSI..." -ForegroundColor Yellow
         Assert-ArtifactTrusted -Path $LocalMsi -Label $MsiFileName

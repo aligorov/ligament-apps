@@ -22,6 +22,16 @@ Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
     final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 1500);
     final req = await client.post('127.0.0.1', kLocalDetectPort, '/autoshare');
     req.headers.contentType = ContentType.json;
+    // A-2 (аудит 2026-10-12): /autoshare принимает только предъявление
+    // wake-токена работающего экземпляра (файл в пер-пользовательском
+    // temp). Нет токена — слушатель не поднят, доставка заведомо не
+    // удастся: уходим в лок-ветку без запроса.
+    final wakeToken = await LocalDetectService.readWakeToken();
+    if (wakeToken == null) {
+      client.close();
+      return false;
+    }
+    req.headers.set('X-Wake-Token', wakeToken);
     req.write(jsonEncode({'session_id': sessionId}));
     final res = await req.close();
     final ok = res.statusCode == 200;

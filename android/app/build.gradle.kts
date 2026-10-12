@@ -16,10 +16,11 @@ plugins {
 // и сам keystore одним из способов:
 //   ANDROID_KEYSTORE_BASE64   — содержимое keystore (jks) в base64, ИЛИ
 //   ANDROID_KEYSTORE_FILE     — путь к файлу keystore на диске
-// Пока значений нет (локальные сборки, секреты ещё не заведены) — release
-// подписывается debug-ключом для совместимости. Когда секреты появятся в
-// .github/workflows/build_clients.yml, этот скрипт подхватит их из env без
-// правок здесь (env → providers.environmentVariable ниже).
+// Когда секреты появятся в .github/workflows/build_clients.yml, этот
+// скрипт подхватит их из env без правок здесь (env → providers
+// .environmentVariable ниже). См. fallback-логику в buildTypes.release
+// (A-4): без секретов release-сборка ПАДАЕТ, debug-подпись — только через
+// явный люк LIGAMENT_ALLOW_DEBUG_SIGNING=1.
 class ReleaseSigningInfo(
     val storeFile: File,
     val storePassword: String,
@@ -108,14 +109,34 @@ android {
 
     buildTypes {
         release {
-            // Секреты подписи заданы (env / -P) → настоящий release-ключ;
-            // иначе debug-ключ: локальные сборки продолжают работать,
-            // CI начнёт подписывать релизы, как только передаст 4 переменных
-            // из комментария в шапке файла.
+            // A-4 (аудит 2026-10-12): фолбэк на общеизвестный debug-ключ
+            // убран — release-APK, подписанный им, подделывается при
+            // sideload-«обновлении». Без секретов подписи release-сборка
+            // падает с GradleException. Явный люк для локальной отладки:
+            //   LIGAMENT_ALLOW_DEBUG_SIGNING=1
+            // (переменная окружения или -PLIGAMENT_ALLOW_DEBUG_SIGNING=1 /
+            // строка в ~/.gradle/gradle.properties) — подписывает debug-
+            // ключом осознанно, НЕ для публикации.
+            val debugSigningExplicitlyAllowed =
+                signingSecret("LIGAMENT_ALLOW_DEBUG_SIGNING") == "1"
             signingConfig = if (releaseSigning != null) {
                 signingConfigs.getByName("release")
-            } else {
+            } else if (debugSigningExplicitlyAllowed) {
+                logger.warn(
+                    "release-signing: секреты подписи не заданы, LIGAMENT_ALLOW_DEBUG_SIGNING=1 — " +
+                        "release подписывается DEBUG-ключом (только для локальной отладки!)",
+                )
                 signingConfigs.getByName("debug")
+            } else {
+                throw GradleException(
+                    "Отказ сборки release: секреты подписи Android не заданы, а debug-подпись не разрешена явно.\n" +
+                        "Release-APK не может подписываться общеизвестным debug-ключом (подделка «обновления» при sideload, аудит A-4).\n" +
+                        "Как настроить секреты: передайте ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD\n" +
+                        "и ANDROID_KEYSTORE_BASE64 (keystore в base64) или ANDROID_KEYSTORE_FILE (путь к файлу) —\n" +
+                        "переменными окружения или Gradle-свойствами (-Pname=value); полный список — в шапке android/app/build.gradle.kts.\n" +
+                        "Для локальной сборки с debug-подписью (НЕ для публикации!) явно разрешите её:\n" +
+                        "  export LIGAMENT_ALLOW_DEBUG_SIGNING=1   # или: ~/.gradle/gradle.properties → LIGAMENT_ALLOW_DEBUG_SIGNING=1",
+                )
             }
         }
     }

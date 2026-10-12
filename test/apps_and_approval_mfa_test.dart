@@ -53,6 +53,7 @@ class MockAuthState extends ChangeNotifier implements AuthState {
   String? lastSubmittedCode;
   bool? lastSubmittedPasskey;
   bool? lastApprove;
+  String? lastSelectedNumberMatch;
 
   @override
   Map<String, dynamic>? activePrompt;
@@ -68,6 +69,7 @@ class MockAuthState extends ChangeNotifier implements AuthState {
     lastApprove = approve;
     lastSubmittedCode = code;
     lastSubmittedPasskey = passkey;
+    lastSelectedNumberMatch = selectedNumberMatch;
   }
 
   @override
@@ -97,7 +99,8 @@ void main() {
   }
 
   group('ApprovalModal: Passkey и TOTP', () {
-    testWidgets('рендерит кнопку Passkey и кнопку вызова ввода TOTP', (tester) async {
+    testWidgets('рендерит кнопку Passkey и кнопку вызова ввода TOTP',
+        (tester) async {
       final auth = MockAuthState();
       final prompt = {
         'challenge_id': 'ch-123',
@@ -123,7 +126,8 @@ void main() {
       await tester.pump();
 
       // Проверяем, что появилось поле ввода TOTP кода
-      expect(find.text('Введите 6-значный TOTP код из приложения:'), findsOneWidget);
+      expect(find.text('Введите 6-значный TOTP код из приложения:'),
+          findsOneWidget);
       expect(find.byType(TextField), findsOneWidget);
       expect(find.text('Ввод'), findsOneWidget);
 
@@ -138,7 +142,8 @@ void main() {
       expect(auth.lastSubmittedCode, equals('123456'));
     });
 
-    testWidgets('нажатие кнопки Passkey отправляет passkey: true', (tester) async {
+    testWidgets('нажатие кнопки Passkey отправляет passkey: true',
+        (tester) async {
       final auth = MockAuthState();
       final prompt = {
         'challenge_id': 'ch-456',
@@ -162,8 +167,70 @@ void main() {
     });
   });
 
+  group('ApprovalModal: Number Matching без предвыбора (A-9)', () {
+    // Тесты исполняются на десктоп-хосте (macOS) → _isDesktop == true:
+    // проверяем именно ту ветку, где раньше правильное число
+    // предвыбиралось и «Принять» уходило без сверки с экраном входа.
+    testWidgets('«Принять» без выбора числа блокируется, решение не уходит',
+        (tester) async {
+      final auth = MockAuthState();
+      final prompt = {
+        'challenge_id': 'ch-nm1',
+        'who': 'sidorov',
+        'service': 'Windows RDP (WS-001)',
+        'ip': '192.168.1.10',
+        'number_match': '42',
+        'expires_in_seconds': 60,
+      };
+
+      await tester.pumpWidget(
+          buildTestApp(child: ApprovalModal(prompt: prompt), auth: auth));
+      await tester.pump();
+
+      // Модал с number-match выше вьюпорта теста — прокручиваем к кнопке.
+      await tester.ensureVisible(find.text('Принять'));
+      await tester.pump();
+      await tester.tap(find.text('Принять'));
+      await tester.pump();
+
+      expect(find.text('Выберите верный номер, показанный на экране входа'),
+          findsOneWidget);
+      expect(auth.lastApprove, isNull); // submitDecision не вызывался
+    });
+
+    testWidgets('явный выбор числа пользователем разблокирует подтверждение',
+        (tester) async {
+      final auth = MockAuthState();
+      final prompt = {
+        'challenge_id': 'ch-nm2',
+        'who': 'sidorov',
+        'service': 'Windows RDP (WS-001)',
+        'ip': '192.168.1.10',
+        'number_match': '42',
+        'expires_in_seconds': 60,
+      };
+
+      await tester.pumpWidget(
+          buildTestApp(child: ApprovalModal(prompt: prompt), auth: auth));
+      await tester.pump();
+
+      // Пользователь сверил число с экраном входа и выбрал его сам.
+      await tester.tap(find.text('42'));
+      await tester.pump();
+      await tester.ensureVisible(find.text('Принять'));
+      await tester.pump();
+      await tester.tap(find.text('Принять'));
+      await tester.pump();
+
+      expect(auth.lastApprove, isTrue);
+      expect(auth.lastSelectedNumberMatch, '42');
+    });
+  });
+
   group('AppsScreen: Рабочие места + SSO Приложения', () {
-    testWidgets('отображает рабочие места и SSO-приложения, фильтрует по поиску и чипам', (tester) async {
+    testWidgets(
+        'отображает рабочие места и SSO-приложения, фильтрует по поиску и чипам',
+        (tester) async {
       final auth = MockAuthState();
 
       await tester.pumpWidget(buildTestApp(

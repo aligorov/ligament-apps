@@ -34,20 +34,21 @@ class SupportChatMessage {
   });
 
   Map<String, dynamic> toJson() => {
-    'type': 'chat_message',
-    'id': id,
-    'sender': sender,
-    'sender_name': senderName,
-    'text': text,
-    'timestamp': timestamp.millisecondsSinceEpoch,
-    if (clientId.isNotEmpty) 'client_id': clientId,
-  };
+        'type': 'chat_message',
+        'id': id,
+        'sender': sender,
+        'sender_name': senderName,
+        'text': text,
+        'timestamp': timestamp.millisecondsSinceEpoch,
+        if (clientId.isNotEmpty) 'client_id': clientId,
+      };
 
   factory SupportChatMessage.fromJson(Map<String, dynamic> json) {
     DateTime ts;
     if (json['timestamp'] != null) {
       if (json['timestamp'] is num) {
-        ts = DateTime.fromMillisecondsSinceEpoch((json['timestamp'] as num).toInt());
+        ts = DateTime.fromMillisecondsSinceEpoch(
+            (json['timestamp'] as num).toInt());
       } else {
         ts = DateTime.tryParse(json['timestamp'].toString()) ?? DateTime.now();
       }
@@ -58,7 +59,8 @@ class SupportChatMessage {
     }
 
     return SupportChatMessage(
-      id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      id: json['id']?.toString() ??
+          DateTime.now().millisecondsSinceEpoch.toString(),
       sender: json['sender']?.toString() ?? 'operator',
       senderName: json['sender_name']?.toString() ??
           (json['sender'] == 'operator' ? 'Инженер' : 'Пользователь'),
@@ -111,12 +113,12 @@ class _ActiveFileDownload {
 /// Результат сборки файловой передачи из чанков (M-3).
 class FileAssemblyResult {
   final Uint8List? bytes;
+
   /// null — сборка успешна; иначе код/описание ошибки
   /// ('incomplete' | 'checksum_mismatch' | 'size_mismatch').
   final String? error;
 
-  const FileAssemblyResult.success(this.bytes)
-      : error = null;
+  const FileAssemblyResult.success(this.bytes) : error = null;
 
   const FileAssemblyResult.failure(this.error) : bytes = null;
 
@@ -148,7 +150,9 @@ FileAssemblyResult assembleFileChunks(
     builder.add(chunks[i]!);
   }
   final bytes = builder.takeBytes();
-  if (expectedSize != null && expectedSize > 0 && bytes.length != expectedSize) {
+  if (expectedSize != null &&
+      expectedSize > 0 &&
+      bytes.length != expectedSize) {
     return const FileAssemblyResult.failure('size_mismatch');
   }
   if (expectedChecksum != null && expectedChecksum.isNotEmpty) {
@@ -198,8 +202,8 @@ enum SupportSessionState {
 /// Ожидаемый формат поля ice_servers:
 ///   [{"urls": ["turn:host:3478", "stun:..."], "username": "...", "credential": "..."}, ...]
 /// urls может быть строкой или массивом; username/credential опциональны.
-/// Возвращает пустой список, если поле отсутствует/невалидно — вызывающий
-/// код решает, использовать ли emergency-фолбэк.
+/// Возвращает пустой список, если поле отсутствует/невалидно — пустой список
+/// и используется (A-3: никаких публичных emergency-фолбэков, fail-closed).
 List<Map<String, dynamic>> parseIceServersConfig(Map<String, dynamic>? config) {
   if (config == null) return const [];
   final raw = config['ice_servers'];
@@ -210,7 +214,10 @@ List<Map<String, dynamic>> parseIceServersConfig(Map<String, dynamic>? config) {
     final urlsRaw = item['urls'];
     List<String> urls = const [];
     if (urlsRaw is List) {
-      urls = urlsRaw.map((e) => e?.toString() ?? '').where((u) => _isValidIceUrl(u)).toList();
+      urls = urlsRaw
+          .map((e) => e?.toString() ?? '')
+          .where((u) => _isValidIceUrl(u))
+          .toList();
     } else if (urlsRaw is String && _isValidIceUrl(urlsRaw)) {
       urls = [urlsRaw];
     }
@@ -218,14 +225,17 @@ List<Map<String, dynamic>> parseIceServersConfig(Map<String, dynamic>? config) {
     result.add({
       'urls': urls,
       if (item['username'] != null) 'username': item['username'].toString(),
-      if (item['credential'] != null) 'credential': item['credential'].toString(),
+      if (item['credential'] != null)
+        'credential': item['credential'].toString(),
     });
   }
   return result;
 }
 
 bool _isValidIceUrl(String url) {
-  return url.startsWith('stun:') || url.startsWith('turn:') || url.startsWith('turns:');
+  return url.startsWith('stun:') ||
+      url.startsWith('turn:') ||
+      url.startsWith('turns:');
 }
 
 /// Сервис управления WebRTC экраном и вводом для удаленной поддержки (SOS).
@@ -244,13 +254,32 @@ class SupportService extends ChangeNotifier {
   final Future<void> Function()? serviceReleaseInput;
 
   static bool serviceHostCommandAllowed(String type) => const {
-    'screen_list', 'switch_screen', 'mouse_move', 'mouse_down', 'mouse_up',
-    'mouse_click', 'click', 'wheel', 'mouse_wheel', 'key_down', 'key_up',
-    'block_input', 'hotkey', 'text_input', 'clipboard_set', 'clipboard_get',
-    'session_ended', 'support_ended', 'console_end',
-    'video_quality', 'reboot',
-    'file_start', 'file_chunk', 'file_end', 'file_reject',
-  }.contains(type);
+        'screen_list',
+        'switch_screen',
+        'mouse_move',
+        'mouse_down',
+        'mouse_up',
+        'mouse_click',
+        'click',
+        'wheel',
+        'mouse_wheel',
+        'key_down',
+        'key_up',
+        'block_input',
+        'hotkey',
+        'text_input',
+        'clipboard_set',
+        'clipboard_get',
+        'session_ended',
+        'support_ended',
+        'console_end',
+        'video_quality',
+        'reboot',
+        'file_start',
+        'file_chunk',
+        'file_end',
+        'file_reject',
+      }.contains(type);
 
   int _captureEpoch = 0;
   DateTime _lastMouseCheck = DateTime.fromMillisecondsSinceEpoch(0);
@@ -267,32 +296,17 @@ class SupportService extends ChangeNotifier {
   static const int _maxConcurrentDownloads = 2;
   static const Duration _downloadStallTimeout = Duration(seconds: 60);
 
-  /// STUN-серверы по умолчанию (fallback): используются, если корпоративный
-  /// сервер не сконфигурировал собственные TURN/STUN-серверы.
-  static const List<Map<String, dynamic>> emergencyIceServers = [
-    {
-      'urls': [
-        'stun:stun.l.google.com:19302',
-        'stun:stun1.l.google.com:19302',
-        'stun:stun2.l.google.com:19302',
-      ],
-    },
-    {
-      'urls': [
-        'stun:stun.cloudflare.com:3478',
-      ],
-    },
-  ];
+  /// A-3 (аудит 2026-10-12): публичные STUN-фолбэки удалены (fail-closed).
+  /// ICE-серверы приходят только с корпоративного сервера
+  /// (/api/v1/app/ice-servers или /api/v1/app/config); пусто — значит пусто:
+  /// утечка IP сотрудников на публичную инфраструктуру недопустима.
 
   /// ICE-серверы из конфига сервера; null — конфиг еще не загружен.
   List<Map<String, dynamic>>? _iceServersFromConfig;
 
-  /// Актуальный список ICE-серверов для RTCPeerConnection.
-  List<Map<String, dynamic>> get effectiveIceServers => serviceHost
-      ? (_iceServersFromConfig ?? const [])
-      : (_iceServersFromConfig != null && _iceServersFromConfig!.isNotEmpty)
-          ? _iceServersFromConfig!
-          : emergencyIceServers;
+  /// Актуальный список ICE-серверов для RTCPeerConnection (только серверные).
+  List<Map<String, dynamic>> get effectiveIceServers =>
+      _iceServersFromConfig ?? const [];
 
   /// Устанавливает ICE-серверы из корпоративного конфига/ядра.
   void setIceServers(List<Map<String, dynamic>>? servers) {
@@ -339,12 +353,15 @@ class SupportService extends ChangeNotifier {
   /// 60с — завершение с ошибкой.
   Timer? _establishmentTimer;
   Timer? _establishmentDeadlineTimer;
+
   /// Disconnected: ждем 10с перед ICE-рестартом (транзиентные обрывы).
   Timer? _disconnectedTimer;
+
   /// Максимум ICE-рестартов с повторным offer (интервал 5с).
   int _iceRestartAttempts = 0;
   DateTime? _lastIceRestartAt;
   bool _p2pConnected = false;
+
   /// Последняя ошибка сессии для UI (null — сессия завершилась без ошибок).
   String? _lastError;
 
@@ -368,6 +385,7 @@ class SupportService extends ChangeNotifier {
       notifyListeners();
     }
   }
+
   List<Map<String, dynamic>> get screens => _screens;
   String? get currentScreenId => _currentScreenId;
 
@@ -381,7 +399,8 @@ class SupportService extends ChangeNotifier {
     final dl = _activeDownloads.remove(transferId);
     dl?.stallTimer?.cancel();
     if (dl != null) {
-      debugPrint('support_service: закачка "${dl.filename}" отменена ($reason)');
+      debugPrint(
+          'support_service: закачка "${dl.filename}" отменена ($reason)');
     }
   }
 
@@ -454,13 +473,17 @@ class SupportService extends ChangeNotifier {
 
     _sendSignalOrData(msg.toJson());
 
-    if (_api != null && _activeSessionId != null && _activeSessionId!.isNotEmpty) {
-      _api!.sendSupportChatMessage(
+    if (_api != null &&
+        _activeSessionId != null &&
+        _activeSessionId!.isNotEmpty) {
+      _api!
+          .sendSupportChatMessage(
         sessionId: _activeSessionId!,
         text: msg.text,
         senderName: msg.senderName,
         clientId: msg.clientId,
-      ).catchError((e) {
+      )
+          .catchError((e) {
         debugPrint('support_service: ошибка отправки сообщения через API: $e');
       });
     }
@@ -468,7 +491,8 @@ class SupportService extends ChangeNotifier {
 
   void _sendSignalOrData(Map<String, dynamic> data) {
     bool sent = false;
-    if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+    if (_dataChannel != null &&
+        _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode(data)));
         sent = true;
@@ -482,7 +506,8 @@ class SupportService extends ChangeNotifier {
       // сервера + отсутствие доставки по порядку.
       final type = data['type']?.toString() ?? '';
       if (type.startsWith('file_')) {
-        throw StateError('Файловая передача требует открытый DataChannel ($type)');
+        throw StateError(
+            'Файловая передача требует открытый DataChannel ($type)');
       }
       _api!.sendSupportSignal(sessionId: _activeSessionId!, signal: data);
     }
@@ -498,7 +523,8 @@ class SupportService extends ChangeNotifier {
     final totalSize = await file.length();
 
     if (totalSize > _maxFileTransferBytes) {
-      _addSystemMessage('⚠ Файл не отправлен: превышен лимит размера 50 МБ ($filename)');
+      _addSystemMessage(
+          '⚠ Файл не отправлен: превышен лимит размера 50 МБ ($filename)');
       notifyListeners();
       return;
     }
@@ -507,8 +533,10 @@ class SupportService extends ChangeNotifier {
 
     // M-3: файловые передачи идут ТОЛЬКО через DataChannel; HTTP-fallback
     // для file_* запрещен (см. _sendSignalOrData).
-    if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
-      _addSystemMessage('⚠ Файл не отправлен: нет открытого соединения с инженером ($filename)');
+    if (_dataChannel == null ||
+        _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
+      _addSystemMessage(
+          '⚠ Файл не отправлен: нет открытого соединения с инженером ($filename)');
       notifyListeners();
       return;
     }
@@ -544,7 +572,8 @@ class SupportService extends ChangeNotifier {
         }
 
         final start = i * chunkSize;
-        final end = (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
+        final end =
+            (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
         final chunkBytes = bytes.sublist(start, end);
         final b64 = base64Encode(chunkBytes);
 
@@ -570,18 +599,21 @@ class SupportService extends ChangeNotifier {
         id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
         sender: 'user',
         senderName: 'Пользователь',
-        text: '📎 Отправлен файл: $filename (${(totalSize / 1024).toStringAsFixed(1)} КБ)',
+        text:
+            '📎 Отправлен файл: $filename (${(totalSize / 1024).toStringAsFixed(1)} КБ)',
         timestamp: DateTime.now(),
       ));
       notifyListeners();
     } catch (e) {
       debugPrint('support_service: передача файла прервана: $e');
-      _addSystemMessage('⚠ Передача файла "$filename" прервана (нет соединения)');
+      _addSystemMessage(
+          '⚠ Передача файла "$filename" прервана (нет соединения)');
       notifyListeners();
     }
   }
 
-  Future<void> _saveReceivedFile(_ActiveFileDownload dl, Uint8List bytes) async {
+  Future<void> _saveReceivedFile(
+      _ActiveFileDownload dl, Uint8List bytes) async {
     String? targetPath;
     try {
       final downloadsPath = await _resolveDownloadsDir();
@@ -624,7 +656,8 @@ class SupportService extends ChangeNotifier {
         id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
         sender: 'operator',
         senderName: 'Система',
-        text: '📁 Получен файл: $safeName (${(bytes.length / 1024).toStringAsFixed(1)} КБ)',
+        text:
+            '📁 Получен файл: $safeName (${(bytes.length / 1024).toStringAsFixed(1)} КБ)',
         timestamp: DateTime.now(),
       ));
       _unreadChatCount++;
@@ -667,7 +700,8 @@ class SupportService extends ChangeNotifier {
   Future<String> _resolveDownloadsDir() async {
     if (!kIsWeb && Platform.isAndroid) {
       try {
-        final dirs = await getExternalStorageDirectories(type: StorageDirectory.downloads);
+        final dirs = await getExternalStorageDirectories(
+            type: StorageDirectory.downloads);
         if (dirs != null && dirs.isNotEmpty) {
           return '${dirs.first.path}${Platform.pathSeparator}LigamentSupport';
         }
@@ -695,13 +729,12 @@ class SupportService extends ChangeNotifier {
                 .whereType<Directory>()
                 .map((d) => d.path)
                 .where((p) {
-                  final name = p.split(Platform.pathSeparator).last.toLowerCase();
-                  return name != 'default' &&
-                      name != 'default user' &&
-                      name != 'public' &&
-                      name != 'all users';
-                })
-                .toList();
+              final name = p.split(Platform.pathSeparator).last.toLowerCase();
+              return name != 'default' &&
+                  name != 'default user' &&
+                  name != 'public' &&
+                  name != 'all users';
+            }).toList();
 
             for (final userPath in userFolders) {
               final dlDir = Directory('$userPath\\Downloads');
@@ -711,7 +744,8 @@ class SupportService extends ChangeNotifier {
             }
           }
         } catch (e) {
-          debugPrint('support_service: ошибка поиска папки Downloads пользователя: $e');
+          debugPrint(
+              'support_service: ошибка поиска папки Downloads пользователя: $e');
         }
 
         // Надежный fallback для службы: Общие загрузки (Public Downloads)
@@ -786,8 +820,9 @@ class SupportService extends ChangeNotifier {
     _accessMode = accessMode;
 
     try {
-      // ICE-серверы берутся из /api/v1/app/ice-servers или конфига сервера;
-      // Google/Cloudflare STUN — emergency-фолбэк.
+      // ICE-серверы берутся только с корпоративного сервера
+      // (/api/v1/app/ice-servers или конфиг): захардкоженные публичные
+      // STUN-фолбэки удалены (A-3, аудит 2026-10-12, fail-closed).
       if (_iceServersFromConfig == null || _iceServersFromConfig!.isEmpty) {
         try {
           final iceRaw = await api.getIceServers();
@@ -806,7 +841,8 @@ class SupportService extends ChangeNotifier {
               setIceServers(parsed);
             }
           } catch (e) {
-            debugPrint('support_service: конфиг недоступен, emergency STUN: $e');
+            debugPrint(
+                'support_service: конфиг недоступен, ICE останется пустым (fail-closed): $e');
           }
         }
       }
@@ -854,7 +890,8 @@ class SupportService extends ChangeNotifier {
             // колбэки перед pc.close) — терминируем с ошибкой в UI.
             if (!_isStopping) {
               _p2pConnected = false;
-              if (_state == SupportSessionState.active || _state == SupportSessionState.connecting) {
+              if (_state == SupportSessionState.active ||
+                  _state == SupportSessionState.connecting) {
                 _failSession(_ownerSession
                     ? 'Соединение с вашим устройством закрыто'
                     : 'Соединение с инженером закрыто');
@@ -874,7 +911,8 @@ class SupportService extends ChangeNotifier {
         _requireCaptureEpoch(epoch);
         _setupDataChannel(dc);
       } catch (e) {
-        debugPrint('support_service: ошибка предварительного создания DataChannel: $e');
+        debugPrint(
+            'support_service: ошибка предварительного создания DataChannel: $e');
       }
       _requireCaptureEpoch(epoch);
 
@@ -888,27 +926,29 @@ class SupportService extends ChangeNotifier {
       // резолвиться и не падать неограниченно долго — сеанс висел
       // «подключение» часами (инцидент 2026-10-10, SOS к Linux).
       MediaStream screenStream;
-      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         List<DesktopCapturerSource> sources = [];
         try {
-          sources = await desktopCapturer
-              .getSources(types: [SourceType.Screen])
-              .timeout(const Duration(seconds: 45));
+          sources = await desktopCapturer.getSources(
+              types: [SourceType.Screen]).timeout(const Duration(seconds: 45));
         } catch (e) {
           debugPrint('support_service: desktopCapturer.getSources error: $e');
         }
         _requireCaptureEpoch(epoch);
         if (sources.isNotEmpty) {
-          _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
+          _screens =
+              sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
           final selectedSource = sources.first;
           _currentScreenId = selectedSource.id;
           _applyActiveScreenRect(selectedSource.id);
 
-          debugPrint('support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
+          debugPrint(
+              'support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
           const captureTimeout = Duration(seconds: 45);
           try {
-            screenStream = await navigator.mediaDevices
-                .getDisplayMedia(<String, dynamic>{
+            screenStream =
+                await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
               'audio': false,
               'video': {
                 'deviceId': {'exact': selectedSource.id},
@@ -934,16 +974,18 @@ class SupportService extends ChangeNotifier {
             }
           }
         } else {
-          debugPrint('support_service: sources пуст, fallback на базовый getDisplayMedia');
-          screenStream = await navigator.mediaDevices
-              .getDisplayMedia(<String, dynamic>{
+          debugPrint(
+              'support_service: sources пуст, fallback на базовый getDisplayMedia');
+          screenStream =
+              await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
             'audio': false,
             'video': true,
           }).timeout(const Duration(seconds: 45));
         }
       } else {
         // Мобильные платформы и Web
-        screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+        screenStream =
+            await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': false,
           'video': true,
         }).timeout(const Duration(seconds: 60));
@@ -961,7 +1003,9 @@ class SupportService extends ChangeNotifier {
 
       // m-1: на macOS без Accessibility-разрешения инъекции ввода молча
       // игнорируются — честно подсказываем пользователю до начала сеанса.
-      if (!kIsWeb && Platform.isMacOS && InputInjector.instance.macAccessibilityTrusted == false) {
+      if (!kIsWeb &&
+          Platform.isMacOS &&
+          InputInjector.instance.macAccessibilityTrusted == false) {
         _addSystemMessage('⚠ Для удаленного управления разрешите Ligament 2FA: '
             'Системные настройки → Конфиденциальность и безопасность → Универсальный доступ');
         notifyListeners();
@@ -998,7 +1042,8 @@ class SupportService extends ChangeNotifier {
           encodings.first.maxBitrate = bitrate;
           params.encodings = encodings;
         }
-        params.degradationPreference = RTCDegradationPreference.MAINTAIN_RESOLUTION;
+        params.degradationPreference =
+            RTCDegradationPreference.MAINTAIN_RESOLUTION;
         await sender.setParameters(params);
         debugPrint('support_service: применен битрейт видео $bitrate bps');
         break;
@@ -1041,7 +1086,8 @@ class SupportService extends ChangeNotifier {
         },
       );
     } catch (e) {
-      debugPrint('support_service: ошибка отправки offer (iceRestart=$iceRestart): $e');
+      debugPrint(
+          'support_service: ошибка отправки offer (iceRestart=$iceRestart): $e');
     }
   }
 
@@ -1051,7 +1097,8 @@ class SupportService extends ChangeNotifier {
     _establishmentTimer?.cancel();
     _establishmentTimer = Timer(const Duration(seconds: 30), () {
       if (_p2pConnected || _peerConnection == null) return;
-      debugPrint('support_service: соединение не установилось за 30с — повторный offer');
+      debugPrint(
+          'support_service: соединение не установилось за 30с — повторный offer');
       _attemptIceRestart();
     });
     _establishmentDeadlineTimer ??= Timer(const Duration(seconds: 60), () {
@@ -1081,12 +1128,19 @@ class SupportService extends ChangeNotifier {
     // A-03: локальный предельный срок аренды на хосте (монотонное время).
     // При потере связи с сервером Core сессия принудительно прекращается.
     _localLeaseDeadline = DateTime.now().add(const Duration(seconds: 60));
-    _leaseWatchdogTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
-      if (_state != SupportSessionState.active || _activeSessionId == null || _api == null) return;
+    _leaseWatchdogTimer =
+        Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (_state != SupportSessionState.active ||
+          _activeSessionId == null ||
+          _api == null) {
+        return;
+      }
 
-      if (_localLeaseDeadline != null && DateTime.now().isAfter(_localLeaseDeadline!)) {
+      if (_localLeaseDeadline != null &&
+          DateTime.now().isAfter(_localLeaseDeadline!)) {
         debugPrint('support_service: local lease expired, stopping P2P (A-03)');
-        _failSession('Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
+        _failSession(
+            'Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
         return;
       }
 
@@ -1097,7 +1151,9 @@ class SupportService extends ChangeNotifier {
           return;
         }
         final status = sess['status']?.toString();
-        if (status == 'completed' || status == 'cancelled' || status == 'rejected') {
+        if (status == 'completed' ||
+            status == 'cancelled' ||
+            status == 'rejected') {
           _failSession('Сеанс удаленной помощи завершен сервером');
           return;
         }
@@ -1105,8 +1161,10 @@ class SupportService extends ChangeNotifier {
         _localLeaseDeadline = DateTime.now().add(const Duration(seconds: 60));
       } catch (e) {
         debugPrint('support_service: lease watchdog check error: $e');
-        if (_localLeaseDeadline != null && DateTime.now().isAfter(_localLeaseDeadline!)) {
-          _failSession('Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
+        if (_localLeaseDeadline != null &&
+            DateTime.now().isAfter(_localLeaseDeadline!)) {
+          _failSession(
+              'Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
         }
       }
     });
@@ -1137,7 +1195,8 @@ class SupportService extends ChangeNotifier {
         WakelockPlus.disable();
       }
     } catch (e) {
-      debugPrint('support_service: wakelock ${enabled ? 'enable' : 'disable'} ошибка: $e');
+      debugPrint(
+          'support_service: wakelock ${enabled ? 'enable' : 'disable'} ошибка: $e');
     }
   }
 
@@ -1146,7 +1205,10 @@ class SupportService extends ChangeNotifier {
   void _onP2pDisconnected() {
     _p2pConnected = false;
     if (_isStopping || _peerConnection == null) return;
-    if (_state != SupportSessionState.active && _state != SupportSessionState.connecting) return;
+    if (_state != SupportSessionState.active &&
+        _state != SupportSessionState.connecting) {
+      return;
+    }
     _disconnectedTimer?.cancel();
     _disconnectedTimer = Timer(const Duration(seconds: 10), () {
       if (_p2pConnected || _peerConnection == null || _isStopping) return;
@@ -1160,17 +1222,23 @@ class SupportService extends ChangeNotifier {
   void _onP2pFailed() {
     _p2pConnected = false;
     if (_isStopping || _peerConnection == null) return;
-    if (_state != SupportSessionState.active && _state != SupportSessionState.connecting) return;
+    if (_state != SupportSessionState.active &&
+        _state != SupportSessionState.connecting) {
+      return;
+    }
     _disconnectedTimer?.cancel();
     _attemptIceRestart();
   }
 
   void _attemptIceRestart({bool force = false, bool iceRestart = true}) {
-    if (_isStopping || _peerConnection == null || _activeSessionId == null) return;
+    if (_isStopping || _peerConnection == null || _activeSessionId == null) {
+      return;
+    }
     if (force) {
       _iceRestartAttempts = 0;
       _lastIceRestartAt = DateTime.now();
-      debugPrint('support_service: форсированный re-offer по запросу оператора');
+      debugPrint(
+          'support_service: форсированный re-offer по запросу оператора');
       _sendOffer(iceRestart: iceRestart);
       _armEstablishmentTimeouts();
       return;
@@ -1180,7 +1248,8 @@ class SupportService extends ChangeNotifier {
       return;
     }
     final now = DateTime.now();
-    final sinceLast = _lastIceRestartAt == null ? null : now.difference(_lastIceRestartAt!);
+    final sinceLast =
+        _lastIceRestartAt == null ? null : now.difference(_lastIceRestartAt!);
     if (sinceLast != null && sinceLast < const Duration(seconds: 5)) {
       final wait = const Duration(seconds: 5) - sinceLast;
       Timer(wait, () {
@@ -1222,6 +1291,55 @@ class SupportService extends ChangeNotifier {
 
   final List<RTCIceCandidate> _pendingCandidates = [];
 
+  /// A-1 (аудит 2026-10-12, регрессия v1.1.38): типы команд, которые
+  /// разрешено получать через сигнальный WS-канал (HTTP-шлюз сервера).
+  /// Управление вводом (mouse_*/key_*/hotkey/text_input/block_input),
+  /// буфер обмена, файловые передачи и reboot исполняются ТОЛЬКО из
+  /// DTLS DataChannel — компрометация сигнального канала/сервера не
+  /// должна давать RAT над рабочей станцией. Служебные WebRTC-кадры
+  /// (sdp/offer/answer/candidate) сигналингу принадлежат по определению.
+  /// Завершение сессии (session_ended/support_ended/console_end) —
+  /// исключение fail-safe: команда только останавливает трансляцию
+  /// (управления не даёт), а консоль шлёт её через WS при закрытии
+  /// сессии — иначе экран транслировался бы ещё до 15с до срабатывания
+  /// lease-watchdog.
+  static const Set<String> signalingAllowedTypes = {
+    'screen_list',
+    'switch_screen',
+    'chat_message',
+    'session_ended',
+    'support_ended',
+    'console_end',
+  };
+
+  /// A-1: типы, которые handleRemoteInput реально исполняет (ввод/буфер/
+  /// файлы/питание). Приход таких типов через сигналинг — попытка обойти
+  /// транспортный гейт: игнорируем с warn-логом.
+  static const Set<String> dataChannelOnlyTypes = {
+    'mouse_move',
+    'mouse_down',
+    'mouse_up',
+    'mouse_click',
+    'click',
+    'wheel',
+    'mouse_wheel',
+    'key_down',
+    'key_up',
+    'block_input',
+    'hotkey',
+    'text_input',
+    'clipboard_set',
+    'clipboard_get',
+    'file_start',
+    'file_chunk',
+    'file_end',
+    'file_reject',
+    'file_ack',
+    'video_quality',
+    'reboot',
+    'input_control',
+  };
+
   /// Обработка сигнальных WebRTC пакетов от браузера оператора (Answer, Candidates)
   Future<void> handleRemoteSignal(Map<String, dynamic> signal) async {
     try {
@@ -1230,34 +1348,65 @@ class SupportService extends ChangeNotifier {
           : signal;
 
       if (payload['type'] == 'chat_message') {
-        _handleRemoteInput(payload);
+        handleRemoteInput(payload);
         return;
       }
 
       if (payload['type'] == 'input_control') {
+        // A-1: обёртка input_control historically несёт команды управления.
+        // Через сигналинг из неё разрешены только информационные типы;
+        // ввод исполняется исключительно из DataChannel (DTLS).
         final inputData = (payload['data'] is Map<String, dynamic>)
             ? payload['data'] as Map<String, dynamic>
             : payload;
-        _handleRemoteInput(inputData);
+        final subType = inputData['type']?.toString();
+        if (subType != null && signalingAllowedTypes.contains(subType)) {
+          handleRemoteInput(inputData);
+        } else {
+          debugPrint('support_service: input via signaling rejected '
+              '(input_control/$subType) — ввод разрешён только через DataChannel');
+        }
         return;
       }
 
-      if (payload['type'] == 'screen_list' || payload['type'] == 'switch_screen') {
-        _handleRemoteInput(payload);
+      if (payload['type'] == 'screen_list' ||
+          payload['type'] == 'switch_screen') {
+        handleRemoteInput(payload);
+        return;
+      }
+
+      // A-1: прочие сигнально-разрешённые типы (завершение сессии) —
+      // маршрутизируем как раньше, они не дают управления.
+      final directType = payload['type']?.toString();
+      if (directType != null && signalingAllowedTypes.contains(directType)) {
+        handleRemoteInput(payload);
+        return;
+      }
+
+      // A-1: прямые команды управления через сигналинг — игнор + warn.
+      // (мышка/клавиатура/буфер/файлы/reboot — только из DataChannel)
+      if (directType != null && dataChannelOnlyTypes.contains(directType)) {
+        debugPrint('support_service: input via signaling rejected '
+            '($directType) — ввод разрешён только через DataChannel');
         return;
       }
 
       if (_peerConnection == null) return;
 
-      if (payload['type'] == 'request_offer' || payload['type'] == 'renegotiate') {
-        debugPrint('support_service: получен запрос офера (request_offer) от оператора');
-        if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
+      if (payload['type'] == 'request_offer' ||
+          payload['type'] == 'renegotiate') {
+        debugPrint(
+            'support_service: получен запрос офера (request_offer) от оператора');
+        if (_dataChannel == null ||
+            _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
           try {
             final dcInit = RTCDataChannelInit()..ordered = true;
-            final dc = await _peerConnection!.createDataChannel('control', dcInit);
+            final dc =
+                await _peerConnection!.createDataChannel('control', dcInit);
             _setupDataChannel(dc);
           } catch (e) {
-            debugPrint('support_service: ошибка пересоздания DataChannel при request_offer: $e');
+            debugPrint(
+                'support_service: ошибка пересоздания DataChannel при request_offer: $e');
           }
         }
         final iceRestart = payload['iceRestart'] == true;
@@ -1288,7 +1437,9 @@ class SupportService extends ChangeNotifier {
           cMap['sdpMLineIndex'] as int?,
         );
         final remoteDesc = await _peerConnection!.getRemoteDescription();
-        if (remoteDesc == null || remoteDesc.type == null || remoteDesc.type!.isEmpty) {
+        if (remoteDesc == null ||
+            remoteDesc.type == null ||
+            remoteDesc.type!.isEmpty) {
           _pendingCandidates.add(candidate);
         } else {
           await _peerConnection!.addCandidate(candidate);
@@ -1312,6 +1463,7 @@ class SupportService extends ChangeNotifier {
         _sendCurrentTelemetry();
       }
     }
+
     channel.onDataChannelState = handleState;
     if (channel.state == RTCDataChannelState.RTCDataChannelOpen) {
       handleState(RTCDataChannelState.RTCDataChannelOpen);
@@ -1320,7 +1472,7 @@ class SupportService extends ChangeNotifier {
       if (msg.isBinary) return;
       try {
         final data = jsonDecode(msg.text) as Map<String, dynamic>;
-        _handleRemoteInput(data);
+        handleRemoteInput(data);
       } catch (e) {
         debugPrint('support_service: ошибка разбора команды ввода: $e');
       }
@@ -1358,33 +1510,45 @@ class SupportService extends ChangeNotifier {
 
   Future<void> _sendScreenList() async {
     try {
-      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         try {
-          final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
+          final sources =
+              await desktopCapturer.getSources(types: [SourceType.Screen]);
           if (sources.isNotEmpty) {
-            _screens = sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
-            debugPrint('support_service: обновлен список экранов (${_screens.length}): $_screens');
+            _screens = sources
+                .map((s) => _screenEntryForSource(s.id, s.name))
+                .toList();
+            debugPrint(
+                'support_service: обновлен список экранов (${_screens.length}): $_screens');
           }
         } catch (e) {
-          debugPrint('support_service: ошибка динамического обновления экранов: $e');
+          debugPrint(
+              'support_service: ошибка динамического обновления экранов: $e');
         }
       }
       final payload = {
         'type': 'screen_list',
         'screens': _screens,
         'selected_id': _currentScreenId,
-        if (_currentScreenRect != null) 'selected_rect': _currentScreenRect!.toJson(),
-        if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
-          'virtual_desktop': InputInjector.instance.getVirtualDesktopRect().toJson(),
+        if (_currentScreenRect != null)
+          'selected_rect': _currentScreenRect!.toJson(),
+        if (!kIsWeb &&
+            (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+          'virtual_desktop':
+              InputInjector.instance.getVirtualDesktopRect().toJson(),
       };
-      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+      if (_dataChannel != null &&
+          _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
       }
       if (_activeSessionId != null && _api != null) {
-        _api!.sendSupportSignal(
-          sessionId: _activeSessionId!,
-          signal: payload,
-        ).catchError((_) => null);
+        _api!
+            .sendSupportSignal(
+              sessionId: _activeSessionId!,
+              signal: payload,
+            )
+            .catchError((_) => null);
       }
     } catch (_) {}
   }
@@ -1395,7 +1559,8 @@ class SupportService extends ChangeNotifier {
     try {
       MediaStream newStream;
       try {
-        newStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+        newStream =
+            await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': false,
           'video': {
             'deviceId': {'exact': screenId},
@@ -1403,7 +1568,8 @@ class SupportService extends ChangeNotifier {
           },
         });
       } catch (_) {
-        newStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+        newStream =
+            await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': false,
           'video': {
             'deviceId': screenId,
@@ -1450,7 +1616,10 @@ class SupportService extends ChangeNotifier {
 
   Future<void> _sendCurrentTelemetry() async {
     if (serviceHost) return;
-    if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) return;
+    if (_dataChannel == null ||
+        _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
+      return;
+    }
     try {
       final cpu = await _telemetry.collectCpuMetrics();
       final disk = await _telemetry.collectDiskMetrics();
@@ -1463,23 +1632,26 @@ class SupportService extends ChangeNotifier {
     } catch (_) {}
   }
 
-
   /// Начало входящей файловой передачи: проверка лимитов размера и числа
   /// одновременных закачек, запуск таймаута ожидания первого чанка.
   void _handleFileStart(Map<String, dynamic> input) {
-    final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    final transferId =
+        input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
     if (transferId.isEmpty) return;
-    final filename = input['filename']?.toString() ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
+    final filename = input['filename']?.toString() ??
+        'file_${DateTime.now().millisecondsSinceEpoch}';
     final size = (input['size'] as num?)?.toInt() ?? 0;
     final totalChunks = (input['total_chunks'] as num?)?.toInt() ?? 1;
 
     if (size < 0 || size > _maxFileTransferBytes) {
-      debugPrint('support_service: передача "$filename" отклонена: размер $size байт превышает лимит 50 МБ');
+      debugPrint(
+          'support_service: передача "$filename" отклонена: размер $size байт превышает лимит 50 МБ');
       return;
     }
     if (totalChunks <= 0) return;
     if (_activeDownloads.length >= _maxConcurrentDownloads) {
-      debugPrint('support_service: передача "$filename" отклонена: превышен лимит одновременных закачек ($_maxConcurrentDownloads)');
+      debugPrint(
+          'support_service: передача "$filename" отклонена: превышен лимит одновременных закачек ($_maxConcurrentDownloads)');
       return;
     }
 
@@ -1494,7 +1666,8 @@ class SupportService extends ChangeNotifier {
       expectedChecksum: input['checksum']?.toString(),
     );
     dl.stallTimer = Timer(_downloadStallTimeout, () {
-      _abortDownload(transferId, 'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
+      _abortDownload(transferId,
+          'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
     });
     _activeDownloads[transferId] = dl;
   }
@@ -1503,7 +1676,8 @@ class SupportService extends ChangeNotifier {
   /// перезапуск таймаута ожидания следующего чанка. Битый base64 —
   /// закачка отменяется с сообщением об ошибке (M-3).
   void _handleFileChunk(Map<String, dynamic> input) {
-    final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    final transferId =
+        input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
     final chunkIndex = (input['chunk_index'] as num?)?.toInt() ?? 0;
     final base64Data = input['data']?.toString() ?? '';
     final dl = _activeDownloads[transferId];
@@ -1527,13 +1701,17 @@ class SupportService extends ChangeNotifier {
 
       dl.stallTimer?.cancel();
       dl.stallTimer = Timer(_downloadStallTimeout, () {
-        _abortDownload(transferId, 'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
+        _abortDownload(transferId,
+            'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
       });
     } catch (e) {
-      debugPrint('support_service: битый base64 в чанке $chunkIndex передачи "$transferId": $e');
+      debugPrint(
+          'support_service: битый base64 в чанке $chunkIndex передачи "$transferId": $e');
       _abortDownload(transferId, 'поврежденные данные (чанк $chunkIndex)');
-      _notifyFileRejected(transferId, dl.filename, 'поврежденные данные при передаче');
-      _addSystemMessage('⚠ Файл "${dl.filename}" не получен: поврежденные данные при передаче');
+      _notifyFileRejected(
+          transferId, dl.filename, 'поврежденные данные при передаче');
+      _addSystemMessage(
+          '⚠ Файл "${dl.filename}" не получен: поврежденные данные при передаче');
       notifyListeners();
     }
   }
@@ -1541,14 +1719,17 @@ class SupportService extends ChangeNotifier {
   /// Завершение передачи: проверка полноты (все индексы 0..totalChunks-1)
   /// и целостности (sha256), только после этого — сохранение (M-3).
   void _handleFileEnd(Map<String, dynamic> input) {
-    final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    final transferId =
+        input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
     final dl = _activeDownloads.remove(transferId);
     dl?.stallTimer?.cancel();
     if (dl == null) return;
 
     // file_end может нести checksum повторно — приоритет у него.
     final endChecksum = input['checksum']?.toString();
-    final checksum = (endChecksum != null && endChecksum.isNotEmpty) ? endChecksum : dl.expectedChecksum;
+    final checksum = (endChecksum != null && endChecksum.isNotEmpty)
+        ? endChecksum
+        : dl.expectedChecksum;
 
     final result = assembleFileChunks(
       dl.chunks,
@@ -1561,7 +1742,8 @@ class SupportService extends ChangeNotifier {
       return;
     }
 
-    debugPrint('support_service: передача "${dl.filename}" отброшена: ${result.error}');
+    debugPrint(
+        'support_service: передача "${dl.filename}" отброшена: ${result.error}');
     String reason;
     switch (result.error) {
       case 'incomplete':
@@ -1599,13 +1781,22 @@ class SupportService extends ChangeNotifier {
   }
 
   /// Эмуляция пользовательского ввода от оператора (мышь/клавиатура/хоткеи/буфер)
-  void _handleRemoteInput(Map<String, dynamic> input) async {
+  ///
+  /// A-1: вызывается ТОЛЬКО из доверенных транспортов — DataChannel
+  /// (DTLS, см. _setupDataChannel) и сигнального канала после фильтра
+  /// handleRemoteSignal (signalingAllowedTypes). Публичное имя нужно
+  /// только тестам транспортного гейта.
+  @visibleForTesting
+  Future<void> handleRemoteInput(Map<String, dynamic> input) async {
     final type = (input['type'] ?? input['action'])?.toString();
     if (type == null) return;
     if (serviceHost && !serviceHostCommandAllowed(type)) return;
 
-    if (type == 'session_ended' || type == 'support_ended' || type == 'console_end') {
-      debugPrint('support_service: remote session ended signal received ($type)');
+    if (type == 'session_ended' ||
+        type == 'support_ended' ||
+        type == 'console_end') {
+      debugPrint(
+          'support_service: remote session ended signal received ($type)');
       await stopScreenSharing();
       return;
     }
@@ -1627,7 +1818,8 @@ class SupportService extends ChangeNotifier {
       try {
         await serviceInput?.call({'type': 'clipboard_probe'});
       } catch (_) {
-        _sendSignalOrData({'type': 'clipboard_error', 'reason': 'secure_desktop'});
+        _sendSignalOrData(
+            {'type': 'clipboard_error', 'reason': 'secure_desktop'});
         return;
       }
     }
@@ -1682,7 +1874,8 @@ class SupportService extends ChangeNotifier {
       return;
     } else if (type == 'clipboard_get') {
       final clip = await Clipboard.getData(Clipboard.kTextPlain);
-      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+      if (_dataChannel != null &&
+          _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
           'type': 'clipboard_data',
           'text': clip?.text ?? '',
@@ -1743,7 +1936,8 @@ class SupportService extends ChangeNotifier {
       if (inject == null) return;
       try {
         final now = DateTime.now();
-        final checkMouse = type == 'mouse_move' && now.difference(_lastMouseCheck).inMilliseconds >= 500;
+        final checkMouse = type == 'mouse_move' &&
+            now.difference(_lastMouseCheck).inMilliseconds >= 500;
         if (checkMouse) _lastMouseCheck = now;
         await inject({
           ...input,
@@ -1755,17 +1949,26 @@ class SupportService extends ChangeNotifier {
             'screen_rect': _currentScreenRect!.toJson(),
         });
         if (type == 'block_input') {
-          _sendSignalOrData({'type': 'block_input_ack', 'blocked': input['blocked'] == true});
+          _sendSignalOrData(
+              {'type': 'block_input_ack', 'blocked': input['blocked'] == true});
         }
       } catch (_) {
         if (type == 'block_input') {
-          _sendSignalOrData({'type': 'block_input_ack', 'blocked': false, 'error': 'input_rejected'});
+          _sendSignalOrData({
+            'type': 'block_input_ack',
+            'blocked': false,
+            'error': 'input_rejected'
+          });
           return;
         }
         final now = DateTime.now();
         if (now.difference(_lastInputError).inSeconds >= 3) {
           _lastInputError = now;
-          _sendSignalOrData({'type': 'input_error', 'command': type, 'reason': 'windows_input_rejected'});
+          _sendSignalOrData({
+            'type': 'input_error',
+            'command': type,
+            'reason': 'windows_input_rejected'
+          });
         }
       }
       return;
@@ -1779,8 +1982,10 @@ class SupportService extends ChangeNotifier {
           if (text is! String || text.length > 4096) return;
           if (!kIsWeb && Platform.isWindows) {
             for (int i = 0; i < text.length; i++) {
-              InputInjector.instance.keyAction(action: 'down', key: text[i], char: text[i]);
-              InputInjector.instance.keyAction(action: 'up', key: text[i], char: text[i]);
+              InputInjector.instance
+                  .keyAction(action: 'down', key: text[i], char: text[i]);
+              InputInjector.instance
+                  .keyAction(action: 'up', key: text[i], char: text[i]);
             }
           } else if (!kIsWeb && Platform.isMacOS) {
             await Clipboard.setData(ClipboardData(text: text));
@@ -1796,7 +2001,8 @@ class SupportService extends ChangeNotifier {
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
           final y = (input['y'] as num?)?.toDouble() ?? 0.0;
           final explicitRect = input['screen_rect'] is Map
-              ? ScreenRect.fromJson(Map<String, dynamic>.from(input['screen_rect'] as Map))
+              ? ScreenRect.fromJson(
+                  Map<String, dynamic>.from(input['screen_rect'] as Map))
               : null;
           InputInjector.instance.moveMouse(x, y, screenRect: explicitRect);
           break;
@@ -1807,11 +2013,19 @@ class SupportService extends ChangeNotifier {
           final btn = (input['button'] as num?)?.toInt() ?? 0;
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
           final y = (input['y'] as num?)?.toDouble() ?? 0.0;
-          final act = type == 'mouse_down' ? 'down' : (type == 'mouse_up' ? 'up' : 'click');
+          final act = type == 'mouse_down'
+              ? 'down'
+              : (type == 'mouse_up' ? 'up' : 'click');
           final explicitRect = input['screen_rect'] is Map
-              ? ScreenRect.fromJson(Map<String, dynamic>.from(input['screen_rect'] as Map))
+              ? ScreenRect.fromJson(
+                  Map<String, dynamic>.from(input['screen_rect'] as Map))
               : null;
-          InputInjector.instance.mouseAction(action: act, button: btn, normX: x, normY: y, screenRect: explicitRect);
+          InputInjector.instance.mouseAction(
+              action: act,
+              button: btn,
+              normX: x,
+              normY: y,
+              screenRect: explicitRect);
           break;
         case 'wheel':
         case 'mouse_wheel':
@@ -1824,7 +2038,8 @@ class SupportService extends ChangeNotifier {
           final code = (input['keyCode'] as num?)?.toInt();
           final char = input['char']?.toString();
           final act = type == 'key_down' ? 'down' : 'up';
-          InputInjector.instance.keyAction(action: act, key: key, keyCode: code, char: char);
+          InputInjector.instance
+              .keyAction(action: act, key: key, keyCode: code, char: char);
           break;
         case 'block_input':
           final blocked = input['blocked'] == true || input['enabled'] == true;
@@ -1832,7 +2047,9 @@ class SupportService extends ChangeNotifier {
           _sendSignalOrData({'type': 'block_input_ack', 'blocked': blocked});
           break;
         case 'hotkey':
-          final hotkey = (input['action'] ?? input['hotkey'] ?? input['key'])?.toString() ?? '';
+          final hotkey = (input['action'] ?? input['hotkey'] ?? input['key'])
+                  ?.toString() ??
+              '';
           if (hotkey.isNotEmpty) {
             await InputInjector.instance.triggerHotkey(hotkey);
           }
@@ -1843,7 +2060,8 @@ class SupportService extends ChangeNotifier {
       final now = DateTime.now();
       if (now.difference(_lastInputError).inSeconds >= 3) {
         _lastInputError = now;
-        _sendSignalOrData({'type': 'input_error', 'command': type, 'reason': e.toString()});
+        _sendSignalOrData(
+            {'type': 'input_error', 'command': type, 'reason': e.toString()});
       }
     }
   }
@@ -1852,7 +2070,14 @@ class SupportService extends ChangeNotifier {
     debugPrint('support_service: получен сигнал reboot от оператора');
     try {
       if (!kIsWeb && Platform.isWindows) {
-        Process.run('shutdown', ['/r', '/t', '5', '/f', '/c', 'Reboot requested by remote operator']);
+        Process.run('shutdown', [
+          '/r',
+          '/t',
+          '5',
+          '/f',
+          '/c',
+          'Reboot requested by remote operator'
+        ]);
       } else if (!kIsWeb && Platform.isLinux) {
         Process.run('systemctl', ['reboot']).catchError((_) {
           return Process.run('shutdown', ['-r', 'now']);
@@ -1914,13 +2139,15 @@ class SupportService extends ChangeNotifier {
       if (dc != null) {
         try {
           if (dc.state == RTCDataChannelState.RTCDataChannelOpen) {
-            dc.send(RTCDataChannelMessage(jsonEncode({'type': 'session_ended'})));
+            dc.send(
+                RTCDataChannelMessage(jsonEncode({'type': 'session_ended'})));
           }
         } catch (_) {}
         try {
           dc.onMessage = null;
           dc.onDataChannelState = null;
-          await dc.close().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+          await dc.close().timeout(const Duration(milliseconds: 300),
+              onTimeout: () => null);
         } catch (_) {}
       }
       try {
@@ -1938,7 +2165,8 @@ class SupportService extends ChangeNotifier {
           pc.onDataChannel = null;
           pc.onIceConnectionState = null;
           pc.onRenegotiationNeeded = null;
-          await pc.close().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+          await pc.close().timeout(const Duration(milliseconds: 300),
+              onTimeout: () => null);
         } catch (_) {}
       }
 
@@ -1949,7 +2177,8 @@ class SupportService extends ChangeNotifier {
         try {
           for (final track in stream.getTracks()) {
             try {
-              await track.stop().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+              await track.stop().timeout(const Duration(milliseconds: 300),
+                  onTimeout: () => null);
             } catch (_) {}
           }
         } catch (_) {}
@@ -1957,10 +2186,14 @@ class SupportService extends ChangeNotifier {
 
       // 5. Окончательное освобождение нативных дескрипторов
       try {
-        await stream?.dispose().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+        await stream
+            ?.dispose()
+            .timeout(const Duration(milliseconds: 300), onTimeout: () => null);
       } catch (_) {}
       try {
-        await pc?.dispose().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+        await pc
+            ?.dispose()
+            .timeout(const Duration(milliseconds: 300), onTimeout: () => null);
       } catch (_) {}
     } catch (e) {
       debugPrint('support_service: ошибка при stopScreenSharing: $e');

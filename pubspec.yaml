@@ -1,7 +1,7 @@
 name: ligament_authenticator
 description: "Cross-platform enterprise 2FA client for Windows, macOS, Linux, iOS, and Android with Fleet support, Number Matching, and Security Posture Telemetry."
 publish_to: 'none'
-version: 1.1.50+76
+version: 1.1.51+77
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -28,7 +28,9 @@ dependencies:
   package_info_plus: ^8.0.0
   intl: ^0.20.0
   url_launcher: ^6.2.5
-  flutter_webrtc: ^1.6.2+hotfix.1
+  # A-12 (аудит 2026-10-12): минимум hotfix.4 — чинит use-after-free
+  # видеорендерера (DoS-класс) в hotfix.1.
+  flutter_webrtc: ^1.6.2+hotfix.4
   crypto: ^3.0.3
   path_provider: ^2.1.0
   wakelock_plus: ^1.2.5

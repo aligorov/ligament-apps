@@ -24,6 +24,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
   /// (например, подтверждено в Telegram или истёк TTL).
   late Map<String, dynamic> _prompt;
   AuthState? _auth;
+
   /// Остаток TTL челленджа. Инициализируется ОДИН раз при показе
   /// конкретного challenge_id (initState) и реинициализируется только при
   /// смене challenge_id в listener. Для того же id счётчик исключительно
@@ -40,11 +41,13 @@ class _ApprovalModalState extends State<ApprovalModal> {
   final _totpController = TextEditingController();
   bool _showTotpInput = false;
 
-  bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
   bool get _isSameMachine {
     if (!_isDesktop) return false;
-    final clientIp = _prompt['client_ip']?.toString() ?? _prompt['ip']?.toString();
+    final clientIp =
+        _prompt['client_ip']?.toString() ?? _prompt['ip']?.toString();
     final host = _prompt['host']?.toString();
     final myHost = Platform.localHostname.toLowerCase();
     if (host != null && host.isNotEmpty) {
@@ -56,12 +59,17 @@ class _ApprovalModalState extends State<ApprovalModal> {
     if (clientIp != null && clientIp.isNotEmpty) {
       if (clientIp == '127.0.0.1' || clientIp == '::1') return true;
       if (TelemetryService.cachedInternalIPs.contains(clientIp)) return true;
-      if (TelemetryService.cachedExternalIP != null && TelemetryService.cachedExternalIP == clientIp) return true;
+      if (TelemetryService.cachedExternalIP != null &&
+          TelemetryService.cachedExternalIP == clientIp) {
+        return true;
+      }
     }
     final localIps = _prompt['local_ips'];
     if (localIps is List) {
       for (final lip in localIps) {
-        if (TelemetryService.cachedInternalIPs.contains(lip.toString())) return true;
+        if (TelemetryService.cachedInternalIPs.contains(lip.toString())) {
+          return true;
+        }
       }
     }
     return false;
@@ -70,11 +78,13 @@ class _ApprovalModalState extends State<ApprovalModal> {
   void _generateOptions(String? expectedMatch) {
     _numberMatchOptions.clear();
     if (expectedMatch != null && expectedMatch.isNotEmpty) {
-      if (_isDesktop || _isSameMachine) {
-        _selectedMatch = expectedMatch;
-      }
+      // A-9 (аудит 2026-10-12): правильное число НЕ предвыбирается даже на
+      // десктопе/том же ПК — пользователь обязан сам сверить его с экраном
+      // входа и выбрать. Сверка с экраном входа и есть смысл number-match;
+      // автовыбор превращал фичу в кнопку «ОК».
       final set = <String>{expectedMatch};
-      final rnd = Random.secure(); // Криптостойкий генератор для дистракторов number matching
+      final rnd = Random
+          .secure(); // Криптостойкий генератор для дистракторов number matching
       while (set.length < 3) {
         final cand = (rnd.nextInt(90) + 10).toString();
         set.add(cand);
@@ -182,12 +192,16 @@ class _ApprovalModalState extends State<ApprovalModal> {
     return '${strings.error}: $e';
   }
 
-  Future<void> _handleDecision(bool approve, {bool passkey = false, String? code}) async {
+  Future<void> _handleDecision(bool approve,
+      {bool passkey = false, String? code}) async {
     final expectedMatch = _prompt['number_match']?.toString();
-    if (approve && code == null && !passkey && expectedMatch != null && expectedMatch.isNotEmpty) {
-      if (_isSameMachine || _isDesktop) {
-        _selectedMatch = expectedMatch;
-      }
+    if (approve &&
+        code == null &&
+        !passkey &&
+        expectedMatch != null &&
+        expectedMatch.isNotEmpty) {
+      // A-9: автовыбор правильного числа для десктопа/_isSameMachine убран —
+      // без явного выбора числа пользователем решение не уходит.
       if (_selectedMatch == null || _selectedMatch != expectedMatch) {
         setState(() => _error = context.stringsRead.errSelectMatch);
         return;
@@ -229,18 +243,21 @@ class _ApprovalModalState extends State<ApprovalModal> {
     final strings = context.strings;
     final expectedMatch = _prompt['number_match']?.toString();
     final who = _prompt['who']?.toString() ?? strings.employee;
-    final clientIp = _prompt['client_ip']?.toString() ?? _prompt['ip']?.toString() ?? '—';
+    final clientIp =
+        _prompt['client_ip']?.toString() ?? _prompt['ip']?.toString() ?? '—';
     final hostIp = _prompt['host_ip']?.toString();
     final host = _prompt['host']?.toString();
     final service = _prompt['service']?.toString() ?? strings.serviceCorpAccess;
-    final device = _prompt['device']?.toString() ?? _formatDeviceUA(_prompt['ua']?.toString() ?? '', isRu: strings.isRu);
+    final device = _prompt['device']?.toString() ??
+        _formatDeviceUA(_prompt['ua']?.toString() ?? '', isRu: strings.isRu);
 
     return Dialog(
       backgroundColor: const Color(0xFF1E293B),
       elevation: 24,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: const Color(0xFF38BDF8).withValues(alpha: 0.4), width: 2),
+        side: BorderSide(
+            color: const Color(0xFF38BDF8).withValues(alpha: 0.4), width: 2),
       ),
       insetPadding: const EdgeInsets.all(16),
       child: ConstrainedBox(
@@ -252,185 +269,205 @@ class _ApprovalModalState extends State<ApprovalModal> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-              // Заголовок, таймер и кнопка закрытия
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Row(
+                // Заголовок, таймер и кнопка закрытия
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF38BDF8)
+                                  .withValues(alpha: 0.15),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.security,
+                                color: Color(0xFF38BDF8), size: 24),
+                          ),
+                          const SizedBox(width: 10),
+                          Flexible(
+                            child: Text(
+                              strings.loginRequestTitle,
+                              style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Row(
                       children: [
                         Container(
-                          padding: const EdgeInsets.all(8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF38BDF8).withValues(alpha: 0.15),
-                            shape: BoxShape.circle,
+                            color: const Color(0xFF0F172A),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF475569)),
                           ),
-                          child: const Icon(Icons.security, color: Color(0xFF38BDF8), size: 24),
-                        ),
-                        const SizedBox(width: 10),
-                        Flexible(
                           child: Text(
-                            strings.loginRequestTitle,
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                            overflow: TextOverflow.ellipsis,
+                            '$_secondsLeft ${strings.secondsShort}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: _secondsLeft < 15
+                                  ? Colors.redAccent
+                                  : const Color(0xFF38BDF8),
+                            ),
                           ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.close,
+                              color: Color(0xFF94A3B8), size: 20),
+                          tooltip: strings.close,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            Navigator.of(context, rootNavigator: true)
+                                .maybePop();
+                          },
                         ),
                       ],
                     ),
-                  ),
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF0F172A),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFF475569)),
-                        ),
-                        child: Text(
-                          '$_secondsLeft ${strings.secondsShort}',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: _secondsLeft < 15 ? Colors.redAccent : const Color(0xFF38BDF8),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
-                        tooltip: strings.close,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        onPressed: () {
-                          Navigator.of(context, rootNavigator: true).maybePop();
-                        },
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const Divider(color: Color(0xFF334155), height: 28),
-
-              // Карточка метаданных
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF334155)),
-                ),
-                child: Column(
-                  children: [
-                    _metaRow(Icons.apps, strings.serviceLabel, service),
-                    const SizedBox(height: 8),
-                    _metaRow(Icons.person, strings.userLabel, who),
-                    const SizedBox(height: 8),
-                    _metaRow(Icons.wifi, strings.ipLabel, _formatIPBadge(clientIp, isRu: strings.isRu)),
-                    if (hostIp != null && hostIp.isNotEmpty && hostIp != clientIp) ...[
-                      const SizedBox(height: 8),
-                      _metaRow(Icons.dns, strings.serverIpLabel, _formatIPBadge(hostIp, isRu: strings.isRu)),
-                    ],
-                    if (host != null && host.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1E293B),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFF38BDF8), width: 1.5),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.computer, size: 18, color: Color(0xFF38BDF8)),
-                            const SizedBox(width: 8),
-                            Text(
-                              strings.pcNameLabel,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF38BDF8),
-                              ),
-                            ),
-                            const Spacer(),
-                            Flexible(
-                              child: Text(
-                                host,
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                  letterSpacing: 0.5,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    _metaRow(Icons.devices, strings.deviceLabel, device),
                   ],
                 ),
-              ),
+                const Divider(color: Color(0xFF334155), height: 28),
 
-              // Number Matching (Защита от push-fatigue)
-              if (expectedMatch != null && expectedMatch.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                if (_isSameMachine || _isDesktop) ...[
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0F2E23),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: const Color(0xFF10B981)),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.verified_user, color: Color(0xFF10B981), size: 20),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                // Карточка метаданных
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F172A),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF334155)),
+                  ),
+                  child: Column(
+                    children: [
+                      _metaRow(Icons.apps, strings.serviceLabel, service),
+                      const SizedBox(height: 8),
+                      _metaRow(Icons.person, strings.userLabel, who),
+                      const SizedBox(height: 8),
+                      _metaRow(Icons.wifi, strings.ipLabel,
+                          _formatIPBadge(clientIp, isRu: strings.isRu)),
+                      if (hostIp != null &&
+                          hostIp.isNotEmpty &&
+                          hostIp != clientIp) ...[
+                        const SizedBox(height: 8),
+                        _metaRow(Icons.dns, strings.serverIpLabel,
+                            _formatIPBadge(hostIp, isRu: strings.isRu)),
+                      ],
+                      if (host != null && host.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1E293B),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: const Color(0xFF38BDF8), width: 1.5),
+                          ),
+                          child: Row(
                             children: [
+                              const Icon(Icons.computer,
+                                  size: 18, color: Color(0xFF38BDF8)),
+                              const SizedBox(width: 8),
                               Text(
-                                strings.isRu
-                                    ? (_isSameMachine
-                                        ? 'Вход на этом компьютере (код: $expectedMatch)'
-                                        : 'Вход на рабочей станции (код: $expectedMatch)')
-                                    : (_isSameMachine
-                                        ? 'Sign-in on this PC (code: $expectedMatch)'
-                                        : 'Workstation sign-in (code: $expectedMatch)'),
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                strings.pcNameLabel,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF38BDF8),
+                                ),
                               ),
-                              const SizedBox(height: 2),
-                              Text(
-                                strings.isRu
-                                    ? 'Подтвердите действие кнопкой ниже или через Passkey'
-                                    : 'Confirm with button below or with Passkey',
-                                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                              const Spacer(),
+                              Flexible(
+                                child: Text(
+                                  host,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                    letterSpacing: 0.5,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               ),
                             ],
                           ),
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF10B981).withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            expectedMatch,
-                            style: const TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                        ),
                       ],
-                    ),
+                      const SizedBox(height: 8),
+                      _metaRow(Icons.devices, strings.deviceLabel, device),
+                    ],
                   ),
-                ] else ...[
+                ),
+
+                // Number Matching (Защита от push-fatigue). A-9 (аудит
+                // 2026-10-12): правильное число нигде не показывается и не
+                // предвыбирается — на ЛЮБОМ устройстве пользователь сам
+                // сверяет число с экраном входа и выбирает его из вариантов.
+                if (expectedMatch != null && expectedMatch.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  if (_isSameMachine || _isDesktop) ...[
+                    // Подсказка о входе на этом же ПК — БЕЗ самого числа:
+                    // раньше здесь выводился правильный ответ, и сверка с
+                    // экраном входа не выполнялась вовсе.
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F2E23),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFF10B981)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.verified_user,
+                              color: Color(0xFF10B981), size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  strings.isRu
+                                      ? (_isSameMachine
+                                          ? 'Вход на этом компьютере: сверьте число с экраном входа'
+                                          : 'Вход на рабочей станции: сверьте число с экраном входа')
+                                      : (_isSameMachine
+                                          ? 'Sign-in on this PC: match the number on the sign-in screen'
+                                          : 'Workstation sign-in: match the number on the sign-in screen'),
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  strings.isRu
+                                      ? 'Выберите это число ниже, затем подтвердите действие'
+                                      : 'Select that number below, then confirm',
+                                  style: const TextStyle(
+                                      color: Color(0xFF94A3B8), fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   Text(
                     strings.numberMatchHeader,
-                    style: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
+                    style:
+                        const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
                   ),
                   const SizedBox(height: 6),
                   Text(
@@ -448,12 +485,17 @@ class _ApprovalModalState extends State<ApprovalModal> {
                         onTap: () => setState(() => _selectedMatch = opt),
                         borderRadius: BorderRadius.circular(10),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 24, vertical: 12),
                           decoration: BoxDecoration(
-                            color: isSelected ? const Color(0xFF0284C7) : const Color(0xFF0F172A),
+                            color: isSelected
+                                ? const Color(0xFF0284C7)
+                                : const Color(0xFF0F172A),
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
-                              color: isSelected ? const Color(0xFF38BDF8) : const Color(0xFF475569),
+                              color: isSelected
+                                  ? const Color(0xFF38BDF8)
+                                  : const Color(0xFF475569),
                               width: 2,
                             ),
                           ),
@@ -462,7 +504,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
                             style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
-                              color: isSelected ? Colors.white : const Color(0xFFE2E8F0),
+                              color: isSelected
+                                  ? Colors.white
+                                  : const Color(0xFFE2E8F0),
                             ),
                           ),
                         ),
@@ -470,148 +514,191 @@ class _ApprovalModalState extends State<ApprovalModal> {
                     }).toList(),
                   ),
                 ],
-              ],
 
-              if (_error != null) ...[
-                const SizedBox(height: 16),
-                Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
-              ],
-
-              const SizedBox(height: 16),
-
-              // Кнопка подтверждения через Passkey / Touch ID / Windows Hello
-              OutlinedButton.icon(
-                onPressed: _isProcessing ? null : () => _handleDecision(true, passkey: true),
-                icon: const Icon(Icons.fingerprint, color: Color(0xFF38BDF8), size: 20),
-                label: Text(
-                  strings.isRu ? '🔑 Подтвердить через Passkey' : '🔑 Confirm with Passkey',
-                  style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Color(0xFF0284C7)),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-              ),
-
-              const SizedBox(height: 10),
-
-              // Окошко для ввода TOTP
-              if (_showTotpInput) ...[
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0F172A),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: const Color(0xFF334155)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        strings.isRu
-                            ? 'Введите 6-значный TOTP код из приложения:'
-                            : 'Enter 6-digit TOTP code from app:',
-                        style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _totpController,
-                              keyboardType: TextInputType.number,
-                              maxLength: 6,
-                              style: const TextStyle(color: Colors.white, letterSpacing: 4, fontWeight: FontWeight.bold),
-                              decoration: InputDecoration(
-                                counterText: '',
-                                hintText: '000000',
-                                hintStyle: const TextStyle(color: Color(0xFF64748B), letterSpacing: 4),
-                                isDense: true,
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                                filled: true,
-                                fillColor: const Color(0xFF1E293B),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                              ),
-                              onSubmitted: (v) {
-                                if (v.trim().isNotEmpty) {
-                                  _handleDecision(true, code: v.trim());
-                                }
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton(
-                            onPressed: _isProcessing
-                                ? null
-                                : () {
-                                    if (_totpController.text.trim().isNotEmpty) {
-                                      _handleDecision(true, code: _totpController.text.trim());
-                                    }
-                                  },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF0284C7),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                            ),
-                            child: Text(strings.isRu ? 'Ввод' : 'OK', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ] else ...[
-                TextButton.icon(
-                  onPressed: () => setState(() => _showTotpInput = true),
-                  icon: const Icon(Icons.pin_outlined, size: 16, color: Color(0xFF94A3B8)),
-                  label: Text(
-                    strings.isRu ? 'Или подтвердить кодом TOTP' : 'Or confirm with TOTP code',
-                    style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-
-              // Кнопки решений
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: _isProcessing ? null : () => _handleDecision(false),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.redAccent,
-                        side: const BorderSide(color: Colors.redAccent),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: Text(strings.denyBtn, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: _isProcessing ? null : () => _handleDecision(true),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF10B981),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: _isProcessing
-                          ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : Text(strings.approveBtn, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                    ),
-                  ),
+                if (_error != null) ...[
+                  const SizedBox(height: 16),
+                  Text(_error!,
+                      style: const TextStyle(
+                          color: Colors.redAccent, fontSize: 13)),
                 ],
-              ),
-            ],
+
+                const SizedBox(height: 16),
+
+                // Кнопка подтверждения через Passkey / Touch ID / Windows Hello
+                OutlinedButton.icon(
+                  onPressed: _isProcessing
+                      ? null
+                      : () => _handleDecision(true, passkey: true),
+                  icon: const Icon(Icons.fingerprint,
+                      color: Color(0xFF38BDF8), size: 20),
+                  label: Text(
+                    strings.isRu
+                        ? '🔑 Подтвердить через Passkey'
+                        : '🔑 Confirm with Passkey',
+                    style: const TextStyle(
+                        color: Color(0xFF38BDF8),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF0284C7)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+
+                const SizedBox(height: 10),
+
+                // Окошко для ввода TOTP
+                if (_showTotpInput) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFF334155)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          strings.isRu
+                              ? 'Введите 6-значный TOTP код из приложения:'
+                              : 'Enter 6-digit TOTP code from app:',
+                          style: const TextStyle(
+                              color: Color(0xFF94A3B8), fontSize: 12),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _totpController,
+                                keyboardType: TextInputType.number,
+                                maxLength: 6,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    letterSpacing: 4,
+                                    fontWeight: FontWeight.bold),
+                                decoration: InputDecoration(
+                                  counterText: '',
+                                  hintText: '000000',
+                                  hintStyle: const TextStyle(
+                                      color: Color(0xFF64748B),
+                                      letterSpacing: 4),
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 10),
+                                  filled: true,
+                                  fillColor: const Color(0xFF1E293B),
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide.none),
+                                ),
+                                onSubmitted: (v) {
+                                  if (v.trim().isNotEmpty) {
+                                    _handleDecision(true, code: v.trim());
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            ElevatedButton(
+                              onPressed: _isProcessing
+                                  ? null
+                                  : () {
+                                      if (_totpController.text
+                                          .trim()
+                                          .isNotEmpty) {
+                                        _handleDecision(true,
+                                            code: _totpController.text.trim());
+                                      }
+                                    },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF0284C7),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8)),
+                              ),
+                              child: Text(strings.isRu ? 'Ввод' : 'OK',
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ] else ...[
+                  TextButton.icon(
+                    onPressed: () => setState(() => _showTotpInput = true),
+                    icon: const Icon(Icons.pin_outlined,
+                        size: 16, color: Color(0xFF94A3B8)),
+                    label: Text(
+                      strings.isRu
+                          ? 'Или подтвердить кодом TOTP'
+                          : 'Or confirm with TOTP code',
+                      style: const TextStyle(
+                          color: Color(0xFF94A3B8), fontSize: 12),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+
+                // Кнопки решений
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed:
+                            _isProcessing ? null : () => _handleDecision(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.redAccent,
+                          side: const BorderSide(color: Colors.redAccent),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: Text(strings.denyBtn,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 15)),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed:
+                            _isProcessing ? null : () => _handleDecision(true),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF10B981),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: _isProcessing
+                            ? const SizedBox(
+                                height: 18,
+                                width: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white))
+                            : Text(strings.approveBtn,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
-    ),
-  );
+    );
   }
 
   Widget _metaRow(IconData icon, String label, String value) {
@@ -620,13 +707,15 @@ class _ApprovalModalState extends State<ApprovalModal> {
       children: [
         Icon(icon, size: 16, color: const Color(0xFF94A3B8)),
         const SizedBox(width: 8),
-        Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
+        Text(label,
+            style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
         const SizedBox(width: 8),
         Expanded(
           child: Text(
             value,
             textAlign: TextAlign.end,
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white),
+            style: const TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
@@ -636,7 +725,10 @@ class _ApprovalModalState extends State<ApprovalModal> {
   }
 
   static bool _isPrivateIP(String ip) {
-    if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip == '127.0.0.1' || ip == '::1') {
+    if (ip.startsWith('10.') ||
+        ip.startsWith('192.168.') ||
+        ip == '127.0.0.1' ||
+        ip == '::1') {
       return true;
     }
     if (ip.startsWith('172.')) {
@@ -658,12 +750,20 @@ class _ApprovalModalState extends State<ApprovalModal> {
   }
 
   static String _formatDeviceUA(String raw, {required bool isRu}) {
-    if (raw.isEmpty || raw == '—') return isRu ? 'Рабочая станция' : 'Workstation';
-    if (raw.contains('CredentialProvider')) return 'Windows (Credential Provider)';
+    if (raw.isEmpty || raw == '—') {
+      return isRu ? 'Рабочая станция' : 'Workstation';
+    }
+    if (raw.contains('CredentialProvider')) {
+      return 'Windows (Credential Provider)';
+    }
     if (raw.contains('Windows NT 10.0')) return 'Windows 10 / 11';
     if (raw.contains('Macintosh') || raw.contains('Mac OS')) return 'macOS';
-    if (raw.contains('Android')) return isRu ? 'Android Устройство' : 'Android Device';
-    if (raw.contains('iPhone') || raw.contains('iPad')) return isRu ? 'iOS Устройство' : 'iOS Device';
+    if (raw.contains('Android')) {
+      return isRu ? 'Android Устройство' : 'Android Device';
+    }
+    if (raw.contains('iPhone') || raw.contains('iPad')) {
+      return isRu ? 'iOS Устройство' : 'iOS Device';
+    }
     if (raw.contains('Linux')) return 'Linux';
     return raw;
   }

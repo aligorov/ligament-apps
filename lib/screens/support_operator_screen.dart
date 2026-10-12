@@ -44,7 +44,8 @@ class _ConsoleFileTransfer {
   final bool isOutgoing;
   int transferredBytes;
   double progress; // 0.0 .. 1.0
-  String status; // 'sending', 'receiving', 'waiting_ack', 'completed', 'error', 'cancelled'
+  String
+      status; // 'sending', 'receiving', 'waiting_ack', 'completed', 'error', 'cancelled'
   String? errorMessage;
   bool isCancelled;
   final DateTime timestamp;
@@ -180,6 +181,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   double? _lastSentNormY;
   int _dataMessageErrorCount = 0;
   bool _transportErrorBannerVisible = false;
+  DateTime _lastInputUnavailableLog = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime? _lastMouseMoveTime;
   Timer? _pendingMouseMoveTimer;
   double? _pendingMouseMoveX;
@@ -198,6 +200,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool get _isDataChannelActive =>
       _dataChannel != null &&
       _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen;
+
+  /// A-1 (аудит 2026-10-12): типы, допустимые в WS-сигнальном фолбэке
+  /// _sendDataMessage. Команды управления вводом/буфером/файлами
+  /// отправляются только через живой DataChannel (DTLS) — принимающая
+  /// сторона их из сигналинга больше не исполняет (см. SupportService).
+  static const Set<String> _signalingSafeTypes = {
+    'screen_list',
+    'switch_screen',
+    'chat_message',
+    'session_ended',
+  };
+
+  /// A-1: ввод недоступен — DataChannel (DTLS) не открыт. Сигнальный
+  /// WS-фолбэк для команд управления отключён, поэтому состояние честно
+  /// отражается индикатором в UI.
+  bool get _isInputUnavailable =>
+      !_isViewOnlySession && _isControlEnabled && !_isDataChannelActive;
 
   /// Управление готово = управление включено И (DataChannel открыт ИЛИ готов WS signaling / P2P).
   bool get _controlReady =>
@@ -447,9 +466,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       widget.sessionData['access_mode']?.toString() == 'view_only';
 
   bool get _canSendFiles =>
-      !_isViewOnlySession &&
-      _isDataChannelActive &&
-      !_isSendingFile;
+      !_isViewOnlySession && _isDataChannelActive && !_isSendingFile;
 
   /// Ш3/A-20: сброс стадийной готовности при переподключении (§4.3).
   void _resetStageReadiness() {
@@ -766,7 +783,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         onDone: () {
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
-          if (_statusKey == 'ended_by_server' || _statusKey == 'session_ended') {
+          if (_statusKey == 'ended_by_server' ||
+              _statusKey == 'session_ended') {
             return;
           }
           _cancelStageTimers();
@@ -885,11 +903,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Future<void> _setupPeerConnection() async {
     final auth = context.read<AuthState>();
     final config = <String, dynamic>{
-      // ICE-серверы из /api/v1/app/config (B-1); emergency-фолбэк на
-      // публичные STUN — только если конфиг не отдал ice_servers.
-      'iceServers': auth.iceServers.isNotEmpty
-          ? auth.iceServers
-          : SupportService.emergencyIceServers,
+      // A-3 (аудит 2026-10-12): ICE-серверы только из /api/v1/app/config
+      // сервера (B-1). Захардкоженные публичные STUN-фолбэки удалены —
+      // fail-closed: пусто значит пусто.
+      'iceServers': auth.iceServers,
       'sdpSemantics': 'unified-plan',
     };
 
@@ -953,7 +970,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
       } else if (state == RTCIceConnectionState.RTCIceConnectionStateClosed) {
         _onSessionTerminated('session_ended');
-      } else if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+      } else if (state ==
+          RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
         _schedulePcGraceTermination();
       }
     };
@@ -1551,6 +1569,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendDataMessage(Map<String, dynamic> msg) {
+    final type = msg['type']?.toString() ?? '';
+    // A-1: команды управления/буфера/файлов — только через DataChannel (DTLS);
+    // сигнальный WS-фолбэк для них отключён (приёмник их не исполнит).
+    final inputOnly = !_signalingSafeTypes.contains(type);
     bool sent = false;
     if (_isDataChannelActive) {
       try {
@@ -1558,8 +1580,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         sent = true;
       } catch (_) {}
     }
-    if (!sent) {
-      // Fallback to signaling channel for full cross-platform / NAT / PWA compatibility
+    if (!sent && !inputOnly) {
+      // Фолбэк на сигнальный канал — только информационные типы
+      // (чат/список экранов/завершение), никакого удалённого ввода.
       try {
         if (_wsChannel != null) {
           _sendWsSignal({'type': 'input_control', 'data': msg});
@@ -1574,18 +1597,35 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           setState(() => _transportErrorBannerVisible = false);
         }
       }
+    } else if (inputOnly) {
+      // A-1: ввод недоступен без DataChannel — не отправляем вовсе.
+      // Индикатор строится от состояния (_isInputUnavailable); лог —
+      // не чаще раза в 3с, чтобы не спамить на каждом mouse_move.
+      final now = DateTime.now();
+      if (now.difference(_lastInputUnavailableLog).inSeconds >= 3) {
+        _lastInputUnavailableLog = now;
+        debugPrint(
+            'support_operator: ввод недоступен — DataChannel не открыт, "$type" не отправлен');
+      }
     } else {
       _dataMessageErrorCount++;
-      if (_dataMessageErrorCount >= 10 && !_transportErrorBannerVisible && mounted) {
+      if (_dataMessageErrorCount >= 10 &&
+          !_transportErrorBannerVisible &&
+          mounted) {
         setState(() => _transportErrorBannerVisible = true);
       }
     }
   }
 
   bool _isOutsideVideo(Offset globalPos) {
-    if (!_frameReady || _remoteRenderer.videoWidth <= 0 || _remoteRenderer.videoHeight <= 0) return true;
+    if (!_frameReady ||
+        _remoteRenderer.videoWidth <= 0 ||
+        _remoteRenderer.videoHeight <= 0) {
+      return true;
+    }
 
-    final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
+    final renderBox =
+        _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return false;
 
     final localPos = renderBox.globalToLocal(globalPos);
@@ -1620,8 +1660,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
-    if (!_controlReady || !_frameReady || _remoteRenderer.videoWidth <= 0 || _remoteRenderer.videoHeight <= 0) return;
-    final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
+    if (!_controlReady ||
+        !_frameReady ||
+        _remoteRenderer.videoWidth <= 0 ||
+        _remoteRenderer.videoHeight <= 0) {
+      return;
+    }
+    final renderBox =
+        _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
     final localPos = renderBox.globalToLocal(event.position);
@@ -1692,9 +1738,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } else {
         if (_pendingMouseMoveTimer == null) {
           final remaining = 16 - elapsed;
-          _pendingMouseMoveTimer = Timer(Duration(milliseconds: remaining > 0 ? remaining : 1), () {
+          _pendingMouseMoveTimer =
+              Timer(Duration(milliseconds: remaining > 0 ? remaining : 1), () {
             _pendingMouseMoveTimer = null;
-            if (_pendingMouseMoveX != null && _pendingMouseMoveY != null && _controlReady) {
+            if (_pendingMouseMoveX != null &&
+                _pendingMouseMoveY != null &&
+                _controlReady) {
               _lastMouseMoveTime = DateTime.now();
               final rect = _currentSelectedScreenRect;
               _sendDataMessage({
@@ -2103,7 +2152,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _pendingMouseMoveTimer?.cancel();
     _pendingMouseMoveTimer = null;
     _releaseAllPressedInputs();
-    if (_isFullScreen && !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (_isFullScreen &&
+        !kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         windowManager.setFullScreen(false);
       } catch (_) {}
@@ -2137,7 +2188,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   // --- Release B Helper Methods ---
 
   Future<void> _toggleFullScreen() async {
-    if (kIsWeb || !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) return;
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return;
+    }
     try {
       final next = !_isFullScreen;
       await windowManager.setFullScreen(next);
@@ -2205,7 +2259,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(strings.cancel, style: const TextStyle(color: Colors.white70)),
+            child: Text(strings.cancel,
+                style: const TextStyle(color: Colors.white70)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -2312,8 +2367,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             packetsLost = '${values['packetsLost']}';
           }
           if (values['bytesReceived'] != null) {
-            final bytes =
-                num.tryParse(values['bytesReceived'].toString()) ?? 0;
+            final bytes = num.tryParse(values['bytesReceived'].toString()) ?? 0;
             bitrate = '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
           }
         }
@@ -2355,14 +2409,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           children: [
             _buildStatRow(
                 strings.isRu ? 'Транспорт:' : 'Transport:', transportType),
-            _buildStatRow(strings.isRu ? 'Задержка (RTT):' : 'Latency (RTT):', rtt),
             _buildStatRow(
-                strings.isRu ? 'Частота кадров (FPS):' : 'Framerate (FPS):', fps),
+                strings.isRu ? 'Задержка (RTT):' : 'Latency (RTT):', rtt),
+            _buildStatRow(
+                strings.isRu ? 'Частота кадров (FPS):' : 'Framerate (FPS):',
+                fps),
             _buildStatRow(
                 strings.isRu ? 'Разрешение видео:' : 'Video Resolution:',
                 resolution),
-            _buildStatRow(
-                strings.isRu ? 'Потери пакетов:' : 'Packets Lost:', packetsLost),
+            _buildStatRow(strings.isRu ? 'Потери пакетов:' : 'Packets Lost:',
+                packetsLost),
             _buildStatRow(
                 strings.isRu ? 'Получено данных:' : 'Data Received:', bitrate),
           ],
@@ -2510,8 +2566,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         if (mounted) {
           setState(() {
             transferItem.transferredBytes = end;
-            transferItem.progress =
-                totalSize > 0 ? (end / totalSize) : 1.0;
+            transferItem.progress = totalSize > 0 ? (end / totalSize) : 1.0;
           });
         }
 
@@ -2774,7 +2829,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                    icon: const Icon(Icons.close,
+                        color: Colors.white70, size: 20),
                     onPressed: () => Navigator.of(context).pop(),
                   ),
                 ],
@@ -2797,7 +2853,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     Expanded(
                       child: Text(
                         strings.consoleFilesDisabledViewOnly,
-                        style: const TextStyle(color: Colors.white, fontSize: 11),
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 11),
                       ),
                     ),
                   ],
@@ -2819,7 +2876,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     Expanded(
                       child: Text(
                         strings.consoleFilesRequireDataChannel,
-                        style: const TextStyle(color: Colors.white, fontSize: 11),
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 11),
                       ),
                     ),
                   ],
@@ -3578,6 +3636,37 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ),
                     ),
 
+                  // A-1 (аудит 2026-10-12): индикатор недоступности ввода.
+                  // Команды управления исполняются принимающей стороной
+                  // только из DTLS DataChannel; без P2P-канала ввод
+                  // физически не работает — честно показываем это.
+                  if ((_isConnected || _signalReady) && _isInputUnavailable)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Tooltip(
+                        message: strings.isRu
+                            ? 'Удалённый ввод недоступен: нет P2P-канала (DataChannel). Управление возможно только при прямом соединении; просмотр и чат работают.'
+                            : 'Remote input unavailable: no P2P DataChannel. Control requires a direct connection; viewing and chat still work.',
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF7F1D1D),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: const Color(0xFFEF4444)),
+                          ),
+                          child: Text(
+                            strings.isRu ? 'ВВОД НЕДОСТУПЕН' : 'NO INPUT',
+                            style: const TextStyle(
+                              color: Color(0xFFFCA5A5),
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
                   // Статистика соединения (B3.7)
                   IconButton(
                     icon: const Icon(Icons.speed,
@@ -3792,7 +3881,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 if (!_controlReady) return KeyEventResult.ignored;
                 final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
                 final msg = _remoteKeyboard.message(event);
-                final keyIdent = msg['key']?.toString() ?? event.logicalKey.keyLabel;
+                final keyIdent =
+                    msg['key']?.toString() ?? event.logicalKey.keyLabel;
                 if (isDown) {
                   _pressedKeys.add(keyIdent);
                 } else {
@@ -3810,7 +3900,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   _keyboardFocus.requestFocus();
                   // A4.3: проверка letterbox до записи кнопки в map
                   if (_isOutsideVideo(ev.position)) return;
-                  final btn = pointerDownButton(ev.buttons, _mouseClickMode == MouseClickMode.right);
+                  final btn = pointerDownButton(
+                      ev.buttons, _mouseClickMode == MouseClickMode.right);
                   _pointerDownButtons[ev.pointer] = btn;
                   _sendPointerEvent('mouse_down', ev, btn);
                 },
@@ -3831,14 +3922,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 },
                 onPointerPanZoomUpdate: (ev) {
                   if (!_controlReady) return;
-                  if (_zoomMode != OperatorZoomMode.zoomIn && ev.panDelta.dy != 0) {
-                    _sendDataMessage({'type': 'wheel', 'deltaY': -ev.panDelta.dy});
+                  if (_zoomMode != OperatorZoomMode.zoomIn &&
+                      ev.panDelta.dy != 0) {
+                    _sendDataMessage(
+                        {'type': 'wheel', 'deltaY': -ev.panDelta.dy});
                   }
                 },
                 onPointerSignal: (signal) {
                   if (!_controlReady) return;
                   if (signal is PointerScrollEvent) {
-                    _sendDataMessage({'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
+                    _sendDataMessage(
+                        {'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
                   }
                 },
                 child: Center(
@@ -3972,11 +4066,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                   children: [
                                     Positioned.fill(
                                       child: InteractiveViewer(
-                                        transformationController: _videoTransform,
-                                        panEnabled:
-                                            _zoomMode == OperatorZoomMode.zoomIn,
-                                        scaleEnabled:
-                                            _zoomMode == OperatorZoomMode.zoomIn,
+                                        transformationController:
+                                            _videoTransform,
+                                        panEnabled: _zoomMode ==
+                                            OperatorZoomMode.zoomIn,
+                                        scaleEnabled: _zoomMode ==
+                                            OperatorZoomMode.zoomIn,
                                         minScale: 1.0,
                                         maxScale: 8.0,
                                         onInteractionEnd: (_) {
@@ -4000,7 +4095,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                       ),
                                     ),
                                     // Бейдж «только просмотр» (A3.3)
-                                    if (_isViewOnlySession || !_isControlEnabled)
+                                    if (_isViewOnlySession ||
+                                        !_isControlEnabled)
                                       Positioned(
                                         top: 10,
                                         right: 10,
@@ -4013,7 +4109,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                               borderRadius:
                                                   BorderRadius.circular(6),
                                               border: Border.all(
-                                                  color: const Color(0xFFF59E0B)),
+                                                  color:
+                                                      const Color(0xFFF59E0B)),
                                             ),
                                             child: Row(
                                               mainAxisSize: MainAxisSize.min,
@@ -4088,8 +4185,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                                   style: const TextStyle(
                                                     color: Color(0xFFFDE047),
                                                     fontSize: 11,
-                                                    fontWeight:
-                                                        FontWeight.bold,
+                                                    fontWeight: FontWeight.bold,
                                                     decoration: TextDecoration
                                                         .underline,
                                                   ),
