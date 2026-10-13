@@ -136,15 +136,20 @@ class _LoginScreenState extends State<LoginScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Логотип «Связка» (концепт A, ligament-a-links-mark):
-                    // прозрачная марка на тёмной теме логина.
-                    Image.asset('assets/icons/logo_mark.png', width: 56, height: 56),
-                    const SizedBox(height: 16),
-                    Text(
-                      serverName,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                    Image.asset(
+                      'assets/icons/logo_light.png',
+                      height: 72,
+                      fit: BoxFit.contain,
+                      semanticLabel: 'Ligament 2FA',
                     ),
+                    if (serverName != 'Ligament 2FA' && serverName != 'Ligament') ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        serverName,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: Colors.white),
+                      ),
+                    ],
                     const SizedBox(height: 4),
                     Text(
                       s.authWorkstation,

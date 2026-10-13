@@ -25,17 +25,22 @@ Widget createTestApp(Widget child, AuthState auth) {
 
 void main() {
   testWidgets('LigamentApp boots and renders ConnectScreen in RU and EN', (WidgetTester tester) async {
-    final authState = AuthState();
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: authState,
-        child: const LigamentApp(),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(find.byType(MaterialApp), findsOneWidget);
-    expect(find.text('Ligament 2FA'), findsWidgets);
-    expect(find.text('Подключиться'), findsOneWidget);
+    final semantics = tester.ensureSemantics();
+    try {
+      final authState = AuthState();
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: authState,
+          child: const LigamentApp(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(MaterialApp), findsOneWidget);
+      expect(find.bySemanticsLabel('Ligament 2FA'), findsWidgets);
+      expect(find.text('Подключиться'), findsOneWidget);
+    } finally {
+      semantics.dispose();
+    }
   });
 
   testWidgets('LoginScreen renders correctly in RU', (WidgetTester tester) async {

@@ -123,12 +123,11 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Icon(Icons.shield_outlined, size: 56, color: Color(0xFF38BDF8)),
-                    const SizedBox(height: 16),
-                    Text(
-                      s.connectTitle,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                    Image.asset(
+                      'assets/icons/logo_light.png',
+                      height: 72,
+                      fit: BoxFit.contain,
+                      semanticLabel: s.connectTitle,
                     ),
                     const SizedBox(height: 8),
                     Text(
