@@ -214,7 +214,7 @@ jobs:
     name: Create GitHub Release & Upload Binaries
     needs: [build-windows, build-android, build-macos, build-ios, build-linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
