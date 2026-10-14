@@ -4,6 +4,8 @@
 #include "qrcodegen.hpp"
 #include "app_logo_data.h"
 #include <wincred.h> // CredProtectW/CredIsProtectedW (wincred.h)
+#include <lm.h>
+#include <lmjoin.h>
 
 namespace ligament {
 
