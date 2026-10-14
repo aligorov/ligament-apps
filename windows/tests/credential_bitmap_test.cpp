@@ -25,7 +25,9 @@ int main() {
         HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
         Check(bitmap && bits, "create bitmap");
         std::memcpy(bits, c_AppLogoPixels, sizeof(c_AppLogoPixels));
-        Check(SUCCEEDED(ligament::EncodeCredentialBitmap(bitmap, &size, &data)), "encode PNG");
+        HRESULT encode = ligament::EncodeCredentialBitmap(bitmap, &size, &data);
+        if (FAILED(encode)) std::fprintf(stderr, "PNG encode HRESULT=0x%08lX\n", static_cast<unsigned long>(encode));
+        Check(SUCCEEDED(encode), "encode PNG");
         DeleteObject(bitmap);
         const BYTE signature[] = {137,80,78,71,13,10,26,10};
         Check(size > 8 && !std::memcmp(data, signature, 8), "PNG signature");

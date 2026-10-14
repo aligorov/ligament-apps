@@ -58,6 +58,12 @@ inline HRESULT EncodeCredentialBitmap(HBITMAP bitmap, DWORD* size, BYTE** buffer
     if (FAILED(hr)) return hr;
     hr = frame->Initialize(nullptr);
     if (FAILED(hr)) return hr;
+    hr = frame->SetSize(dib.dsBm.bmWidth, dib.dsBm.bmHeight);
+    if (FAILED(hr)) return hr;
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+    hr = frame->SetPixelFormat(&format);
+    if (FAILED(hr)) return hr;
+    if (!IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA)) return E_FAIL;
     hr = frame->WriteSource(converted.Get(), nullptr);
     if (FAILED(hr)) return hr;
     hr = frame->Commit();
