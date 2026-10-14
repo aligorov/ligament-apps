@@ -140,6 +140,23 @@ def generate_clients(master: Image.Image) -> None:
         "\n".join(header) + "\n", encoding="utf-8"
     )
 
+    # Embed the same 256px mark as a PNG for the LogonUI alpha-preserving path.
+    import io
+    png_stream = io.BytesIO()
+    cp_mark.save(png_stream, format="PNG", optimize=True)
+    png = png_stream.getvalue()
+    png_header = [
+        "// Transparent PNG generated from assets/icons/logo_mark.png (256x256).",
+        "#pragma once", "#include <cstdint>", "namespace ligament {",
+        "inline constexpr uint8_t kCredentialLogoPng[] = {",
+    ]
+    for offset in range(0, len(png), 16):
+        png_header.append("    " + ", ".join(f"0x{x:02x}" for x in png[offset:offset + 16]) + ",")
+    png_header.extend(["};", "}"])
+    (ROOT / "windows/credential_provider/credential_logo_png.h").write_text(
+        "\n".join(png_header) + "\n", encoding="utf-8"
+    )
+
 
 def generate_server(master: Image.Image, server_root: Path) -> None:
     static = server_root / "internal/web/static"

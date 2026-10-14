@@ -37,6 +37,16 @@ jobs:
           cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /DNOMINMAX windows\tests\remote_mouse_input_test.cpp /Fe:remote_mouse_input_test.exe user32.lib && remote_mouse_input_test.exe"
           if ($LASTEXITCODE -ne 0) { throw 'Native remote mouse tests failed' }
 
+      - name: Test credential image interfaces
+        shell: pwsh
+        run: |
+          cmake -S windows/credential_provider -B build-images -A x64 -DLIGAMENT_CREDENTIAL_IMAGE_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Image test configuration failed' }
+          cmake --build build-images --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'Image test build failed' }
+          ./build-images/Release/credential_images_test.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Credential image contract tests failed' }
+
       - name: Build Windows Application and MSI
         shell: pwsh
         run: |

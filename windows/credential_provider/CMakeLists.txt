@@ -38,6 +38,9 @@ set(HEADERS
     rdp_gate.h
     qrcodegen.hpp
     app_logo_data.h
+    credential_interfaces.h
+    credential_image.h
+    credential_logo_png.h
 )
 
 add_library(LigamentCredentialProvider SHARED ${SOURCES} ${HEADERS})
@@ -62,3 +65,14 @@ set_target_properties(LigamentCredentialProvider PROPERTIES
     OUTPUT_NAME "LigamentCredentialProvider"
     LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/exports.def\""
 )
+
+option(LIGAMENT_CREDENTIAL_IMAGE_TESTS "Build native credential image contract tests" OFF)
+if(LIGAMENT_CREDENTIAL_IMAGE_TESTS)
+    add_executable(credential_images_test
+        ../tests/credential_images_test.cpp
+        LigamentCredential.cpp HttpApiClient.cpp WebAuthnClient.cpp rdp_gate.cpp qrcodegen.cpp)
+    target_compile_definitions(credential_images_test PRIVATE LIGAMENT_CREDENTIAL_IMAGE_TEST NOMINMAX)
+    target_link_libraries(credential_images_test PRIVATE
+        winhttp secur32 credui shlwapi wtsapi32 ole32 user32 gdi32 advapi32
+        ws2_32 iphlpapi bcrypt netapi32 windowscodecs)
+endif()
