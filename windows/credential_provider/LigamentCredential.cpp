@@ -17,7 +17,7 @@ static void GetMachineAndDomain(std::wstring& netBios, std::wstring& joinedDomai
 
 // Field descriptors
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
-    { FID_LOGO, CPFT_TILE_IMAGE, const_cast<LPWSTR>(L"Логотип"), GUID_NULL },
+    { FID_LOGO, CPFT_TILE_IMAGE, const_cast<LPWSTR>(L"Логотип"), CPFG_CREDENTIAL_PROVIDER_LOGO },
     { FID_LARGE_TEXT, CPFT_LARGE_TEXT, const_cast<LPWSTR>(L"Ligament 2FA"), GUID_NULL },
     { FID_USERNAME, CPFT_EDIT_TEXT, const_cast<LPWSTR>(L"Имя пользователя"), GUID_NULL },
     { FID_PASSWORD, CPFT_PASSWORD_TEXT, const_cast<LPWSTR>(L"Пароль"), GUID_NULL },
@@ -422,6 +422,42 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     return SHStrDupW(val.c_str(), ppsz);
 }
 
+// Клонирует HBITMAP с сохранением 32-битного ARGB альфа-канала через BITMAPV5HEADER.
+// В отличие от стандартного CopyImage(..., LR_CREATEDIBSECTION), который сбрасывает
+// альфа-канал и превращает прозрачные пиксели в чёрный фон (0x00000000 = RGB(0,0,0)),
+// этот метод создаёт DIBSection с bV5AlphaMask = 0xFF000000 и побайтово копирует пиксели.
+static HBITMAP CloneAlphaDIB(HBITMAP hSrc) {
+    if (!hSrc) return nullptr;
+    DIBSECTION ds = {0};
+    if (GetObject(hSrc, sizeof(ds), &ds) == sizeof(DIBSECTION) && ds.dsBm.bmBits) {
+        BITMAPV5HEADER bi = {0};
+        bi.bV5Size = sizeof(BITMAPV5HEADER);
+        bi.bV5Width = ds.dsBm.bmWidth;
+        bi.bV5Height = ds.dsBmih.biHeight; // сохраняем ориентацию (top-down / bottom-up)
+        bi.bV5Planes = 1;
+        bi.bV5BitCount = 32;
+        bi.bV5Compression = BI_BITFIELDS;
+        bi.bV5RedMask   = 0x00FF0000;
+        bi.bV5GreenMask = 0x0000FF00;
+        bi.bV5BlueMask  = 0x000000FF;
+        bi.bV5AlphaMask = 0xFF000000;
+
+        void* pDstBits = nullptr;
+        HDC hdc = GetDC(nullptr);
+        HBITMAP hDst = CreateDIBSection(hdc, reinterpret_cast<const BITMAPINFO*>(&bi), DIB_RGB_COLORS, &pDstBits, nullptr, 0);
+        ReleaseDC(nullptr, hdc);
+
+        if (hDst && pDstBits) {
+            size_t numBytes = static_cast<size_t>(ds.dsBm.bmWidth) * abs(ds.dsBm.bmHeight) * sizeof(uint32_t);
+            memcpy(pDstBits, ds.dsBm.bmBits, numBytes);
+            GdiFlush();
+            return hDst;
+        }
+        if (hDst) DeleteObject(hDst);
+    }
+    return (HBITMAP)CopyImage(hSrc, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+}
+
 HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
     if (dwFieldID == FID_LOGO && phbmp) {
         HBITMAP src = nullptr;
@@ -429,7 +465,7 @@ HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
         src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
         LeaveCriticalSection(&m_csPoll);
         if (src) {
-            *phbmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+            *phbmp = CloneAlphaDIB(src);
             if (*phbmp) {
                 CPLog(L"GetBitmapValue: returning copy of %s bitmap=%p",
                     (src != m_hDefaultLogoBmp) ? L"QR" : L"DefaultLogo", *phbmp);
@@ -721,41 +757,42 @@ void LigamentCredential::ClearQrBitmap() {
 }
 
 HBITMAP LigamentCredential::CreateLogoBitmap(int targetSize) {
-    BITMAPINFO bmi = {0};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = targetSize;
-    bmi.bmiHeader.biHeight = targetSize; // Positive bottom-up DIB (compatible with GetDIBits and COM)
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
+    BITMAPV5HEADER bi = {0};
+    bi.bV5Size = sizeof(BITMAPV5HEADER);
+    bi.bV5Width = targetSize;
+    bi.bV5Height = -targetSize; // Отрицательная высота: top-down DIB (строка 0 = верх)
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask   = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask  = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000; // Явный 8-битный альфа-канал для LogonUI
 
     void* pBits = nullptr;
     HDC hdc = GetDC(nullptr);
-    HDC hMemDC = CreateCompatibleDC(hdc);
-    HBITMAP hBmp = CreateDIBSection(hMemDC ? hMemDC : hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    HBITMAP hBmp = CreateDIBSection(hdc, reinterpret_cast<const BITMAPINFO*>(&bi), DIB_RGB_COLORS, &pBits, nullptr, 0);
+    ReleaseDC(nullptr, hdc);
 
     if (!hBmp || !pBits) {
-        if (hMemDC) DeleteDC(hMemDC);
-        ReleaseDC(nullptr, hdc);
         return nullptr;
     }
 
     uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
 
-    // Official Application Logo from app_logo_data.h (256x256)
-    // In bottom-up DIB, row 0 in memory corresponds to the bottom row of the image.
+    // Официальный логотип Ligament из app_logo_data.h (256x256 ARGB premultiplied)
+    // В top-down DIB пиксели идут сверху вниз: pixels[y * targetSize + x].
     for (int y = 0; y < targetSize; ++y) {
-        int srcY = (y < 256) ? y : 255;
+        int srcY = (y * 256) / targetSize;
+        if (srcY >= 256) srcY = 255;
         for (int x = 0; x < targetSize; ++x) {
-            int srcX = (x < 256) ? x : 255;
-            pixels[(targetSize - 1 - y) * targetSize + x] = c_AppLogoPixels[srcY * 256 + srcX];
+            int srcX = (x * 256) / targetSize;
+            if (srcX >= 256) srcX = 255;
+            pixels[y * targetSize + x] = c_AppLogoPixels[srcY * 256 + srcX];
         }
     }
 
-    if (hMemDC) DeleteDC(hMemDC);
-    ReleaseDC(nullptr, hdc);
     GdiFlush();
-
     return hBmp;
 }
 
@@ -766,17 +803,21 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
         int qrSize = qr.getSize();
         if (qrSize <= 0) return nullptr;
 
-        BITMAPINFO bmi = {0};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = targetSize;
-        bmi.bmiHeader.biHeight = targetSize; // Positive bottom-up DIB
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
+        BITMAPV5HEADER bi = {0};
+        bi.bV5Size = sizeof(BITMAPV5HEADER);
+        bi.bV5Width = targetSize;
+        bi.bV5Height = -targetSize; // Top-down DIB
+        bi.bV5Planes = 1;
+        bi.bV5BitCount = 32;
+        bi.bV5Compression = BI_BITFIELDS;
+        bi.bV5RedMask   = 0x00FF0000;
+        bi.bV5GreenMask = 0x0000FF00;
+        bi.bV5BlueMask  = 0x000000FF;
+        bi.bV5AlphaMask = 0xFF000000;
 
         void* pBits = nullptr;
         HDC hdc = GetDC(nullptr);
-        HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+        HBITMAP hBmp = CreateDIBSection(hdc, reinterpret_cast<const BITMAPINFO*>(&bi), DIB_RGB_COLORS, &pBits, nullptr, 0);
         ReleaseDC(nullptr, hdc);
 
         if (!hBmp || !pBits) {
@@ -785,15 +826,12 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
 
         uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
 
-        // 1. Fill entire canvas with solid opaque pure white (0xFFFFFFFF)
+        // 1. Заполняем белым фоном
         for (int i = 0; i < targetSize * targetSize; ++i) {
             pixels[i] = 0xFFFFFFFF;
         }
 
-        // 2. Safe circular area in Windows 10/11 logon screen:
-        // A circle of diameter targetSize has radius R = targetSize / 2 (128 for 256).
-        // Square inscribed in circle of radius R requires Side <= R * sqrt(2) = 181px.
-        // We use maxInner = 160px so all 4 corners and quiet zones fit comfortably inside the circle!
+        // 2. Безопасная круглая область в Windows 10/11 logon screen
         int maxInner = 160;
         int moduleScale = maxInner / qrSize;
         if (moduleScale < 1) moduleScale = 1;
@@ -801,8 +839,7 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
         int startX = (targetSize - actualQrSize) / 2;
         int startY = (targetSize - actualQrSize) / 2;
 
-        // 3. Draw QR Code modules directly into memory
-        // In bottom-up DIB, visual row y (0 at top) is at memory row (targetSize - 1 - y)
+        // 3. Отрисовка модулей QR (в top-down DIB visualY == memY)
         for (int qy = 0; qy < qrSize; ++qy) {
             for (int qx = 0; qx < qrSize; ++qx) {
                 if (qr.getModule(qx, qy)) {
@@ -810,29 +847,29 @@ HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSi
                     int leftX = startX + qx * moduleScale;
                     for (int dy = 0; dy < moduleScale; ++dy) {
                         int visualY = topY + dy;
-                        int memY = targetSize - 1 - visualY;
                         for (int dx = 0; dx < moduleScale; ++dx) {
                             int visualX = leftX + dx;
-                            pixels[memY * targetSize + visualX] = 0xFF0A0F1D; // Solid dark slate
+                            if (visualY >= 0 && visualY < targetSize && visualX >= 0 && visualX < targetSize) {
+                                pixels[visualY * targetSize + visualX] = 0xFF0A0F1D; // Solid dark slate
+                            }
                         }
                     }
                 }
             }
         }
 
-        // 4. Draw subtle circular border ring around the card at radius R = 126
+        // 4. Тонкое круглое кольцо на радиусе R = 126
         int cx = targetSize / 2;
         int cy = targetSize / 2;
         int rOuterSq = 126 * 126;
         int rInnerSq = 123 * 123;
         for (int visualY = 0; visualY < targetSize; ++visualY) {
-            int memY = targetSize - 1 - visualY;
             int dy = visualY - cy;
             for (int visualX = 0; visualX < targetSize; ++visualX) {
                 int dx = visualX - cx;
                 int distSq = dx * dx + dy * dy;
                 if (distSq <= rOuterSq && distSq >= rInnerSq) {
-                    pixels[memY * targetSize + visualX] = 0xFFCBD5E1; // subtle slate-300 ring
+                    pixels[visualY * targetSize + visualX] = 0xFFCBD5E1; // subtle slate-300 ring
                 }
             }
         }
@@ -1813,48 +1850,37 @@ static void GetMachineAndDomain(std::wstring& netBios, std::wstring& joinedDomai
     }
 }
 
-// Каноническая защита пароля (сэмпл helpers.cpp, ProtectIfNecessary-
-// AndCopyPassword): для CPUS_LOGON/UNLOCK LSA ожидает зашифрованный
-// CredProtectW блоб (DPAPI). Открытый текст на современных Windows 10/11 с
-// Credential Guard / LSA protection отклоняется с 0xC000006D (STATUS_LOGON_FAILURE).
-// Вызов CredProtectW обязательно двухшаговый: первый шаг с nullptr-буфером
-// возвращает необходимый размер (~180-250 символов), второй — выполняет шифрование.
-static HRESULT ProtectPasswordCopy(const std::wstring& pass, std::wstring& out) {
-    if (pass.empty()) { out.clear(); return S_OK; }
+// При необходимости расшифровывает пароль (если он уже был зашифрован CredProtectW).
+// В KERB_INTERACTIVE_LOGON по официальной документации Microsoft поле Password
+// обязано содержать открытый текст (plaintext): LSA и MSV1_0 (локальный SAM)
+// вычисляют NT-хэш напрямую из переданных байтов буфера. Шифрование пароля через
+// CredProtectW приводило к тому, что MSV1_0 хэшировал шифротекст AQAA... вместо
+// реального пароля пользователя, вызывая 0xC000006D (STATUS_LOGON_FAILURE) / 0xC000006A (STATUS_WRONG_PASSWORD).
+static std::wstring GetPlainPassword(const std::wstring& pass) {
+    if (pass.empty()) return std::wstring();
 
     CRED_PROTECTION_TYPE pt = CredUnprotected;
     if (CredIsProtectedW(const_cast<LPWSTR>(pass.c_str()), &pt) && pt != CredUnprotected) {
-        out = pass;
-        return S_OK;
+        DWORD cchNeeded = 0;
+        if (CredUnprotectW(FALSE, const_cast<LPWSTR>(pass.c_str()), (DWORD)pass.size() + 1, nullptr, &cchNeeded) ||
+            GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+            if (cchNeeded > 0) {
+                PWSTR buf = (PWSTR)CoTaskMemAlloc(cchNeeded * sizeof(wchar_t));
+                if (buf) {
+                    if (CredUnprotectW(FALSE, const_cast<LPWSTR>(pass.c_str()), (DWORD)pass.size() + 1, buf, &cchNeeded)) {
+                        std::wstring result(buf, wcsnlen(buf, cchNeeded));
+                        SecureZeroMemory(buf, cchNeeded * sizeof(wchar_t));
+                        CoTaskMemFree(buf);
+                        CPLog(L"pack: CredUnprotectW успешно расшифровал переданный пароль");
+                        return result;
+                    }
+                    SecureZeroMemory(buf, cchNeeded * sizeof(wchar_t));
+                    CoTaskMemFree(buf);
+                }
+            }
+        }
     }
-
-    DWORD cchIn = (DWORD)pass.size() + 1;
-    DWORD cchNeeded = 0;
-
-    // Шаг 1: получение требуемого размера буфера (ожидается ERROR_INSUFFICIENT_BUFFER)
-    CredProtectW(FALSE, const_cast<LPWSTR>(pass.c_str()), cchIn, nullptr, &cchNeeded, &pt);
-    DWORD dwErr = GetLastError();
-    if (dwErr != ERROR_INSUFFICIENT_BUFFER || cchNeeded == 0) {
-        CPLog(L"pack: CredProtectW query failed err=%lu", dwErr);
-        return HRESULT_FROM_WIN32(dwErr);
-    }
-
-    // Шаг 2: выделение памяти и шифрование пароля
-    PWSTR buf = (PWSTR)CoTaskMemAlloc(cchNeeded * sizeof(wchar_t));
-    if (!buf) return E_OUTOFMEMORY;
-
-    if (!CredProtectW(FALSE, const_cast<LPWSTR>(pass.c_str()), cchIn, buf, &cchNeeded, &pt)) {
-        dwErr = GetLastError();
-        CPLog(L"pack: CredProtectW encrypt failed err=%lu", dwErr);
-        SecureZeroMemory(buf, cchNeeded * sizeof(wchar_t));
-        CoTaskMemFree(buf);
-        return HRESULT_FROM_WIN32(dwErr);
-    }
-
-    out.assign(buf, wcsnlen(buf, cchNeeded));
-    SecureZeroMemory(buf, cchNeeded * sizeof(wchar_t));
-    CoTaskMemFree(buf);
-    return S_OK;
+    return pass;
 }
 
 // id пакета 0 — ВАЛИДЕН (на части машин Negotiate зарегистрирован именно под 0,
@@ -1948,30 +1974,36 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
             }
         }
     }
-
-    std::wstring protPassword;
-    HRESULT protHr = ProtectPasswordCopy(password, protPassword);
-    bool protUsed = SUCCEEDED(protHr);
-    if (!protUsed) {
-        CPLog(L"pack: CredProtect не удался hr=0x%08X — отправляю открытый пароль", (unsigned)protHr);
-        protPassword = password;
+    if (effDomain.empty()) {
+        effDomain = netBios.empty() ? L"." : netBios;
+        forcedLocalDomain = true;
     }
+
+    std::wstring plainPassword = GetPlainPassword(password);
 
     DWORD domainBytes = (DWORD)(effDomain.length() * sizeof(wchar_t));
     DWORD userBytes = (DWORD)(effUser.length() * sizeof(wchar_t));
-    DWORD passBytes = (DWORD)(protPassword.length() * sizeof(wchar_t));
+    DWORD passBytes = (DWORD)(plainPassword.length() * sizeof(wchar_t));
 
     // Поля KERB_INTERACTIVE_LOGON — USHORT-длины: свыше 64КБ молчаливая
     // усечь дала бы несогласованный блоб; отвергаем явно.
     if (domainBytes > 0xFFFF || userBytes > 0xFFFF || passBytes > 0xFFFF) {
         CPLog(L"pack: отказ — поле длиннее USHORT (dom=%lu usr=%lu pass=%lu)",
             (unsigned long)domainBytes, (unsigned long)userBytes, (unsigned long)passBytes);
+        if (!plainPassword.empty()) {
+            SecureZeroMemory(&plainPassword[0], plainPassword.size() * sizeof(wchar_t));
+        }
         return E_INVALIDARG;
     }
 
     DWORD totalSize = sizeof(KERB_INTERACTIVE_UNLOCK_LOGON) + domainBytes + userBytes + passBytes;
     BYTE* buffer = (BYTE*)CoTaskMemAlloc(totalSize);
-    if (!buffer) return E_OUTOFMEMORY;
+    if (!buffer) {
+        if (!plainPassword.empty()) {
+            SecureZeroMemory(&plainPassword[0], plainPassword.size() * sizeof(wchar_t));
+        }
+        return E_OUTOFMEMORY;
+    }
     ZeroMemory(buffer, totalSize);
 
     KERB_INTERACTIVE_UNLOCK_LOGON* pKiul = (KERB_INTERACTIVE_UNLOCK_LOGON*)buffer;
@@ -1997,12 +2029,15 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pLogon->Password.Length = (USHORT)passBytes;
     pLogon->Password.MaximumLength = (USHORT)passBytes;
     pLogon->Password.Buffer = (PWSTR)(ptr - buffer);
-    CopyMemory(ptr, protPassword.data(), passBytes);
+    CopyMemory(ptr, plainPassword.data(), passBytes);
 
     ULONG authPkg = GetNegotiateAuthPackage();
     if (!g_authPkgValid) {
         CPLog(L"pack: CRITICAL — LSA не отдал пакет, сериализация отменена");
         CoTaskMemFree(buffer);
+        if (!plainPassword.empty()) {
+            SecureZeroMemory(&plainPassword[0], plainPassword.size() * sizeof(wchar_t));
+        }
         return E_FAIL;
     }
 
@@ -2011,12 +2046,12 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
 
-    CPLog(L"pack(kiul): domain=\"%s\"(forced=%d, adJoined=%d) user=\"%s\" passLen=%u prot=%d authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
-        effDomain.c_str(), forcedLocalDomain ? 1 : 0, isDomainJoined ? 1 : 0, effUser.c_str(), (unsigned)password.length(),
-        protUsed ? 1 : 0, authPkg, g_authPkgValid ? 1 : 0,
+    CPLog(L"pack(kiul): domain=\"%s\"(forced=%d, adJoined=%d) user=\"%s\" passLen=%u authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
+        effDomain.c_str(), forcedLocalDomain ? 1 : 0, isDomainJoined ? 1 : 0, effUser.c_str(), (unsigned)plainPassword.length(),
+        authPkg, g_authPkgValid ? 1 : 0,
         (unsigned long)pLogon->MessageType, (unsigned long)totalSize);
-    if (!protPassword.empty()) {
-        SecureZeroMemory(&protPassword[0], protPassword.size() * sizeof(wchar_t));
+    if (!plainPassword.empty()) {
+        SecureZeroMemory(&plainPassword[0], plainPassword.size() * sizeof(wchar_t));
     }
     return S_OK;
 }

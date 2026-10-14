@@ -1,4 +1,4 @@
-﻿// guid.h — COM GUIDs for Ligament 2FA Windows Credential Provider
+// guid.h — COM GUIDs for Ligament 2FA Windows Credential Provider
 #pragma once
 
 #include <initguid.h>
@@ -10,3 +10,10 @@ DEFINE_GUID(CLSID_LigamentProvider,
 // {7B896B22-8B35-4E7B-A350-9E17E5E3D10B}
 DEFINE_GUID(CLSID_LigamentCredential,
     0x7b896b22, 0x8b35, 0x4e7b, 0xa3, 0x50, 0x9e, 0x17, 0xe5, 0xe3, 0xd1, 0x0b);
+
+// {2D837775-F6CD-464E-A745-482FD0B47493}
+#ifndef CPFG_CREDENTIAL_PROVIDER_LOGO
+DEFINE_GUID(CPFG_CREDENTIAL_PROVIDER_LOGO,
+    0x2d837775, 0xf6cd, 0x464e, 0xa7, 0x45, 0x48, 0x2f, 0xd0, 0xb4, 0x74, 0x93);
+#endif
+
