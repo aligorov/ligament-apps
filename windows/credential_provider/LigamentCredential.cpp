@@ -434,7 +434,9 @@ static HBITMAP CloneAlphaDIB(HBITMAP hSrc) {
         BITMAPV5HEADER bi = {0};
         bi.bV5Size = sizeof(BITMAPV5HEADER);
         bi.bV5Width = ds.dsBm.bmWidth;
-        bi.bV5Height = ds.dsBmih.biHeight; // сохраняем ориентацию (top-down / bottom-up)
+        // Both source constructors use top-down pixels. GetObject reports a
+        // positive height, so copying that sign would vertically flip the image.
+        bi.bV5Height = -abs(ds.dsBm.bmHeight);
         bi.bV5Planes = 1;
         bi.bV5BitCount = 32;
         bi.bV5Compression = BI_BITFIELDS;
