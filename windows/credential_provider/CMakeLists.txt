@@ -55,6 +55,7 @@ target_link_libraries(LigamentCredentialProvider PRIVATE
     ws2_32
     iphlpapi
     bcrypt
+    netapi32
 )
 
 set_target_properties(LigamentCredentialProvider PROPERTIES

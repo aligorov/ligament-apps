@@ -11,6 +11,7 @@ namespace ligament {
 // GetSerialization/ReportResult идут раньше, отсюда форвард-декларация.
 static void CPLog(const wchar_t* fmt, ...);
 static void GetMachineNames(std::wstring& netBios, std::wstring& dnsDomain);
+static void GetMachineAndDomain(std::wstring& netBios, std::wstring& joinedDomain, bool& isDomainJoined);
 
 // Field descriptors
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
@@ -1777,26 +1778,79 @@ static void GetMachineNames(std::wstring& netBios, std::wstring& dnsDomain) {
     if (GetComputerNameExW(ComputerNameDnsDomain, dd, &d)) dnsDomain = dd;
 }
 
+// Определяет NetBIOS-имя ПК и статус членства в Active Directory
+static void GetMachineAndDomain(std::wstring& netBios, std::wstring& joinedDomain, bool& isDomainJoined) {
+    netBios.clear();
+    joinedDomain.clear();
+    isDomainJoined = false;
+
+    wchar_t nb[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+    DWORD n = ARRAYSIZE(nb);
+    if (GetComputerNameW(nb, &n)) {
+        netBios = nb;
+    }
+    if (netBios.empty()) {
+        wchar_t nbEx[256] = {0};
+        DWORD nEx = ARRAYSIZE(nbEx);
+        if (GetComputerNameExW(ComputerNameNetBIOS, nbEx, &nEx)) {
+            netBios = nbEx;
+        }
+    }
+
+    LPWSTR pDomain = nullptr;
+    NETSETUP_JOIN_STATUS joinStatus = NetSetupUnknownStatus;
+    NET_API_STATUS err = NetGetJoinInformation(nullptr, &pDomain, &joinStatus);
+    if (err == NERR_Success) {
+        if (joinStatus == NetSetupDomainJoined && pDomain) {
+            isDomainJoined = true;
+            joinedDomain = pDomain;
+        }
+        if (pDomain) {
+            NetApiBufferFree(pDomain);
+        }
+    }
+}
+
 // Каноническая защита пароля (сэмпл helpers.cpp, ProtectIfNecessary-
-// AndCopyPassword): для CPUS_LOGON/UNLOCK штатный вход и все продакшн-
-// провайдеры (privacyIDEA/multiOTP/rdOTP) отправляют пароль CredProtect-
-// блобом; уже защищённый (пришёл из SetSerialization в RDP) не шифруем
-// дважды. LSA принимает и открытый текст, но делаем канонично.
+// AndCopyPassword): для CPUS_LOGON/UNLOCK LSA ожидает зашифрованный
+// CredProtectW блоб (DPAPI). Открытый текст на современных Windows 10/11 с
+// Credential Guard / LSA protection отклоняется с 0xC000006D (STATUS_LOGON_FAILURE).
+// Вызов CredProtectW обязательно двухшаговый: первый шаг с nullptr-буфером
+// возвращает необходимый размер (~180-250 символов), второй — выполняет шифрование.
 static HRESULT ProtectPasswordCopy(const std::wstring& pass, std::wstring& out) {
     if (pass.empty()) { out.clear(); return S_OK; }
+
     CRED_PROTECTION_TYPE pt = CredUnprotected;
     if (CredIsProtectedW(const_cast<LPWSTR>(pass.c_str()), &pt) && pt != CredUnprotected) {
         out = pass;
         return S_OK;
     }
-    DWORD cch = (DWORD)pass.size() + 1; // CredProtectW: счётчик С нуль-терминатором
-    PWSTR buf = (PWSTR)CoTaskMemAlloc(cch * sizeof(wchar_t));
-    if (!buf) return E_OUTOFMEMORY;
-    if (!CredProtectW(FALSE, const_cast<LPWSTR>(pass.c_str()), cch, buf, &cch, nullptr)) {
-        CoTaskMemFree(buf);
-        return E_FAIL;
+
+    DWORD cchIn = (DWORD)pass.size() + 1;
+    DWORD cchNeeded = 0;
+
+    // Шаг 1: получение требуемого размера буфера (ожидается ERROR_INSUFFICIENT_BUFFER)
+    CredProtectW(FALSE, const_cast<LPWSTR>(pass.c_str()), cchIn, nullptr, &cchNeeded, &pt);
+    DWORD dwErr = GetLastError();
+    if (dwErr != ERROR_INSUFFICIENT_BUFFER || cchNeeded == 0) {
+        CPLog(L"pack: CredProtectW query failed err=%lu", dwErr);
+        return HRESULT_FROM_WIN32(dwErr);
     }
-    out.assign(buf, wcsnlen(buf, cch));
+
+    // Шаг 2: выделение памяти и шифрование пароля
+    PWSTR buf = (PWSTR)CoTaskMemAlloc(cchNeeded * sizeof(wchar_t));
+    if (!buf) return E_OUTOFMEMORY;
+
+    if (!CredProtectW(FALSE, const_cast<LPWSTR>(pass.c_str()), cchIn, buf, &cchNeeded, &pt)) {
+        dwErr = GetLastError();
+        CPLog(L"pack: CredProtectW encrypt failed err=%lu", dwErr);
+        SecureZeroMemory(buf, cchNeeded * sizeof(wchar_t));
+        CoTaskMemFree(buf);
+        return HRESULT_FROM_WIN32(dwErr);
+    }
+
+    out.assign(buf, wcsnlen(buf, cchNeeded));
+    SecureZeroMemory(buf, cchNeeded * sizeof(wchar_t));
     CoTaskMemFree(buf);
     return S_OK;
 }
@@ -1855,22 +1909,41 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     // (KERB_INTERACTIVE_LOGON + LUID LogonSessionId, его заполняет Winlogon),
     // а Buffer-поля UNICODE_STRING — байтовые СМЕЩЕНИЯ от начала структуры,
     // НЕ указатели: блоб уходит в чужие процессы (Winlogon/LSASS), абсолютные
-    // адреса там бессмысленны (v0.4.62–64: 0xC000006D/0xC00000E5 из-за
-    // указателей и голой структуры). Строки без нуль-терминаторов,
-    // MaximumLength = Length. Диагностика v0.4.64 подтвердила: пакет и креды
-    // верны, формат был битый.
-    // Голое имя пользователя на машине БЕЗ домена (рабочая группа): пустой
-    // LogonDomainName — единственное значение, которым мы отличались от
-    // рабочего штатного входа; штатный вход для локальных учёток резолвит
-    // SAM по ИМЕНИ МАШИНЫ. Подставляем его принудительно.
+    // адреса там бессмысленны.
     std::wstring effDomain = domain;
+    std::wstring effUser = user;
     bool forcedLocalDomain = false;
+
+    std::wstring netBios, joinedDomain;
+    bool isDomainJoined = false;
+    GetMachineAndDomain(netBios, joinedDomain, isDomainJoined);
+
+    // 1. '.' или '\' в качестве домена — явный запрос локального входа
+    if (effDomain == L"." || effDomain == L"\\") {
+        effDomain = netBios;
+        forcedLocalDomain = true;
+    }
+
+    // 2. Если домен не указан:
     if (effDomain.empty()) {
-        std::wstring nb, dd;
-        GetMachineNames(nb, dd);
-        if (dd.empty() && !nb.empty()) {
-            effDomain = nb;
-            forcedLocalDomain = true;
+        if (isDomainJoined) {
+            // Машина в домене: проверяем, существует ли пользователь в локальной базе SAM
+            LPBYTE pUserInfo = nullptr;
+            NET_API_STATUS uErr = NetUserGetInfo(nullptr, effUser.c_str(), 1, &pUserInfo);
+            if (uErr == NERR_Success) {
+                if (pUserInfo) NetApiBufferFree(pUserInfo);
+                effDomain = netBios;
+                forcedLocalDomain = true;
+            } else {
+                effDomain = joinedDomain;
+            }
+        } else {
+            // Машина не в домене (Workgroup / Standalone): все пользователи локальные в SAM.
+            // Подставляем NetBIOS-имя машины, чтобы LSA не пытался искать KDC по DNS-суффиксу от DHCP.
+            if (!netBios.empty()) {
+                effDomain = netBios;
+                forcedLocalDomain = true;
+            }
         }
     }
 
@@ -1883,7 +1956,7 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     }
 
     DWORD domainBytes = (DWORD)(effDomain.length() * sizeof(wchar_t));
-    DWORD userBytes = (DWORD)(user.length() * sizeof(wchar_t));
+    DWORD userBytes = (DWORD)(effUser.length() * sizeof(wchar_t));
     DWORD passBytes = (DWORD)(protPassword.length() * sizeof(wchar_t));
 
     // Поля KERB_INTERACTIVE_LOGON — USHORT-длины: свыше 64КБ молчаливая
@@ -1916,7 +1989,7 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pLogon->UserName.Length = (USHORT)userBytes;
     pLogon->UserName.MaximumLength = (USHORT)userBytes;
     pLogon->UserName.Buffer = (PWSTR)(ptr - buffer);
-    CopyMemory(ptr, user.data(), userBytes);
+    CopyMemory(ptr, effUser.data(), userBytes);
     ptr += userBytes;
 
     pLogon->Password.Length = (USHORT)passBytes;
@@ -1936,11 +2009,13 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
 
-    CPLog(L"pack(kiul): domain=\"%s\"(forced=%d) user=\"%s\" passLen=%u prot=%d authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
-        effDomain.c_str(), forcedLocalDomain ? 1 : 0, user.c_str(), (unsigned)password.length(),
+    CPLog(L"pack(kiul): domain=\"%s\"(forced=%d, adJoined=%d) user=\"%s\" passLen=%u prot=%d authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
+        effDomain.c_str(), forcedLocalDomain ? 1 : 0, isDomainJoined ? 1 : 0, effUser.c_str(), (unsigned)password.length(),
         protUsed ? 1 : 0, authPkg, g_authPkgValid ? 1 : 0,
         (unsigned long)pLogon->MessageType, (unsigned long)totalSize);
-    SecureZeroMemory(&protPassword[0], protPassword.size() * sizeof(wchar_t));
+    if (!protPassword.empty()) {
+        SecureZeroMemory(&protPassword[0], protPassword.size() * sizeof(wchar_t));
+    }
     return S_OK;
 }
 

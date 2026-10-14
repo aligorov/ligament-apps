@@ -113,22 +113,28 @@ def generate_clients(master: Image.Image) -> None:
         image = app_icon(master, size).convert("RGB")
         image.save(ROOT / f"android/app/src/main/res/mipmap-{density}/ic_launcher.png")
 
-    pixels = app_icon(master, 256).tobytes()
+    cp_mark = master.resize((256, 256), Image.Resampling.LANCZOS)
+    raw = cp_mark.tobytes()
     header = [
-        "// Generated from assets/icons/logo_mark.svg; 256x256 ARGB.",
+        "// Generated from assets/icons/logo_mark.png; 256x256 ARGB (transparent background, premultiplied).",
         "#pragma once",
         "#include <stdint.h>",
         "static const uint32_t c_AppLogoWidth = 256;",
         "static const uint32_t c_AppLogoHeight = 256;",
         "static const uint32_t c_AppLogoPixels[256 * 256] = {",
     ]
-    for offset in range(0, len(pixels), 64):
-        block = pixels[offset:offset + 64]
-        row = ", ".join(
-            f"0x{a:02X}{r:02X}{g:02X}{b:02X}"
-            for r, g, b, a in zip(block[0::4], block[1::4], block[2::4], block[3::4])
-        )
-        header.append("    " + row + ",")
+    for offset in range(0, len(raw), 64):
+        block = raw[offset:offset + 64]
+        items = []
+        for r, g, b, a in zip(block[0::4], block[1::4], block[2::4], block[3::4]):
+            if a == 0:
+                items.append("0x00000000")
+            else:
+                pr = (r * a) // 255
+                pg = (g * a) // 255
+                pb = (b * a) // 255
+                items.append(f"0x{a:02X}{pr:02X}{pg:02X}{pb:02X}")
+        header.append("    " + ", ".join(items) + ",")
     header.append("};")
     (ROOT / "windows/credential_provider/app_logo_data.h").write_text(
         "\n".join(header) + "\n", encoding="utf-8"

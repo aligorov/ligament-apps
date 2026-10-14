@@ -22,6 +22,7 @@
 #include <stdio.h>    // swprintf_s/_vsnwprintf_s (CPLog)
 #include <sddl.h>     // ConvertStringSecurityDescriptorToSecurityDescriptorW (DACL cp.log)
 #include <aclapi.h>   // SetNamedSecurityInfoW (перехват владения cp.log/каталогом)
+#include <lm.h>       // NetGetJoinInformation, NetUserGetInfo, NetApiBufferFree
 
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "netapi32.lib")
 
 namespace ligament {
 
