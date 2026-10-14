@@ -38,7 +38,6 @@ set(HEADERS
     rdp_gate.h
     qrcodegen.hpp
     app_logo_data.h
-    credential_bitmap.h
 )
 
 add_library(LigamentCredentialProvider SHARED ${SOURCES} ${HEADERS})
@@ -57,7 +56,6 @@ target_link_libraries(LigamentCredentialProvider PRIVATE
     iphlpapi
     bcrypt
     netapi32
-    windowscodecs
 )
 
 set_target_properties(LigamentCredentialProvider PROPERTIES

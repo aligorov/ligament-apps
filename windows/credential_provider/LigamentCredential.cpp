@@ -218,10 +218,11 @@ void LigamentCredential::SetProviderEvents(ICredentialProviderEvents* pcpe, UINT
 
 // IUnknown
 HRESULT LigamentCredential::QueryInterface(REFIID riid, void** ppv) {
+    // Note: only ICredentialProviderCredential is implemented; the tile does
+    // not implement ICredentialProviderCredential2 (GetUserSid), so it must
+    // not be advertised in the QITAB.
     static const QITAB qit[] = {
         QITABENT(LigamentCredential, ICredentialProviderCredential),
-        QITABENT(LigamentCredential, ICredentialProviderCredential2),
-        QITABENT(LigamentCredential, ILigamentCredential3),
         {0},
     };
     return QISearch(this, qit, riid, ppv);
@@ -457,55 +458,23 @@ static HBITMAP CloneAlphaDIB(HBITMAP hSrc) {
     return (HBITMAP)CopyImage(hSrc, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
 }
 
-// This is a generic username/password tile, not associated with a specific SID.
-HRESULT LigamentCredential::GetUserSid(PWSTR* sid) {
-    if (!sid) return E_POINTER;
-    *sid = nullptr;
-    return S_FALSE;
-}
-
-HRESULT LigamentCredential::GetBitmapBufferValue(DWORD field, DWORD* size, BYTE** buffer) {
-    if (!size || !buffer) return E_POINTER;
-    *size = 0;
-    *buffer = nullptr;
-    if (field != FID_LOGO) return E_INVALIDARG;
-    // Protect the source for the entire encoding, including concurrent QR disposal.
-    EnterCriticalSection(&m_csPoll);
-    HRESULT hr = EncodeCredentialBitmap(m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp, size, buffer);
-    LeaveCriticalSection(&m_csPoll);
-    CPLog(L"GetBitmapBufferValue: PNG hr=0x%08X bytes=%u", (unsigned)hr, *size);
-    return hr;
-}
-
-HRESULT LigamentCredential::GetBitmapValue(DWORD field, HBITMAP* bitmap) {
-    if (!bitmap) return E_POINTER;
-    *bitmap = nullptr;
-    if (field != FID_LOGO) return E_INVALIDARG;
-    EnterCriticalSection(&m_csPoll);
-    *bitmap = CloneAlphaDIB(m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp);
-    LeaveCriticalSection(&m_csPoll);
-    return *bitmap ? S_OK : E_OUTOFMEMORY;
-}
-
-HRESULT LigamentCredential::UpdateBitmapField(ICredentialProviderCredentialEvents* events) {
-    if (!events) return E_POINTER;
-    ILigamentCredentialEvents3* events3 = nullptr;
-    if (SUCCEEDED(events->QueryInterface(IID_PPV_ARGS(&events3)))) {
-        DWORD size = 0;
-        BYTE* buffer = nullptr;
-        HRESULT hr = GetBitmapBufferValue(FID_LOGO, &size, &buffer);
-        if (SUCCEEDED(hr)) hr = events3->SetFieldBitmapBuffer(this, FID_LOGO, size, buffer);
-        CoTaskMemFree(buffer);
-        events3->Release();
-        return hr;
+HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
+    if (dwFieldID == FID_LOGO && phbmp) {
+        HBITMAP src = nullptr;
+        EnterCriticalSection(&m_csPoll);
+        src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        LeaveCriticalSection(&m_csPoll);
+        if (src) {
+            *phbmp = CloneAlphaDIB(src);
+            if (*phbmp) {
+                CPLog(L"GetBitmapValue: returning copy of %s bitmap=%p",
+                    (src != m_hDefaultLogoBmp) ? L"QR" : L"DefaultLogo", *phbmp);
+                return S_OK;
+            }
+        }
     }
-    HBITMAP bitmap = nullptr;
-    HRESULT hr = GetBitmapValue(FID_LOGO, &bitmap);
-    if (SUCCEEDED(hr)) {
-        hr = events->SetFieldBitmap(this, FID_LOGO, bitmap);
-        DeleteObject(bitmap);
-    }
-    return hr;
+    if (phbmp) *phbmp = nullptr;
+    return E_NOTIMPL;
 }
 
 HRESULT LigamentCredential::GetCheckboxValue(DWORD dwFieldID, BOOL* pbChecked, PWSTR* ppszLabel) {
@@ -700,7 +669,16 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
             CoTaskMemFree(psz);
         }
     } else if (dwFieldID == FID_LOGO) {
-        hrStr = UpdateBitmapField(pEvents);
+        HBITMAP bmp = nullptr;
+        EnterCriticalSection(&m_csPoll);
+        bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        LeaveCriticalSection(&m_csPoll);
+        if (bmp) {
+            HBITMAP copyBmp = (HBITMAP)CopyImage(bmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+            if (copyBmp) {
+                pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
+            }
+        }
         pEvents->SetFieldState(this, FID_LOGO, cpfs);
         GdiFlush();
     }
@@ -745,10 +723,18 @@ void LigamentCredential::UpdateFieldStates() {
 }
 
 void LigamentCredential::NotifyQrChanged() {
-    if (m_pEvents) {
-        HRESULT hr = UpdateBitmapField(m_pEvents);
-        CPLog(L"NotifyQrChanged: bitmap update hr=0x%08X", (unsigned)hr);
+    HBITMAP src = nullptr;
+    EnterCriticalSection(&m_csPoll);
+    src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+    LeaveCriticalSection(&m_csPoll);
+    if (m_pEvents && src) {
+        HBITMAP copyBmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+        if (copyBmp) {
+            HRESULT hr = m_pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
+            CPLog(L"NotifyQrChanged: SetFieldBitmap hr=0x%08X", (unsigned)hr);
+        }
         m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
+        GdiFlush();
     }
     if (m_pProviderEvents && m_providerAdviseContext) {
         CPLog(L"NotifyQrChanged: triggering CredentialsChanged to reload tile avatar");
