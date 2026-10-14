@@ -3,6 +3,8 @@
 #include "rdp_gate.h"
 #include "qrcodegen.hpp"
 #include "app_logo_data.h"
+#include "credential_logo_png.h"
+#include "credential_image.h"
 #include <wincred.h> // CredProtectW/CredIsProtectedW (wincred.h)
 #include <lm.h>
 #include <lmjoin.h>
@@ -218,11 +220,10 @@ void LigamentCredential::SetProviderEvents(ICredentialProviderEvents* pcpe, UINT
 
 // IUnknown
 HRESULT LigamentCredential::QueryInterface(REFIID riid, void** ppv) {
-    // Note: only ICredentialProviderCredential is implemented; the tile does
-    // not implement ICredentialProviderCredential2 (GetUserSid), so it must
-    // not be advertised in the QITAB.
     static const QITAB qit[] = {
         QITABENT(LigamentCredential, ICredentialProviderCredential),
+        QITABENT(LigamentCredential, ICredentialProviderCredential2),
+        QITABENT(LigamentCredential, ILigamentCredential3),
         {0},
     };
     return QISearch(this, qit, riid, ppv);
@@ -433,7 +434,9 @@ static HBITMAP CloneAlphaDIB(HBITMAP hSrc) {
         BITMAPV5HEADER bi = {0};
         bi.bV5Size = sizeof(BITMAPV5HEADER);
         bi.bV5Width = ds.dsBm.bmWidth;
-        bi.bV5Height = ds.dsBmih.biHeight; // сохраняем ориентацию (top-down / bottom-up)
+        // Both source constructors use top-down pixels. GetObject reports a
+        // positive height, so copying that sign would vertically flip the image.
+        bi.bV5Height = -abs(ds.dsBm.bmHeight);
         bi.bV5Planes = 1;
         bi.bV5BitCount = 32;
         bi.bV5Compression = BI_BITFIELDS;
@@ -456,6 +459,65 @@ static HBITMAP CloneAlphaDIB(HBITMAP hSrc) {
         if (hDst) DeleteObject(hDst);
     }
     return (HBITMAP)CopyImage(hSrc, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+}
+
+// Keep the dedicated provider tile, as before Credential3 was added.
+// S_FALSE/null would instead associate it with "Other user" and hide it on
+// non-domain PCs. E_NOTIMPL/null preserves the V1-compatible tile behavior.
+HRESULT LigamentCredential::GetUserSid(PWSTR* sid) {
+    if (!sid) return E_POINTER;
+    *sid = nullptr;
+    return E_NOTIMPL;
+}
+
+HRESULT LigamentCredential::GetBitmapBufferValue(DWORD field, DWORD* size, BYTE** buffer) {
+    if (!size || !buffer) return E_POINTER;
+    *size = 0;
+    *buffer = nullptr;
+    if (field != FID_LOGO) return E_INVALIDARG;
+    try {
+        std::vector<uint8_t> qrPng;
+        HRESULT hr = S_OK;
+        // Both image constructors are top-down. GetObject normalizes biHeight;
+        // use the pixel buffer's known orientation, not its reported sign.
+        EnterCriticalSection(&m_csPoll);
+        if (m_hQrBmp) {
+            DIBSECTION dib = {};
+            if (GetObject(m_hQrBmp, sizeof(dib), &dib) != sizeof(dib) ||
+                !dib.dsBm.bmBits || dib.dsBm.bmBitsPixel != 32) {
+                hr = E_FAIL;
+            } else {
+                try {
+                    qrPng = EncodeOpaqueBgraPng(static_cast<const uint32_t*>(dib.dsBm.bmBits),
+                        dib.dsBm.bmWidth, dib.dsBm.bmHeight, dib.dsBm.bmWidthBytes / 4);
+                    if (qrPng.empty()) hr = E_FAIL;
+                } catch (...) { hr = E_OUTOFMEMORY; }
+            }
+        }
+        LeaveCriticalSection(&m_csPoll);
+        if (FAILED(hr)) return hr;
+        const BYTE* source = qrPng.empty() ? kCredentialLogoPng : qrPng.data();
+        const size_t length = qrPng.empty() ? sizeof(kCredentialLogoPng) : qrPng.size();
+        BYTE* copy = static_cast<BYTE*>(CoTaskMemAlloc(length));
+        if (!copy) return E_OUTOFMEMORY;
+        memcpy(copy, source, length);
+        *size = static_cast<DWORD>(length);
+        *buffer = copy;
+        CPLog(L"image: %s PNG bytes=%u", qrPng.empty() ? L"logo" : L"QR", *size);
+        return S_OK;
+    } catch (...) { return E_OUTOFMEMORY; }
+}
+
+HRESULT LigamentCredential::SetTransparentLogo(ICredentialProviderCredentialEvents* events) {
+    if (!events) return E_POINTER;
+    ILigamentCredentialEvents3* events3 = nullptr;
+    HRESULT hr = events->QueryInterface(IID_PPV_ARGS(&events3));
+    if (FAILED(hr)) return hr;
+    // Static PNG: no WIC, COM activation, GDI conversion or bitmap lifetime involved.
+    hr = events3->SetFieldBitmapBuffer(this, FID_LOGO,
+        static_cast<DWORD>(sizeof(kCredentialLogoPng)), const_cast<BYTE*>(kCredentialLogoPng));
+    events3->Release();
+    return hr;
 }
 
 HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
@@ -673,7 +735,9 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
         EnterCriticalSection(&m_csPoll);
         bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
         LeaveCriticalSection(&m_csPoll);
-        if (bmp) {
+        if (bmp == m_hDefaultLogoBmp && SUCCEEDED(SetTransparentLogo(pEvents))) {
+            // Logo restored with alpha after clearing the QR.
+        } else if (bmp) {
             HBITMAP copyBmp = (HBITMAP)CopyImage(bmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
             if (copyBmp) {
                 pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
@@ -728,13 +792,17 @@ void LigamentCredential::NotifyQrChanged() {
     src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
     LeaveCriticalSection(&m_csPoll);
     if (m_pEvents && src) {
-        HBITMAP copyBmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
-        if (copyBmp) {
-            HRESULT hr = m_pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
-            CPLog(L"NotifyQrChanged: SetFieldBitmap hr=0x%08X", (unsigned)hr);
+        if (src == m_hDefaultLogoBmp && SUCCEEDED(SetTransparentLogo(m_pEvents))) {
+            m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
+        } else {
+            HBITMAP copyBmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+            if (copyBmp) {
+                HRESULT hr = m_pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
+                CPLog(L"NotifyQrChanged: SetFieldBitmap hr=0x%08X", (unsigned)hr);
+            }
+            m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
+            GdiFlush();
         }
-        m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
-        GdiFlush();
     }
     if (m_pProviderEvents && m_providerAdviseContext) {
         CPLog(L"NotifyQrChanged: triggering CredentialsChanged to reload tile avatar");

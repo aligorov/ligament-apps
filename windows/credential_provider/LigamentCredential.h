@@ -2,6 +2,7 @@
 #pragma once
 
 #include "common.h"
+#include "credential_interfaces.h"
 #include "HttpApiClient.h"
 #include "WebAuthnClient.h"
 
@@ -29,7 +30,7 @@ enum AUTH_FACTOR_MODE {
 
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[];
 
-class LigamentCredential : public ICredentialProviderCredential {
+class LigamentCredential : public ILigamentCredential3 {
 public:
     LigamentCredential();
     virtual ~LigamentCredential();
@@ -38,6 +39,9 @@ public:
     IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv);
     IFACEMETHODIMP_(ULONG) AddRef();
     IFACEMETHODIMP_(ULONG) Release();
+
+    IFACEMETHODIMP GetUserSid(PWSTR* sid);
+    IFACEMETHODIMP GetBitmapBufferValue(DWORD field, DWORD* size, BYTE** buffer);
 
     // ICredentialProviderCredential
     IFACEMETHODIMP Advise(ICredentialProviderCredentialEvents* pcpce);
@@ -76,6 +80,9 @@ public:
     bool IsAuthenticated() const { return m_authenticated; }
 
 private:
+#ifdef LIGAMENT_CREDENTIAL_IMAGE_TEST
+    friend class CredentialImageTestAccess;
+#endif
     LONG m_cRef = 1;
     ICredentialProviderCredentialEvents* m_pEvents = nullptr;
     DWORD m_dwEventsCookie = 0;
@@ -108,6 +115,7 @@ private:
     HBITMAP m_hDefaultLogoBmp = nullptr;
     void ClearQrBitmap();
     void NotifyQrChanged();
+    HRESULT SetTransparentLogo(ICredentialProviderCredentialEvents* events);
     static HBITMAP CreateQrBitmap(const std::string& text, int targetSize = 256);
     static HBITMAP CreateLogoBitmap(int targetSize = 256);
 
