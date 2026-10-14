@@ -93,7 +93,7 @@ jobs:
             exit 1
           fi
           flutter pub get
-          flutter build apk --release
+          flutter build apk --release --no-tree-shake-icons
           apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           [ -n "$apksigner" ]
           "$apksigner" verify --verbose --print-certs build/app/outputs/flutter-apk/app-release.apk
@@ -122,7 +122,7 @@ jobs:
       - name: Build macOS Application and DMG
         run: |
           flutter pub get
-          flutter build macos --release
+          flutter build macos --release --no-tree-shake-icons
           chmod +x scripts/build_dmg.sh
           ./scripts/build_dmg.sh
 
@@ -148,7 +148,7 @@ jobs:
       - name: Build iOS Application and IPA
         run: |
           flutter pub get
-          flutter build ios --release --no-codesign
+          flutter build ios --release --no-codesign --no-tree-shake-icons
           chmod +x scripts/build_ios.sh
           ./scripts/build_ios.sh
 

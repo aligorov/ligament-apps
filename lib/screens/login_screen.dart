@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import 'home_screen.dart';
+import 'connect_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   final Map<String, dynamic> serverConfig;
@@ -111,16 +112,52 @@ class _LoginScreenState extends State<LoginScreen> {
     final s = context.strings;
     final serverName = widget.serverConfig['server_name'] ?? 'Ligament 2FA';
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.of(context).pop(),
+    final auth = context.watch<AuthState>();
+    final isGpoLocked = auth.gpo.enforcedServerUrl != null;
+    final canPopRoute = Navigator.of(context).canPop();
+    final canGoBack = !isGpoLocked || canPopRoute || _requiresSecondFactor;
+
+    void handleBack() {
+      if (_requiresSecondFactor) {
+        setState(() {
+          _requiresSecondFactor = false;
+          _codeController.clear();
+          _error = null;
+        });
+      } else if (canPopRoute) {
+        Navigator.of(context).pop();
+      } else if (!isGpoLocked) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const ConnectScreen()),
+        );
+      }
+    }
+
+    return PopScope(
+      canPop: canPopRoute && !_requiresSecondFactor,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (canGoBack) {
+          handleBack();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0F172A),
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: canGoBack
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  tooltip: _requiresSecondFactor
+                      ? s.btnBackToPassword
+                      : (canPopRoute
+                          ? (auth.isRu ? 'Назад' : 'Back')
+                          : s.changeServer),
+                  onPressed: handleBack,
+                )
+              : null,
         ),
-      ),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -317,6 +354,7 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }

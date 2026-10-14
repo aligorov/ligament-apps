@@ -23,7 +23,7 @@ Write-Host "========================================================" -Foregroun
 Set-Location $ClientDir
 $env:CL = "$env:CL /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
 Write-Host "`n[1/5] Компиляция Flutter Windows Release..." -ForegroundColor Yellow
-flutter build windows --release
+flutter build windows --release --no-tree-shake-icons
 
 if (-not (Test-Path "$BuildReleaseDir\ligament_authenticator.exe")) {
     Write-Error "Ошибка: Бинарный файл $BuildReleaseDir\ligament_authenticator.exe не найден!"
