@@ -26,6 +26,16 @@ public:
         LeaveCriticalSection(&credential.m_csPoll);
     }
     static void ClearQr(LigamentCredential& credential) { credential.ClearQrBitmap(); }
+    static void SetEvents(LigamentCredential& credential, ICredentialProviderCredentialEvents* events) {
+        if (events) events->AddRef();
+        EnterCriticalSection(&credential.m_csPoll);
+        ICredentialProviderCredentialEvents* previous = credential.m_pEvents;
+        credential.m_pEvents = events;
+        LeaveCriticalSection(&credential.m_csPoll);
+        if (previous) previous->Release();
+    }
+    static void NotifyLogo(LigamentCredential& credential) { credential.NotifyFieldChanged(FID_LOGO); }
+    static void NotifyQr(LigamentCredential& credential) { credential.NotifyQrChanged(); }
 };
 }
 
@@ -81,10 +91,7 @@ static std::vector<BYTE> GetPng(ILigamentCredential3* credential) {
     return result;
 }
 
-static Pixels GetLegacyBitmap(ICredentialProviderCredential* credential) {
-    HBITMAP bitmap = nullptr;
-    Check(SUCCEEDED(credential->GetBitmapValue(FID_LOGO, &bitmap)) && bitmap,
-        "legacy GetBitmapValue must remain available");
+static Pixels ReadBitmap(HBITMAP bitmap) {
     BITMAP descriptor = {};
     Check(GetObject(bitmap, sizeof(descriptor), &descriptor) == sizeof(descriptor), "bitmap dimensions");
     Check(descriptor.bmWidth == 256 && descriptor.bmHeight == 256, "legacy credential image size");
@@ -101,10 +108,89 @@ static Pixels GetLegacyBitmap(ICredentialProviderCredential* credential) {
     HDC dc = GetDC(nullptr);
     const int rows = GetDIBits(dc, bitmap, 0, 256, result.bgra.data(), &info, DIB_RGB_COLORS);
     ReleaseDC(nullptr, dc);
-    DeleteObject(bitmap);
     Check(rows == 256, "read actual HBITMAP in display orientation");
     return result;
 }
+
+static Pixels GetLegacyBitmap(ICredentialProviderCredential* credential) {
+    HBITMAP bitmap = nullptr;
+    Check(SUCCEEDED(credential->GetBitmapValue(FID_LOGO, &bitmap)) && bitmap,
+        "legacy GetBitmapValue must remain available");
+    Pixels result = ReadBitmap(bitmap);
+    DeleteObject(bitmap);
+    return result;
+}
+
+// The mock consumes image data synchronously, as the host does. It deliberately
+// exposes the actual interface ABI, instead of invoking image helpers directly.
+class ImageEvents final : public ILigamentCredentialEvents3 {
+public:
+    bool supportsBuffer = true;
+    HRESULT bufferResult = S_OK;
+    unsigned bufferCalls = 0;
+    unsigned bitmapCalls = 0;
+    unsigned stateCalls = 0;
+    std::vector<BYTE> png;
+    Pixels bitmap;
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override {
+        if (!value) return E_POINTER;
+        *value = nullptr;
+        if (iid == IID_IUnknown || iid == IID_ICredentialProviderCredentialEvents ||
+            iid == IID_ICredentialProviderCredentialEvents2) {
+            *value = static_cast<ICredentialProviderCredentialEvents2*>(this);
+        } else if (iid == __uuidof(ILigamentCredentialEvents3) && supportsBuffer) {
+            *value = static_cast<ILigamentCredentialEvents3*>(this);
+        } else {
+            return E_NOINTERFACE;
+        }
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&references); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG count = InterlockedDecrement(&references);
+        if (!count) delete this;
+        return count;
+    }
+    HRESULT STDMETHODCALLTYPE SetFieldState(ICredentialProviderCredential*, DWORD,
+        CREDENTIAL_PROVIDER_FIELD_STATE) override { ++stateCalls; return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetFieldInteractiveState(ICredentialProviderCredential*, DWORD,
+        CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetFieldString(ICredentialProviderCredential*, DWORD, PCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetFieldCheckbox(ICredentialProviderCredential*, DWORD, BOOL, PCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetFieldBitmap(ICredentialProviderCredential*, DWORD field, HBITMAP image) override {
+        Check(field == FID_LOGO && image, "legacy update uses actual logo field");
+        ++bitmapCalls;
+        bitmap = ReadBitmap(image);
+        DeleteObject(image);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetFieldComboBoxSelectedItem(ICredentialProviderCredential*, DWORD, DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE DeleteFieldComboBoxItem(ICredentialProviderCredential*, DWORD, DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE AppendFieldComboBoxItem(ICredentialProviderCredential*, DWORD, PCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetFieldSubmitButton(ICredentialProviderCredential*, DWORD, DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnCreatingWindow(HWND* window) override {
+        if (!window) return E_POINTER;
+        *window = nullptr;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE BeginFieldUpdates() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE EndFieldUpdates() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetFieldOptions(ICredentialProviderCredential*, DWORD,
+        CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetFieldBitmapBuffer(ICredentialProviderCredential*, DWORD field,
+        DWORD size, BYTE* buffer) override {
+        Check(field == FID_LOGO && size && buffer, "PNG update uses actual logo field");
+        ++bufferCalls;
+        if (FAILED(bufferResult)) return bufferResult;
+        png.assign(buffer, buffer + size);
+        return S_OK;
+    }
+
+private:
+    LONG references = 1;
+};
 
 static void WritePng(const char* name, const std::vector<BYTE>& png) {
     FILE* file = nullptr;
@@ -159,6 +245,60 @@ static void CheckQr(const Pixels& image, const char* text, bool checkAlpha) {
     std::printf("Actual QR: %dx%d modules, scale=%d, upright, four-module quiet zone intact\n", size, size, scale);
 }
 
+static void CheckImageUpdates(LigamentCredential& credential, const char* url) {
+    ComPtr<ImageEvents> modern;
+    modern.Attach(new ImageEvents());
+    CredentialImageTestAccess::SetEvents(credential, modern.Get());
+    CredentialImageTestAccess::NotifyLogo(credential);
+    Check(modern->bufferCalls == 1 && modern->bitmapCalls == 0,
+        "initial logo update must send transparent PNG to Events3");
+    CheckLogo(DecodePng(modern->png));
+
+    CredentialImageTestAccess::InstallQr(credential, url);
+    CredentialImageTestAccess::NotifyQr(credential);
+    Check(modern->bitmapCalls == 1 && modern->bufferCalls == 1,
+        "QR notification must retain original SetFieldBitmap path");
+    CheckQr(modern->bitmap, url, false);
+    CredentialImageTestAccess::NotifyLogo(credential);
+    Check(modern->bitmapCalls == 2 && modern->bufferCalls == 1,
+        "QR field-state refresh must retain SetFieldBitmap path");
+    CheckQr(modern->bitmap, url, false);
+    CredentialImageTestAccess::ClearQr(credential);
+    Check(modern->bufferCalls == 2 && modern->bitmapCalls == 2,
+        "clearing QR must restore transparent PNG through Events3");
+    CheckLogo(DecodePng(modern->png));
+
+    ComPtr<ImageEvents> legacy;
+    legacy.Attach(new ImageEvents());
+    legacy->supportsBuffer = false;
+    CredentialImageTestAccess::SetEvents(credential, legacy.Get());
+    CredentialImageTestAccess::NotifyLogo(credential);
+    Check(legacy->bitmapCalls == 1 && legacy->bufferCalls == 0,
+        "host without Events3 must receive legacy logo bitmap");
+    CredentialImageTestAccess::InstallQr(credential, url);
+    CredentialImageTestAccess::NotifyQr(credential);
+    Check(legacy->bitmapCalls == 2 && legacy->bufferCalls == 0,
+        "host without Events3 must retain legacy QR updates");
+    CheckQr(legacy->bitmap, url, false);
+    CredentialImageTestAccess::ClearQr(credential);
+    Check(legacy->bitmapCalls == 3 && legacy->bufferCalls == 0,
+        "host without Events3 must restore legacy logo");
+
+    ComPtr<ImageEvents> rejecting;
+    rejecting.Attach(new ImageEvents());
+    rejecting->bufferResult = E_NOTIMPL;
+    CredentialImageTestAccess::SetEvents(credential, rejecting.Get());
+    CredentialImageTestAccess::NotifyLogo(credential);
+    Check(rejecting->bufferCalls == 1 && rejecting->bitmapCalls == 1,
+        "host that rejects a PNG update must receive legacy fallback");
+    CredentialImageTestAccess::InstallQr(credential, url);
+    CredentialImageTestAccess::ClearQr(credential);
+    Check(rejecting->bufferCalls == 2 && rejecting->bitmapCalls == 2,
+        "QR-to-logo restoration must fall back if Events3 rejects PNG");
+    CredentialImageTestAccess::SetEvents(credential, nullptr);
+    std::puts("Image update events: transparent logo, legacy QR, restoration and fallback passed");
+}
+
 int main() {
     Check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "COM initialization");
     {
@@ -203,6 +343,7 @@ int main() {
         const std::vector<BYTE> restored = GetPng(credential.Get());
         CheckLogo(DecodePng(restored));
         Check(restored == logo, "clearing QR must restore original transparent logo");
+        CheckImageUpdates(*actual, url);
     }
     Check(g_cRefDll == 0, "credential COM lifetime leaked");
     CoUninitialize();
