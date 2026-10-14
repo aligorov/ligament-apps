@@ -1803,7 +1803,7 @@ static void GetMachineAndDomain(std::wstring& netBios, std::wstring& joinedDomai
     NETSETUP_JOIN_STATUS joinStatus = NetSetupUnknownStatus;
     NET_API_STATUS err = NetGetJoinInformation(nullptr, &pDomain, &joinStatus);
     if (err == NERR_Success) {
-        if (joinStatus == NetSetupDomainJoined && pDomain) {
+        if (joinStatus == NetSetupDomainName && pDomain) {
             isDomainJoined = true;
             joinedDomain = pDomain;
         }

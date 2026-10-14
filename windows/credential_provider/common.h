@@ -23,7 +23,7 @@
 #include <sddl.h>     // ConvertStringSecurityDescriptorToSecurityDescriptorW (DACL cp.log)
 #include <aclapi.h>   // SetNamedSecurityInfoW (перехват владения cp.log/каталогом)
 #include <lm.h>       // NetGetJoinInformation, NetUserGetInfo, NetApiBufferFree
-#include <lmjoin.h>   // NetGetJoinInformation, NetSetupDomainJoined, NETSETUP_JOIN_STATUS
+#include <lmjoin.h>   // NetGetJoinInformation, NetSetupDomainName, NETSETUP_JOIN_STATUS
 
 #include <string>
 #include <vector>
