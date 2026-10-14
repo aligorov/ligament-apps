@@ -26,8 +26,10 @@ inline HRESULT EncodeCredentialBitmap(HBITMAP bitmap, DWORD* size, BYTE** buffer
     *buffer = nullptr;
     DIBSECTION dib = {};
     if (!bitmap || GetObject(bitmap, sizeof(dib), &dib) != sizeof(dib) ||
-        !dib.dsBm.bmBits || dib.dsBm.bmBitsPixel != 32 || dib.dsBmih.biHeight >= 0)
+        !dib.dsBm.bmBits || dib.dsBm.bmBitsPixel != 32)
         return E_INVALIDARG;
+    // Both CP image constructors create top-down DIBs. GetObject normalizes
+    // biHeight to positive, so its sign cannot identify their orientation.
     using Microsoft::WRL::ComPtr;
     ComPtr<IWICImagingFactory> factory;
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
