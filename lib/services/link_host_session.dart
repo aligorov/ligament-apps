@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'input_injector.dart';
+import 'link_host_readiness.dart';
+import '../models/link_control_messages.dart';
 
 typedef LinkHostSignalSender = Future<void> Function(
   Map<String, dynamic> frame,
@@ -61,6 +64,8 @@ class LinkHostSession {
   final List<Map<String, dynamic>> _pendingCandidates = [];
   Timer? _readyTimer;
   bool _started = false;
+  Completer<bool>? _authorization;
+  String? _consentNonce;
   bool _ready = false;
   bool _closed = false;
   Future<void>? _closing;
@@ -74,6 +79,8 @@ class LinkHostSession {
     required String offerSdp,
     required List<Map<String, dynamic>> iceServers,
     bool consentGranted = false,
+    bool confirmationRequired = false,
+    String confirmationCode = '',
   }) async {
     if (_started || _closed) {
       throw StateError('Link host session already started or closed');
@@ -84,6 +91,40 @@ class LinkHostSession {
     });
 
     try {
+      if (confirmationRequired) {
+        if (!consentGranted ||
+            !RegExp(r'^(?:[0-9]{3}|[0-9]{6})$').hasMatch(confirmationCode)) {
+          await _reject('number_matching_required');
+          return;
+        }
+        _authorization = Completer<bool>();
+        // Bind the server decision to this private request: operator-originated
+        // signals cannot forge authorization through the shared signal channel.
+        final random = Random.secure();
+        _consentNonce = List.generate(32,
+                (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'))
+            .join();
+        await send({
+          'type': 'session_answer',
+          'session_id': sessionId,
+          'payload': {
+            'session_id': sessionId,
+            'stage': 'consent',
+            'accepted': false,
+            'consent_granted': true,
+            'confirmation_code': confirmationCode,
+            'consent_nonce': _consentNonce,
+          },
+        });
+        final authorized = await Future.any<bool>([
+          _authorization!.future,
+          done.then((_) => false),
+        ]).timeout(readyTimeout, onTimeout: () => false);
+        if (!authorized || _closed) {
+          await _reject('number_matching_failed');
+          return;
+        }
+      }
       if (offerSdp.isEmpty ||
           utf8.encode(offerSdp).length > maxOfferSdpBytes ||
           iceServers.length > maxIceServers) {
@@ -128,6 +169,8 @@ class LinkHostSession {
         await peer.addRemoteCandidate(candidate);
       }
       _pendingCandidates.clear();
+    } on LinkHostReadinessException catch (error) {
+      await _reject(error.reason);
     } catch (_) {
       await _reject('host_worker_failed');
     }
@@ -148,6 +191,15 @@ class LinkHostSession {
           return;
         }
         final signal = Map<String, dynamic>.from(raw);
+        if (signal['type'] == 'consent_decision') {
+          if (_authorization?.isCompleted == false &&
+              _consentNonce != null &&
+              signal['consent_nonce'] == _consentNonce) {
+            _authorization!.complete(signal['authorized'] == true);
+            _consentNonce = null;
+          }
+          return;
+        }
         final candidateValue = signal['candidate'];
         if (candidateValue is! Map) {
           await _reject('invalid_signal');
@@ -248,11 +300,13 @@ class LinkHostWorkerState extends ChangeNotifier {
   String? sessionId;
   String operatorName = '';
   String accessType = 'attended';
+  String confirmationCode = '';
 
   Future<void> get disconnectRequested => _disconnect.future;
 
   void showSession(String id, String mode, String operator,
       {String type = 'attended'}) {
+    confirmationCode = '';
     sessionId = id;
     accessMode = mode;
     final trimmedOperator = operator.trim();
@@ -275,11 +329,13 @@ class LinkHostWorkerState extends ChangeNotifier {
     );
   }
 
-  void approveConsent() {
+  void approveConsent([String code = '']) {
     if (phase != LinkHostWorkerPhase.awaitingConsent ||
         _consent?.isCompleted != false) {
       return;
     }
+    if (!RegExp(r'^(?:[0-9]{3}|[0-9]{6})$').hasMatch(code)) return;
+    confirmationCode = code;
     _consent!.complete(true);
     phase = LinkHostWorkerPhase.connecting;
     notifyListeners();
@@ -317,6 +373,7 @@ class LinkHostWorkerState extends ChangeNotifier {
   }
 
   void markClosed() {
+    confirmationCode = '';
     if (_consent?.isCompleted == false) _consent!.complete(false);
     phase = LinkHostWorkerPhase.closed;
     notifyListeners();
@@ -514,11 +571,14 @@ Future<void> _runConnectedLinkHostWorker(
   final accessMode = offer['access_mode'];
   final operatorName = offer['operator_name'];
   final accessType = offer['access_type'];
+  final confirmationRequired = offer['confirmation_required'];
   final sdp = offer['sdp'];
   final iceRaw = offer['ice_servers'];
   if (sessionId is! String ||
       accessMode is! String ||
       (accessType != 'attended' && accessType != 'unattended') ||
+      confirmationRequired is! bool ||
+      confirmationRequired != (accessType == 'attended') ||
       sdp is! String ||
       (operatorName != null &&
           (operatorName is! String || operatorName.runes.length > 128)) ||
@@ -604,10 +664,14 @@ Future<void> _runConnectedLinkHostWorker(
         (accessType == 'attended' && !consentGranted)) {
       if (!session.isClosed) await session.reject('host_consent_denied');
     } else {
+      final enteredCode = state.confirmationCode;
+      state.confirmationCode = '';
       await session.start(
         offerSdp: sdp,
         iceServers: iceServers,
         consentGranted: consentGranted,
+        confirmationRequired: confirmationRequired,
+        confirmationCode: enteredCode,
       );
     }
     await Future.any<void>([session.done, state.disconnectRequested]);
@@ -659,6 +723,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     required void Function() onFailure,
   }) async {
     _allowControl = allowControl;
+    await ensureLinkHostInputReady(allowControl: allowControl);
     final peer = await createPeerConnection({
       'iceServers': iceServers,
       'sdpSemantics': 'unified-plan',
@@ -749,13 +814,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       return delta is num && delta.toDouble().isFinite && delta.abs() <= 1200;
     }
     if (type == 'key_down' || type == 'key_up') {
-      final key = input['key'];
-      final keyCode = input['keyCode'];
-      return key is String &&
-          key.isNotEmpty &&
-          key.length <= 64 &&
-          (keyCode == null ||
-              (keyCode is int && keyCode >= 0 && keyCode <= 0xffff));
+      return LinkKeyMessage.tryParse(input) != null;
     }
     return false;
   }
@@ -782,12 +841,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       } else if (type == 'wheel') {
         injector.mouseWheel((input['deltaY'] as num).toDouble());
       } else if (type == 'key_down' || type == 'key_up') {
-        final keyCode = input['keyCode'];
-        injector.keyAction(
-          action: type == 'key_down' ? 'down' : 'up',
-          key: input['key'] as String,
-          keyCode: keyCode as int?,
-        );
+        LinkKeyMessage.tryParse(input)?.inject(injector.keyAction);
       }
     } catch (_) {
       _control?.send(RTCDataChannelMessage(jsonEncode({
@@ -797,9 +851,16 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   }
 
   Future<MediaStream> _captureScreen() async {
-    final sources = await desktopCapturer.getSources(
-        types: [SourceType.Screen]).timeout(const Duration(seconds: 20));
-    if (sources.isEmpty) throw StateError('No capturable desktop screen');
+    final sources = await desktopCapturer
+        .getSources(types: [SourceType.Screen])
+        .timeout(const Duration(seconds: 20))
+        .catchError((Object _) {
+          throw const LinkHostReadinessException(
+              'host_screen_capture_unavailable');
+        });
+    if (sources.isEmpty) {
+      throw const LinkHostReadinessException('host_screen_capture_unavailable');
+    }
     final source = sources.first;
     _screenRect = InputInjector.instance.getMonitorRectForSource(source.id);
     InputInjector.instance.setActiveMonitorRect(_screenRect);
@@ -812,10 +873,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         },
       }).timeout(const Duration(seconds: 30));
     } catch (_) {
-      return navigator.mediaDevices.getDisplayMedia({
-        'audio': false,
-        'video': true,
-      }).timeout(const Duration(seconds: 30));
+      throw const LinkHostReadinessException('host_screen_capture_unavailable');
     }
   }
 

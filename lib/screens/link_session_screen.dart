@@ -38,6 +38,7 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
   Timer? _heartbeatTimer;
   Timer? _hostAnswerTimer;
   String? _sessionId;
+  String? _confirmationCode;
   int _cursor = 0;
   bool _busy = true;
   bool _polling = false;
@@ -52,7 +53,7 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
   final List<Map<String, dynamic>> _queuedCandidates = [];
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
   final Map<int, int> _pressedPointerButtons = {};
-  final Set<String> _pressedKeys = {};
+  final Map<int, LinkKeyMessage> _pressedKeys = {};
   Offset? _lastControlPosition;
 
   @override
@@ -78,9 +79,9 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
       return;
     }
     _api = api;
-    _iceServers = auth.iceServers;
-
     try {
+      _iceServers = await api.getLinkIceServers();
+      if (!mounted || _stopping) return;
       await _renderer.initialize();
       if (!mounted || _stopping) return;
       final peer = await createPeerConnection({
@@ -179,11 +180,25 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
         throw StateError('Сервер не вернул session_id');
       }
       _sessionId = id;
+      final confirmationRequired = session['confirmation_required'];
+      if (confirmationRequired is! bool) {
+        throw StateError(
+            'Обновите сервер Ligament: он не поддерживает подтверждение подключения Link.');
+      }
+      final confirmationCode = session['confirmation_code'];
+      if (confirmationRequired) {
+        if (confirmationCode is! String ||
+            !RegExp(r'^(?:[0-9]{3}|[0-9]{6})$').hasMatch(confirmationCode)) {
+          throw StateError(
+              'Сервер Link не выдал код подтверждения подключения.');
+        }
+        _confirmationCode = confirmationCode;
+      }
       _hostAnswerTimer?.cancel();
-      _hostAnswerTimer = Timer(const Duration(seconds: 90), () {
+      _hostAnswerTimer = Timer(const Duration(seconds: 120), () {
         if (!_remoteDescriptionSet && mounted && !_stopping) {
           _fail(
-              'Хост не ответил за 90 секунд. Проверьте службу Link на компьютере, запрос согласия, разрешение записи экрана и подключение к серверу.');
+              'Хост не ответил за 120 секунд. Проверьте службу Link на компьютере, запрос согласия, разрешение записи экрана и подключение к серверу.');
         }
       });
       if (!mounted || _stopping) {
@@ -194,7 +209,9 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
       if (mounted) {
         setState(() {
           _busy = false;
-          _status = 'Ожидание ответа хоста…';
+          _status = _confirmationCode == null
+              ? 'Ожидание ответа хоста…'
+              : 'Сообщите код пользователю хоста для подтверждения';
         });
       }
       final queued = List<Map<String, dynamic>>.from(_queuedCandidates);
@@ -264,9 +281,28 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
     final type = event['type']?.toString() ?? message['type']?.toString();
     if (type == 'session_answer' && !_remoteDescriptionSet) {
       if (message['accepted'] != true) {
+        _confirmationCode = null;
         _hostAnswerTimer?.cancel();
         _hostAnswerTimer = null;
         final reason = message['reason']?.toString();
+        const rejectionMessages = {
+          'number_matching_failed':
+              'Код не совпал, уже использован или истёк. Создайте новую сессию.',
+          'number_matching_required':
+              'Хост не подтвердил код. Обновите приложение хоста и повторите подключение.',
+          'host_accessibility_permission_required':
+              'На Mac хоста разрешите приложению управление в настройках «Конфиденциальность и безопасность → Универсальный доступ».',
+          'host_wayland_control_unavailable':
+              'Управление в Wayland не поддерживается. Подключитесь в режиме просмотра или используйте X11.',
+          'host_linux_input_unavailable':
+              'На Linux-хосте недоступен ввод через X11/xdotool. Проверьте графическую сессию и установку xdotool.',
+          'host_screen_capture_unavailable':
+              'На хосте недоступен захват экрана. Проверьте разрешение записи экрана и наличие активного рабочего стола.',
+        };
+        if (rejectionMessages.containsKey(reason)) {
+          _fail(rejectionMessages[reason]!);
+          return;
+        }
         _fail(reason == 'host_worker_unavailable'
             ? 'Служба Link не смогла запустить интерактивный компонент на хосте.'
             : reason == 'host_ready_timeout'
@@ -282,6 +318,7 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
         return;
       }
       await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
+      if (mounted) setState(() => _confirmationCode = null);
       _remoteDescriptionSet = true;
       _hostAnswerTimer?.cancel();
       _hostAnswerTimer = null;
@@ -423,19 +460,23 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
     final key = event.logicalKey.keyLabel;
     if (key.isEmpty) return KeyEventResult.ignored;
     final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
-    if (isDown) {
-      _pressedKeys.add(key);
-    } else if (event is KeyUpEvent) {
-      _pressedKeys.remove(key);
-    } else {
-      return KeyEventResult.ignored;
-    }
-    unawaited(_sendControlMessage(<String, Object?>{
+    final message = LinkKeyMessage.tryParse({
       'type': isDown ? 'key_down' : 'key_up',
       'key': key,
       'keyCode': event.logicalKey.keyId,
-      if (event.character != null) 'char': event.character,
-    }));
+      'char': event.character,
+    });
+    if (message == null) return KeyEventResult.ignored;
+    var outgoing = message;
+    if (isDown) {
+      _pressedKeys.putIfAbsent(event.logicalKey.keyId, () => message);
+    } else if (event is KeyUpEvent) {
+      outgoing =
+          _pressedKeys.remove(event.logicalKey.keyId)?.release ?? message;
+    } else {
+      return KeyEventResult.ignored;
+    }
+    unawaited(_sendControlMessage(outgoing.toJson()));
     return KeyEventResult.handled;
   }
 
@@ -452,11 +493,8 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
         button: button,
       )));
     }
-    for (final key in _pressedKeys.toList()) {
-      unawaited(_sendControlMessage(<String, Object?>{
-        'type': 'key_up',
-        'key': key,
-      }));
+    for (final key in _pressedKeys.values.toList()) {
+      unawaited(_sendControlMessage(key.release.toJson()));
     }
     _clearPressedControlState();
   }
@@ -553,6 +591,13 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
         ),
         body: Column(
           children: [
+            if (_confirmationCode != null)
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: SelectableText('Код подтверждения: $_confirmationCode',
+                    key: const Key('link-operator-confirmation-code'),
+                    style: const TextStyle(color: Colors.white, fontSize: 24)),
+              ),
             Expanded(
               child: ColoredBox(
                 color: Colors.black,

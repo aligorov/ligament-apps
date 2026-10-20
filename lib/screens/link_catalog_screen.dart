@@ -506,13 +506,24 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   style:
                       const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
                 )),
-            Text(
-              online ? (isRu ? 'Онлайн' : 'Online') : status,
-              style: TextStyle(
-                  color: online
-                      ? const Color(0xFF4ADE80)
-                      : const Color(0xFF94A3B8),
-                  fontSize: 10),
+            Tooltip(
+              message: isRu
+                  ? 'Доступность агента. Экран и управление проверяются при подключении.'
+                  : 'Agent availability. Screen and control are checked when connecting.',
+              child: Text(
+                online
+                    ? (isRu ? 'Онлайн' : 'Online')
+                    : status == 'revoked'
+                        ? (isRu ? 'Отозван' : 'Revoked')
+                        : status == 'suspended'
+                            ? (isRu ? 'Приостановлен' : 'Suspended')
+                            : (isRu ? 'Офлайн' : 'Offline'),
+                style: TextStyle(
+                    color: online
+                        ? const Color(0xFF4ADE80)
+                        : const Color(0xFF94A3B8),
+                    fontSize: 10),
+              ),
             ),
             IconButton(
               tooltip: isRu ? 'Сведения о компьютере' : 'Computer details',
@@ -544,7 +555,21 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         isRu ? 'Пользователь за ПК' : 'Signed-in user',
         host['interactive_username']?.toString() ?? ''
       ),
-      (isRu ? 'Внешний IP' : 'Public IP', host['public_ip']?.toString() ?? ''),
+      (
+        isRu ? 'IP подключения к серверу' : 'Server-observed IP',
+        host['public_ip']?.toString() ?? ''
+      ),
+      (isRu ? 'Группа' : 'Group', host['group_name']?.toString() ?? ''),
+      (
+        isRu ? 'Источник группы' : 'Group source',
+        switch (host['group_source']) {
+          'explicit' => isRu ? 'Назначена явно' : 'Explicit assignment',
+          'owner_group' => isRu ? 'Группа владельца' : 'Owner group',
+          'owner_ldap_group' =>
+            isRu ? 'LDAP-группа владельца' : 'Owner LDAP group',
+          _ => '',
+        },
+      ),
       (
         isRu ? 'Локальные IP' : 'Local IPs',
         localIPs is List ? localIPs.join(', ') : ''

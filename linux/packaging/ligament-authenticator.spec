@@ -10,6 +10,7 @@ AutoReqProv:    no
 Requires:       gtk3 >= 3.22
 Requires:       glib2 >= 2.58
 Requires:       libsecret >= 0.18
+Requires:       xdotool
 
 %description
 Ligament Authenticator is an enterprise cross-platform Two-Factor Authentication client.

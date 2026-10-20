@@ -98,7 +98,7 @@ void main() {
     state.showSession(_sessionId, 'control', 'operator@example.com');
     final decision = state.awaitConsent();
     expect(state.phase, LinkHostWorkerPhase.awaitingConsent);
-    state.approveConsent();
+    state.approveConsent('012345');
     expect(await decision, isTrue);
     expect(state.phase, LinkHostWorkerPhase.connecting);
   });

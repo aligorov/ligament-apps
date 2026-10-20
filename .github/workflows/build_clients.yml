@@ -36,7 +36,7 @@ jobs:
         shell: pwsh
         run: |
           flutter pub get
-          flutter test test/remote_pointer_surface_test.dart test/service_console_input_test.dart test/remote_keyboard_test.dart test/screen_mapping_test.dart
+          flutter test test/remote_pointer_surface_test.dart test/service_console_input_test.dart test/remote_keyboard_test.dart test/screen_mapping_test.dart test/link_host_session_test.dart test/link_number_matching_test.dart test/link_key_messages_test.dart test/link_host_readiness_test.dart test/link_ice_configuration_test.dart test/link_session_control_test.dart
           if ($LASTEXITCODE -ne 0) { throw 'Flutter remote input tests failed' }
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
@@ -155,6 +155,7 @@ jobs:
       - name: Build macOS Application and DMG
         run: |
           flutter pub get
+          flutter test test/link_host_session_test.dart test/link_number_matching_test.dart test/link_key_messages_test.dart test/link_host_readiness_test.dart test/link_ice_configuration_test.dart test/link_session_control_test.dart
           mkdir -p build
           (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags='-s -w' -o ../../build/macos-link-agent ./cmd/link-agent)
           flutter build macos --release --no-tree-shake-icons

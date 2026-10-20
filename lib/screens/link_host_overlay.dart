@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/link_host_session.dart';
@@ -16,6 +17,7 @@ class LinkHostOverlay extends StatefulWidget {
 }
 
 class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
+  final _code = TextEditingController();
   @override
   void initState() {
     super.initState();
@@ -25,6 +27,7 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
 
   @override
   void dispose() {
+    _code.dispose();
     windowManager.removeListener(this);
     super.dispose();
   }
@@ -93,8 +96,33 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
                       ),
                       const SizedBox(width: 12),
                       if (awaitingConsent) ...[
+                        SizedBox(
+                          width: 165,
+                          child: TextField(
+                            key: const Key('link-confirmation-code'),
+                            controller: _code,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(6)
+                            ],
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Код оператора',
+                              hintText: 'Введите 3 или 6 цифр',
+                            ),
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
                         FilledButton(
-                          onPressed: state.approveConsent,
+                          onPressed: RegExp(r'^(?:[0-9]{3}|[0-9]{6})$')
+                                  .hasMatch(_code.text)
+                              ? () {
+                                  state.approveConsent(_code.text);
+                                  _code.clear();
+                                }
+                              : null,
                           child: const Text('Разрешить'),
                         ),
                         const SizedBox(width: 8),

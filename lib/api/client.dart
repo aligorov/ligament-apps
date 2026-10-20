@@ -1219,4 +1219,26 @@ class ApiClient {
     } catch (_) {}
     return const [];
   }
+
+  /// Link must not silently start without TURN after a configuration request
+  /// fails: otherwise a network error is misreported as a remote host failure.
+  Future<List<Map<String, dynamic>>> getLinkIceServers() async {
+    final res =
+        await _get(_cleanUrl('/api/v1/app/ice-servers'), headers: _headers());
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'link_ice_configuration_unavailable');
+    }
+    if (res.bodyBytes.length > 64 * 1024) {
+      throw const FormatException('Link ICE configuration exceeds size limit');
+    }
+    final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+    if (decoded is! Map || decoded['ice_servers'] is! List) {
+      throw const FormatException('Invalid Link ICE configuration');
+    }
+    final raw = decoded['ice_servers'] as List;
+    if (raw.length > 32 || raw.any((entry) => entry is! Map)) {
+      throw const FormatException('Invalid Link ICE server list');
+    }
+    return raw.map((entry) => Map<String, dynamic>.from(entry as Map)).toList();
+  }
 }
