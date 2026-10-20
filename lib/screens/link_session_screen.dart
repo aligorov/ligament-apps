@@ -180,10 +180,10 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
       }
       _sessionId = id;
       _hostAnswerTimer?.cancel();
-      _hostAnswerTimer = Timer(const Duration(seconds: 60), () {
+      _hostAnswerTimer = Timer(const Duration(seconds: 90), () {
         if (!_remoteDescriptionSet && mounted && !_stopping) {
           _fail(
-              'Хост не ответил за 60 секунд. Проверьте службу Link на компьютере, разрешение записи экрана и подключение к серверу.');
+              'Хост не ответил за 90 секунд. Проверьте службу Link на компьютере, запрос согласия, разрешение записи экрана и подключение к серверу.');
         }
       });
       if (!mounted || _stopping) {

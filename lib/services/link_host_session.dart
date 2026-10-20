@@ -270,7 +270,7 @@ class LinkHostWorkerState extends ChangeNotifier {
     phase = LinkHostWorkerPhase.awaitingConsent;
     notifyListeners();
     return _consent!.future.timeout(
-      const Duration(seconds: 60),
+      const Duration(seconds: 45),
       onTimeout: () => false,
     );
   }
