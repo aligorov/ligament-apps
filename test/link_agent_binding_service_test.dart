@@ -22,5 +22,12 @@ void main() {
       ),
       contains('Windows Services'),
     );
+    expect(
+      linkAgentBindingErrorMessage(
+        PlatformException(code: 'link_agent_launchd_failed'),
+        isRu: true,
+      ),
+      contains('Applications'),
+    );
   });
 }

@@ -159,7 +159,7 @@ jobs:
           (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags='-s -w' -o ../../build/macos-link-agent ./cmd/link-agent)
           flutter build macos --release --no-tree-shake-icons
           install -m 755 build/macos-link-agent 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-agent'
-          install -m 644 macos/packaging/com.ligament.link-agent.plist 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/Resources/com.ligament.link-agent.plist'
+          install -m 755 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/Ligament 2FA' 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/ligament_authenticator'
           app_path='build/macos/Build/Products/Release/Ligament 2FA.app'
           # Flutter signs the app before Link's agent and LaunchAgent files are
           # injected. Re-seal the complete bundle so the DMG is not corrupted.

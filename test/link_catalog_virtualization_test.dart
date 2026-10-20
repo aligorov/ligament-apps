@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/screens/link_catalog_screen.dart';
@@ -52,6 +54,9 @@ void main() {
       child: const MaterialApp(home: LinkCatalogScreen()),
     ));
     await tester.pump();
+    if (Platform.isMacOS) {
+      expect(find.text('Добавить ПК'), findsOneWidget);
+    }
 
     await tester.tap(find.text('OU=Finance'));
     await tester.pumpAndSettle();

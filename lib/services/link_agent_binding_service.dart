@@ -51,13 +51,12 @@ class LinkAgentBindingService {
       );
 
   Future<String?> _bindUnix(String serverUrl, String enrollmentToken) async {
+    if (Platform.isMacOS) {
+      await _channel.invokeMethod<void>('ensureMacAgentRunning');
+    }
     final uid = await _currentUnixUID();
     final socketPath = linkAgentBindingSocketPath(uid);
-    final socket = await Socket.connect(
-      InternetAddress(socketPath, type: InternetAddressType.unix),
-      0,
-      timeout: const Duration(seconds: 10),
-    );
+    final socket = await _connectUnixBindingSocket(socketPath);
     try {
       final payload =
           Uint8List.fromList(utf8.encode(jsonEncode(<String, Object>{
@@ -92,6 +91,20 @@ class LinkAgentBindingService {
     }
   }
 
+  Future<Socket> _connectUnixBindingSocket(String socketPath) async {
+    final address = InternetAddress(socketPath, type: InternetAddressType.unix);
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (true) {
+      try {
+        return await Socket.connect(address, 0,
+            timeout: const Duration(seconds: 1));
+      } on SocketException {
+        if (!DateTime.now().isBefore(deadline)) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+    }
+  }
+
   Future<int> _currentUnixUID() async {
     final result = await Process.run('/usr/bin/id', const ['-u']);
     if (result.exitCode != 0 || result.stdout is! String) {
@@ -108,6 +121,12 @@ class LinkAgentBindingService {
 String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
   final code = error is PlatformException ? error.code : '';
   return switch (code) {
+    'link_agent_missing' => isRu
+        ? 'В этой копии приложения не найден Link Agent. Установите Ligament 2FA в папку Applications и попробуйте снова.'
+        : 'Link Agent is missing from this app bundle. Install Ligament 2FA in Applications and try again.',
+    'link_agent_launchd_failed' => isRu
+        ? 'Не удалось запустить macOS Link Agent. Проверьте, что приложение находится в Applications, и повторите попытку.'
+        : 'Could not start the macOS Link Agent. Make sure the app is in Applications and try again.',
     'link_agent_service_not_running' => isRu
         ? 'Служба Ligament Link Agent не запущена. Проверьте её состояние в «Службах» Windows.'
         : 'Ligament Link Agent service is not running. Check its status in Windows Services.',

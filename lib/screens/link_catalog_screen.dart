@@ -248,12 +248,12 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         backgroundColor: const Color(0xFF0B0F19),
         title: Text(isRu ? 'Ligament Link' : 'Ligament Link'),
         actions: [
-          if (Platform.isWindows)
-            IconButton(
-              tooltip: isRu ? 'Привязать этот компьютер' : 'Link this computer',
+          if (Platform.isWindows || Platform.isMacOS)
+            FilledButton.tonalIcon(
               onPressed: _bindingThisHost || !auth.linkFeatureAvailable
                   ? null
                   : () => _bindThisHost(auth, isRu),
+              label: Text(isRu ? 'Добавить ПК' : 'Add computer'),
               icon: _bindingThisHost
                   ? const SizedBox.square(
                       dimension: 18,
