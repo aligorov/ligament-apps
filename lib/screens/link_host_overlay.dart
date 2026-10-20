@@ -44,9 +44,13 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
                 final state = widget.state;
                 final isClosing = state.phase == LinkHostWorkerPhase.closing ||
                     state.phase == LinkHostWorkerPhase.closed;
+                final awaitingConsent =
+                    state.phase == LinkHostWorkerPhase.awaitingConsent;
                 final status = switch (state.phase) {
                   LinkHostWorkerPhase.starting =>
                     'Подготовка защищённого канала',
+                  LinkHostWorkerPhase.awaitingConsent =>
+                    'Разрешить удалённое подключение?',
                   LinkHostWorkerPhase.connecting =>
                     'Удалённое подключение устанавливается',
                   LinkHostWorkerPhase.active => 'Удалённая сессия активна',
@@ -88,14 +92,28 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      FilledButton(
-                        onPressed:
-                            isClosing ? null : widget.state.requestDisconnect,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFFB42318),
+                      if (awaitingConsent) ...[
+                        FilledButton(
+                          onPressed: state.approveConsent,
+                          child: const Text('Разрешить'),
                         ),
-                        child: const Text('Отключить'),
-                      ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          onPressed: state.denyConsent,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFB42318),
+                          ),
+                          child: const Text('Отклонить'),
+                        ),
+                      ] else
+                        FilledButton(
+                          onPressed:
+                              isClosing ? null : widget.state.requestDisconnect,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFB42318),
+                          ),
+                          child: const Text('Отключить'),
+                        ),
                     ],
                   ),
                 );

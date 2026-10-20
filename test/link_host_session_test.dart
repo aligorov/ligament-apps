@@ -93,6 +93,25 @@ void main() {
     expect(state.phase, LinkHostWorkerPhase.closing);
   });
 
+  test('attended request remains blocked until local approval', () async {
+    final state = LinkHostWorkerState();
+    state.showSession(_sessionId, 'control', 'operator@example.com');
+    final decision = state.awaitConsent();
+    expect(state.phase, LinkHostWorkerPhase.awaitingConsent);
+    state.approveConsent();
+    expect(await decision, isTrue);
+    expect(state.phase, LinkHostWorkerPhase.connecting);
+  });
+
+  test('local denial fails closed', () async {
+    final state = LinkHostWorkerState();
+    state.showSession(_sessionId, 'view', 'operator@example.com');
+    final decision = state.awaitConsent();
+    state.denyConsent();
+    expect(await decision, isFalse);
+    expect(state.phase, LinkHostWorkerPhase.closing);
+  });
+
   testWidgets('privacy indicator stays visible and disconnects on request',
       (tester) async {
     const windowChannel = MethodChannel('window_manager');
@@ -119,6 +138,25 @@ void main() {
     expect(find.text('Отключение…'), findsOneWidget);
   });
 
+  testWidgets('attended request shows explicit approve and deny actions',
+      (tester) async {
+    const windowChannel = MethodChannel('window_manager');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(windowChannel, (call) async => null);
+    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+
+    final state = LinkHostWorkerState()
+      ..showSession(_sessionId, 'control', 'Иванов Иван');
+    final decision = state.awaitConsent();
+    await tester.pumpWidget(LinkHostOverlay(state: state));
+    expect(find.text('Разрешить удалённое подключение?'), findsOneWidget);
+    expect(find.text('Разрешить'), findsOneWidget);
+    expect(find.text('Отклонить'), findsOneWidget);
+    await tester.tap(find.text('Отклонить'));
+    expect(await decision, isFalse);
+  });
+
   test('answers offer with session-scoped envelope and forwards ICE', () async {
     final peer = _FakeLinkHostPeer();
     final sent = <Map<String, dynamic>>[];
@@ -129,7 +167,11 @@ void main() {
       send: (frame) async => sent.add(frame),
     );
 
-    await session.start(offerSdp: _controlOffer, iceServers: const []);
+    await session.start(
+      offerSdp: _controlOffer,
+      iceServers: const [],
+      consentGranted: true,
+    );
     peer.candidateCallback!({'candidate': 'candidate:1'});
     await Future<void>.delayed(Duration.zero);
 
@@ -140,6 +182,7 @@ void main() {
       'payload': {
         'session_id': _sessionId,
         'accepted': true,
+        'consent_granted': true,
         'sdp': 'v=0 answer',
       },
     });

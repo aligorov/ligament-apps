@@ -64,6 +64,7 @@ class LinkHostSession {
   bool _ready = false;
   bool _closed = false;
   Future<void>? _closing;
+  Future<void>? _rejecting;
   final Completer<void> _done = Completer<void>();
 
   bool get isClosed => _closed;
@@ -72,6 +73,7 @@ class LinkHostSession {
   Future<void> start({
     required String offerSdp,
     required List<Map<String, dynamic>> iceServers,
+    bool consentGranted = false,
   }) async {
     if (_started || _closed) {
       throw StateError('Link host session already started or closed');
@@ -114,6 +116,7 @@ class LinkHostSession {
         'payload': {
           'session_id': sessionId,
           'accepted': true,
+          'consent_granted': consentGranted,
           'sdp': answer,
         },
       });
@@ -188,7 +191,9 @@ class LinkHostSession {
     }
   }
 
-  Future<void> _reject(String reason) async {
+  Future<void> _reject(String reason) => _rejecting ??= _rejectOnce(reason);
+
+  Future<void> _rejectOnce(String reason) async {
     if (_closed) return;
     // An accepted session has already been committed by the server. Do not
     // send a second session_answer; just release local media and input.
@@ -210,6 +215,8 @@ class LinkHostSession {
     await close();
   }
 
+  Future<void> reject(String reason) => _reject(reason);
+
   Future<void> close() {
     final existing = _closing;
     if (existing != null) return existing;
@@ -221,26 +228,70 @@ class LinkHostSession {
   }
 }
 
-enum LinkHostWorkerPhase { starting, connecting, active, closing, closed }
+enum LinkHostWorkerPhase {
+  starting,
+  awaitingConsent,
+  connecting,
+  active,
+  closing,
+  closed
+}
 
 /// State shared by the visible local privacy indicator and the session worker.
 class LinkHostWorkerState extends ChangeNotifier {
   final Completer<void> _disconnect = Completer<void>();
+  Completer<bool>? _consent;
   void Function()? _disconnectHandler;
 
   LinkHostWorkerPhase phase = LinkHostWorkerPhase.starting;
   String accessMode = 'view';
   String? sessionId;
   String operatorName = '';
+  String accessType = 'attended';
 
   Future<void> get disconnectRequested => _disconnect.future;
 
-  void showSession(String id, String mode, String operator) {
+  void showSession(String id, String mode, String operator,
+      {String type = 'attended'}) {
     sessionId = id;
     accessMode = mode;
     final trimmedOperator = operator.trim();
     operatorName = String.fromCharCodes(trimmedOperator.runes.take(96));
+    accessType = type;
     phase = LinkHostWorkerPhase.connecting;
+    notifyListeners();
+  }
+
+  Future<bool> awaitConsent() {
+    if (_disconnect.isCompleted || phase == LinkHostWorkerPhase.closed) {
+      return Future<bool>.value(false);
+    }
+    _consent = Completer<bool>();
+    phase = LinkHostWorkerPhase.awaitingConsent;
+    notifyListeners();
+    return _consent!.future.timeout(
+      const Duration(seconds: 60),
+      onTimeout: () => false,
+    );
+  }
+
+  void approveConsent() {
+    if (phase != LinkHostWorkerPhase.awaitingConsent ||
+        _consent?.isCompleted != false) {
+      return;
+    }
+    _consent!.complete(true);
+    phase = LinkHostWorkerPhase.connecting;
+    notifyListeners();
+  }
+
+  void denyConsent() {
+    if (phase != LinkHostWorkerPhase.awaitingConsent ||
+        _consent?.isCompleted != false) {
+      return;
+    }
+    _consent!.complete(false);
+    phase = LinkHostWorkerPhase.closing;
     notifyListeners();
   }
 
@@ -258,6 +309,7 @@ class LinkHostWorkerState extends ChangeNotifier {
 
   void requestDisconnect() {
     if (_disconnect.isCompleted) return;
+    if (_consent?.isCompleted == false) _consent!.complete(false);
     phase = LinkHostWorkerPhase.closing;
     _disconnect.complete();
     notifyListeners();
@@ -265,6 +317,7 @@ class LinkHostWorkerState extends ChangeNotifier {
   }
 
   void markClosed() {
+    if (_consent?.isCompleted == false) _consent!.complete(false);
     phase = LinkHostWorkerPhase.closed;
     notifyListeners();
   }
@@ -460,10 +513,12 @@ Future<void> _runConnectedLinkHostWorker(
   final sessionId = offer['session_id'];
   final accessMode = offer['access_mode'];
   final operatorName = offer['operator_name'];
+  final accessType = offer['access_type'];
   final sdp = offer['sdp'];
   final iceRaw = offer['ice_servers'];
   if (sessionId is! String ||
       accessMode is! String ||
+      (accessType != 'attended' && accessType != 'unattended') ||
       sdp is! String ||
       (operatorName != null &&
           (operatorName is! String || operatorName.runes.length > 128)) ||
@@ -475,6 +530,7 @@ Future<void> _runConnectedLinkHostWorker(
     sessionId,
     accessMode,
     operatorName is String ? operatorName : '',
+    type: accessType as String,
   );
   final iceServers = <Map<String, dynamic>>[];
   if (iceRaw is List) {
@@ -511,7 +567,9 @@ Future<void> _runConnectedLinkHostWorker(
       return next;
     },
   );
-  state.setDisconnectHandler(() => unawaited(session.close()));
+  state.setDisconnectHandler(
+    () => unawaited(session.reject('host_local_disconnect')),
+  );
   var polling = false;
   final timer = Timer.periodic(const Duration(milliseconds: 10), (_) async {
     if (polling || session.isClosed) return;
@@ -535,7 +593,23 @@ Future<void> _runConnectedLinkHostWorker(
     }
   });
   try {
-    await session.start(offerSdp: sdp, iceServers: iceServers);
+    final consentGranted = accessType == 'attended'
+        ? await Future.any<bool>([
+            state.awaitConsent(),
+            session.done.then((_) => false),
+          ])
+        : false;
+    if (session.isClosed ||
+        state.phase == LinkHostWorkerPhase.closing ||
+        (accessType == 'attended' && !consentGranted)) {
+      if (!session.isClosed) await session.reject('host_consent_denied');
+    } else {
+      await session.start(
+        offerSdp: sdp,
+        iceServers: iceServers,
+        consentGranted: consentGranted,
+      );
+    }
     await Future.any<void>([session.done, state.disconnectRequested]);
     if (state.phase == LinkHostWorkerPhase.closing) {
       try {

@@ -45,6 +45,7 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
   bool _closeRequested = false;
   bool _remoteDescriptionSet = false;
   bool _controlChannelOpen = false;
+  bool _videoFrameRendered = false;
   DateTime? _lastMouseMoveAt;
   String? _error;
   String _status = 'Подключение…';
@@ -57,6 +58,15 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
   @override
   void initState() {
     super.initState();
+    _renderer.onFirstFrameRendered = () {
+      if (!mounted || _stopping || _error != null) return;
+      setState(() {
+        _videoFrameRendered = true;
+        _status = _controlChannelOpen
+            ? 'Видео отображается; управление готово'
+            : 'Видео отображается';
+      });
+    };
     WidgetsBinding.instance.addPostFrameCallback((_) => _start());
   }
 
@@ -98,7 +108,9 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
           setState(() {
             _controlChannelOpen = open;
             if (open) {
-              _status = 'Видео и защищённый канал управления готовы';
+              _status = _videoFrameRendered
+                  ? 'Видео отображается; управление готово'
+                  : 'Канал управления открыт; ожидание видео';
             } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
               _status = 'Канал управления закрыт';
             }
@@ -131,14 +143,18 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
         }
         if (!mounted || _stopping) return;
         await _renderer.setSrcObject(stream: stream);
-        setState(() => _status = 'Видеопоток получен');
+        setState(() => _status = _videoFrameRendered
+            ? 'Видео отображается'
+            : 'Видеодорожка подключена; ожидание первого кадра');
       };
       peer.onConnectionState = (state) {
         if (!mounted || _stopping) return;
         setState(() {
           _status = switch (state) {
             RTCPeerConnectionState.RTCPeerConnectionStateConnected =>
-              'Соединено',
+              _videoFrameRendered
+                  ? 'Видео отображается'
+                  : 'Соединено; ожидание первого кадра',
             RTCPeerConnectionState.RTCPeerConnectionStateConnecting =>
               'Согласование WebRTC…',
             RTCPeerConnectionState.RTCPeerConnectionStateFailed =>
