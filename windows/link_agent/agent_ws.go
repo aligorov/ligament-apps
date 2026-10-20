@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,13 +32,15 @@ const (
 
 // AgentWSConfig contains the enrolled identity and non-secret host metadata.
 type AgentWSConfig struct {
-	ServerURL    string
-	Identity     *Identity
-	Hostname     string
-	OSFamily     string
-	OSVersion    string
-	AgentVersion string
-	Capabilities map[string]any
+	ServerURL       string
+	Identity        *Identity
+	Hostname        string
+	OSFamily        string
+	OSVersion       string
+	AgentVersion    string
+	Capabilities    map[string]any
+	InteractiveUser func() string
+	LocalIPs        func() []string
 }
 
 // AgentMessageHandler processes a server text frame. send is safe to call from
@@ -117,7 +120,7 @@ func RunAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.Diale
 		started := time.Now()
 		conn, err := ConnectAgent(ctx, config, dialer)
 		if err == nil {
-			err = serveAgentConnection(ctx, conn, handler)
+			err = serveAgentConnection(ctx, conn, config, handler)
 			_ = conn.Close()
 		}
 		if ctx.Err() != nil {
@@ -143,7 +146,7 @@ func RunAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.Diale
 	}
 }
 
-func serveAgentConnection(ctx context.Context, conn agentSocket, handler AgentMessageHandler) error {
+func serveAgentConnection(ctx context.Context, conn agentSocket, config AgentWSConfig, handler AgentMessageHandler) error {
 	defer conn.Close()
 	connectionCtx, cancelConnection := context.WithCancel(ctx)
 	defer cancelConnection()
@@ -189,7 +192,11 @@ func serveAgentConnection(ctx context.Context, conn agentSocket, handler AgentMe
 	defer close(stopCloser)
 
 	lastAck := time.Now()
-	if err := send(map[string]string{"type": "heartbeat"}); err != nil {
+	collectInteractiveUser := false
+	sendHeartbeat := func() error {
+		return send(agentHeartbeatMessage(config, collectInteractiveUser))
+	}
+	if err := sendHeartbeat(); err != nil {
 		return fmt.Errorf("link agent: initial heartbeat failed: %w", err)
 	}
 	heartbeat := time.NewTicker(agentHeartbeatPeriod)
@@ -206,10 +213,12 @@ func serveAgentConnection(ctx context.Context, conn agentSocket, handler AgentMe
 				continue
 			}
 			var envelope struct {
-				Type string `json:"type"`
+				Type                   string `json:"type"`
+				CollectInteractiveUser bool   `json:"collect_interactive_user"`
 			}
 			if json.Unmarshal(result.payload, &envelope) == nil && envelope.Type == "heartbeat_ack" {
 				lastAck = time.Now()
+				collectInteractiveUser = envelope.CollectInteractiveUser
 				continue
 			}
 			if err := handler(connectionCtx, result.payload, send); err != nil {
@@ -219,11 +228,58 @@ func serveAgentConnection(ctx context.Context, conn agentSocket, handler AgentMe
 			if time.Since(lastAck) > 2*agentHeartbeatPeriod {
 				return errors.New("link agent: server heartbeat acknowledgement timed out")
 			}
-			if err := send(map[string]string{"type": "heartbeat"}); err != nil {
+			if err := sendHeartbeat(); err != nil {
 				return fmt.Errorf("link agent: send heartbeat: %w", err)
 			}
 		}
 	}
+}
+
+func agentHeartbeatMessage(config AgentWSConfig, collectInteractiveUser bool) map[string]any {
+	message := map[string]any{"type": "heartbeat"}
+	if config.LocalIPs != nil {
+		message["local_ips"] = config.LocalIPs()
+	}
+	if collectInteractiveUser && config.InteractiveUser != nil {
+		message["interactive_user"] = config.InteractiveUser()
+	}
+	return message
+}
+
+// CurrentLocalIPs returns bounded, non-loopback interface addresses for host
+// inventory. The server performs independent validation before persistence.
+func CurrentLocalIPs() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	addresses := make([]string, 0, 8)
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			addresses = append(addresses, ip.String())
+			if len(addresses) >= 20 {
+				return addresses
+			}
+		}
+	}
+	return addresses
 }
 
 func agentWebSocketEndpoint(serverURL string) (string, error) {

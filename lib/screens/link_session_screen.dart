@@ -36,6 +36,7 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
   RTCDataChannel? _controlChannel;
   Timer? _signalTimer;
   Timer? _heartbeatTimer;
+  Timer? _hostAnswerTimer;
   String? _sessionId;
   int _cursor = 0;
   bool _busy = true;
@@ -162,6 +163,13 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
         throw StateError('Сервер не вернул session_id');
       }
       _sessionId = id;
+      _hostAnswerTimer?.cancel();
+      _hostAnswerTimer = Timer(const Duration(seconds: 60), () {
+        if (!_remoteDescriptionSet && mounted && !_stopping) {
+          _fail(
+              'Хост не ответил за 60 секунд. Проверьте службу Link на компьютере, разрешение записи экрана и подключение к серверу.');
+        }
+      });
       if (!mounted || _stopping) {
         _closeRequested = true;
         await api.closeLinkSession(id);
@@ -240,16 +248,27 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
     final type = event['type']?.toString() ?? message['type']?.toString();
     if (type == 'session_answer' && !_remoteDescriptionSet) {
       if (message['accepted'] != true) {
-        _fail('Хост отклонил подключение.');
+        _hostAnswerTimer?.cancel();
+        _hostAnswerTimer = null;
+        final reason = message['reason']?.toString();
+        _fail(reason == 'host_worker_unavailable'
+            ? 'Служба Link не смогла запустить интерактивный компонент на хосте.'
+            : reason == 'host_ready_timeout'
+                ? 'Компонент хоста не начал передачу экрана вовремя.'
+                : 'Хост отклонил подключение.');
         return;
       }
       final sdp = message['sdp']?.toString();
       if (sdp == null || sdp.isEmpty) {
+        _hostAnswerTimer?.cancel();
+        _hostAnswerTimer = null;
         _fail('Хост прислал пустой SDP-ответ.');
         return;
       }
       await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
       _remoteDescriptionSet = true;
+      _hostAnswerTimer?.cancel();
+      _hostAnswerTimer = null;
       for (final candidate
           in List<Map<String, dynamic>>.from(_pendingRemoteCandidates)) {
         await _addRemoteCandidate(peer, candidate);
@@ -456,6 +475,7 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
     if (_stopping) return;
     _releasePressedControls();
     _stopping = true;
+    _hostAnswerTimer?.cancel();
     _signalTimer?.cancel();
     _heartbeatTimer?.cancel();
     final id = _sessionId;
@@ -488,6 +508,7 @@ class _LinkSessionScreenState extends State<LinkSessionScreen> {
       unawaited(api.closeLinkSession(id).catchError((_) {}));
     }
     _stopping = true;
+    _hostAnswerTimer?.cancel();
     _signalTimer?.cancel();
     _heartbeatTimer?.cancel();
     final peer = _peer;

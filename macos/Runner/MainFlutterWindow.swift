@@ -70,6 +70,14 @@ class MainFlutterWindow: NSWindow {
       withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700]
     )
+    let logDirectoryURL = homeURL.appendingPathComponent(
+      "Library/Logs/Ligament", isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: logDirectoryURL,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700]
+    )
     let plistURL = launchAgentsURL.appendingPathComponent(
       "com.ligament.link-agent.plist", isDirectory: false
     )
@@ -78,6 +86,8 @@ class MainFlutterWindow: NSWindow {
       "ProgramArguments": [agentURL.path],
       "RunAtLoad": true,
       "KeepAlive": true,
+      "StandardOutPath": logDirectoryURL.appendingPathComponent("link-agent.log").path,
+      "StandardErrorPath": logDirectoryURL.appendingPathComponent("link-agent-error.log").path,
     ]
     let plistData = try PropertyListSerialization.data(
       fromPropertyList: job,

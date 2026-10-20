@@ -39,6 +39,8 @@ func runUnixAgent(ctx context.Context) error {
 	config := linkagent.AgentConfig("", hostname, osFamily, "", unixAgentVersion, map[string]any{
 		"interactive_session_worker": true,
 	})
+	config.InteractiveUser = linkagent.CurrentInteractiveUser
+	config.LocalIPs = linkagent.CurrentLocalIPs
 	if err := linkagent.ValidateAgentHostMetadata(config); err != nil {
 		return err
 	}

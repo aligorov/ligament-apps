@@ -19,7 +19,7 @@ using flutter::EncodableValue;
 
 class BindingException : public std::runtime_error {
  public:
-  BindingException(const char* code, const char* message)
+  BindingException(const char* code, const std::string& message)
       : std::runtime_error(message), code_(code) {}
   const char* code() const { return code_; }
 
@@ -33,11 +33,15 @@ bool IsHexToken(const std::string& token) {
   });
 }
 
-bool IsSystemProcess(HANDLE process) {
+bool IsSystemProcess(HANDLE process, DWORD* failure) {
   HANDLE token = nullptr;
-  if (!OpenProcessToken(process, TOKEN_QUERY, &token)) return false;
+  if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
+    *failure = GetLastError();
+    return false;
+  }
   DWORD needed = 0;
   GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
+  const DWORD sizing_error = GetLastError();
   std::vector<BYTE> buffer(needed);
   BYTE system_sid[SECURITY_MAX_SID_SIZE];
   DWORD sid_size = sizeof(system_sid);
@@ -45,8 +49,16 @@ bool IsSystemProcess(HANDLE process) {
       GetTokenInformation(token, TokenUser, buffer.data(), needed, &needed) &&
       CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid, &sid_size) &&
       EqualSid(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, system_sid);
+  if (!ok) {
+    const DWORD error = GetLastError();
+    *failure = error == ERROR_SUCCESS ? sizing_error : error;
+  }
   CloseHandle(token);
   return ok;
+}
+
+std::string Win32Diagnostic(const char* operation, DWORD error) {
+  return std::string(operation) + " (Win32 error " + std::to_string(error) + ")";
 }
 
 std::string JsonString(const std::string& value) {
@@ -95,18 +107,41 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
 
   ULONG server_pid = 0;
   DWORD server_session = MAXDWORD;
-  HANDLE server = nullptr;
-  if (GetNamedPipeServerProcessId(pipe, &server_pid))
-    server = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server_pid);
-  const bool trusted = server && IsSystemProcess(server) &&
-      ProcessIdToSessionId(server_pid, &server_session) && server_session == 0;
-  if (server) CloseHandle(server);
+  bool trusted = false;
+  const char* trust_error_code = "link_agent_service_untrusted";
+  std::string trust_error = "Link service identity check failed";
+  if (!GetNamedPipeServerProcessId(pipe, &server_pid)) {
+    trust_error_code = "link_agent_pipe_server_pid_failed";
+    trust_error = Win32Diagnostic("Cannot identify named-pipe server", GetLastError());
+  } else {
+    HANDLE server = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server_pid);
+    if (!server) {
+      trust_error_code = "link_agent_service_process_open_failed";
+      trust_error = Win32Diagnostic("Cannot inspect Link service process", GetLastError());
+    } else {
+      DWORD identity_error = ERROR_SUCCESS;
+      if (!IsSystemProcess(server, &identity_error)) {
+        trust_error_code = "link_agent_service_sid_mismatch";
+        trust_error = identity_error == ERROR_SUCCESS
+            ? "Link service process is not LocalSystem"
+            : Win32Diagnostic("Cannot verify Link service account", identity_error);
+      } else if (!ProcessIdToSessionId(server_pid, &server_session)) {
+        trust_error_code = "link_agent_service_session_check_failed";
+        trust_error = Win32Diagnostic("Cannot verify Link service session", GetLastError());
+      } else if (server_session != 0) {
+        trust_error_code = "link_agent_service_not_session0";
+        trust_error = "Link service process is not running in Session 0";
+      } else {
+        trusted = true;
+      }
+      CloseHandle(server);
+    }
+  }
   if (!trusted) {
     CloseHandle(pipe);
     SecureZeroMemory(token.data(), token.size());
     SecureZeroMemory(server_url.data(), server_url.size());
-    throw BindingException("link_agent_service_untrusted",
-                           "Link service pipe is not owned by LocalSystem");
+    throw BindingException(trust_error_code, trust_error);
   }
 
   std::string request = "{\"version\":1,\"server_url\":" + JsonString(server_url) +

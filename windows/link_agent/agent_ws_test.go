@@ -141,7 +141,7 @@ func TestServeAgentConnectionHeartbeatsAndDispatchesServerMessages(t *testing.T)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err = serveAgentConnection(ctx, conn, func(_ context.Context, message []byte, send func(any) error) error {
+	err = serveAgentConnection(ctx, conn, AgentWSConfig{}, func(_ context.Context, message []byte, send func(any) error) error {
 		var event map[string]string
 		if err := json.Unmarshal(message, &event); err != nil {
 			return err
@@ -161,6 +161,28 @@ func TestServeAgentConnectionHeartbeatsAndDispatchesServerMessages(t *testing.T)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not receive agent reply")
+	}
+}
+
+func TestAgentHeartbeatCollectsInteractiveUserOnlyWhenServerAllows(t *testing.T) {
+	userReads := 0
+	config := AgentWSConfig{
+		InteractiveUser: func() string {
+			userReads++
+			return "DOMAIN\\alice"
+		},
+		LocalIPs: func() []string { return []string{"192.168.1.20"} },
+	}
+	initial := agentHeartbeatMessage(config, false)
+	if _, exists := initial["interactive_user"]; exists || userReads != 0 {
+		t.Fatal("agent read or sent the OS username before server policy allowed it")
+	}
+	if got := initial["local_ips"].([]string); len(got) != 1 || got[0] != "192.168.1.20" {
+		t.Fatalf("local IP telemetry = %#v", got)
+	}
+	allowed := agentHeartbeatMessage(config, true)
+	if got := allowed["interactive_user"]; got != "DOMAIN\\alice" || userReads != 1 {
+		t.Fatalf("allowed username = %#v, reads=%d", got, userReads)
 	}
 }
 

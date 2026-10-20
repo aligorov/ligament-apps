@@ -53,6 +53,8 @@ class LinkAgentBindingService {
   Future<String?> _bindUnix(String serverUrl, String enrollmentToken) async {
     if (Platform.isMacOS) {
       await _channel.invokeMethod<void>('ensureMacAgentRunning');
+    } else if (Platform.isLinux) {
+      await _ensureLinuxAgentRunning();
     }
     final uid = await _currentUnixUID();
     final socketPath = linkAgentBindingSocketPath(uid);
@@ -91,6 +93,25 @@ class LinkAgentBindingService {
     }
   }
 
+  Future<void> _ensureLinuxAgentRunning() async {
+    ProcessResult result;
+    try {
+      result = await Process.run(
+        'systemctl',
+        const ['--user', 'enable', '--now', 'ligament-link-agent.service'],
+      ).timeout(const Duration(seconds: 15));
+    } on Object catch (error) {
+      throw LinkAgentBindingFailure(
+          'link_agent_linux_systemd_unavailable', error);
+    }
+    if (result.exitCode != 0) {
+      throw LinkAgentBindingFailure(
+        'link_agent_linux_service_unavailable',
+        result.stderr,
+      );
+    }
+  }
+
   Future<Socket> _connectUnixBindingSocket(String socketPath) async {
     final address = InternetAddress(socketPath, type: InternetAddressType.unix);
     final deadline = DateTime.now().add(const Duration(seconds: 10));
@@ -119,7 +140,11 @@ class LinkAgentBindingService {
 }
 
 String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
-  final code = error is PlatformException ? error.code : '';
+  final code = error is PlatformException
+      ? error.code
+      : error is LinkAgentBindingFailure
+          ? error.code
+          : '';
   return switch (code) {
     'link_agent_missing' => isRu
         ? 'В этой копии приложения не найден Link Agent. Установите Ligament 2FA в папку Applications и попробуйте снова.'
@@ -130,12 +155,33 @@ String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
     'link_agent_service_not_running' => isRu
         ? 'Служба Ligament Link Agent не запущена. Проверьте её состояние в «Службах» Windows.'
         : 'Ligament Link Agent service is not running. Check its status in Windows Services.',
+    'link_agent_linux_systemd_unavailable' => isRu
+        ? 'Не удалось запустить службу Link через systemd --user. Установите Linux-пакет Ligament и войдите в пользовательскую графическую сессию.'
+        : 'Could not start Link through systemd --user. Install the Ligament Linux package and use a logged-in desktop session.',
+    'link_agent_linux_service_unavailable' => isRu
+        ? 'Служба Link не найдена или не запустилась. Для tar.gz выполните ./install.sh --enable-link-agent от имени пользователя; проверьте systemctl --user status ligament-link-agent.'
+        : 'Link service is missing or failed to start. For tar.gz, run ./install.sh --enable-link-agent as your user; check systemctl --user status ligament-link-agent.',
     'link_agent_pipe_unavailable' => isRu
         ? 'Не удаётся подключиться к службе Ligament Link Agent. Проверьте установку и состояние службы.'
         : 'Cannot connect to Ligament Link Agent. Check that the service is installed and running.',
     'link_agent_service_untrusted' => isRu
-        ? 'Не удалось подтвердить системную службу Link. Переустановите приложение из доверенного MSI.'
-        : 'Could not verify the Link system service. Reinstall the app from a trusted MSI.',
+        ? 'Не удалось подтвердить службу Link как системную. Проверьте, что служба LigamentLinkAgent установлена от имени LocalSystem и запущена.'
+        : 'Could not verify Link as a system service. Check that LigamentLinkAgent is installed as LocalSystem and running.',
+    'link_agent_pipe_server_pid_failed' => isRu
+        ? 'Windows не смогла определить процесс службы Link. Перезапустите службу и повторите привязку.'
+        : 'Windows could not identify the Link service process. Restart the service and try binding again.',
+    'link_agent_service_process_open_failed' => isRu
+        ? 'Windows запретила проверить процесс службы Link. Проверьте права и журнал службы.'
+        : 'Windows denied access to inspect the Link service process. Check permissions and the service log.',
+    'link_agent_service_sid_mismatch' => isRu
+        ? 'Служба Link запущена не от LocalSystem. Проверьте учётную запись службы LigamentLinkAgent.'
+        : 'Link is not running as LocalSystem. Check the LigamentLinkAgent service account.',
+    'link_agent_service_session_check_failed' => isRu
+        ? 'Не удалось проверить системную сессию службы Link. Перезапустите службу и проверьте журнал.'
+        : 'Could not verify the Link service session. Restart the service and check its log.',
+    'link_agent_service_not_session0' => isRu
+        ? 'Служба Link запущена не в системной Session 0. Проверьте тип запуска службы Windows.'
+        : 'Link is not running in system Session 0. Check the Windows service configuration.',
     'link_agent_server_mismatch' => isRu
         ? 'Адрес сервера в настройках службы Windows не совпадает с сервером приложения. Проверьте параметр SERVERURL установщика.'
         : 'The server URL configured for the Windows service differs from the app. Check the installer SERVERURL setting.',
@@ -158,6 +204,16 @@ String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
         ? 'Не удалось привязать компьютер. Проверьте, что служба Ligament Link Agent запущена.'
         : 'Could not link this computer. Check that Ligament Link Agent service is running.',
   };
+}
+
+class LinkAgentBindingFailure implements Exception {
+  const LinkAgentBindingFailure(this.code, this.details);
+
+  final String code;
+  final Object details;
+
+  @override
+  String toString() => '$code: $details';
 }
 
 const _bindingFrameLimit = 4096;

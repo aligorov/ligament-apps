@@ -215,10 +215,13 @@ func readServiceConfig() (linkagent.AgentWSConfig, error) {
 		return linkagent.AgentWSConfig{}, errors.New("resolve host name")
 	}
 	osVersion := readWindowsVersion()
-	return linkagent.StoredAgentConfig(serverURL, hostname, osVersion, agentVersion, map[string]any{
+	config := linkagent.StoredAgentConfig(serverURL, hostname, osVersion, agentVersion, map[string]any{
 		"windows_service": true,
 		"session0":        true,
-	}), nil
+	})
+	config.InteractiveUser = linkagent.CurrentInteractiveUser
+	config.LocalIPs = linkagent.CurrentLocalIPs
+	return config, nil
 }
 
 func configureBindingServerURL(configuredURL, requestedURL string) (string, error) {

@@ -73,7 +73,7 @@ func (*UnixSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer, of
 	cmd := exec.Command(appPath, "--link-host=unix:"+socketPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = filepath.Dir(appPath)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		_ = listener.Close()
 		_ = os.RemoveAll(base)

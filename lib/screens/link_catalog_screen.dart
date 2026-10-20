@@ -248,7 +248,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         backgroundColor: const Color(0xFF0B0F19),
         title: Text(isRu ? 'Ligament Link' : 'Ligament Link'),
         actions: [
-          if (Platform.isWindows || Platform.isMacOS)
+          if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
             FilledButton.tonalIcon(
               onPressed: _bindingThisHost || !auth.linkFeatureAvailable
                   ? null
@@ -515,6 +515,14 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   fontSize: 10),
             ),
             IconButton(
+              tooltip: isRu ? 'Сведения о компьютере' : 'Computer details',
+              onPressed: () => _showHostDetails(host, isRu),
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 32, height: 34),
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.info_outline, size: 16),
+            ),
+            IconButton(
               tooltip: isRu ? 'Подключиться' : 'Connect',
               onPressed: online ? () => _startLinkSession(host, isRu) : null,
               visualDensity: VisualDensity.compact,
@@ -524,6 +532,70 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Future<void> _showHostDetails(Map<String, dynamic> host, bool isRu) async {
+    final localIPs = host['local_ips'];
+    final values = <(String, String)>[
+      (isRu ? 'Владелец' : 'Owner', host['owner_username']?.toString() ?? ''),
+      (
+        isRu ? 'Пользователь за ПК' : 'Signed-in user',
+        host['interactive_username']?.toString() ?? ''
+      ),
+      (isRu ? 'Внешний IP' : 'Public IP', host['public_ip']?.toString() ?? ''),
+      (
+        isRu ? 'Локальные IP' : 'Local IPs',
+        localIPs is List ? localIPs.join(', ') : ''
+      ),
+      (
+        isRu ? 'ОС' : 'OS',
+        [host['os_family'], host['os_version']]
+            .where((value) => value != null && value.toString().isNotEmpty)
+            .join(' ')
+      ),
+      (
+        isRu ? 'Версия агента' : 'Agent version',
+        host['agent_version']?.toString() ?? ''
+      ),
+      (
+        isRu ? 'Отпечаток' : 'Fingerprint',
+        host['fingerprint']?.toString() ?? ''
+      ),
+    ];
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF131B2B),
+        title: Text(
+            host['hostname']?.toString() ?? (isRu ? 'Компьютер' : 'Computer')),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final (label, value) in values)
+                  if (value.trim().isNotEmpty) ...[
+                    Text(label,
+                        style: const TextStyle(
+                            color: Color(0xFF94A3B8), fontSize: 12)),
+                    SelectableText(value,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 13)),
+                    const SizedBox(height: 10),
+                  ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(isRu ? 'Закрыть' : 'Close')),
+        ],
       ),
     );
   }
