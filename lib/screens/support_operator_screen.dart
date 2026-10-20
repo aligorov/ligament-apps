@@ -135,6 +135,12 @@ class SupportOperatorScreen extends StatefulWidget {
   /// разрешено владельцу (серверная склейка S3).
   final bool ownerMode;
 
+  /// Режим Ligament Link (удалённый доступ к корпоративным и личным ПК).
+  /// Использует сигнальный канал Link API и единую консоль управления.
+  final bool isLink;
+  final String? linkAgentId;
+  final String? linkAccessMode;
+
   const SupportOperatorScreen({
     super.key,
     required this.sessionId,
@@ -142,6 +148,9 @@ class SupportOperatorScreen extends StatefulWidget {
     required this.sessionData,
     this.isChatOnly = false,
     this.ownerMode = false,
+    this.isLink = false,
+    this.linkAgentId,
+    this.linkAccessMode,
   });
 
   @override
@@ -150,6 +159,16 @@ class SupportOperatorScreen extends StatefulWidget {
 
 class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   static RTCVideoRenderer? _sharedMacOSRenderer;
+
+  String? _linkSessionId;
+  int _linkCursor = 0;
+  Timer? _linkSignalTimer;
+  Timer? _linkHeartbeatTimer;
+  Timer? _linkHostAnswerTimer;
+  bool _linkPolling = false;
+  bool _linkRemoteDescriptionSet = false;
+  final List<Map<String, dynamic>> _linkQueuedCandidates = [];
+  final List<Map<String, dynamic>> _linkPendingRemoteCandidates = [];
 
   RTCVideoRenderer get _remoteRenderer {
     if (!kIsWeb && Platform.isMacOS) {
@@ -496,6 +515,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _cancelStageTimers();
     _resetStageReadiness();
     _setStatus('stage_retry');
+    if (widget.isLink) {
+      _startLinkConnection();
+      return;
+    }
     if (_signalReady) {
       _sendWsSignal({'type': 'request_offer'});
       _startOfferStageTimer();
@@ -536,6 +559,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _pcGraceTimer = null;
     _leaseTimer?.cancel();
     _leaseTimer = null;
+    _linkSignalTimer?.cancel();
+    _linkSignalTimer = null;
+    _linkHeartbeatTimer?.cancel();
+    _linkHeartbeatTimer = null;
+    _linkHostAnswerTimer?.cancel();
+    _linkHostAnswerTimer = null;
+    if (widget.isLink && _linkSessionId != null) {
+      final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
+      auth?.api?.closeLinkSession(_linkSessionId!).catchError((_) => null);
+    }
     _setStatus(reasonKey);
     _isControlEnabled = false;
     _cleanupResources();
@@ -611,7 +644,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _loadChatHistory() async {
-    if (widget.ownerMode || widget.sessionData['owner'] == true) return;
+    if (widget.isLink || widget.ownerMode || widget.sessionData['owner'] == true) return;
     final auth = context.read<AuthState>();
     if (auth.api == null || widget.sessionId.isEmpty) return;
     try {
@@ -662,7 +695,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final accessMode = widget.sessionData['access_mode']?.toString();
     _isControlEnabled = accessMode != 'view_only';
     _loadChatHistory();
-    if (_isChatOnly) {
+    if (_isChatOnly && !widget.isLink) {
       _statusKey = 'chat';
       _connectWebSocket();
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -674,6 +707,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _initRendererAndWebRTC() async {
+    if (widget.isLink) {
+      await _startLinkConnection();
+      return;
+    }
     _startLeaseRenewal();
     // Этап 2.4: в owner-режиме consent не нужен — цель стартует шаринг
     // сама по support_prompt(owner:true); number-match отсутствует.
@@ -699,6 +736,315 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
     _connectWebSocket();
     await _setupPeerConnection();
+  }
+
+  Future<void> _startLinkConnection() async {
+    final auth = context.read<AuthState>();
+    final api = auth.api;
+    if (api == null) {
+      _setStatus('conn_error', 'No active API session');
+      return;
+    }
+    _setStatus('init');
+    if (!kIsWeb && Platform.isMacOS) {
+      if (_sharedMacOSRenderer == null) {
+        _sharedMacOSRenderer = RTCVideoRenderer();
+        await _sharedMacOSRenderer!.initialize();
+      }
+    } else {
+      await _instanceRenderer.initialize();
+    }
+    _remoteRenderer.onFirstFrameRendered = () {
+      _markFrameReady();
+    };
+
+    try {
+      List<Map<String, dynamic>> iceServers = [];
+      try {
+        iceServers = await api.getLinkIceServers();
+      } catch (e) {
+        debugPrint('support_operator (link): getLinkIceServers fallback: $e');
+        iceServers = auth.iceServers;
+      }
+      if (_isCleanedUp) return;
+
+      final peer = await createPeerConnection({
+        'iceServers': iceServers,
+        'sdpSemantics': 'unified-plan',
+      });
+      _peerConnection = peer;
+      if (_isCleanedUp) {
+        await peer.close();
+        return;
+      }
+
+      peer.onIceCandidate = (candidate) {
+        if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
+          final signal = {
+            'type': 'candidate',
+            'candidate': {
+              'candidate': candidate.candidate,
+              'sdpMid': candidate.sdpMid,
+              'sdpMLineIndex': candidate.sdpMLineIndex,
+            },
+          };
+          _sendWsSignal(signal);
+        }
+      };
+
+      peer.onConnectionState = (state) {
+        debugPrint('support_operator (link): connection state: $state');
+        if (!mounted || _isCleanedUp) return;
+        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          _pcGraceTimer?.cancel();
+          _pcGraceTimer = null;
+          setState(() {
+            _isConnected = true;
+            _currentNumberMatch = null;
+            _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
+            _statusArg = null;
+          });
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+          _onSessionTerminated('session_ended');
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+          setState(() {
+            _isConnected = false;
+            _currentNumberMatch = null;
+            _statusKey = 'disconnected';
+            _statusArg = state.name;
+          });
+          _schedulePcGraceTermination();
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+          setState(() {
+            _isConnected = false;
+            _currentNumberMatch = null;
+            _statusKey = 'disconnected';
+            _statusArg = state.name;
+          });
+          if (_pcGraceTimer != null) _schedulePcGraceTermination();
+        }
+      };
+
+      peer.onTrack = (RTCTrackEvent event) async {
+        debugPrint(
+            'support_operator (link): remote track: ${event.track.kind}');
+        if (!mounted || _isCleanedUp) return;
+        MediaStream? stream;
+        if (event.streams.isNotEmpty) {
+          stream = event.streams[0];
+        } else {
+          try {
+            stream = await createLocalMediaStream('remote_stream');
+            await stream.addTrack(event.track);
+          } catch (_) {}
+        }
+        if (mounted && stream != null) {
+          setState(() {
+            _remoteRenderer.srcObject = stream;
+            _isConnected = true;
+            _currentNumberMatch = null;
+            _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
+            _statusArg = null;
+          });
+          if (!_frameReady) _startFirstFrameStageTimer();
+          _sendDataMessage({'type': 'screen_list'});
+        }
+      };
+
+      peer.onDataChannel = (channel) {
+        debugPrint(
+            'support_operator (link): remote data channel: ${channel.label}');
+        _setupDataChannel(channel);
+      };
+
+      await peer.addTransceiver(
+        kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+        init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
+      );
+
+      final accessMode = widget.linkAccessMode ??
+          widget.sessionData['access_mode']?.toString() ??
+          'control';
+      if (accessMode != 'view_only' && accessMode != 'view') {
+        final channel = await peer.createDataChannel(
+          'link-control-v1',
+          RTCDataChannelInit()..ordered = true,
+        );
+        _setupDataChannel(channel);
+      }
+
+      final offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      if (_isCleanedUp) return;
+
+      final targetAgentId = widget.linkAgentId ??
+          widget.sessionData['agent_id']?.toString() ??
+          widget.sessionId;
+      final session = await api.requestLinkSession(
+        agentId: targetAgentId,
+        accessMode: accessMode == 'view_only' ? 'view' : accessMode,
+        clientSdp: offer.sdp,
+      );
+      final id = session['session_id']?.toString();
+      if (id == null || id.isEmpty) {
+        throw StateError('Server did not return session_id');
+      }
+      _linkSessionId = id;
+
+      final confirmationRequired = session['confirmation_required'] == true;
+      if (confirmationRequired) {
+        _currentNumberMatch = session['confirmation_code']?.toString();
+        _setStatus('waiting_consent', _currentNumberMatch);
+      } else {
+        _setStatus('owner_waiting');
+      }
+
+      _linkHostAnswerTimer?.cancel();
+      _linkHostAnswerTimer = Timer(const Duration(seconds: 120), () {
+        if (!_linkRemoteDescriptionSet && mounted && !_isCleanedUp) {
+          _setStatus('pc_no_offer');
+          _onSessionTerminated('pc_failed');
+        }
+      });
+
+      for (final cand
+          in List<Map<String, dynamic>>.from(_linkQueuedCandidates)) {
+        await api
+            .sendLinkSessionSignal(sessionId: id, signal: cand)
+            .catchError((_) => null);
+      }
+      _linkQueuedCandidates.clear();
+
+      _linkSignalTimer?.cancel();
+      _linkSignalTimer = Timer.periodic(
+        const Duration(milliseconds: 500),
+        (_) => _pollLinkSignals(),
+      );
+      _linkHeartbeatTimer?.cancel();
+      _linkHeartbeatTimer = Timer.periodic(
+        const Duration(seconds: 20),
+        (_) => _sendLinkHeartbeat(),
+      );
+      _pollLinkSignals();
+    } catch (e) {
+      debugPrint('support_operator (link): error starting session: $e');
+      if (mounted) {
+        _setStatus('conn_error', e.toString());
+      }
+    }
+  }
+
+  Future<void> _pollLinkSignals() async {
+    final id = _linkSessionId;
+    final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
+    final api = auth?.api;
+    if (_linkPolling || _isCleanedUp || id == null || api == null) return;
+    _linkPolling = true;
+    try {
+      final result =
+          await api.getLinkSessionSignals(sessionId: id, after: _linkCursor);
+      final nextCursor = result['next_cursor'];
+      if (nextCursor is int && nextCursor > _linkCursor) {
+        _linkCursor = nextCursor;
+      }
+      final rawSignals = result['signals'];
+      if (rawSignals is List) {
+        for (final raw in rawSignals.whereType<Map>()) {
+          await _handleLinkSignal(Map<String, dynamic>.from(raw));
+        }
+      }
+    } catch (e) {
+      debugPrint('support_operator (link): polling signals failed: $e');
+    } finally {
+      _linkPolling = false;
+    }
+  }
+
+  Future<void> _handleLinkSignal(Map<String, dynamic> event) async {
+    final peer = _peerConnection;
+    if (peer == null || _isCleanedUp) return;
+    final payload = event['payload'];
+    if (payload is! Map) return;
+    final message = Map<String, dynamic>.from(payload);
+    final type = event['type']?.toString() ?? message['type']?.toString();
+
+    if (type == 'session_answer' && !_linkRemoteDescriptionSet) {
+      if (message['accepted'] != true) {
+        _linkHostAnswerTimer?.cancel();
+        _linkHostAnswerTimer = null;
+        final reason = message['reason']?.toString();
+        debugPrint('support_operator (link): rejected by host: $reason');
+        _onSessionTerminated('session_ended');
+        return;
+      }
+      final sdp = message['sdp']?.toString();
+      if (sdp != null && sdp.isNotEmpty) {
+        await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
+        _linkRemoteDescriptionSet = true;
+        _linkHostAnswerTimer?.cancel();
+        _linkHostAnswerTimer = null;
+        if (mounted) {
+          setState(() {
+            _currentNumberMatch = null;
+            _signalReady = true;
+          });
+        }
+        for (final cand
+            in List<Map<String, dynamic>>.from(_linkPendingRemoteCandidates)) {
+          await _addLinkRemoteCandidate(peer, cand);
+        }
+        _linkPendingRemoteCandidates.clear();
+      }
+      return;
+    }
+
+    if (type == 'candidate') {
+      final candValue = message['candidate'];
+      if (candValue is Map) {
+        final cand = Map<String, dynamic>.from(candValue);
+        if (_linkRemoteDescriptionSet) {
+          await _addLinkRemoteCandidate(peer, cand);
+        } else if (_linkPendingRemoteCandidates.length < 256) {
+          _linkPendingRemoteCandidates.add(cand);
+        }
+      }
+      return;
+    }
+
+    if (isSessionTerminatedMessage(message)) {
+      _onSessionTerminated('session_ended');
+    }
+  }
+
+  Future<void> _addLinkRemoteCandidate(
+      RTCPeerConnection peer, Map<String, dynamic> candidate) async {
+    try {
+      await peer.addCandidate(RTCIceCandidate(
+        candidate['candidate']?.toString(),
+        candidate['sdpMid']?.toString(),
+        candidate['sdpMLineIndex'] is num
+            ? (candidate['sdpMLineIndex'] as num).toInt()
+            : null,
+      ));
+    } catch (e) {
+      debugPrint('support_operator (link): addCandidate failed: $e');
+    }
+  }
+
+  Future<void> _sendLinkHeartbeat() async {
+    final id = _linkSessionId;
+    final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
+    final api = auth?.api;
+    if (id == null || api == null || _isCleanedUp) return;
+    try {
+      await api.heartbeatLinkSession(id);
+    } catch (e) {
+      debugPrint('support_operator (link): heartbeat failed: $e');
+      _onSessionTerminated('ended_by_server');
+    }
   }
 
   void _connectWebSocket() {
@@ -1563,6 +1909,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendWsSignal(Map<String, dynamic> signal) {
+    if (widget.isLink) {
+      final id = _linkSessionId;
+      final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
+      final api = auth?.api;
+      if (id != null && api != null) {
+        api
+            .sendLinkSessionSignal(sessionId: id, signal: signal)
+            .catchError((e) {
+          debugPrint('support_operator (link): send signal error: $e');
+        });
+      } else {
+        _linkQueuedCandidates.add(signal);
+      }
+      return;
+    }
     try {
       _wsChannel?.sink.add(jsonEncode(signal));
     } catch (_) {}
@@ -2008,6 +2369,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _pcGraceTimer = null;
     _leaseTimer?.cancel();
     _leaseTimer = null;
+    _linkSignalTimer?.cancel();
+    _linkSignalTimer = null;
+    _linkHeartbeatTimer?.cancel();
+    _linkHeartbeatTimer = null;
+    _linkHostAnswerTimer?.cancel();
+    _linkHostAnswerTimer = null;
+    if (widget.isLink && _linkSessionId != null) {
+      final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
+      auth?.api?.closeLinkSession(_linkSessionId!).catchError((_) => null);
+    }
 
     // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
     _releaseAllPressedInputs();
@@ -2127,7 +2498,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         // Оператор SOS бьёт в operator-маршрут (app-токен + роль инженера):
         // прежний /app/.../end для него всегда 403 — сессия не закрывалась.
-        if (isOwner) {
+        if (widget.isLink && _linkSessionId != null) {
+          await auth.api?.closeLinkSession(_linkSessionId!).timeout(
+                const Duration(seconds: 2),
+              );
+        } else if (isOwner) {
           await auth.api?.endSupportSession(sessionId: sessId).timeout(
                 const Duration(seconds: 2),
               );
@@ -3069,11 +3444,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
+    final isLink = widget.isLink;
     final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
     final String clientName;
     final String pcName;
     final bool is1C;
-    if (isOwner) {
+    if (isLink) {
+      clientName = widget.sessionData['hostname']?.toString() ??
+          widget.sessionData['name']?.toString() ??
+          'Ligament Link';
+      pcName = widget.sessionData['hostname']?.toString() ??
+          widget.sessionData['endpoint']?.toString() ??
+          'Remote PC';
+      is1C = false;
+    } else if (isOwner) {
       // Этап 2.4: заголовок окна — «Мой ПК», а не «Помощь»: на другой
       // стороне экран самого владельца, категория SOS не показывается.
       clientName = widget.sessionData['name']?.toString() ??
@@ -3126,7 +3510,30 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         tooltip: strings.backTooltip,
                         onPressed: () => Navigator.of(context).pop(),
                       ),
-                      if (isOwner)
+                      if (isLink)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF6366F1),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.link, size: 12, color: Colors.white),
+                              SizedBox(width: 4),
+                              Text(
+                                'LINK',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        )
+                      else if (isOwner)
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 4),

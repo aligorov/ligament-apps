@@ -31,6 +31,9 @@ abstract interface class LinkHostPeer {
 /// Owns one server-authorized Link session. It translates the WSS agent
 /// protocol to a WebRTC peer without sharing the legacy Support signaling API.
 class LinkHostSession {
+  static bool isValidControlInput(Map<String, dynamic> input) =>
+      FlutterLinkHostPeer.isValidInput(input);
+
   LinkHostSession({
     required this.sessionId,
     required this.accessMode,
@@ -711,8 +714,74 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   MediaStream? _stream;
   RTCDataChannel? _control;
   ScreenRect? _screenRect;
+  String? _selectedScreenId;
   bool _allowControl = false;
   bool _closed = false;
+
+  Future<void> _sendScreenList() async {
+    final control = _control;
+    if (control == null || _closed) return;
+    try {
+      final sources =
+          await desktopCapturer.getSources(types: [SourceType.Screen]);
+      final screens = <Map<String, dynamic>>[];
+      for (final src in sources) {
+        final rect = InputInjector.instance.getMonitorRectForSource(src.id);
+        screens.add({
+          'id': src.id,
+          'name': src.name.isNotEmpty ? src.name : 'Monitor ${src.id}',
+          if (rect != null) 'rect': rect.toJson(),
+        });
+      }
+      final payload = {
+        'type': 'screen_list',
+        'screens': screens,
+        if (_selectedScreenId != null) 'selected_id': _selectedScreenId,
+        if (!kIsWeb &&
+            (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+          'virtual_desktop':
+              InputInjector.instance.getVirtualDesktopRect().toJson(),
+      };
+      control.send(RTCDataChannelMessage(jsonEncode(payload)));
+    } catch (e) {
+      debugPrint('link_host_session: _sendScreenList failed: $e');
+    }
+  }
+
+  Future<void> switchScreen(String screenId) async {
+    if (kIsWeb || _peer == null || _closed) return;
+    try {
+      final newStream =
+          await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+        'audio': false,
+        'video': {
+          'deviceId': {'exact': screenId},
+          'cursor': 'always',
+        },
+      });
+      final oldTracks = _stream?.getVideoTracks() ?? [];
+      final newTracks = newStream.getVideoTracks();
+      if (newTracks.isNotEmpty && oldTracks.isNotEmpty) {
+        final senders = await _peer!.getSenders();
+        for (final sender in senders) {
+          if (sender.track?.kind == 'video') {
+            await sender.replaceTrack(newTracks.first);
+            break;
+          }
+        }
+        for (final t in oldTracks) {
+          t.stop();
+        }
+        _stream = newStream;
+        _selectedScreenId = screenId;
+        _screenRect = InputInjector.instance.getMonitorRectForSource(screenId);
+        InputInjector.instance.setActiveMonitorRect(_screenRect);
+        await _sendScreenList();
+      }
+    } catch (e) {
+      debugPrint('link_host_session: switchScreen failed: $e');
+    }
+  }
 
   @override
   Future<String> start({
@@ -739,14 +808,16 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     };
     peer.onDataChannel = (channel) {
       if (!_allowControl ||
-          channel.label != 'link-control-v1' ||
+          (channel.label != 'link-control-v1' && channel.label != 'control') ||
           _control != null) {
         unawaited(channel.close());
         return;
       }
       _control = channel;
       channel.onDataChannelState = (state) {
-        if (state == RTCDataChannelState.RTCDataChannelClosed) {
+        if (state == RTCDataChannelState.RTCDataChannelOpen) {
+          _sendScreenList();
+        } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
           InputInjector.instance.releaseAllPressed();
         }
       };
@@ -788,6 +859,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     return answer.sdp ?? '';
   }
 
+  static bool isValidInput(Map<String, dynamic> input) => _isValidInput(input);
+
   static bool _isValidInput(Map<String, dynamic> input) {
     final type = input['type'];
     if (type == 'mouse_move' || type == 'mouse_down' || type == 'mouse_up') {
@@ -816,6 +889,27 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (type == 'key_down' || type == 'key_up') {
       return LinkKeyMessage.tryParse(input) != null;
     }
+    if (type == 'hotkey') {
+      final action = input['action'];
+      return action is String && action.isNotEmpty;
+    }
+    if (type == 'screen_list') {
+      return true;
+    }
+    if (type == 'switch_screen') {
+      final sId = input['screen_id'];
+      return sId != null && sId.toString().isNotEmpty;
+    }
+    if (type == 'clipboard_set') {
+      final text = input['text'];
+      return text is String && text.length <= 65536;
+    }
+    if (type == 'clipboard_get') {
+      return true;
+    }
+    if (type == 'block_input') {
+      return input['blocked'] is bool;
+    }
     return false;
   }
 
@@ -842,6 +936,30 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         injector.mouseWheel((input['deltaY'] as num).toDouble());
       } else if (type == 'key_down' || type == 'key_up') {
         LinkKeyMessage.tryParse(input)?.inject(injector.keyAction);
+      } else if (type == 'hotkey') {
+        injector.triggerHotkey(input['action'] as String);
+      } else if (type == 'screen_list') {
+        _sendScreenList();
+      } else if (type == 'switch_screen') {
+        final screenId = input['screen_id']?.toString();
+        if (screenId != null) {
+          switchScreen(screenId);
+        }
+      } else if (type == 'clipboard_set') {
+        final text = input['text']?.toString() ?? '';
+        if (text.length <= 65536) {
+          Clipboard.setData(ClipboardData(text: text));
+        }
+      } else if (type == 'clipboard_get') {
+        Clipboard.getData(Clipboard.kTextPlain).then((clip) {
+          final text = clip?.text ?? '';
+          _control?.send(RTCDataChannelMessage(jsonEncode({
+            'type': 'clipboard_data',
+            'text': text,
+          })));
+        });
+      } else if (type == 'block_input') {
+        injector.setInputBlocked(input['blocked'] == true);
       }
     } catch (_) {
       _control?.send(RTCDataChannelMessage(jsonEncode({
@@ -862,6 +980,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       throw const LinkHostReadinessException('host_screen_capture_unavailable');
     }
     final source = sources.first;
+    _selectedScreenId = source.id;
     _screenRect = InputInjector.instance.getMonitorRectForSource(source.id);
     InputInjector.instance.setActiveMonitorRect(_screenRect);
     try {

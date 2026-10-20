@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import 'link_session_screen.dart';
+import 'support_operator_screen.dart';
 import '../services/auth_state.dart';
 import '../services/link_agent_binding_service.dart';
 
@@ -475,10 +475,11 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         .where((part) => part != null && part.toString().isNotEmpty)
         .join(' ');
     final status = host['status']?.toString() ?? 'enrolled';
-    return SizedBox(
-      height: 38,
+    final localIPs = host['local_ips'];
+    return Container(
+      constraints: const BoxConstraints(minHeight: 46),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
         child: Row(
           children: [
             Icon(Icons.circle,
@@ -488,14 +489,36 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             const SizedBox(width: 10),
             Expanded(
                 flex: 3,
-                child: Text(
-                  hostname == null || hostname.isEmpty ? '—' : hostname,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hostname == null || hostname.isEmpty ? '—' : hostname,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600),
+                    ),
+                    Text(
+                      [
+                        if (localIPs is List && localIPs.isNotEmpty)
+                          localIPs.first.toString()
+                        else if (host['public_ip'] != null &&
+                            host['public_ip'].toString().isNotEmpty)
+                          host['public_ip'].toString(),
+                        if (host['interactive_username'] != null &&
+                            host['interactive_username'].toString().isNotEmpty)
+                          '👤 ${host['interactive_username']}',
+                      ].where((s) => s.isNotEmpty).join(' • '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Color(0xFF64748B), fontSize: 10),
+                    ),
+                  ],
                 )),
             Expanded(
                 flex: 2,
@@ -549,17 +572,102 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
 
   Future<void> _showHostDetails(Map<String, dynamic> host, bool isRu) async {
     final localIPs = host['local_ips'];
+    final notDetected = isRu ? 'Не определено' : 'Not detected';
+    final hwModel = host['capabilities'] is Map
+        ? host['capabilities']['hw_model']?.toString()
+        : null;
+    final uptimeSec = host['uptime_seconds'] is num
+        ? (host['uptime_seconds'] as num).toInt()
+        : 0;
+    final cpuPercent = host['cpu_usage_percent'] is num
+        ? (host['cpu_usage_percent'] as num).toInt()
+        : 0;
+    final ramUsed = host['ram_used_mb'] is num
+        ? (host['ram_used_mb'] as num).toInt()
+        : 0;
+    final ramTotal = host['ram_total_mb'] is num
+        ? (host['ram_total_mb'] as num).toInt()
+        : 0;
+
+    String formatUptime(int sec) {
+      if (sec <= 0) return notDetected;
+      final d = sec ~/ 86400;
+      final h = (sec % 86400) ~/ 3600;
+      final m = (sec % 3600) ~/ 60;
+      if (d > 0) return isRu ? '$d д $h ч $m мин' : '${d}d ${h}h ${m}m';
+      if (h > 0) return isRu ? '$h ч $m мин' : '${h}h ${m}m';
+      return isRu ? '$m мин' : '${m}m';
+    }
+
     final values = <(String, String)>[
-      (isRu ? 'Владелец' : 'Owner', host['owner_username']?.toString() ?? ''),
+      (
+        isRu ? 'Имя компьютера' : 'Hostname',
+        host['hostname']?.toString() ?? notDetected,
+      ),
+      (
+        isRu ? 'Владелец' : 'Owner',
+        (host['owner_username'] != null &&
+                host['owner_username'].toString().isNotEmpty)
+            ? host['owner_username'].toString()
+            : notDetected,
+      ),
       (
         isRu ? 'Пользователь за ПК' : 'Signed-in user',
-        host['interactive_username']?.toString() ?? ''
+        (host['interactive_username'] != null &&
+                host['interactive_username'].toString().isNotEmpty)
+            ? host['interactive_username'].toString()
+            : notDetected,
       ),
       (
-        isRu ? 'IP подключения к серверу' : 'Server-observed IP',
-        host['public_ip']?.toString() ?? ''
+        isRu ? 'Локальный IP (LAN)' : 'Local IP (LAN)',
+        (localIPs is List && localIPs.isNotEmpty)
+            ? localIPs.join(', ')
+            : notDetected,
       ),
-      (isRu ? 'Группа' : 'Group', host['group_name']?.toString() ?? ''),
+      (
+        isRu ? 'Внешний IP сервера' : 'Server-observed IP',
+        (host['public_ip'] != null &&
+                host['public_ip'].toString().isNotEmpty)
+            ? host['public_ip'].toString()
+            : notDetected,
+      ),
+      (
+        isRu ? 'Модель ПК / Оборудование' : 'Hardware model',
+        (hwModel != null && hwModel.isNotEmpty)
+            ? hwModel
+            : notDetected,
+      ),
+      (
+        isRu ? 'ОС и версия' : 'OS and version',
+        [host['os_family'], host['os_version']]
+            .where((value) => value != null && value.toString().isNotEmpty)
+            .join(' ')
+            .trim(),
+      ),
+      if (uptimeSec > 0 || cpuPercent > 0 || ramTotal > 0) ...[
+        if (uptimeSec > 0)
+          (
+            isRu ? 'Время работы' : 'Uptime',
+            formatUptime(uptimeSec),
+          ),
+        if (cpuPercent > 0)
+          (
+            isRu ? 'Загрузка ЦП' : 'CPU load',
+            '$cpuPercent%',
+          ),
+        if (ramTotal > 0)
+          (
+            isRu ? 'Оперативная память' : 'RAM usage',
+            '$ramUsed МБ / $ramTotal МБ',
+          ),
+      ],
+      (
+        isRu ? 'Группа' : 'Group',
+        (host['group_name'] != null &&
+                host['group_name'].toString().isNotEmpty)
+            ? host['group_name'].toString()
+            : notDetected,
+      ),
       (
         isRu ? 'Источник группы' : 'Group source',
         switch (host['group_source']) {
@@ -567,26 +675,19 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           'owner_group' => isRu ? 'Группа владельца' : 'Owner group',
           'owner_ldap_group' =>
             isRu ? 'LDAP-группа владельца' : 'Owner LDAP group',
-          _ => '',
+          _ => notDetected,
         },
       ),
       (
-        isRu ? 'Локальные IP' : 'Local IPs',
-        localIPs is List ? localIPs.join(', ') : ''
-      ),
-      (
-        isRu ? 'ОС' : 'OS',
-        [host['os_family'], host['os_version']]
-            .where((value) => value != null && value.toString().isNotEmpty)
-            .join(' ')
-      ),
-      (
         isRu ? 'Версия агента' : 'Agent version',
-        host['agent_version']?.toString() ?? ''
+        (host['agent_version'] != null &&
+                host['agent_version'].toString().isNotEmpty)
+            ? host['agent_version'].toString()
+            : notDetected,
       ),
       (
-        isRu ? 'Отпечаток' : 'Fingerprint',
-        host['fingerprint']?.toString() ?? ''
+        isRu ? 'Отпечаток ключа' : 'Fingerprint',
+        host['fingerprint']?.toString() ?? notDetected,
       ),
     ];
     await showDialog<void>(
@@ -602,16 +703,19 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final (label, value) in values)
-                  if (value.trim().isNotEmpty) ...[
-                    Text(label,
-                        style: const TextStyle(
-                            color: Color(0xFF94A3B8), fontSize: 12)),
-                    SelectableText(value,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 13)),
-                    const SizedBox(height: 10),
-                  ],
+                for (final (label, value) in values) ...[
+                  Text(label,
+                      style: const TextStyle(
+                          color: Color(0xFF94A3B8), fontSize: 12)),
+                  SelectableText(
+                      value.isNotEmpty ? value : notDetected,
+                      style: TextStyle(
+                          color: value.isNotEmpty && value != notDetected
+                              ? Colors.white
+                              : const Color(0xFF64748B),
+                          fontSize: 13)),
+                  const SizedBox(height: 10),
+                ],
               ],
             ),
           ),
@@ -649,12 +753,26 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     if (mode == null || !mounted) return;
     final agentId = host['id']?.toString();
     if (agentId == null || agentId.isEmpty) return;
+    final auth = context.read<AuthState>();
+    final isOwner = host['owner_username'] != null &&
+        host['owner_username'] == auth.username;
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) => LinkSessionScreen(
-          agentId: agentId,
-          hostname: host['hostname']?.toString() ?? agentId,
-          accessMode: mode,
+        builder: (_) => SupportOperatorScreen(
+          sessionId: 'link_$agentId',
+          isLink: true,
+          linkAgentId: agentId,
+          linkAccessMode: mode,
+          ownerMode: isOwner,
+          sessionData: {
+            'id': 'link_$agentId',
+            'agent_id': agentId,
+            'hostname': host['hostname']?.toString() ?? agentId,
+            'employee_name': host['hostname']?.toString() ?? agentId,
+            'access_mode': mode,
+            'is_link': true,
+            ...host,
+          },
         ),
       ),
     );

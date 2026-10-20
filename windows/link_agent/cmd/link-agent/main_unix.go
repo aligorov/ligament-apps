@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strings"
@@ -16,6 +18,40 @@ import (
 )
 
 const unixAgentVersion = "0.1.0"
+
+func readUnixOSVersion() string {
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("sw_vers", "-productVersion").Output()
+		if err == nil && len(bytes.TrimSpace(out)) > 0 {
+			return string(bytes.TrimSpace(out))
+		}
+	} else if runtime.GOOS == "linux" {
+		data, err := os.ReadFile("/etc/os-release")
+		if err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "PRETTY_NAME=") {
+					return strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), "\"")
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func readUnixHardwareModel() string {
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("sysctl", "-n", "hw.model").Output()
+		if err == nil && len(bytes.TrimSpace(out)) > 0 {
+			return string(bytes.TrimSpace(out))
+		}
+	} else if runtime.GOOS == "linux" {
+		data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_name")
+		if err == nil && len(bytes.TrimSpace(data)) > 0 {
+			return string(bytes.TrimSpace(data))
+		}
+	}
+	return ""
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
@@ -36,9 +72,15 @@ func runUnixAgent(ctx context.Context) error {
 	if osFamily == "darwin" {
 		osFamily = "macos"
 	}
-	config := linkagent.AgentConfig("", hostname, osFamily, "", unixAgentVersion, map[string]any{
+	osVersion := readUnixOSVersion()
+	hwModel := readUnixHardwareModel()
+	capabilities := map[string]any{
 		"interactive_session_worker": true,
-	})
+	}
+	if hwModel != "" {
+		capabilities["hw_model"] = hwModel
+	}
+	config := linkagent.AgentConfig("", hostname, osFamily, osVersion, unixAgentVersion, capabilities)
 	config.InteractiveUser = linkagent.CurrentInteractiveUser
 	config.LocalIPs = linkagent.CurrentLocalIPs
 	if err := linkagent.ValidateAgentHostMetadata(config); err != nil {
