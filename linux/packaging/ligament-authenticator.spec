@@ -30,8 +30,11 @@ mkdir -p %{buildroot}/usr/bin
 mkdir -p %{buildroot}/usr/share/applications
 mkdir -p %{buildroot}/usr/share/icons/hicolor/128x128/apps
 mkdir -p %{buildroot}/usr/share/pixmaps
+mkdir -p %{buildroot}/usr/lib/systemd/user
 
 cp -r %{_sourcedir}/bundle/* %{buildroot}/opt/ligament-authenticator/
+chmod 755 %{buildroot}/opt/ligament-authenticator/link-agent
+install -m 644 %{_sourcedir}/systemd/ligament-link-agent.service %{buildroot}/usr/lib/systemd/user/ligament-link-agent.service
 ln -sf /opt/ligament-authenticator/ligament_authenticator %{buildroot}/usr/bin/ligament-authenticator
 install -m 644 %{_sourcedir}/packaging/ligament-authenticator.desktop %{buildroot}/usr/share/applications/ligament-authenticator.desktop
 install -m 644 %{_sourcedir}/icons/app_icon.png %{buildroot}/usr/share/icons/hicolor/128x128/apps/ligament-authenticator.png
@@ -41,6 +44,9 @@ install -m 644 %{_sourcedir}/icons/app_icon.png %{buildroot}/usr/share/pixmaps/l
 if [ -x /usr/bin/update-desktop-database ]; then
     /usr/bin/update-desktop-database -q /usr/share/applications || true
 fi
+if [ -x /usr/bin/systemctl ]; then
+    /usr/bin/systemctl --global daemon-reload >/dev/null 2>&1 || true
+fi
 if [ -x /usr/bin/gtk-update-icon-cache ]; then
     /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
@@ -48,6 +54,9 @@ fi
 %postun
 if [ -x /usr/bin/update-desktop-database ]; then
     /usr/bin/update-desktop-database -q /usr/share/applications || true
+fi
+if [ -x /usr/bin/systemctl ]; then
+    /usr/bin/systemctl --global daemon-reload >/dev/null 2>&1 || true
 fi
 if [ -x /usr/bin/gtk-update-icon-cache ]; then
     /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
@@ -60,3 +69,4 @@ fi
 /usr/share/applications/ligament-authenticator.desktop
 /usr/share/icons/hicolor/128x128/apps/ligament-authenticator.png
 /usr/share/pixmaps/ligament-authenticator.png
+/usr/lib/systemd/user/ligament-link-agent.service

@@ -13,13 +13,16 @@ import 'services/deep_link_service.dart';
 import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
 import 'services/service_console_host.dart';
+import 'services/link_host_session.dart';
+import 'screens/link_host_overlay.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 import 'app_version.dart';
 
 Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
   try {
-    final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 1500);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(milliseconds: 1500);
     final req = await client.post('127.0.0.1', kLocalDetectPort, '/autoshare');
     req.headers.contentType = ContentType.json;
     // A-2 (аудит 2026-10-12): /autoshare принимает только предъявление
@@ -44,6 +47,47 @@ Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (args.any((arg) => arg.startsWith('--link-host'))) {
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      exit(2);
+    }
+    try {
+      final endpoint = Platform.isWindows
+          ? linkHostPipeFromArgs(args)
+          : linkHostUnixSocketFromArgs(args);
+      if (endpoint == null) exit(2);
+      final workerState = LinkHostWorkerState();
+      await windowManager.ensureInitialized();
+      runApp(LinkHostOverlay(state: workerState));
+      await windowManager.waitUntilReadyToShow(
+        const WindowOptions(
+          size: Size(500, 112),
+          minimumSize: Size(460, 96),
+          center: true,
+          backgroundColor: Color(0xFF10251D),
+          skipTaskbar: true,
+          title: 'Ligament Link — удалённая сессия',
+        ),
+        () async {
+          await windowManager.setAlwaysOnTop(true);
+          await windowManager.setPreventClose(true);
+          await windowManager.setClosable(false);
+          await windowManager.setMinimizable(false);
+          await windowManager.setMaximizable(false);
+          await windowManager.show();
+        },
+      );
+      await runLinkHostWorker(
+        Platform.isWindows ? endpoint : 'unix:$endpoint',
+        state: workerState,
+      );
+    } catch (_) {
+      debugPrint('link_host: worker_bootstrap_failed');
+      exit(2);
+    }
+    exit(0);
+  }
   // A service worker has its own machine-scoped authorization. Never restore
   // a GUI user's tokens, local HTTP listener, notifications, tray or window.
   if (args.any((arg) => arg.startsWith('--service-console'))) {
@@ -79,9 +123,11 @@ void main(List<String> args) async {
   // сначала пытаемся передать намерение работающему экземпляру;
   // если его нет — берём эксклюзивный файл-лок.
   if (autoshareSessionId != null) {
-    final delivered = await _tryForwardAutoshareToRunningInstance(autoshareSessionId);
+    final delivered =
+        await _tryForwardAutoshareToRunningInstance(autoshareSessionId);
     if (delivered) {
-      debugPrint('main: autoshare-сессия успешно доставлена запущенному экземпляру — выходим');
+      debugPrint(
+          'main: autoshare-сессия успешно доставлена запущенному экземпляру — выходим');
       exit(0);
     }
 
@@ -107,11 +153,15 @@ void main(List<String> args) async {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 48),
+              const Icon(Icons.error_outline,
+                  color: Color(0xFFEF4444), size: 48),
               const SizedBox(height: 16),
               const Text(
                 'Ligament 2FA',
-                style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
               Text(
@@ -134,8 +184,8 @@ void main(List<String> args) async {
   // окно не показывается, приложение сидит в системном трее. Ш5: --autoshare
   // тоже стартует свёрнутым — wake поднимает трансляцию, а не окно; при
   // неудачном восстановлении сессии приложение молча остаётся в трее.
-  final startMinimized = !kIsWeb &&
-      (args.contains('--minimized') || autoshareSessionId != null);
+  final startMinimized =
+      !kIsWeb && (args.contains('--minimized') || autoshareSessionId != null);
 
   // Инициализация оконного менеджера для Windows, macOS и Linux
   if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
@@ -192,19 +242,22 @@ void main(List<String> args) async {
 class LigamentApp extends StatefulWidget {
   const LigamentApp({super.key});
 
-  static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  static final GlobalKey<NavigatorState> navigatorKey =
+      GlobalKey<NavigatorState>();
 
   @override
   State<LigamentApp> createState() => _LigamentAppState();
 }
 
-class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowListener {
+class _LigamentAppState extends State<LigamentApp>
+    with TrayListener, WindowListener {
   String? _lastTrayLocale;
 
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       trayManager.addListener(this);
       windowManager.addListener(this);
       _initTray();
@@ -213,7 +266,8 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
 
   @override
   void dispose() {
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       trayManager.removeListener(this);
       windowManager.removeListener(this);
     }
@@ -227,12 +281,16 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
       final isRu = auth.isRu;
 
       await trayManager.setIcon(
-        Platform.isWindows ? 'assets/icons/app_icon.ico' : 'assets/icons/app_icon.png',
+        Platform.isWindows
+            ? 'assets/icons/app_icon.ico'
+            : 'assets/icons/app_icon.png',
       );
 
       final menu = Menu(
         items: [
-          MenuItem(key: 'show', label: isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA'),
+          MenuItem(
+              key: 'show',
+              label: isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA'),
           MenuItem.separator(),
           MenuItem(
             key: 'exit',
@@ -337,7 +395,9 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
       builder: (dialogCtx) => AlertDialog(
         backgroundColor: const Color(0xFF1E293B),
         title: Text(
-          isRu ? 'Идет сеанс удаленной помощи' : 'Remote support session in progress',
+          isRu
+              ? 'Идет сеанс удаленной помощи'
+              : 'Remote support session in progress',
           style: const TextStyle(color: Colors.white, fontSize: 16),
         ),
         content: Text(
@@ -353,7 +413,8 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(dialogCtx).pop(true),
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFEF4444)),
             child: Text(isRu ? 'Завершить и закрыть' : 'End & Close'),
           ),
         ],
@@ -365,7 +426,8 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       _updateTrayIfNeeded(auth);
     }
 

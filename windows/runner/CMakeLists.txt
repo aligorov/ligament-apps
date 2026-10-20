@@ -15,6 +15,8 @@ add_executable(${BINARY_NAME} WIN32
   "Runner.rc"
   "runner.exe.manifest"
   "input_block.cpp"
+  "link_agent_binding_bridge.cpp"
+  "link_host_bridge.cpp"
   "service_console_bridge.cpp"
 )
 

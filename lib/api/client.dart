@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../app_version.dart';
+import '../models/link_enrollment_credential.dart';
 
 class ApiException implements Exception {
   final int statusCode;
@@ -32,13 +33,15 @@ class ApiClient {
     return http.get(Uri.parse(url), headers: headers).timeout(_requestTimeout);
   }
 
-  Future<http.Response> _post(String url, {Map<String, String>? headers, String? body}) {
+  Future<http.Response> _post(String url,
+      {Map<String, String>? headers, String? body}) {
     return http
         .post(Uri.parse(url), headers: headers, body: body)
         .timeout(_requestTimeout);
   }
 
-  Future<http.Response> _put(String url, {Map<String, String>? headers, String? body}) {
+  Future<http.Response> _put(String url,
+      {Map<String, String>? headers, String? body}) {
     return http
         .put(Uri.parse(url), headers: headers, body: body)
         .timeout(_requestTimeout);
@@ -77,7 +80,8 @@ class ApiClient {
   /// или сети нет: подсветка обновления просто не появляется.
   Future<Map<String, dynamic>?> getAppVersion() async {
     try {
-      final res = await _get(_cleanUrl('/api/v1/app/version'), headers: _headers());
+      final res =
+          await _get(_cleanUrl('/api/v1/app/version'), headers: _headers());
       if (res.statusCode == 200) {
         return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       }
@@ -88,7 +92,8 @@ class ApiClient {
   /// Определение внешнего IP-адреса через эндпоинт сервера 2FA
   Future<Map<String, dynamic>> getMyIP() async {
     try {
-      final res = await _get(_cleanUrl('/api/v1/app/my-ip'), headers: _headers());
+      final res =
+          await _get(_cleanUrl('/api/v1/app/my-ip'), headers: _headers());
       if (res.statusCode == 200) {
         return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       }
@@ -102,9 +107,11 @@ class ApiClient {
   Future<Map<String, dynamic>> getConfig() async {
     final res = await _get(_cleanUrl('/api/v1/app/config'));
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       if (data['relays'] is List) {
-        relays = (data['relays'] as List).whereType<Map<String, dynamic>>().toList();
+        relays =
+            (data['relays'] as List).whereType<Map<String, dynamic>>().toList();
       }
       return data;
     }
@@ -113,7 +120,8 @@ class ApiClient {
 
   /// Проверка доступности локального Relay-узла (только HTTPS: по открытому
   /// HTTP статус-ответ может подменить активный MITM)
-  static Future<Map<String, dynamic>?> probeRelay(String ip, {int port = 8082}) async {
+  static Future<Map<String, dynamic>?> probeRelay(String ip,
+      {int port = 8082}) async {
     try {
       final res = await http
           .get(Uri.parse('https://$ip:$port/api/v1/status'))
@@ -164,7 +172,8 @@ class ApiClient {
       token = data['token'] as String?;
       return data;
     }
-    throw ApiException(res.statusCode, data['error']?.toString() ?? 'login_failed');
+    throw ApiException(
+        res.statusCode, data['error']?.toString() ?? 'login_failed');
   }
 
   /// Выход устройства (деактивация сессии)
@@ -199,7 +208,8 @@ class ApiClient {
       body: jsonEncode({'security_posture': posture}),
     );
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       return data['is_compliant'] == true;
     }
     throw ApiException(res.statusCode, 'telemetry_failed');
@@ -355,7 +365,8 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       final list = (data['results'] as List<dynamic>?) ?? [];
       return list.cast<Map<String, dynamic>>();
     }
@@ -369,7 +380,8 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       final list = (data['notifications'] as List<dynamic>?) ?? [];
       return list.cast<Map<String, dynamic>>();
     }
@@ -457,7 +469,8 @@ class ApiClient {
     if (res.statusCode == 200) {
       return data;
     }
-    throw ApiException(res.statusCode, data['error']?.toString() ?? 'support_request_failed');
+    throw ApiException(
+        res.statusCode, data['error']?.toString() ?? 'support_request_failed');
   }
 
   /// Получение текущей активной сессии поддержки
@@ -467,7 +480,8 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       if (data['active'] == true) {
         return data['session'] as Map<String, dynamic>?;
       }
@@ -514,7 +528,8 @@ class ApiClient {
     // только через WebRTC DataChannel (см. SupportService._sendSignalOrData).
     final type = signal['type']?.toString() ?? '';
     if (type.startsWith('file_')) {
-      throw ArgumentError('file_* сигналы не отправляются через HTTP-fallback: $type');
+      throw ArgumentError(
+          'file_* сигналы не отправляются через HTTP-fallback: $type');
     }
     final res = await _post(
       _cleanUrl('/api/v1/app/support/$sessionId/signal'),
@@ -527,7 +542,8 @@ class ApiClient {
   }
 
   /// Получение истории сообщений чата сессии поддержки
-  Future<List<Map<String, dynamic>>> getSupportMessages(String sessionId) async {
+  Future<List<Map<String, dynamic>>> getSupportMessages(
+      String sessionId) async {
     http.Response res;
     try {
       res = await _get(
@@ -570,7 +586,8 @@ class ApiClient {
   }) async {
     final body = jsonEncode({
       'text': text,
-      if (senderName != null && senderName.isNotEmpty) 'sender_name': senderName,
+      if (senderName != null && senderName.isNotEmpty)
+        'sender_name': senderName,
       // Идемпотентный ключ (0074): повторная запись той же пары
       // (session_id, client_id) на сервере — no-op, дублей в чате нет.
       if (clientId != null && clientId.isNotEmpty) 'client_id': clientId,
@@ -649,7 +666,8 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       final list = data['categories'] as List<dynamic>? ?? [];
       return list.cast<Map<String, dynamic>>();
     }
@@ -667,7 +685,8 @@ class ApiClient {
       if (decoded is List) {
         return decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
       } else if (decoded is Map) {
-        final list = (decoded['queue'] ?? decoded['sessions']) as List<dynamic>? ?? [];
+        final list =
+            (decoded['queue'] ?? decoded['sessions']) as List<dynamic>? ?? [];
         return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
       }
     }
@@ -691,16 +710,166 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       final list = (data['targets'] as List<dynamic>?);
       if (list == null) return [];
-      return list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      return list
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
     }
     if (res.statusCode == 404) {
       // Фича выключена на этом сервере — не ошибка, просто пусто.
       return [];
     }
     throw ApiException(res.statusCode, 'rdp_targets_fetch_failed');
+  }
+
+  /// Корпоративный каталог устройств Link: GET /api/v1/app/link/hosts.
+  Future<List<Map<String, dynamic>>> getLinkHosts() async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/link/hosts'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final hosts = data['hosts'];
+      if (hosts is! List) return <Map<String, dynamic>>[];
+      return hosts
+          .whereType<Map>()
+          .map((host) => Map<String, dynamic>.from(host))
+          .toList(growable: false);
+    }
+    String code = 'link_hosts_fetch_failed';
+    try {
+      final data =
+          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      code = data['error']?.toString() ?? code;
+    } catch (_) {}
+    throw ApiException(res.statusCode, code);
+  }
+
+  /// Issues a short-lived, one-use credential for binding the current Windows
+  /// host. The token is returned only to the authenticated app client.
+  Future<LinkEnrollmentCredential> createLinkEnrollmentCredential() async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/agents/enrollment-token'),
+      headers: _headers(),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 201) {
+      try {
+        return LinkEnrollmentCredential.fromJson(data);
+      } on FormatException {
+        throw ApiException(res.statusCode, 'invalid_link_enrollment_response');
+      }
+    }
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'link_enrollment_token_failed',
+    );
+  }
+
+  /// Starts a Link session; default to view-only until the operator explicitly
+  /// requests control privileges.
+  Future<Map<String, dynamic>> requestLinkSession({
+    required String agentId,
+    String accessMode = 'view',
+    String? clientSdp,
+    String? resolution,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sessions/request'),
+      headers: _headers(),
+      body: jsonEncode({
+        'agent_id': agentId,
+        'access_mode': accessMode,
+        if (clientSdp != null && clientSdp.isNotEmpty) 'client_sdp': clientSdp,
+        if (resolution != null && resolution.isNotEmpty)
+          'resolution': resolution,
+      }),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'link_session_request_failed',
+    );
+  }
+
+  /// Posts the operator's SDP/ICE signaling payload to the enrolled agent.
+  Future<void> sendLinkSessionSignal({
+    required String sessionId,
+    required Map<String, dynamic> signal,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sessions/$sessionId/signal'),
+      headers: _headers(),
+      body: jsonEncode({'signal': signal}),
+    );
+    if (res.statusCode != 200) {
+      final data = _decodeJsonMap(res.bodyBytes);
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'link_signal_send_failed',
+      );
+    }
+  }
+
+  /// Polls agent-originated SDP/ICE signals using the server's monotonic ID cursor.
+  Future<Map<String, dynamic>> getLinkSessionSignals({
+    required String sessionId,
+    int after = 0,
+  }) async {
+    final uri = Uri.parse(
+      _cleanUrl('/api/v1/app/link/sessions/$sessionId/signal'),
+    ).replace(queryParameters: {'after': '$after'});
+    final res = await _get(uri.toString(), headers: _headers());
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'link_signals_fetch_failed',
+    );
+  }
+
+  Future<void> heartbeatLinkSession(String sessionId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sessions/$sessionId/heartbeat'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      final data = _decodeJsonMap(res.bodyBytes);
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'link_session_heartbeat_failed',
+      );
+    }
+  }
+
+  Future<void> closeLinkSession(String sessionId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sessions/$sessionId/close'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      final data = _decodeJsonMap(res.bodyBytes);
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'link_session_close_failed',
+      );
+    }
+  }
+
+  Map<String, dynamic> _decodeJsonMap(List<int> bodyBytes) {
+    try {
+      final value = jsonDecode(utf8.decode(bodyBytes));
+      return value is Map<String, dynamic> ? value : <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
   }
 
   /// Одноразовый грант доступа к цели: POST /api/v1/app/rdp/grant.
@@ -727,10 +896,12 @@ class ApiClient {
       'mode': mode,
       if (code != null && code.isNotEmpty) 'code': code,
       if (actionId != null && actionId.isNotEmpty) 'action_id': actionId,
-      if (sourceInstanceId != null && sourceInstanceId.isNotEmpty) 'source_instance_id': sourceInstanceId,
+      if (sourceInstanceId != null && sourceInstanceId.isNotEmpty)
+        'source_instance_id': sourceInstanceId,
       if (attemptId != null && attemptId.isNotEmpty) 'attempt_id': attemptId,
       if (passkey == true) 'passkey': true,
-      if (clientLocalIps != null && clientLocalIps.isNotEmpty) 'client_local_ips': clientLocalIps,
+      if (clientLocalIps != null && clientLocalIps.isNotEmpty)
+        'client_local_ips': clientLocalIps,
     };
     final res = await _post(
       _cleanUrl('/api/v1/app/rdp/grant'),
@@ -907,9 +1078,12 @@ class ApiClient {
       if (id != null && id.isNotEmpty) 'id': id,
       if (hostname != null && hostname.isNotEmpty) 'hostname': hostname,
       if (osType != null && osType.isNotEmpty) 'os_type': osType,
-      if (machinePublicKey != null && machinePublicKey.isNotEmpty) 'machine_public_key': machinePublicKey,
-      if (keyAlgorithm != null && keyAlgorithm.isNotEmpty) 'key_algorithm': keyAlgorithm,
-      if (enclaveType != null && enclaveType.isNotEmpty) 'enclave_type': enclaveType,
+      if (machinePublicKey != null && machinePublicKey.isNotEmpty)
+        'machine_public_key': machinePublicKey,
+      if (keyAlgorithm != null && keyAlgorithm.isNotEmpty)
+        'key_algorithm': keyAlgorithm,
+      if (enclaveType != null && enclaveType.isNotEmpty)
+        'enclave_type': enclaveType,
     };
     final res = await _post(
       _cleanUrl('/api/v1/app/rdp/machines/register'),
@@ -944,14 +1118,17 @@ class ApiClient {
     final payload = <String, dynamic>{
       'instance_id': instanceId,
       if (machineId != null && machineId.isNotEmpty) 'machine_id': machineId,
-      if (installationId != null && installationId.isNotEmpty) 'installation_id': installationId,
-      if (instancePublicKey != null && instancePublicKey.isNotEmpty) 'instance_public_key': instancePublicKey,
+      if (installationId != null && installationId.isNotEmpty)
+        'installation_id': installationId,
+      if (instancePublicKey != null && instancePublicKey.isNotEmpty)
+        'instance_public_key': instancePublicKey,
       if (bootId != null && bootId.isNotEmpty) 'boot_id': bootId,
       if (osSessionId != null) 'os_session_id': osSessionId,
       if (authLuid != null) 'auth_luid': authLuid,
       if (userSid != null && userSid.isNotEmpty) 'user_sid': userSid,
       if (posixUid != null) 'posix_uid': posixUid,
-      if (posixDisplay != null && posixDisplay.isNotEmpty) 'posix_display': posixDisplay,
+      if (posixDisplay != null && posixDisplay.isNotEmpty)
+        'posix_display': posixDisplay,
       'can_share_screen': canShareScreen,
     };
     final res = await _post(
@@ -987,7 +1164,8 @@ class ApiClient {
   }
 
   /// Активация сессии экрана выбранным Sharer: POST /api/v1/app/support/{id}/activate-screen
-  Future<Map<String, dynamic>> activateOwnerScreen(String sessionId, String instanceId) async {
+  Future<Map<String, dynamic>> activateOwnerScreen(
+      String sessionId, String instanceId) async {
     final res = await _post(
       _cleanUrl('/api/v1/app/support/$sessionId/activate-screen'),
       headers: _headers(),
@@ -1031,7 +1209,8 @@ class ApiClient {
         headers: _headers(),
       );
       if (res.statusCode == 200) {
-        final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        final data =
+            jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
         final raw = data['ice_servers'];
         if (raw is List) {
           return raw.whereType<Map<String, dynamic>>().toList();
@@ -1041,4 +1220,3 @@ class ApiClient {
     return const [];
   }
 }
-

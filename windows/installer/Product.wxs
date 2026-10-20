@@ -34,6 +34,7 @@
       <ComponentRef Id="RdpWebAuthnPolicyComponent" />
       <ComponentRef Id="LigamentServiceComponent" />
       <ComponentRef Id="EndpointServiceComponent" />
+      <ComponentRef Id="LinkAgentServiceComponent" />
     </Feature>
 
     <Icon Id="AppIcon.ico" SourceFile="windows/runner/resources/app_icon.ico" />
@@ -211,6 +212,26 @@
     </DirectoryRef>
 
     <DirectoryRef Id="INSTALLFOLDER">
+      <!-- Ligament Link Host Agent: LocalSystem service, enrollment is initiated
+           from the authenticated Flutter app over the restricted local Named Pipe. -->
+      <Component Id="LinkAgentServiceComponent" Guid="9A01C0A7-6B95-4D42-BE36-1EE7CB13A41D" Win64="yes">
+        <File Id="LigamentLinkAgentServiceExe"
+              Name="ligament_link_agent.exe"
+              Source="windows/link_agent/build/Release/ligament_link_agent.exe"
+              KeyPath="yes" />
+        <ServiceInstall Name="LigamentLinkAgent"
+                        DisplayName="Ligament Link Agent"
+                        Description="Ligament Link Windows host agent: protected identity and outbound WSS control channel"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="ignore" />
+        <ServiceControl Id="LigamentLinkAgentServiceControl"
+                        Name="LigamentLinkAgent"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall" />
+      </Component>
+
       <!-- Ligament 2FA Service (watchdog): exe лежит рядом с приложением.
            Auto-start, LocalSystem. Активна только при AllowExit=0:
            перезапускает клиент в активных пользовательских сессиях, если

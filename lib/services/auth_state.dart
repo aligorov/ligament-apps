@@ -196,6 +196,12 @@ class AuthState extends ChangeNotifier {
   List<Map<String, dynamic>> rdpTargets = [];
   bool rdpFeatureAvailable = true;
 
+  /// Link inventory is available only when the server grants the feature.
+  List<Map<String, dynamic>> linkHosts = [];
+  bool linkFeatureAvailable = true;
+  bool linkHostsLoading = false;
+  String? linkHostsError;
+
   /// device_id этой сессии (выдаётся сервером при логине, хранится в prefs
   /// под тем же ключом, что у LocalDetectService). Режиму «Экран» (этап
   /// 2.4, план §5.2) он нужен, чтобы отличить инициатора от цели: пуш
@@ -1123,6 +1129,10 @@ class AuthState extends ChangeNotifier {
     activeRelayEndpoint = null;
     activeRelayName = null;
     relays.clear();
+    linkHosts.clear();
+    linkFeatureAvailable = true;
+    linkHostsLoading = false;
+    linkHostsError = null;
     pendingChallenges.clear();
     allowedApps.clear();
     history.clear();
@@ -1163,6 +1173,7 @@ class AuthState extends ChangeNotifier {
       checkSupportSession(),
       refreshRelays(),
       loadRdpTargets(),
+      loadLinkHosts(),
       registerRdpMachineAndInstance(),
     ];
     if (isEngineer) {
@@ -1194,6 +1205,41 @@ class AuthState extends ChangeNotifier {
       debugPrint('auth_state: ошибка загрузки RDP-целей: $e');
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки RDP-целей: $e');
+    }
+  }
+
+  /// Loads the authenticated Link inventory. A license denial hides the
+  /// feature's data while preserving network and server errors for the UI.
+  Future<void> loadLinkHosts() async {
+    if (api == null || linkHostsLoading) return;
+    final expectedEpoch = _authEpoch;
+    linkHostsLoading = true;
+    linkHostsError = null;
+    notifyListeners();
+    try {
+      final hosts = await api!.getLinkHosts();
+      if (_authEpoch == expectedEpoch && isLoggedIn) {
+        linkHosts = hosts;
+        linkFeatureAvailable = true;
+      }
+    } on ApiException catch (e) {
+      if (_authEpoch == expectedEpoch && isLoggedIn) {
+        if (e.statusCode == 402 || e.statusCode == 403 || e.statusCode == 404) {
+          linkFeatureAvailable = false;
+          linkHosts = [];
+        } else {
+          linkHostsError = e.code;
+        }
+      }
+    } catch (e) {
+      if (_authEpoch == expectedEpoch && isLoggedIn) {
+        linkHostsError = e.toString();
+      }
+    } finally {
+      if (_authEpoch == expectedEpoch) {
+        linkHostsLoading = false;
+        notifyListeners();
+      }
     }
   }
 

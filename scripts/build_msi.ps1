@@ -77,6 +77,30 @@ if (Test-Path "$EpDir\CMakeLists.txt") {
     }
 }
 
+# 3c. Сборка Windows Ligament Link Agent (LocalSystem host service; входит в MSI).
+$LinkAgentDir = "$ClientDir\windows\link_agent"
+$LinkAgentBuildDir = "$LinkAgentDir\build\Release"
+if (Test-Path "$LinkAgentDir\go.mod") {
+    Write-Host "`n[2d/5] Сборка Ligament Link Agent (Go Windows service)..." -ForegroundColor Yellow
+    if (-not (Get-Command "go.exe" -ErrorAction SilentlyContinue)) {
+        Write-Error "Go 1.23+ is required to build windows/link_agent."
+    }
+    New-Item -ItemType Directory -Force -Path $LinkAgentBuildDir | Out-Null
+    Push-Location $LinkAgentDir
+    try {
+        go test ./...
+        if ($LASTEXITCODE -ne 0) { throw 'Link agent Go tests failed' }
+        go vet ./...
+        if ($LASTEXITCODE -ne 0) { throw 'Link agent go vet failed' }
+        go build -trimpath -ldflags "-s -w" -o "$LinkAgentBuildDir\ligament_link_agent.exe" .\cmd\link-agent
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$LinkAgentBuildDir\ligament_link_agent.exe")) {
+            throw 'Link agent Windows service build failed'
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 # 4. Каталог дистрибутивов (отдельный RDP-ZIP больше не создаётся:
 #    единый MSI = приложение + CP + служба)
 if (-not (Test-Path $DistDir)) {

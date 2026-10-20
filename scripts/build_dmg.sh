@@ -48,6 +48,13 @@ trap 'rm -rf "${STAGING_DIR}"' EXIT
 echo "--> Подготовка staging директории: ${STAGING_DIR}"
 cp -R "${APP_PATH}" "${STAGING_DIR}/"
 
+# Keep per-user host-agent setup opt-in; the agent requires the user's login
+# session for Keychain, ScreenCaptureKit permissions and interactive workers.
+cp -f "${CLIENT_DIR}/macos/packaging/install_link_agent.sh" "${STAGING_DIR}/Install-Link-Agent.command"
+cp -f "${CLIENT_DIR}/macos/packaging/uninstall_link_agent.sh" "${STAGING_DIR}/Remove-Link-Agent.command"
+cp -f "${CLIENT_DIR}/macos/packaging/README-Link-Agent.txt" "${STAGING_DIR}/Link-Agent-README.txt"
+chmod 755 "${STAGING_DIR}/Install-Link-Agent.command" "${STAGING_DIR}/Remove-Link-Agent.command"
+
 # Создаем символическую ссылку на /Applications для удобной установки Drag & Drop
 ln -s /Applications "${STAGING_DIR}/Applications"
 

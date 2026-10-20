@@ -4,8 +4,12 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project, bool service_console)
-    : project_(project), service_console_(service_console) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project,
+                             bool service_console,
+                             bool link_host_worker)
+    : project_(project),
+      service_console_(service_console),
+      link_host_worker_(link_host_worker) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -25,13 +29,20 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  if (!service_console_ && !link_host_worker_) {
+    link_agent_binding_bridge_ = std::make_unique<LinkAgentBindingBridge>(
+        flutter_controller_->engine()->messenger());
+  }
   if (service_console_) {
     service_console_bridge_ = std::make_unique<ServiceConsoleBridge>(flutter_controller_->engine()->messenger());
+  }
+  if (link_host_worker_) {
+    link_host_bridge_ = std::make_unique<LinkHostBridge>(flutter_controller_->engine()->messenger());
   }
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    if (!service_console_) this->Show();
+    if (!service_console_ && !link_host_worker_) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -43,7 +54,9 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  link_agent_binding_bridge_.reset();
   service_console_bridge_.reset();
+  link_host_bridge_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

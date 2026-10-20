@@ -6,6 +6,7 @@ import '../i18n/app_strings.dart';
 import '../services/auth_state.dart';
 import '../services/rdp_actions.dart';
 import '../widgets/rdp_target_tile.dart';
+import 'link_catalog_screen.dart';
 
 class AppsScreen extends StatefulWidget {
   const AppsScreen({super.key});
@@ -39,6 +40,7 @@ class _AppsScreenState extends State<AppsScreen> {
     await Future.wait([
       auth.loadAllowedApps(),
       if (auth.rdpFeatureAvailable) auth.loadRdpTargets(),
+      auth.loadLinkHosts(),
     ]);
   }
 
@@ -71,7 +73,8 @@ class _AppsScreenState extends State<AppsScreen> {
     final isRu = auth.isRu;
 
     final allApps = auth.allowedApps;
-    final allTargets = auth.rdpFeatureAvailable ? auth.rdpTargets : <Map<String, dynamic>>[];
+    final allTargets =
+        auth.rdpFeatureAvailable ? auth.rdpTargets : <Map<String, dynamic>>[];
 
     // Фильтрация по строке поиска
     final q = _query.trim().toLowerCase();
@@ -90,8 +93,11 @@ class _AppsScreenState extends State<AppsScreen> {
             return name.contains(q);
           }).toList();
 
-    final showWorkstations = (_selectedFilter == 'all' || _selectedFilter == 'workstations') && targets.isNotEmpty;
-    final showApps = (_selectedFilter == 'all' || _selectedFilter == 'apps') && apps.isNotEmpty;
+    final showWorkstations =
+        (_selectedFilter == 'all' || _selectedFilter == 'workstations') &&
+            targets.isNotEmpty;
+    final showApps = (_selectedFilter == 'all' || _selectedFilter == 'apps') &&
+        apps.isNotEmpty;
     final isEmpty = !showWorkstations && !showApps;
 
     return Scaffold(
@@ -104,9 +110,19 @@ class _AppsScreenState extends State<AppsScreen> {
         ),
         title: Text(
           isRu ? 'Сервисы и рабочие места' : 'Services & Workstations',
-          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+          style: const TextStyle(
+              color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
         ),
         actions: [
+          IconButton(
+            tooltip: isRu ? 'Каталог Ligament Link' : 'Ligament Link inventory',
+            icon: const Icon(Icons.devices_other_outlined,
+                color: Color(0xFF38BDF8)),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                  builder: (_) => const LinkCatalogScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8)),
             onPressed: () => _refresh(auth),
@@ -132,11 +148,14 @@ class _AppsScreenState extends State<AppsScreen> {
                       hintText: isRu
                           ? 'Поиск рабочих мест и сервисов...'
                           : 'Search workstations & apps...',
-                      hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
-                      prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF38BDF8), size: 20),
+                      hintStyle: const TextStyle(
+                          color: Color(0xFF64748B), fontSize: 13),
+                      prefixIcon: const Icon(Icons.search_rounded,
+                          color: Color(0xFF38BDF8), size: 20),
                       suffixIcon: _query.isNotEmpty
                           ? IconButton(
-                              icon: const Icon(Icons.clear_rounded, color: Color(0xFF94A3B8), size: 18),
+                              icon: const Icon(Icons.clear_rounded,
+                                  color: Color(0xFF94A3B8), size: 18),
                               onPressed: () {
                                 _searchController.clear();
                                 setState(() => _query = '');
@@ -146,18 +165,22 @@ class _AppsScreenState extends State<AppsScreen> {
                       filled: true,
                       fillColor: const Color(0xFF131B2B),
                       isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 11),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
-                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+                        borderSide: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.08)),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
-                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+                        borderSide: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.08)),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
-                        borderSide: const BorderSide(color: Color(0xFF38BDF8), width: 1.2),
+                        borderSide: const BorderSide(
+                            color: Color(0xFF38BDF8), width: 1.2),
                       ),
                     ),
                   ),
@@ -169,14 +192,18 @@ class _AppsScreenState extends State<AppsScreen> {
                     child: Row(
                       children: [
                         _filterChip(
-                          label: isRu ? 'Все (${allTargets.length + allApps.length})' : 'All (${allTargets.length + allApps.length})',
+                          label: isRu
+                              ? 'Все (${allTargets.length + allApps.length})'
+                              : 'All (${allTargets.length + allApps.length})',
                           value: 'all',
                           icon: Icons.grid_view_rounded,
                         ),
                         if (allTargets.isNotEmpty) ...[
                           const SizedBox(width: 8),
                           _filterChip(
-                            label: isRu ? 'Рабочие места (${allTargets.length})' : 'Workstations (${allTargets.length})',
+                            label: isRu
+                                ? 'Рабочие места (${allTargets.length})'
+                                : 'Workstations (${allTargets.length})',
                             value: 'workstations',
                             icon: Icons.desktop_windows_rounded,
                           ),
@@ -184,7 +211,9 @@ class _AppsScreenState extends State<AppsScreen> {
                         if (allApps.isNotEmpty) ...[
                           const SizedBox(width: 8),
                           _filterChip(
-                            label: isRu ? 'Приложения (${allApps.length})' : 'Apps (${allApps.length})',
+                            label: isRu
+                                ? 'Приложения (${allApps.length})'
+                                : 'Apps (${allApps.length})',
                             value: 'apps',
                             icon: Icons.shield_rounded,
                           ),
@@ -209,13 +238,17 @@ class _AppsScreenState extends State<AppsScreen> {
                         if (showWorkstations) ...[
                           SliverToBoxAdapter(
                             child: Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 16, 16, 10),
                               child: Row(
                                 children: [
-                                  const Icon(Icons.desktop_windows_outlined, color: Color(0xFF38BDF8), size: 20),
+                                  const Icon(Icons.desktop_windows_outlined,
+                                      color: Color(0xFF38BDF8), size: 20),
                                   const SizedBox(width: 8),
                                   Text(
-                                    isRu ? 'Мои рабочие места' : 'My Workstations',
+                                    isRu
+                                        ? 'Мои рабочие места'
+                                        : 'My Workstations',
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 16,
@@ -224,15 +257,22 @@ class _AppsScreenState extends State<AppsScreen> {
                                   ),
                                   const SizedBox(width: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 2),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF0284C7).withValues(alpha: 0.2),
+                                      color: const Color(0xFF0284C7)
+                                          .withValues(alpha: 0.2),
                                       borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: const Color(0xFF0284C7).withValues(alpha: 0.4)),
+                                      border: Border.all(
+                                          color: const Color(0xFF0284C7)
+                                              .withValues(alpha: 0.4)),
                                     ),
                                     child: Text(
                                       '${targets.length}',
-                                      style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold),
+                                      style: const TextStyle(
+                                          color: Color(0xFF38BDF8),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold),
                                     ),
                                   ),
                                 ],
@@ -242,7 +282,8 @@ class _AppsScreenState extends State<AppsScreen> {
                           SliverPadding(
                             padding: const EdgeInsets.symmetric(horizontal: 16),
                             sliver: SliverGrid(
-                              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                              gridDelegate:
+                                  const SliverGridDelegateWithMaxCrossAxisExtent(
                                 maxCrossAxisExtent: 380,
                                 mainAxisExtent: 168,
                                 crossAxisSpacing: 12,
@@ -256,7 +297,8 @@ class _AppsScreenState extends State<AppsScreen> {
                                     isRu: isRu,
                                     margin: EdgeInsets.zero,
                                     connecting: auth.rdp.isBusy,
-                                    onConnect: () => RdpActions.connectRdp(context, auth, t),
+                                    onConnect: () =>
+                                        RdpActions.connectRdp(context, auth, t),
                                     onScreen: RdpActions.isOwnerScreenBusy
                                         ? null
                                         : () => RdpActions.openOwnerScreen(
@@ -279,13 +321,17 @@ class _AppsScreenState extends State<AppsScreen> {
                         if (showApps) ...[
                           SliverToBoxAdapter(
                             child: Padding(
-                              padding: EdgeInsets.fromLTRB(16, showWorkstations ? 24 : 16, 16, 12),
+                              padding: EdgeInsets.fromLTRB(
+                                  16, showWorkstations ? 24 : 16, 16, 12),
                               child: Row(
                                 children: [
-                                  const Icon(Icons.shield_rounded, color: Color(0xFF38BDF8), size: 20),
+                                  const Icon(Icons.shield_rounded,
+                                      color: Color(0xFF38BDF8), size: 20),
                                   const SizedBox(width: 8),
                                   Text(
-                                    isRu ? 'Корпоративные приложения (SSO)' : 'Corporate Apps (SSO)',
+                                    isRu
+                                        ? 'Корпоративные приложения (SSO)'
+                                        : 'Corporate Apps (SSO)',
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 16,
@@ -294,15 +340,22 @@ class _AppsScreenState extends State<AppsScreen> {
                                   ),
                                   const SizedBox(width: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 2),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                                      color: const Color(0xFF0284C7)
+                                          .withValues(alpha: 0.15),
                                       borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: const Color(0xFF0284C7).withValues(alpha: 0.35)),
+                                      border: Border.all(
+                                          color: const Color(0xFF0284C7)
+                                              .withValues(alpha: 0.35)),
                                     ),
                                     child: Text(
                                       '${apps.length}',
-                                      style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold),
+                                      style: const TextStyle(
+                                          color: Color(0xFF38BDF8),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold),
                                     ),
                                   ),
                                 ],
@@ -312,7 +365,8 @@ class _AppsScreenState extends State<AppsScreen> {
                           SliverPadding(
                             padding: const EdgeInsets.symmetric(horizontal: 16),
                             sliver: SliverGrid(
-                              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                              gridDelegate:
+                                  const SliverGridDelegateWithMaxCrossAxisExtent(
                                 maxCrossAxisExtent: 240,
                                 mainAxisExtent: 180,
                                 crossAxisSpacing: 12,
@@ -321,22 +375,27 @@ class _AppsScreenState extends State<AppsScreen> {
                               delegate: SliverChildBuilderDelegate(
                                 (context, index) {
                                   final app = apps[index];
-                                  final name = app['name']?.toString() ?? (isRu ? 'Сервис' : 'Service');
-                                  final launchUrl = app['launch_url']?.toString() ?? '';
+                                  final name = app['name']?.toString() ??
+                                      (isRu ? 'Сервис' : 'Service');
+                                  final launchUrl =
+                                      app['launch_url']?.toString() ?? '';
                                   final icon = _getAppIcon(name, launchUrl);
-                                  final sub = _getAppSubtitle(name, launchUrl, isRu);
+                                  final sub =
+                                      _getAppSubtitle(name, launchUrl, isRu);
 
                                   return Container(
                                     decoration: BoxDecoration(
                                       color: const Color(0xFF131B2B),
                                       borderRadius: BorderRadius.circular(16),
                                       border: Border.all(
-                                        color: Colors.white.withValues(alpha: 0.08),
+                                        color: Colors.white
+                                            .withValues(alpha: 0.08),
                                         width: 1,
                                       ),
                                       boxShadow: [
                                         BoxShadow(
-                                          color: Colors.black.withValues(alpha: 0.35),
+                                          color: Colors.black
+                                              .withValues(alpha: 0.35),
                                           blurRadius: 14,
                                           offset: const Offset(0, 4),
                                         ),
@@ -345,12 +404,16 @@ class _AppsScreenState extends State<AppsScreen> {
                                     child: Material(
                                       color: Colors.transparent,
                                       child: InkWell(
-                                        onTap: launchUrl.isNotEmpty ? () => _launchApp(context, launchUrl) : null,
+                                        onTap: launchUrl.isNotEmpty
+                                            ? () =>
+                                                _launchApp(context, launchUrl)
+                                            : null,
                                         borderRadius: BorderRadius.circular(16),
                                         child: Padding(
                                           padding: const EdgeInsets.all(14),
                                           child: Column(
-                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
                                             children: [
                                               Container(
                                                 width: 48,
@@ -359,18 +422,28 @@ class _AppsScreenState extends State<AppsScreen> {
                                                   shape: BoxShape.circle,
                                                   gradient: LinearGradient(
                                                     colors: [
-                                                      const Color(0xFF0284C7).withValues(alpha: 0.22),
-                                                      const Color(0xFF0369A1).withValues(alpha: 0.08),
+                                                      const Color(0xFF0284C7)
+                                                          .withValues(
+                                                              alpha: 0.22),
+                                                      const Color(0xFF0369A1)
+                                                          .withValues(
+                                                              alpha: 0.08),
                                                     ],
                                                     begin: Alignment.topLeft,
                                                     end: Alignment.bottomRight,
                                                   ),
                                                   border: Border.all(
-                                                    color: const Color(0xFF38BDF8).withValues(alpha: 0.35),
+                                                    color:
+                                                        const Color(0xFF38BDF8)
+                                                            .withValues(
+                                                                alpha: 0.35),
                                                     width: 1,
                                                   ),
                                                 ),
-                                                child: Icon(icon, size: 24, color: const Color(0xFF38BDF8)),
+                                                child: Icon(icon,
+                                                    size: 24,
+                                                    color: const Color(
+                                                        0xFF38BDF8)),
                                               ),
                                               const SizedBox(height: 10),
                                               Text(
@@ -399,30 +472,48 @@ class _AppsScreenState extends State<AppsScreen> {
                                               const Spacer(),
                                               Container(
                                                 width: double.infinity,
-                                                padding: const EdgeInsets.symmetric(vertical: 7),
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        vertical: 7),
                                                 decoration: BoxDecoration(
-                                                  color: const Color(0xFF0284C7).withValues(alpha: 0.12),
-                                                  borderRadius: BorderRadius.circular(9),
+                                                  color: const Color(0xFF0284C7)
+                                                      .withValues(alpha: 0.12),
+                                                  borderRadius:
+                                                      BorderRadius.circular(9),
                                                   border: Border.all(
-                                                    color: const Color(0xFF0284C7).withValues(alpha: 0.45),
+                                                    color:
+                                                        const Color(0xFF0284C7)
+                                                            .withValues(
+                                                                alpha: 0.45),
                                                     width: 1,
                                                   ),
                                                 ),
                                                 child: FittedBox(
                                                   fit: BoxFit.scaleDown,
                                                   child: Row(
-                                                    mainAxisAlignment: MainAxisAlignment.center,
+                                                    mainAxisAlignment:
+                                                        MainAxisAlignment
+                                                            .center,
                                                     children: [
                                                       Text(
-                                                        isRu ? 'Войти через SSO' : 'Open via SSO',
+                                                        isRu
+                                                            ? 'Войти через SSO'
+                                                            : 'Open via SSO',
                                                         style: const TextStyle(
                                                           fontSize: 11,
-                                                          color: Color(0xFF38BDF8),
-                                                          fontWeight: FontWeight.w700,
+                                                          color:
+                                                              Color(0xFF38BDF8),
+                                                          fontWeight:
+                                                              FontWeight.w700,
                                                         ),
                                                       ),
                                                       const SizedBox(width: 4),
-                                                      const Icon(Icons.arrow_forward_rounded, size: 12, color: Color(0xFF38BDF8)),
+                                                      const Icon(
+                                                          Icons
+                                                              .arrow_forward_rounded,
+                                                          size: 12,
+                                                          color: Color(
+                                                              0xFF38BDF8)),
                                                     ],
                                                   ),
                                                 ),
@@ -451,16 +542,25 @@ class _AppsScreenState extends State<AppsScreen> {
 
   IconData _getAppIcon(String name, String url) {
     final lower = '$name $url'.toLowerCase();
-    if (lower.contains('pass') || lower.contains('pwd') || lower.contains('vault') || lower.contains('key')) {
+    if (lower.contains('pass') ||
+        lower.contains('pwd') ||
+        lower.contains('vault') ||
+        lower.contains('key')) {
       return Icons.lock_outline_rounded;
     }
-    if (lower.contains('wifi') || lower.contains('wi-fi') || lower.contains('net')) {
+    if (lower.contains('wifi') ||
+        lower.contains('wi-fi') ||
+        lower.contains('net')) {
       return Icons.wifi_rounded;
     }
-    if (lower.contains('mail') || lower.contains('post') || lower.contains('inbox')) {
+    if (lower.contains('mail') ||
+        lower.contains('post') ||
+        lower.contains('inbox')) {
       return Icons.mail_outline_rounded;
     }
-    if (lower.contains('git') || lower.contains('repo') || lower.contains('code')) {
+    if (lower.contains('git') ||
+        lower.contains('repo') ||
+        lower.contains('code')) {
       return Icons.code_rounded;
     }
     return Icons.shield_outlined;
@@ -468,7 +568,9 @@ class _AppsScreenState extends State<AppsScreen> {
 
   String _getAppSubtitle(String name, String url, bool isRu) {
     final lower = '$name $url'.toLowerCase();
-    if (lower.contains('pass') || lower.contains('pwd') || lower.contains('vault')) {
+    if (lower.contains('pass') ||
+        lower.contains('pwd') ||
+        lower.contains('vault')) {
       return isRu ? 'Корпоративные пароли' : 'Corporate Vault';
     }
     if (lower.contains('wifi') || lower.contains('wi-fi')) {
@@ -501,7 +603,9 @@ class _AppsScreenState extends State<AppsScreen> {
             color: selected ? null : const Color(0xFF131B2B),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: selected ? const Color(0xFF38BDF8) : Colors.white.withValues(alpha: 0.08),
+              color: selected
+                  ? const Color(0xFF38BDF8)
+                  : Colors.white.withValues(alpha: 0.08),
               width: 1,
             ),
             boxShadow: selected
@@ -517,7 +621,9 @@ class _AppsScreenState extends State<AppsScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 14, color: selected ? Colors.white : const Color(0xFF94A3B8)),
+              Icon(icon,
+                  size: 14,
+                  color: selected ? Colors.white : const Color(0xFF94A3B8)),
               const SizedBox(width: 6),
               Text(
                 label,
@@ -551,13 +657,20 @@ class _AppsScreenState extends State<AppsScreen> {
               isFiltered
                   ? (isRu ? 'Ничего не найдено' : 'No items found')
                   : (isRu ? 'Нет доступных сервисов' : 'No services available'),
-              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 16, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Color(0xFF94A3B8),
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 6),
             Text(
               isFiltered
-                  ? (isRu ? 'Попробуйте изменить поисковый запрос или фильтр' : 'Try modifying your search or filter')
-                  : (isRu ? 'Обратитесь к администратору для назначения доступа' : 'Contact your administrator for access'),
+                  ? (isRu
+                      ? 'Попробуйте изменить поисковый запрос или фильтр'
+                      : 'Try modifying your search or filter')
+                  : (isRu
+                      ? 'Обратитесь к администратору для назначения доступа'
+                      : 'Contact your administrator for access'),
               style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
               textAlign: TextAlign.center,
             ),

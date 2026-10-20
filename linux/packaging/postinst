@@ -11,6 +11,10 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
 
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --global daemon-reload >/dev/null 2>&1 || true
+fi
+
 # Установка прав на исполняемый файл
 if [ -f /opt/ligament-authenticator/ligament_authenticator ]; then
     chmod 755 /opt/ligament-authenticator/ligament_authenticator || true

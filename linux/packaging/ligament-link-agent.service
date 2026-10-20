@@ -1,0 +1,16 @@
+[Unit]
+Description=Ligament Link host agent (user session)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/opt/ligament-authenticator/link-agent
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

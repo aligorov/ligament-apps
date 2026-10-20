@@ -62,6 +62,7 @@ mkdir -p "${TARBALL_STAGING}/ligament-authenticator/icons"
 
 cp -rf "${BUILD_BUNDLE_DIR}/"* "${TARBALL_STAGING}/ligament-authenticator/bundle/"
 cp -f "${PACKAGING_DIR}/ligament-authenticator.desktop" "${TARBALL_STAGING}/ligament-authenticator/packaging/"
+cp -f "${PACKAGING_DIR}/ligament-link-agent.service" "${TARBALL_STAGING}/ligament-authenticator/packaging/"
 cp -f "${APP_ICON}" "${TARBALL_STAGING}/ligament-authenticator/icons/"
 cp -f "${PACKAGING_DIR}/install.sh" "${TARBALL_STAGING}/ligament-authenticator/install.sh"
 chmod +x "${TARBALL_STAGING}/ligament-authenticator/install.sh"
@@ -83,6 +84,10 @@ Ligament Authenticator for Linux
 Удаление:
   sudo ./install.sh --uninstall
   (или ./install.sh --uninstall при пользовательской установке)
+
+Link host agent (user session):
+  ./install.sh --enable-link-agent
+  systemctl --user status ligament-link-agent
 EOF
 
 TARBALL_FILE="${DIST_DIR}/Ligament-2FA-Linux-x86_64.tar.gz"
@@ -103,6 +108,7 @@ if command -v dpkg-deb >/dev/null 2>&1; then
     mkdir -p "${DEB_STAGING}/usr/share/applications"
     mkdir -p "${DEB_STAGING}/usr/share/icons/hicolor/128x128/apps"
     mkdir -p "${DEB_STAGING}/usr/share/pixmaps"
+    mkdir -p "${DEB_STAGING}/usr/lib/systemd/user"
 
     # Подготовка DEBIAN/control
     sed "s/@VERSION@/${APP_VERSION}/g" "${PACKAGING_DIR}/control" > "${DEB_STAGING}/DEBIAN/control"
@@ -115,6 +121,8 @@ if command -v dpkg-deb >/dev/null 2>&1; then
     # Копирование бандла
     cp -rf "${BUILD_BUNDLE_DIR}/"* "${DEB_STAGING}/opt/ligament-authenticator/"
     chmod 755 "${DEB_STAGING}/opt/ligament-authenticator/ligament_authenticator"
+    chmod 755 "${DEB_STAGING}/opt/ligament-authenticator/link-agent"
+    cp -f "${PACKAGING_DIR}/ligament-link-agent.service" "${DEB_STAGING}/usr/lib/systemd/user/ligament-link-agent.service"
 
     # Симлинк в /usr/bin
     ln -sf /opt/ligament-authenticator/ligament_authenticator "${DEB_STAGING}/usr/bin/ligament-authenticator"
@@ -155,6 +163,7 @@ if command -v rpmbuild >/dev/null 2>&1; then
     mkdir -p "${RPM_TOPDIR}/SOURCES/bundle"
     mkdir -p "${RPM_TOPDIR}/SOURCES/packaging"
     mkdir -p "${RPM_TOPDIR}/SOURCES/icons"
+    mkdir -p "${RPM_TOPDIR}/SOURCES/systemd"
     mkdir -p "${RPM_TOPDIR}/SPECS"
     mkdir -p "${RPM_TOPDIR}/SRPMS"
 
@@ -162,6 +171,7 @@ if command -v rpmbuild >/dev/null 2>&1; then
     cp -rf "${BUILD_BUNDLE_DIR}/"* "${RPM_TOPDIR}/SOURCES/bundle/"
     cp -f "${PACKAGING_DIR}/ligament-authenticator.desktop" "${RPM_TOPDIR}/SOURCES/packaging/"
     cp -f "${APP_ICON}" "${RPM_TOPDIR}/SOURCES/icons/app_icon.png"
+    cp -f "${PACKAGING_DIR}/ligament-link-agent.service" "${RPM_TOPDIR}/SOURCES/systemd/ligament-link-agent.service"
     cp -f "${PACKAGING_DIR}/ligament-authenticator.spec" "${RPM_TOPDIR}/SPECS/"
 
     rpmbuild --define "_topdir ${RPM_TOPDIR}" \

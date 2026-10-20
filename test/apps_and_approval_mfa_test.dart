@@ -79,6 +79,9 @@ class MockAuthState extends ChangeNotifier implements AuthState {
   Future<void> loadRdpTargets() async {}
 
   @override
+  Future<void> loadLinkHosts() async {}
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
