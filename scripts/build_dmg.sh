@@ -41,6 +41,14 @@ fi
 
 echo "--> Найден бандл приложения: ${APP_PATH}"
 
+# Refuse to package a bundle whose signature was invalidated by post-build
+# resource or executable injection. This checks integrity, not Gatekeeper trust:
+# public distribution still requires Developer ID signing and notarization.
+if ! codesign --verify --deep --strict --verbose=2 "${APP_PATH}"; then
+  echo "ОШИБКА: подпись .app повреждена; пересоберите и подпишите bundle после всех изменений."
+  exit 1
+fi
+
 # 2. Подготовка каталога staging
 STAGING_DIR="$(mktemp -d -t ligament_dmg_XXXXXX)"
 trap 'rm -rf "${STAGING_DIR}"' EXIT
@@ -48,12 +56,9 @@ trap 'rm -rf "${STAGING_DIR}"' EXIT
 echo "--> Подготовка staging директории: ${STAGING_DIR}"
 cp -R "${APP_PATH}" "${STAGING_DIR}/"
 
-# Keep per-user host-agent setup opt-in; the agent requires the user's login
-# session for Keychain, ScreenCaptureKit permissions and interactive workers.
-cp -f "${CLIENT_DIR}/macos/packaging/install_link_agent.sh" "${STAGING_DIR}/Install-Link-Agent.command"
-cp -f "${CLIENT_DIR}/macos/packaging/uninstall_link_agent.sh" "${STAGING_DIR}/Remove-Link-Agent.command"
-cp -f "${CLIENT_DIR}/macos/packaging/README-Link-Agent.txt" "${STAGING_DIR}/Link-Agent-README.txt"
-chmod 755 "${STAGING_DIR}/Install-Link-Agent.command" "${STAGING_DIR}/Remove-Link-Agent.command"
+# The DMG intentionally contains only the app and the Applications shortcut.
+# Standalone .command installers are unsigned and trigger Gatekeeper; host-agent
+# registration must be provided by a signed, notarized native installer flow.
 
 # Создаем символическую ссылку на /Applications для удобной установки Drag & Drop
 ln -s /Applications "${STAGING_DIR}/Applications"
@@ -91,14 +96,14 @@ fi
 
 # 4. Проверка и вывод результата
 if [[ -f "${FINAL_DMG}" ]]; then
+  hdiutil verify "${FINAL_DMG}"
   DMG_SIZE="$(du -h "${FINAL_DMG}" | awk '{print $1}')"
   echo "========================================================"
   echo " УСПЕШНО СОБРАН DMG ДИСТРИБУТИВ:"
   echo " Файл:    ${FINAL_DMG}"
   echo " Размер:  ${DMG_SIZE}"
   echo "========================================================"
-  echo "Установка пользователем: дважды кликнуть ${DMG_NAME} и перетащить"
-  echo "${APP_NAME} в папку Программы (Applications)."
+  echo "Установка: перетащить ${APP_NAME} в папку Программы (Applications)."
 else
   echo "ОШИБКА: DMG файл не был создан."
   exit 1

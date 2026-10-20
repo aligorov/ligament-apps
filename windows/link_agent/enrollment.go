@@ -19,6 +19,11 @@ import (
 
 const enrollmentResponseLimit = 1 << 20
 
+var (
+	ErrHostAlreadyEnrolled   = errors.New("link agent: this host is already enrolled")
+	ErrBindingServerMismatch = errors.New("link agent: app server does not match configured machine server")
+)
+
 // EnrollmentMetadata is sent to POST /api/v1/link/agents/enroll.
 type EnrollmentMetadata struct {
 	Hostname     string         `json:"hostname"`
@@ -178,7 +183,7 @@ func ResolveBindingServerURL(configuredURL, requestedURL string) (serverURL stri
 		return "", false, fmt.Errorf("link agent: invalid configured server URL: %w", err)
 	}
 	if configured != requested {
-		return "", false, errors.New("link agent: app server does not match configured machine server")
+		return "", false, ErrBindingServerMismatch
 	}
 	return configured, false, nil
 }

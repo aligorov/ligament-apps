@@ -212,9 +212,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(isRu
-            ? 'Не удалось привязать компьютер: $error'
-            : 'Could not link this computer: $error'),
+        content: Text(linkAgentBindingErrorMessage(error, isRu: isRu)),
       ));
     } finally {
       if (mounted) setState(() => _bindingThisHost = false);

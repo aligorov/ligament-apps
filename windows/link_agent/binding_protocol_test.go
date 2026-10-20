@@ -2,6 +2,7 @@ package linkagent
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,23 @@ func TestBindingSuccessResponseWireOrder(t *testing.T) {
 	want := `{"ok":true,"fingerprint":"` + fingerprint + `"}`
 	if string(encoded) != want {
 		t.Fatalf("response=%s, want %s", encoded, want)
+	}
+}
+
+func TestPublicBindingErrorCodeAllowsOnlyKnownCodes(t *testing.T) {
+	for _, code := range []string{
+		"server_mismatch",
+		"host_already_enrolled",
+		"enrollment_rejected",
+		"identity_store_failed",
+	} {
+		err := &BindingPublicError{Code: code, Err: errors.New("private diagnostic")}
+		if got := PublicBindingErrorCode(err); got != code {
+			t.Errorf("PublicBindingErrorCode(%q) = %q", code, got)
+		}
+	}
+	if got := PublicBindingErrorCode(errors.New("unexpected internal detail")); got != "enrollment_rejected" {
+		t.Fatalf("unknown failure leaked or mapped unexpectedly: %q", got)
 	}
 }
 

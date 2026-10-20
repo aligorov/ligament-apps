@@ -96,13 +96,22 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 			err := linkagent.ServeOneBindingPipe(ctx, func(bindCtx context.Context, request linkagent.BindingRequest) (string, error) {
 				serverURL, err := configureBindingServerURL(config.ServerURL, request.ServerURL)
 				if err != nil {
-					return "", err
+					if errors.Is(err, linkagent.ErrBindingServerMismatch) {
+						return "", &linkagent.BindingPublicError{Code: "server_mismatch", Err: err}
+					}
+					return "", &linkagent.BindingPublicError{Code: "identity_store_failed", Err: err}
 				}
 				config.ServerURL = serverURL
 				fingerprint, err := linkagent.EnrollAndStoreIdentity(bindCtx, config, request.EnrollmentToken)
 				if err != nil {
 					serviceLog(logger, logErr, "L1 binding attempt rejected: %v", err)
-					return "", err
+					code := "enrollment_rejected"
+					if errors.Is(err, linkagent.ErrHostAlreadyEnrolled) {
+						code = "host_already_enrolled"
+					} else if strings.Contains(err.Error(), "persist enrolled identity") {
+						code = "identity_store_failed"
+					}
+					return "", &linkagent.BindingPublicError{Code: code, Err: err}
 				}
 				serviceLog(logger, logErr, "L1 binding completed: fingerprint=%s", fingerprint)
 				return fingerprint, nil

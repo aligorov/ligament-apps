@@ -25,6 +25,38 @@ type BindingResponse struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// BindingPublicError carries a non-sensitive, allowlisted failure code over
+// the local pipe. Detailed causes stay in the SYSTEM service log.
+type BindingPublicError struct {
+	Code string
+	Err  error
+}
+
+func (e *BindingPublicError) Error() string {
+	if e == nil || e.Err == nil {
+		return "link agent: host binding failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *BindingPublicError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func PublicBindingErrorCode(err error) string {
+	var publicErr *BindingPublicError
+	if errors.As(err, &publicErr) {
+		switch publicErr.Code {
+		case "server_mismatch", "host_already_enrolled", "enrollment_rejected", "identity_store_failed":
+			return publicErr.Code
+		}
+	}
+	return "enrollment_rejected"
+}
+
 // DecodeBindingRequest validates the bounded, versioned local IPC message.
 func DecodeBindingRequest(data []byte) (BindingRequest, error) {
 	if len(data) == 0 || len(data) > bindingMessageLimit {

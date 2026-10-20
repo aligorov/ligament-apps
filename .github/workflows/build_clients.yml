@@ -160,8 +160,13 @@ jobs:
           flutter build macos --release --no-tree-shake-icons
           install -m 755 build/macos-link-agent 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-agent'
           install -m 644 macos/packaging/com.ligament.link-agent.plist 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/Resources/com.ligament.link-agent.plist'
-          cp macos/packaging/install_link_agent.sh macos/packaging/uninstall_link_agent.sh 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/Resources/'
-          chmod 755 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/Resources/install_link_agent.sh' 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/Resources/uninstall_link_agent.sh'
+          app_path='build/macos/Build/Products/Release/Ligament 2FA.app'
+          # Flutter signs the app before Link's agent and LaunchAgent files are
+          # injected. Re-seal the complete bundle so the DMG is not corrupted.
+          # Ad-hoc signing is integrity-only; public macOS distribution still
+          # requires a Developer ID signature and Apple notarization.
+          codesign --force --deep --sign - "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
           chmod +x scripts/build_dmg.sh
           ./scripts/build_dmg.sh
 

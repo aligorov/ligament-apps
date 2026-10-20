@@ -17,6 +17,16 @@ namespace {
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 
+class BindingException : public std::runtime_error {
+ public:
+  BindingException(const char* code, const char* message)
+      : std::runtime_error(message), code_(code) {}
+  const char* code() const { return code_; }
+
+ private:
+  const char* code_;
+};
+
 bool IsHexToken(const std::string& token) {
   return token.size() == 64 && std::all_of(token.begin(), token.end(), [](unsigned char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -70,7 +80,8 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
   if (!WaitNamedPipeW(pipe_name, 5000)) {
     SecureZeroMemory(token.data(), token.size());
     SecureZeroMemory(server_url.data(), server_url.size());
-    throw std::runtime_error("Windows Link service is not ready");
+    throw BindingException("link_agent_service_not_running",
+                           "Ligament Link Agent service is not running");
   }
   HANDLE pipe = CreateFileW(pipe_name, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                             OPEN_EXISTING,
@@ -78,7 +89,8 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
   if (pipe == INVALID_HANDLE_VALUE) {
     SecureZeroMemory(token.data(), token.size());
     SecureZeroMemory(server_url.data(), server_url.size());
-    throw std::runtime_error("Could not connect to Windows Link service");
+    throw BindingException("link_agent_pipe_unavailable",
+                           "Cannot connect to Ligament Link Agent service pipe");
   }
 
   ULONG server_pid = 0;
@@ -93,7 +105,8 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
     CloseHandle(pipe);
     SecureZeroMemory(token.data(), token.size());
     SecureZeroMemory(server_url.data(), server_url.size());
-    throw std::runtime_error("Connected pipe is not owned by the Windows Link service");
+    throw BindingException("link_agent_service_untrusted",
+                           "Link service pipe is not owned by LocalSystem");
   }
 
   std::string request = "{\"version\":1,\"server_url\":" + JsonString(server_url) +
@@ -106,14 +119,18 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
   SecureZeroMemory(request.data(), request.size());
   if (!write_ok) {
     CloseHandle(pipe);
-    throw std::runtime_error("Could not send Link binding request");
+    throw BindingException("link_agent_pipe_communication_failed",
+                           "Could not send the binding request to Link service");
   }
 
   char response[512]{};
   DWORD read = 0;
   const bool read_ok = ReadFile(pipe, response, sizeof(response) - 1, &read, nullptr) && read > 0;
   CloseHandle(pipe);
-  if (!read_ok) throw std::runtime_error("Windows Link service did not return a binding result");
+  if (!read_ok) {
+    throw BindingException("link_agent_pipe_communication_failed",
+                           "Link service did not return a binding result");
+  }
   const std::string body(response, read);
   SecureZeroMemory(response, sizeof(response));
   constexpr char ok_prefix[] = "{\"ok\":true,\"fingerprint\":\"";
@@ -121,10 +138,34 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
   if (body.size() != sizeof(ok_prefix) - 1 + 64 + sizeof(ok_suffix) - 1 ||
       body.compare(0, sizeof(ok_prefix) - 1, ok_prefix) != 0 ||
       body.compare(body.size() - (sizeof(ok_suffix) - 1), sizeof(ok_suffix) - 1, ok_suffix) != 0) {
-    throw std::runtime_error("Windows Link service rejected host binding");
+    constexpr char error_prefix[] = "{\"ok\":false,\"error\":\"";
+    constexpr char error_suffix[] = "\"}";
+    const size_t prefix_size = sizeof(error_prefix) - 1;
+    const size_t suffix_size = sizeof(error_suffix) - 1;
+    if (body.size() > prefix_size + suffix_size &&
+        body.compare(0, prefix_size, error_prefix) == 0 &&
+        body.compare(body.size() - suffix_size, suffix_size, error_suffix) == 0) {
+      const std::string code = body.substr(prefix_size, body.size() - prefix_size - suffix_size);
+      if (code == "server_mismatch")
+        throw BindingException("link_agent_server_mismatch",
+                               "App and Windows service use different server URLs");
+      if (code == "host_already_enrolled")
+        throw BindingException("link_agent_host_already_enrolled",
+                               "This computer is already enrolled");
+      if (code == "identity_store_failed")
+        throw BindingException("link_agent_identity_store_failed",
+                               "Windows service could not save the host identity");
+      if (code == "enrollment_rejected")
+        throw BindingException("link_agent_enrollment_rejected",
+                               "Server rejected host enrollment; check the Link agent log");
+    }
+    throw BindingException("link_agent_enrollment_rejected",
+                           "Windows Link service rejected host enrollment");
   }
   const std::string fingerprint = body.substr(sizeof(ok_prefix) - 1, 64);
-  if (!IsHexToken(fingerprint)) throw std::runtime_error("Windows Link service returned an invalid fingerprint");
+  if (!IsHexToken(fingerprint))
+    throw BindingException("link_agent_invalid_response",
+                           "Windows Link service returned an invalid fingerprint");
   return fingerprint;
 }
 }  // namespace
@@ -161,9 +202,12 @@ LinkAgentBindingBridge::LinkAgentBindingBridge(flutter::BinaryMessenger* messeng
         const auto fingerprint = BindOverNamedPipe(std::move(server_url), std::move(token));
         busy->store(false);
         result->Success(EncodableValue(fingerprint));
+      } catch (const BindingException& error) {
+        busy->store(false);
+        result->Error(error.code(), error.what());
       } catch (const std::exception&) {
         busy->store(false);
-        result->Error("binding_failed", "Windows Link host binding failed");
+        result->Error("link_agent_binding_failed", "Windows Link host binding failed");
       }
     }).detach();
   });

@@ -115,15 +115,6 @@ class _AppsScreenState extends State<AppsScreen> {
         ),
         actions: [
           IconButton(
-            tooltip: isRu ? 'Каталог Ligament Link' : 'Ligament Link inventory',
-            icon: const Icon(Icons.devices_other_outlined,
-                color: Color(0xFF38BDF8)),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                  builder: (_) => const LinkCatalogScreen()),
-            ),
-          ),
-          IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8)),
             onPressed: () => _refresh(auth),
             tooltip: s.appsRefresh,
@@ -132,6 +123,70 @@ class _AppsScreenState extends State<AppsScreen> {
       ),
       body: Column(
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Material(
+              color: const Color(0xFF131B2B),
+              borderRadius: BorderRadius.circular(14),
+              child: InkWell(
+                key: const ValueKey('apps-open-link-catalog'),
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const LinkCatalogScreen(),
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 12),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0284C7).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: const Icon(Icons.devices_other_outlined,
+                            color: Color(0xFF38BDF8), size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text(
+                              'Ligament Link',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              isRu
+                                  ? 'Каталог компьютеров и удалённый доступ'
+                                  : 'Computer inventory and remote access',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Color(0xFF94A3B8), fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.arrow_forward_ios_rounded,
+                          color: Color(0xFF38BDF8), size: 16),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
           // Панель поиска и фильтров
           if (allTargets.isNotEmpty || allApps.isNotEmpty || q.isNotEmpty)
             Container(

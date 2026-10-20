@@ -105,6 +105,42 @@ class LinkAgentBindingService {
   }
 }
 
+String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
+  final code = error is PlatformException ? error.code : '';
+  return switch (code) {
+    'link_agent_service_not_running' => isRu
+        ? 'Служба Ligament Link Agent не запущена. Проверьте её состояние в «Службах» Windows.'
+        : 'Ligament Link Agent service is not running. Check its status in Windows Services.',
+    'link_agent_pipe_unavailable' => isRu
+        ? 'Не удаётся подключиться к службе Ligament Link Agent. Проверьте установку и состояние службы.'
+        : 'Cannot connect to Ligament Link Agent. Check that the service is installed and running.',
+    'link_agent_service_untrusted' => isRu
+        ? 'Не удалось подтвердить системную службу Link. Переустановите приложение из доверенного MSI.'
+        : 'Could not verify the Link system service. Reinstall the app from a trusted MSI.',
+    'link_agent_server_mismatch' => isRu
+        ? 'Адрес сервера в настройках службы Windows не совпадает с сервером приложения. Проверьте параметр SERVERURL установщика.'
+        : 'The server URL configured for the Windows service differs from the app. Check the installer SERVERURL setting.',
+    'link_agent_host_already_enrolled' => isRu
+        ? 'Этот компьютер уже зарегистрирован. Сначала отзовите его в каталоге Ligament Link.'
+        : 'This computer is already enrolled. Revoke it from the Ligament Link inventory first.',
+    'link_agent_identity_store_failed' => isRu
+        ? 'Служба Link не смогла сохранить защищённый ключ компьютера. Проверьте журнал %ProgramData%\\Ligament\\Link\\agent.log.'
+        : 'Link service could not save the protected host identity. Check %ProgramData%\\Ligament\\Link\\agent.log.',
+    'link_agent_enrollment_rejected' => isRu
+        ? 'Сервер отклонил регистрацию компьютера. Проверьте срок токена и журнал %ProgramData%\\Ligament\\Link\\agent.log.'
+        : 'The server rejected host enrollment. Check the token expiry and %ProgramData%\\Ligament\\Link\\agent.log.',
+    'link_agent_pipe_communication_failed' => isRu
+        ? 'Связь со службой Link прервалась. Проверьте, что служба запущена, и повторите попытку.'
+        : 'The connection to Link service was interrupted. Check that it is running and try again.',
+    'link_agent_invalid_response' => isRu
+        ? 'Служба Link вернула некорректный ответ. Проверьте журнал службы.'
+        : 'Link service returned an invalid response. Check the service log.',
+    _ => isRu
+        ? 'Не удалось привязать компьютер. Проверьте, что служба Ligament Link Agent запущена.'
+        : 'Could not link this computer. Check that Ligament Link Agent service is running.',
+  };
+}
+
 const _bindingFrameLimit = 4096;
 
 String linkAgentBindingSocketPath(int uid) {

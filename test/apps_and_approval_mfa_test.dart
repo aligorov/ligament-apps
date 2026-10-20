@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/screens/approval_modal.dart';
 import 'package:ligament_authenticator/screens/apps_screen.dart';
+import 'package:ligament_authenticator/screens/link_catalog_screen.dart';
 import 'package:ligament_authenticator/services/auth_state.dart';
 import 'package:ligament_authenticator/services/rdp_service.dart';
 import 'package:provider/provider.dart';
@@ -49,6 +50,18 @@ class MockAuthState extends ChangeNotifier implements AuthState {
       'launch_url': 'https://1c.corp.local/base',
     },
   ];
+
+  @override
+  List<Map<String, dynamic>> linkHosts = [];
+
+  @override
+  bool linkFeatureAvailable = true;
+
+  @override
+  bool linkHostsLoading = false;
+
+  @override
+  String? linkHostsError;
 
   String? lastSubmittedCode;
   bool? lastSubmittedPasskey;
@@ -231,6 +244,26 @@ void main() {
   });
 
   group('AppsScreen: Рабочие места + SSO Приложения', () {
+    testWidgets('Link catalog has a visible entry and opens from Services',
+        (tester) async {
+      final auth = MockAuthState();
+
+      await tester.pumpWidget(buildTestApp(
+        child: const AppsScreen(),
+        auth: auth,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ligament Link'), findsOneWidget);
+      expect(find.text('Каталог компьютеров и удалённый доступ'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('apps-open-link-catalog')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(LinkCatalogScreen), findsOneWidget);
+      expect(find.text('Зачисленных компьютеров пока нет.'), findsOneWidget);
+    });
+
     testWidgets(
         'отображает рабочие места и SSO-приложения, фильтрует по поиску и чипам',
         (tester) async {

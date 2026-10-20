@@ -28,7 +28,7 @@ func EnrollAndStoreIdentity(ctx context.Context, config AgentWSConfig, token str
 		return "", err
 	}
 	if _, err := LoadIdentity(); err == nil {
-		return "", errors.New("link agent: this host is already enrolled")
+		return "", ErrHostAlreadyEnrolled
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("link agent: check existing identity: %w", err)
 	}
@@ -101,7 +101,7 @@ func ServeOneBindingPipe(ctx context.Context, bind func(context.Context, Binding
 			if reportError != nil && !errors.Is(err, context.Canceled) {
 				reportError(err)
 			}
-			_ = writeBindingResponse(pipe, BindingResponse{OK: false, Error: "binding_failed"})
+			_ = writeBindingResponse(pipe, BindingResponse{OK: false, Error: PublicBindingErrorCode(err)})
 		}
 		_ = windows.DisconnectNamedPipe(pipe)
 		_ = windows.CloseHandle(pipe)
