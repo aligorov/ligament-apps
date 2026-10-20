@@ -46,6 +46,10 @@ if [[ ! -f "${BUILD_BUNDLE_DIR}/ligament_authenticator" ]]; then
     exit 1
 fi
 
+if [[ -f "${ROOT_DIR}/build/linux-link-agent" ]]; then
+    install -m 755 "${ROOT_DIR}/build/linux-link-agent" "${BUILD_BUNDLE_DIR}/link-agent"
+fi
+
 echo "--> Скомпилированный Linux бандл найден: ${BUILD_BUNDLE_DIR}"
 
 # 3. Сборка переносимого архива .tar.gz

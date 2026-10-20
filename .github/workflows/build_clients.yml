@@ -239,7 +239,6 @@ jobs:
           mkdir -p build
           (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags='-s -w' -o ../../build/linux-link-agent ./cmd/link-agent)
           chmod +x scripts/build_linux.sh linux/packaging/install.sh
-          install -m 755 build/linux-link-agent build/linux/x64/release/bundle/link-agent
           ./scripts/build_linux.sh
 
       - name: Upload Linux DEB Artifact (Astra Linux, Debian, Ubuntu)

@@ -152,7 +152,7 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 					serviceLog(logger, logErr, "WTS event=%s session_id=unavailable (missing event data)", changeName)
 					continue
 				}
-				notification := (*windows.WTSSESSION_NOTIFICATION)(unsafe.Pointer(request.EventData))
+				notification := (*windows.WTSSESSION_NOTIFICATION)(uintptrToPointer(request.EventData))
 				if notification.Size < uint32(unsafe.Sizeof(windows.WTSSESSION_NOTIFICATION{})) {
 					serviceLog(logger, logErr, "WTS event=%s session_id=unavailable (invalid event data size)", changeName)
 					continue
@@ -268,4 +268,9 @@ func serviceLog(logger *log.Logger, logErr error, format string, args ...any) {
 		return
 	}
 	log.Printf("link agent (file log unavailable: %v): "+format, append([]any{logErr}, args...)...)
+}
+
+//go:nosplit
+func uintptrToPointer(p uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&p))
 }
