@@ -3,6 +3,16 @@ import 'package:flutter/services.dart';
 import 'package:ligament_authenticator/services/link_agent_binding_service.dart';
 
 void main() {
+  test('binding diagnostic shows only the numeric Win32 error', () {
+    final error = PlatformException(
+      code: 'link_agent_service_session_check_failed',
+      message: 'Cannot verify Link service pipe session (Win32 error 5) secret',
+    );
+    final message = linkAgentBindingErrorMessage(error, isRu: true);
+    expect(message, contains('Named Pipe'));
+    expect(message, contains('Win32: 5'));
+    expect(message, isNot(contains('secret')));
+  });
   test('Unix agent binding socket is scoped to a numeric user ID', () {
     expect(
         linkAgentBindingSocketPath(501), '/tmp/ligament-agent-501/bind.sock');

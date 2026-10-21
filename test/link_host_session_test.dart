@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/screens/link_host_overlay.dart';
 import 'package:ligament_authenticator/services/link_host_session.dart';
@@ -98,7 +99,7 @@ void main() {
     state.showSession(_sessionId, 'control', 'operator@example.com');
     final decision = state.awaitConsent();
     expect(state.phase, LinkHostWorkerPhase.awaitingConsent);
-    state.approveConsent('012345');
+    state.approveConsent('27');
     expect(await decision, isTrue);
     expect(state.phase, LinkHostWorkerPhase.connecting);
   });
@@ -150,11 +151,13 @@ void main() {
       ..showSession(_sessionId, 'control', 'Иванов Иван');
     final decision = state.awaitConsent();
     await tester.pumpWidget(LinkHostOverlay(state: state));
-    expect(find.text('Разрешить удалённое подключение?'), findsOneWidget);
-    expect(find.text('Разрешить'), findsOneWidget);
+    expect(find.text('Запрос на управление вашим ПК'), findsOneWidget);
+    expect(find.text('Разрешить доступ'), findsOneWidget);
     expect(find.text('Отклонить'), findsOneWidget);
+    await tester.ensureVisible(find.text('Отклонить'));
     await tester.tap(find.text('Отклонить'));
     expect(await decision, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   test('answers offer with session-scoped envelope and forwards ICE', () async {

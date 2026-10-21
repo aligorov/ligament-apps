@@ -63,7 +63,7 @@ void main(List<String> args) async {
       await windowManager.waitUntilReadyToShow(
         const WindowOptions(
           size: Size(800, 160),
-          minimumSize: Size(780, 150),
+          minimumSize: Size(460, 120),
           center: true,
           backgroundColor: Color(0xFF10251D),
           skipTaskbar: true,

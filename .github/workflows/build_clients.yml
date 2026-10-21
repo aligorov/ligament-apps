@@ -38,10 +38,14 @@ jobs:
           flutter pub get
           flutter test test/remote_pointer_surface_test.dart test/service_console_input_test.dart test/remote_keyboard_test.dart test/screen_mapping_test.dart test/link_host_session_test.dart test/link_number_matching_test.dart test/link_key_messages_test.dart test/link_host_readiness_test.dart test/link_ice_configuration_test.dart test/link_session_control_test.dart test/link_archive_test.dart
           if ($LASTEXITCODE -ne 0) { throw 'Flutter remote input tests failed' }
+          flutter test test/support_approval_modal_test.dart test/link_agent_binding_service_test.dart
+          if ($LASTEXITCODE -ne 0) { throw 'SOS approval or Link binding regression tests failed' }
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
           cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /DNOMINMAX windows\tests\remote_mouse_input_test.cpp /Fe:remote_mouse_input_test.exe user32.lib && remote_mouse_input_test.exe"
           if ($LASTEXITCODE -ne 0) { throw 'Native remote mouse tests failed' }
+          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /DNOMINMAX windows\tests\link_pipe_session_test.cpp /Fe:link_pipe_session_test.exe && link_pipe_session_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Native Link pipe session tests failed' }
 
       - name: Test credential image interfaces
         shell: pwsh

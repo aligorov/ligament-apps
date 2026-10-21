@@ -145,7 +145,7 @@ String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
       : error is LinkAgentBindingFailure
           ? error.code
           : '';
-  return switch (code) {
+  final message = switch (code) {
     'link_agent_missing' => isRu
         ? 'В этой копии приложения не найден Link Agent. Установите Ligament 2FA в папку Applications и попробуйте снова.'
         : 'Link Agent is missing from this app bundle. Install Ligament 2FA in Applications and try again.',
@@ -177,8 +177,8 @@ String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
         ? 'Служба Link запущена не от LocalSystem. Проверьте учётную запись службы LigamentLinkAgent.'
         : 'Link is not running as LocalSystem. Check the LigamentLinkAgent service account.',
     'link_agent_service_session_check_failed' => isRu
-        ? 'Не удалось проверить системную сессию службы Link. Перезапустите службу и проверьте журнал.'
-        : 'Could not verify the Link service session. Restart the service and check its log.',
+        ? 'Не удалось проверить сессию Named Pipe службы Link. Проверьте версию приложения и службы; перезапуск сам по себе может не устранить ошибку.'
+        : 'Could not verify the Link service named-pipe session. Check the app and service versions; restarting alone may not fix this error.',
     'link_agent_service_not_session0' => isRu
         ? 'Служба Link запущена не в системной Session 0. Проверьте тип запуска службы Windows.'
         : 'Link is not running in system Session 0. Check the Windows service configuration.',
@@ -204,6 +204,11 @@ String linkAgentBindingErrorMessage(Object error, {required bool isRu}) {
         ? 'Не удалось привязать компьютер. Проверьте, что служба Ligament Link Agent запущена.'
         : 'Could not link this computer. Check that Ligament Link Agent service is running.',
   };
+  // Retain only the numeric OS diagnostic, never raw native error details or
+  // enrollment credentials. It distinguishes access denial from a missing PID.
+  final nativeMessage = error is PlatformException ? error.message : null;
+  final win32 = RegExp(r'Win32 error (\d+)').firstMatch(nativeMessage ?? '');
+  return win32 == null ? message : '$message (Win32: ${win32.group(1)})';
 }
 
 class LinkAgentBindingFailure implements Exception {

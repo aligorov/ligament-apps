@@ -1,4 +1,5 @@
 #include "link_agent_binding_bridge.h"
+#include "link_pipe_session.h"
 
 #include <windows.h>
 
@@ -82,7 +83,6 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
   }
 
   ULONG server_pid = 0;
-  DWORD server_session = MAXDWORD;
   bool trusted = false;
   const char* trust_error_code = "link_agent_service_untrusted";
   std::string trust_error = "Link service identity check failed";
@@ -121,14 +121,17 @@ std::string BindOverNamedPipe(std::string server_url, std::string token) {
                        lstrcmpiW(config->lpServiceStartName, L"LocalSystem") != 0) {
               trust_error_code = "link_agent_service_sid_mismatch";
               trust_error = "Link service is not configured as LocalSystem";
-            } else if (!ProcessIdToSessionId(server_pid, &server_session)) {
-              trust_error_code = "link_agent_service_session_check_failed";
-              trust_error = Win32Diagnostic("Cannot verify Link service session", GetLastError());
-            } else if (server_session != 0) {
-              trust_error_code = "link_agent_service_not_session0";
-              trust_error = "Link service process is not running in Session 0";
             } else {
-              trusted = true;
+              const auto session = CheckLinkPipeSession(pipe);
+              if (session.status == LinkPipeSessionStatus::query_failed) {
+                trust_error_code = "link_agent_service_session_check_failed";
+                trust_error = Win32Diagnostic("Cannot verify Link service pipe session", session.error);
+              } else if (session.status != LinkPipeSessionStatus::trusted) {
+                trust_error_code = "link_agent_service_not_session0";
+                trust_error = "Link service pipe is not running in Session 0";
+              } else {
+                trusted = true;
+              }
             }
           }
         }

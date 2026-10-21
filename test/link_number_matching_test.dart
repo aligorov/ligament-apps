@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/screens/link_host_overlay.dart';
+import 'package:ligament_authenticator/screens/support_approval_modal.dart';
 import 'package:ligament_authenticator/services/link_host_session.dart';
 import 'package:ligament_authenticator/services/link_host_readiness.dart';
 
@@ -67,7 +68,7 @@ void main() {
           iceServers: [],
           consentGranted: true,
           confirmationRequired: true,
-          confirmationCode: '012345');
+          confirmationCode: '27');
       await requestSent.future;
       expect(peer.starts, 0);
       // An operator can send arbitrary signals, but cannot know the private nonce.
@@ -123,15 +124,25 @@ void main() {
     final state = LinkHostWorkerState()..showSession(_id, 'view', 'Оператор');
     final consent = state.awaitConsent();
     await tester.pumpWidget(LinkHostOverlay(state: state));
-    final approve = find.widgetWithText(FilledButton, 'Разрешить');
-    expect(tester.widget<FilledButton>(approve).onPressed, isNull);
+    expect(find.byType(SupportApprovalModal), findsOneWidget);
+    expect(
+        tester
+            .widget<TextField>(
+                find.byKey(const Key('support-number-match-code')))
+            .maxLength,
+        2);
+    expect(find.text('27'), findsNothing);
+    final approve = find.widgetWithText(ElevatedButton, 'Разрешить доступ');
+    expect(tester.widget<ElevatedButton>(approve).onPressed, isNull);
     await tester.enterText(
-        find.byKey(const Key('link-confirmation-code')), '012345');
+        find.byKey(const Key('support-number-match-code')), '27');
     await tester.pump();
     expect(state.phase, LinkHostWorkerPhase.awaitingConsent);
+    await tester.ensureVisible(approve);
     await tester.tap(approve);
     expect(await consent, true);
-    expect(state.confirmationCode, '012345');
+    expect(state.confirmationCode, '27');
     state.markClosed();
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }

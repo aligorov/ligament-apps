@@ -14,8 +14,19 @@ import '../i18n/app_strings.dart';
 /// (полный контроль / только просмотр) показывается ДО подтверждения.
 class SupportApprovalModal extends StatefulWidget {
   final Map<String, dynamic> prompt;
+  final AppStrings? stringsOverride;
+  final Future<void> Function(String code)? onApprove;
+  final Future<void> Function()? onDeny;
+  final int? numberMatchLength;
 
-  const SupportApprovalModal({super.key, required this.prompt});
+  const SupportApprovalModal({
+    super.key,
+    required this.prompt,
+    this.stringsOverride,
+    this.onApprove,
+    this.onDeny,
+    this.numberMatchLength,
+  }) : assert((onApprove == null) == (onDeny == null));
 
   @override
   State<SupportApprovalModal> createState() => _SupportApprovalModalState();
@@ -32,7 +43,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   void initState() {
     super.initState();
     _codeController.addListener(() {
-      if (_error != null) setState(() => _error = null);
+      setState(() => _error = null);
     });
     _armExpiryWatch();
   }
@@ -63,6 +74,10 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   }
 
   void _close() {
+    if (_standalone) {
+      if (!_processing) unawaited(_deny());
+      return;
+    }
     if (mounted && Navigator.of(context).canPop()) {
       Navigator.of(context).pop(false);
     }
@@ -80,15 +95,23 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   /// невозможно в принципе (сервер такой approve тоже отклонит).
   String get _expectedMatch => widget.prompt['number_match']?.toString() ?? '';
 
-  bool get _codeEntered => _codeController.text.trim().length == _expectedMatch.length;
+  bool get _standalone => widget.onApprove != null;
+  int get _codeLength => _expectedMatch.isNotEmpty
+      ? _expectedMatch.length
+      : (widget.numberMatchLength ?? 0);
+
+  bool get _codeEntered =>
+      _codeLength > 0 && _codeController.text.trim().length == _codeLength;
 
   Future<void> _approve() async {
-    final strings = context.stringsRead;
+    if (_processing) return;
+    final strings = widget.stringsOverride ?? context.stringsRead;
     if (!_codeEntered) {
       setState(() => _error = strings.errEnterMatch);
       return;
     }
-    if (_codeController.text.trim() != _expectedMatch) {
+    if (_expectedMatch.isNotEmpty &&
+        _codeController.text.trim() != _expectedMatch) {
       setState(() => _error = strings.errWrongMatchPhone);
       return;
     }
@@ -99,6 +122,10 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
     });
 
     try {
+      if (_standalone) {
+        await widget.onApprove!(_codeController.text.trim());
+        return;
+      }
       final auth = context.read<AuthState>();
       final sessId = widget.prompt['session_id']?.toString() ?? '';
       await auth.confirmSupport(
@@ -113,36 +140,42 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
       if (mounted) {
         setState(() {
           _processing = false;
-          _error = '${context.stringsRead.errApprovalPrefix}: $e';
+          _error = '${strings.errApprovalPrefix}: $e';
         });
       }
     }
   }
 
   Future<void> _deny() async {
+    if (_processing) return;
     setState(() => _processing = true);
     try {
+      if (_standalone) {
+        await widget.onDeny!();
+        return;
+      }
       final auth = context.read<AuthState>();
       final sessId = widget.prompt['session_id']?.toString() ?? '';
       await auth.rejectSupport(sessionId: sessId);
     } catch (_) {}
-    if (mounted) {
+    if (!_standalone && mounted) {
       Navigator.of(context).pop(false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final strings = context.strings;
-    final auth = context.watch<AuthState>();
+    final strings = widget.stringsOverride ?? context.strings;
 
     // m-3: промпт исчез (сессия завершена/отклонена на сервере или из другого
     // канала) — модалка закрывается сама, «висящее» окно подтверждения
     // не должно пережить свой запрос. Во время обработки решения не закрываем.
-    if (!_processing) {
+    if (!_standalone && !_processing) {
+      final auth = context.watch<AuthState>();
       final current = auth.activeSupportPrompt;
       final gone = current == null ||
-          (current['session_id']?.toString() ?? '') != (widget.prompt['session_id']?.toString() ?? '');
+          (current['session_id']?.toString() ?? '') !=
+              (widget.prompt['session_id']?.toString() ?? '');
       if (gone) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && Navigator.of(context).canPop()) {
@@ -153,11 +186,13 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
     }
 
     final category = widget.prompt['category']?.toString() ?? 'it';
-    final summary = widget.prompt['problem_summary']?.toString() ?? (strings.isRu ? 'Удаленная помощь' : 'Remote support');
+    final summary = widget.prompt['problem_summary']?.toString() ??
+        (strings.isRu ? 'Удаленная помощь' : 'Remote support');
     final operatorName = widget.prompt['admin_name']?.toString() ??
         widget.prompt['operator']?.toString() ??
         strings.defaultEngineer;
-    final accessMode = widget.prompt['access_mode']?.toString() ?? 'full_control';
+    final accessMode =
+        widget.prompt['access_mode']?.toString() ?? 'full_control';
     final fullControl = accessMode != 'view_only';
 
     return Dialog(
@@ -185,14 +220,21 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
               child: Icon(
                 fullControl ? Icons.lock : Icons.visibility,
                 size: 48,
-                color: fullControl ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
+                color: fullControl
+                    ? const Color(0xFFF59E0B)
+                    : const Color(0xFF38BDF8),
               ),
             ),
             const SizedBox(height: 16),
 
             Text(
-              fullControl ? strings.supportApprovalTitleFull : strings.supportApprovalTitleView,
-              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+              fullControl
+                  ? strings.supportApprovalTitleFull
+                  : strings.supportApprovalTitleView,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 6),
@@ -216,18 +258,23 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.person_outline, size: 16, color: Color(0xFF94A3B8)),
+                      const Icon(Icons.person_outline,
+                          size: 16, color: Color(0xFF94A3B8)),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
                           operatorName,
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       const SizedBox(width: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
                         decoration: BoxDecoration(
                           color: category == '1c'
                               ? const Color(0xFFF59E0B).withValues(alpha: 0.2)
@@ -235,9 +282,13 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
-                          category == '1c' ? strings.oneCSupportBadge : strings.itSupportBadge,
+                          category == '1c'
+                              ? strings.oneCSupportBadge
+                              : strings.itSupportBadge,
                           style: TextStyle(
-                            color: category == '1c' ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
+                            color: category == '1c'
+                                ? const Color(0xFFF59E0B)
+                                : const Color(0xFF38BDF8),
                             fontSize: 11,
                             fontWeight: FontWeight.bold,
                           ),
@@ -248,12 +299,14 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                   const Divider(color: Color(0xFF334155), height: 16),
                   Text(
                     '${strings.problemSummaryPrefix} "$summary"',
-                    style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12),
+                    style:
+                        const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12),
                   ),
                   const SizedBox(height: 8),
                   // Режим доступа — строго ДО подтверждения.
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       color: fullControl
                           ? const Color(0xFFEF4444).withValues(alpha: 0.12)
@@ -263,16 +316,24 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                     child: Row(
                       children: [
                         Icon(
-                          fullControl ? Icons.warning_amber_rounded : Icons.visibility_outlined,
+                          fullControl
+                              ? Icons.warning_amber_rounded
+                              : Icons.visibility_outlined,
                           size: 16,
-                          color: fullControl ? const Color(0xFFF87171) : const Color(0xFF34D399),
+                          color: fullControl
+                              ? const Color(0xFFF87171)
+                              : const Color(0xFF34D399),
                         ),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            fullControl ? strings.fullControlDesc : strings.viewOnlyDesc,
+                            fullControl
+                                ? strings.fullControlDesc
+                                : strings.viewOnlyDesc,
                             style: TextStyle(
-                              color: fullControl ? const Color(0xFFF87171) : const Color(0xFF34D399),
+                              color: fullControl
+                                  ? const Color(0xFFF87171)
+                                  : const Color(0xFF34D399),
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
                             ),
@@ -287,10 +348,13 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
             const SizedBox(height: 20),
 
             // Number Matching: ввод кода с клавиатуры
-            if (_expectedMatch.isNotEmpty) ...[
+            if (_codeLength > 0) ...[
               Text(
                 strings.numberMatchTitle,
-                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 4),
               Text(
@@ -302,12 +366,13 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
               SizedBox(
                 width: 160,
                 child: TextField(
+                  key: const Key('support-number-match-code'),
                   controller: _codeController,
                   focusNode: _codeFocus,
                   enabled: !_processing,
                   keyboardType: TextInputType.number,
                   textAlign: TextAlign.center,
-                  maxLength: _expectedMatch.length,
+                  maxLength: _codeLength,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   style: const TextStyle(
                     color: Colors.white,
@@ -318,17 +383,22 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                   decoration: InputDecoration(
                     counterText: '',
                     hintText: '••',
-                    hintStyle: const TextStyle(color: Color(0xFF475569), fontSize: 30, letterSpacing: 12),
+                    hintStyle: const TextStyle(
+                        color: Color(0xFF475569),
+                        fontSize: 30,
+                        letterSpacing: 12),
                     filled: true,
                     fillColor: const Color(0xFF0F172A),
                     contentPadding: const EdgeInsets.symmetric(vertical: 12),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
-                      borderSide: const BorderSide(color: Color(0xFF334155), width: 2),
+                      borderSide:
+                          const BorderSide(color: Color(0xFF334155), width: 2),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
-                      borderSide: const BorderSide(color: Color(0xFF38BDF8), width: 2),
+                      borderSide:
+                          const BorderSide(color: Color(0xFF38BDF8), width: 2),
                     ),
                   ),
                   onSubmitted: (_) => _codeEntered ? _approve() : null,
@@ -345,7 +415,8 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                 ),
                 child: Text(
                   strings.noCodeNotice,
-                  style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12),
+                  style:
+                      const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12),
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -355,7 +426,10 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
               const SizedBox(height: 14),
               Text(
                 _error!,
-                style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    color: Color(0xFFEF4444),
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -372,7 +446,8 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                       foregroundColor: const Color(0xFFEF4444),
                       side: const BorderSide(color: Color(0xFFEF4444)),
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                     ),
                     child: Text(strings.denyBtn),
                   ),
@@ -381,24 +456,27 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                 Expanded(
                   flex: 2,
                   child: ElevatedButton(
-                    onPressed: (_processing || !_codeEntered || _expectedMatch.isEmpty) ? null : _approve,
+                    onPressed: (_processing || !_codeEntered) ? null : _approve,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF10B981),
                       foregroundColor: Colors.white,
                       disabledBackgroundColor: const Color(0xFF064E3B),
                       disabledForegroundColor: const Color(0xFF64748B),
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                     ),
                     child: _processing
                         ? const SizedBox(
                             width: 20,
                             height: 20,
-                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                            child: CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2),
                           )
                         : Text(
                             strings.allowAccessBtn,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 14),
                           ),
                   ),
                 ),

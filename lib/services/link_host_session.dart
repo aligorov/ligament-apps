@@ -96,7 +96,8 @@ class LinkHostSession {
     try {
       if (confirmationRequired) {
         if (!consentGranted ||
-            !RegExp(r'^(?:[0-9]{3}|[0-9]{6})$').hasMatch(confirmationCode)) {
+            !RegExp(r'^(?:[0-9]{2}|[0-9]{3}|[0-9]{6})$')
+                .hasMatch(confirmationCode)) {
           await _reject('number_matching_required');
           return;
         }
@@ -304,17 +305,19 @@ class LinkHostWorkerState extends ChangeNotifier {
   String operatorName = '';
   String accessType = 'attended';
   String confirmationCode = '';
+  int confirmationDigits = 2;
 
   Future<void> get disconnectRequested => _disconnect.future;
 
   void showSession(String id, String mode, String operator,
-      {String type = 'attended'}) {
+      {String type = 'attended', int digits = 2}) {
     confirmationCode = '';
     sessionId = id;
     accessMode = mode;
     final trimmedOperator = operator.trim();
     operatorName = String.fromCharCodes(trimmedOperator.runes.take(96));
     accessType = type;
+    confirmationDigits = digits;
     phase = LinkHostWorkerPhase.connecting;
     notifyListeners();
   }
@@ -337,7 +340,10 @@ class LinkHostWorkerState extends ChangeNotifier {
         _consent?.isCompleted != false) {
       return;
     }
-    if (!RegExp(r'^(?:[0-9]{3}|[0-9]{6})$').hasMatch(code)) return;
+    if (!RegExp(r'^(?:[0-9]{2}|[0-9]{3}|[0-9]{6})$').hasMatch(code) ||
+        code.length != confirmationDigits) {
+      return;
+    }
     confirmationCode = code;
     _consent!.complete(true);
     phase = LinkHostWorkerPhase.connecting;
@@ -575,6 +581,7 @@ Future<void> _runConnectedLinkHostWorker(
   final operatorName = offer['operator_name'];
   final accessType = offer['access_type'];
   final confirmationRequired = offer['confirmation_required'];
+  final confirmationDigits = offer['confirmation_digits'] ?? 6; // legacy server
   final sdp = offer['sdp'];
   final iceRaw = offer['ice_servers'];
   if (sessionId is! String ||
@@ -582,6 +589,9 @@ Future<void> _runConnectedLinkHostWorker(
       (accessType != 'attended' && accessType != 'unattended') ||
       confirmationRequired is! bool ||
       confirmationRequired != (accessType == 'attended') ||
+      (accessType == 'attended' &&
+          (confirmationDigits is! int ||
+              !const [2, 3, 6].contains(confirmationDigits))) ||
       sdp is! String ||
       (operatorName != null &&
           (operatorName is! String || operatorName.runes.length > 128)) ||
@@ -594,6 +604,7 @@ Future<void> _runConnectedLinkHostWorker(
     accessMode,
     operatorName is String ? operatorName : '',
     type: accessType as String,
+    digits: confirmationDigits is int ? confirmationDigits : 0,
   );
   final iceServers = <Map<String, dynamic>>[];
   if (iceRaw is List) {
