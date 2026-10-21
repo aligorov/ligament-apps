@@ -102,6 +102,28 @@ func LoadIdentity() (*Identity, error) {
 	return loadIdentityAt(path)
 }
 
+// DeleteAgentIdentity removes only the protected identity file, never its
+// parent directory. Called after an authenticated server archive response.
+func DeleteAgentIdentity() error {
+	path, err := DefaultIdentityStorePath()
+	if err != nil {
+		return err
+	}
+	if err := ensureProtectedDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := rejectReparsePoint(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func saveIdentityAt(path string, identity *Identity) error {
 	if err := validatePersistedIdentity(identity); err != nil {
 		return err

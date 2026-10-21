@@ -556,6 +556,18 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
               padding: EdgeInsets.zero,
               icon: const Icon(Icons.info_outline, size: 16),
             ),
+            if (host['can_archive'] == true || host['can_unlink'] == true)
+              IconButton(
+                tooltip: host['can_archive'] == true
+                    ? (isRu ? 'Удалить из LINK' : 'Remove from LINK')
+                    : (isRu ? 'Отвязать мой ПК' : 'Unlink my PC'),
+                onPressed: () => _archiveHost(host, isRu),
+                visualDensity: VisualDensity.compact,
+                constraints:
+                    const BoxConstraints.tightFor(width: 32, height: 34),
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.link_off, size: 16),
+              ),
             IconButton(
               tooltip: isRu ? 'Подключиться' : 'Connect',
               onPressed: online ? () => _startLinkSession(host, isRu) : null,
@@ -570,6 +582,63 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     );
   }
 
+  Future<void> _archiveHost(Map<String, dynamic> host, bool isRu) async {
+    final agentId = host['id'];
+    if (agentId is! String || agentId.isEmpty) return;
+    final auth = context.read<AuthState>();
+    final api = auth.api;
+    if (api == null) return;
+    var reason = '';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(host['can_archive'] == true
+            ? (isRu ? 'Удалить ПК из LINK?' : 'Remove PC from LINK?')
+            : (isRu ? 'Отвязать мой ПК?' : 'Unlink my PC?')),
+        content: SizedBox(
+          width: 420,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(isRu
+                ? '${host['hostname'] ?? agentId}: доступ и текущие подключения будут прекращены. История сохранится. Для добавления заново потребуется регистрация агента.'
+                : '${host['hostname'] ?? agentId}: access and current connections will end. History is preserved. Adding this PC again requires agent enrollment.'),
+            const SizedBox(height: 16),
+            TextField(
+              onChanged: (value) => reason = value.trim(),
+              maxLength: 256,
+              decoration: InputDecoration(
+                  labelText:
+                      isRu ? 'Причина (необязательно)' : 'Reason (optional)'),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: Text(isRu ? 'Отмена' : 'Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: Text(isRu ? 'Подтвердить' : 'Confirm')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await api.archiveLinkHost(agentId, reason: reason);
+      await auth.loadLinkHosts();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(isRu
+              ? 'ПК удалён из LINK. История сохранена.'
+              : 'PC removed from LINK. History preserved.')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(isRu
+              ? 'Не удалось удалить ПК. Проверьте права и обновите список; регистрация не очищалась локально.'
+              : 'Could not remove PC. Check permissions and refresh the list; local enrollment was not cleared.')));
+    }
+  }
+
   Future<void> _showHostDetails(Map<String, dynamic> host, bool isRu) async {
     final localIPs = host['local_ips'];
     final notDetected = isRu ? 'Не определено' : 'Not detected';
@@ -582,12 +651,10 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final cpuPercent = host['cpu_usage_percent'] is num
         ? (host['cpu_usage_percent'] as num).toInt()
         : 0;
-    final ramUsed = host['ram_used_mb'] is num
-        ? (host['ram_used_mb'] as num).toInt()
-        : 0;
-    final ramTotal = host['ram_total_mb'] is num
-        ? (host['ram_total_mb'] as num).toInt()
-        : 0;
+    final ramUsed =
+        host['ram_used_mb'] is num ? (host['ram_used_mb'] as num).toInt() : 0;
+    final ramTotal =
+        host['ram_total_mb'] is num ? (host['ram_total_mb'] as num).toInt() : 0;
 
     String formatUptime(int sec) {
       if (sec <= 0) return notDetected;
@@ -626,16 +693,13 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       ),
       (
         isRu ? 'Внешний IP сервера' : 'Server-observed IP',
-        (host['public_ip'] != null &&
-                host['public_ip'].toString().isNotEmpty)
+        (host['public_ip'] != null && host['public_ip'].toString().isNotEmpty)
             ? host['public_ip'].toString()
             : notDetected,
       ),
       (
         isRu ? 'Модель ПК / Оборудование' : 'Hardware model',
-        (hwModel != null && hwModel.isNotEmpty)
-            ? hwModel
-            : notDetected,
+        (hwModel != null && hwModel.isNotEmpty) ? hwModel : notDetected,
       ),
       (
         isRu ? 'ОС и версия' : 'OS and version',
@@ -663,8 +727,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       ],
       (
         isRu ? 'Группа' : 'Group',
-        (host['group_name'] != null &&
-                host['group_name'].toString().isNotEmpty)
+        (host['group_name'] != null && host['group_name'].toString().isNotEmpty)
             ? host['group_name'].toString()
             : notDetected,
       ),
@@ -707,8 +770,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   Text(label,
                       style: const TextStyle(
                           color: Color(0xFF94A3B8), fontSize: 12)),
-                  SelectableText(
-                      value.isNotEmpty ? value : notDetected,
+                  SelectableText(value.isNotEmpty ? value : notDetected,
                       style: TextStyle(
                           color: value.isNotEmpty && value != notDetected
                               ? Colors.white

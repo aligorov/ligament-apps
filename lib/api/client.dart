@@ -751,6 +751,22 @@ class ApiClient {
     throw ApiException(res.statusCode, code);
   }
 
+  /// Archives a host, preserving history. The server checks administrator role
+  /// or ownership plus explicit policy; connection ACL is not sufficient.
+  Future<void> archiveLinkHost(String agentId, {required String reason}) async {
+    final res = await _post(
+      _cleanUrl(
+          '/api/v1/app/link/hosts/${Uri.encodeComponent(agentId)}/archive'),
+      headers: _headers(),
+      body: jsonEncode(<String, String>{'reason': reason}),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode != 200 || data['status'] != 'archived') {
+      throw ApiException(
+          res.statusCode, data['error']?.toString() ?? 'link_archive_failed');
+    }
+  }
+
   /// Issues a short-lived, one-use credential for binding the current Windows
   /// host. The token is returned only to the authenticated app client.
   Future<LinkEnrollmentCredential> createLinkEnrollmentCredential() async {

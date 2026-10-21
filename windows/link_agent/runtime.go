@@ -44,7 +44,19 @@ func RunStoredAgent(
 	}
 	defer clearIdentity(identity)
 	config.Identity = identity
-	return RunAgent(ctx, config, dialer, handler, reportError)
+	err = RunAgent(ctx, config, dialer, handler, reportError)
+	if errors.Is(err, ErrAgentUnbound) {
+		if dialer != nil && dialer.TLSClientConfig != nil && dialer.TLSClientConfig.InsecureSkipVerify {
+			return errors.New("link agent: refusing identity deletion with insecure TLS")
+		}
+		if config.DeleteIdentity == nil {
+			return errors.New("link agent: identity cleanup is unavailable")
+		}
+		if deleteErr := config.DeleteIdentity(); deleteErr != nil {
+			return fmt.Errorf("link agent: delete archived identity: %w", deleteErr)
+		}
+	}
+	return err
 }
 
 // ValidateAgentWSMetadata verifies registry/configuration data without requiring

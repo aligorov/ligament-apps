@@ -75,6 +75,7 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	config.DeleteIdentity = linkagent.DeleteAgentIdentity
 	defer cancel()
 	workerBroker := linkagent.NewSessionWorkerBroker(linkagent.NewNativeSessionWorkerLauncher())
 	workerResults := make(chan serviceWorkerResult, 2)
@@ -88,9 +89,7 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 			workerResults <- serviceWorkerResult{kind: "runtime", err: err}
 		}()
 	}
-	if identityErr == nil {
-		startRuntime()
-	} else {
+	startBinding := func() {
 		activeWorkers++
 		go func() {
 			err := linkagent.ServeOneBindingPipe(ctx, func(bindCtx context.Context, request linkagent.BindingRequest) (string, error) {
@@ -121,6 +120,11 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 			workerResults <- serviceWorkerResult{kind: "binding", err: err}
 		}()
 	}
+	if identityErr == nil {
+		startRuntime()
+	} else {
+		startBinding()
+	}
 	statuses <- svc.Status{
 		State:   svc.Running,
 		Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange,
@@ -131,6 +135,11 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 		case result := <-workerResults:
 			activeWorkers--
 			if result.kind == "runtime" {
+				if errors.Is(result.err, linkagent.ErrAgentUnbound) {
+					serviceLog(logger, logErr, "archived identity removed; waiting for local enrollment")
+					startBinding()
+					continue
+				}
 				cancel()
 				if errors.Is(result.err, context.Canceled) {
 					return false, 0

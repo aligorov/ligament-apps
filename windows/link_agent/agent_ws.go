@@ -30,6 +30,8 @@ const (
 	agentReconnectMax    = time.Minute
 )
 
+var ErrAgentUnbound = errors.New("link agent: server archived this identity")
+
 // AgentWSConfig contains the enrolled identity and non-secret host metadata.
 type AgentWSConfig struct {
 	ServerURL       string
@@ -41,6 +43,7 @@ type AgentWSConfig struct {
 	Capabilities    map[string]any
 	InteractiveUser func() string
 	LocalIPs        func() []string
+	DeleteIdentity  func() error
 }
 
 // AgentMessageHandler processes a server text frame. send is safe to call from
@@ -125,6 +128,9 @@ func RunAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.Diale
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if errors.Is(err, ErrAgentUnbound) {
+			return err
 		}
 		if reportError != nil && err != nil {
 			reportError(err)
@@ -214,9 +220,21 @@ func serveAgentConnection(ctx context.Context, conn agentSocket, config AgentWSC
 			}
 			var envelope struct {
 				Type                   string `json:"type"`
+				AgentID                string `json:"agent_id"`
+				Status                 string `json:"status"`
 				CollectInteractiveUser bool   `json:"collect_interactive_user"`
 			}
-			if json.Unmarshal(result.payload, &envelope) == nil && envelope.Type == "heartbeat_ack" {
+			decoded := json.Unmarshal(result.payload, &envelope) == nil
+			if decoded && envelope.Type == "agent_unbound" && envelope.Status == "archived" && config.Identity != nil && envelope.AgentID == config.Identity.AgentID {
+				// Only an authenticated TLS server may trigger destructive local
+				// cleanup. Network errors, HTTP and ordinary revocation keep keys.
+				endpoint, parseErr := url.Parse(config.ServerURL)
+				if parseErr != nil || endpoint.Scheme != "https" {
+					return errors.New("link agent: unbind requires authenticated HTTPS")
+				}
+				return ErrAgentUnbound
+			}
+			if decoded && envelope.Type == "heartbeat_ack" {
 				lastAck = time.Now()
 				collectInteractiveUser = envelope.CollectInteractiveUser
 				continue

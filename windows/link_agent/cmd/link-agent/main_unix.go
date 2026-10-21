@@ -57,9 +57,17 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := runUnixAgent(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("link agent stopped: %v", err)
-		os.Exit(1)
+	for {
+		err := runUnixAgent(ctx)
+		if errors.Is(err, linkagent.ErrAgentUnbound) {
+			log.Print("Link identity archived; waiting for a new local enrollment")
+			continue
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("link agent stopped: %v", err)
+			os.Exit(1)
+		}
+		return
 	}
 }
 
@@ -83,6 +91,7 @@ func runUnixAgent(ctx context.Context) error {
 	config := linkagent.AgentConfig("", hostname, osFamily, osVersion, unixAgentVersion, capabilities)
 	config.InteractiveUser = linkagent.CurrentInteractiveUser
 	config.LocalIPs = linkagent.CurrentLocalIPs
+	config.DeleteIdentity = linkagent.DeleteAgentIdentity
 	if err := linkagent.ValidateAgentHostMetadata(config); err != nil {
 		return err
 	}
