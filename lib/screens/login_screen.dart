@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../api/client.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import 'home_screen.dart';
@@ -20,10 +23,95 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   bool _isLoading = false;
   bool _requiresSecondFactor = false;
+  bool _pushSent = false;
+  String? _challengeId;
+  String? _claimToken;
+  Timer? _claimPollingTimer;
   String? _error;
+
+  void _stopClaimPolling() {
+    _claimPollingTimer?.cancel();
+    _claimPollingTimer = null;
+  }
+
+  void _resetSecondFactor() {
+    _stopClaimPolling();
+    setState(() {
+      _requiresSecondFactor = false;
+      _pushSent = false;
+      _challengeId = null;
+      _claimToken = null;
+      _codeController.clear();
+      _error = null;
+    });
+  }
+
+  void _startClaimPolling() {
+    _stopClaimPolling();
+    if (!mounted || _challengeId == null || _claimToken == null) return;
+
+    _claimPollingTimer = Timer.periodic(const Duration(milliseconds: 1500), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      try {
+        final auth = context.read<AuthState>();
+        final res = await auth.loginClaim(
+          challengeId: _challengeId!,
+          claimToken: _claimToken!,
+        );
+
+        if (!mounted) return;
+
+        final status = res['status']?.toString();
+        if (res['token'] != null) {
+          timer.cancel();
+          _claimPollingTimer = null;
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const HomeScreen()),
+          );
+        } else if (status == 'denied') {
+          timer.cancel();
+          _claimPollingTimer = null;
+          setState(() {
+            _pushSent = false;
+            _error = context.stringsRead.errLoginDeniedOnDevice;
+          });
+        } else if (status == 'expired') {
+          timer.cancel();
+          _claimPollingTimer = null;
+          setState(() {
+            _pushSent = false;
+            _error = context.stringsRead.errChallengeExpired;
+          });
+        }
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        if (e.code == 'challenge_denied' || e.code == 'denied') {
+          timer.cancel();
+          _claimPollingTimer = null;
+          setState(() {
+            _pushSent = false;
+            _error = context.stringsRead.errLoginDeniedOnDevice;
+          });
+        } else if (e.code == 'challenge_expired' || e.code == 'expired') {
+          timer.cancel();
+          _claimPollingTimer = null;
+          setState(() {
+            _pushSent = false;
+            _error = context.stringsRead.errChallengeExpired;
+          });
+        }
+      } catch (e) {
+        debugPrint('login push claim error: $e');
+      }
+    });
+  }
 
   @override
   void dispose() {
+    _stopClaimPolling();
     _usernameController.dispose();
     _passwordController.dispose();
     _codeController.dispose();
@@ -32,6 +120,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _handleLogin() async {
     if (_isLoading) return;
+    _stopClaimPolling();
     final s = context.stringsRead;
     final username = _usernameController.text.trim();
     final password = _passwordController.text;
@@ -67,7 +156,17 @@ class _LoginScreenState extends State<LoginScreen> {
           if (msg.contains('second_factor_required')) {
             if (!_requiresSecondFactor) {
               _requiresSecondFactor = true;
-              _error = s.errSecondFactorRequired;
+              if (e is ApiException && e.details != null) {
+                _challengeId = e.details!['challenge_id']?.toString();
+                _claimToken = e.details!['claim_token']?.toString();
+                _pushSent = e.details!['push_sent'] == true;
+              }
+              if (_pushSent && _challengeId != null && _claimToken != null) {
+                _error = null;
+                _startClaimPolling();
+              } else {
+                _error = s.errSecondFactorRequired;
+              }
             } else {
               _error = s.errInvalidVerificationCode;
             }
@@ -119,11 +218,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     void handleBack() {
       if (_requiresSecondFactor) {
-        setState(() {
-          _requiresSecondFactor = false;
-          _codeController.clear();
-          _error = null;
-        });
+        _resetSecondFactor();
       } else if (canPopRoute) {
         Navigator.of(context).pop();
       } else if (!isGpoLocked) {
@@ -248,41 +343,90 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                             ),
                             TextButton(
-                              onPressed: () => setState(() {
-                                _requiresSecondFactor = false;
-                                _codeController.clear();
-                                _error = null;
-                              }),
+                              onPressed: _resetSecondFactor,
                               child: Text(s.btnChangeUser, style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12)),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 16),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF0284C7).withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFF0284C7)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.verified_user, color: Color(0xFF38BDF8), size: 20),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                s.secondFactorPrompt,
-                                style: const TextStyle(color: Color(0xFFBAE6FD), fontSize: 12),
+                      if (_pushSent) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.5)),
+                          ),
+                          child: Row(
+                            children: [
+                              const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: Color(0xFF38BDF8),
+                                ),
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      s.pushWaitingPrompt,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      s.pushWaitingHelp,
+                                      style: const TextStyle(
+                                        color: Color(0xFFBAE6FD),
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 16),
+                        Text(
+                          s.orEnterCodePrompt,
+                          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                        ),
+                      ] else ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFF0284C7)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.verified_user, color: Color(0xFF38BDF8), size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  s.secondFactorPrompt,
+                                  style: const TextStyle(color: Color(0xFFBAE6FD), fontSize: 12),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 16),
                       TextField(
                         controller: _codeController,
-                        autofocus: true,
+                        autofocus: !_pushSent,
                         keyboardType: TextInputType.number,
                         style: const TextStyle(color: Colors.white, fontSize: 18, letterSpacing: 4),
                         textAlign: TextAlign.center,
@@ -337,13 +481,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     if (_requiresSecondFactor) ...[
                       const SizedBox(height: 8),
                       TextButton(
-                        onPressed: _isLoading
-                            ? null
-                            : () => setState(() {
-                                  _requiresSecondFactor = false;
-                                  _codeController.clear();
-                                  _error = null;
-                                }),
+                        onPressed: _isLoading ? null : _resetSecondFactor,
                         child: Text(s.btnBackToPassword, style: const TextStyle(color: Color(0xFF94A3B8))),
                       ),
                     ],
