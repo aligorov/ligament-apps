@@ -46,7 +46,7 @@ void main() {
     final auth = _CatalogAuthState([
       {
         'hostname': 'STALE-PC',
-        'ad_ou': 'OU=Test',
+        'ad_ou': 'OU=IT-Corp',
         'group_name': 'Test',
         'is_online': null,
         'os_family': 'windows',
@@ -60,7 +60,7 @@ void main() {
     await tester.pump();
     expect(find.text('Не удалось обновить каталог. Доступность ПК неизвестна.'),
         findsOneWidget);
-    await tester.tap(find.text('OU=Test'));
+    await tester.tap(find.text('IT-Corp'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Test'));
     await tester.pumpAndSettle();
@@ -92,7 +92,7 @@ void main() {
       expect(find.text('Добавить ПК'), findsOneWidget);
     }
 
-    await tester.tap(find.text('OU=Finance'));
+    await tester.tap(find.text('Finance'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Workstations'));
     await tester.pumpAndSettle();

@@ -1,13 +1,38 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ligament_authenticator/api/client.dart';
 import 'package:ligament_authenticator/screens/link_catalog_screen.dart';
 import 'package:ligament_authenticator/services/auth_state.dart';
 import 'package:provider/provider.dart';
+
+class _FakeApi extends ApiClient {
+  _FakeApi() : super(baseUrl: 'https://example.test');
+  String? lastType;
+  String? lastTarget;
+
+  @override
+  Future<Map<String, dynamic>> getLinkGroupAccess({
+    required String type,
+    required String target,
+  }) async {
+    lastType = type;
+    lastTarget = target;
+    return {
+      'type': type,
+      'target': target,
+      'operators': <dynamic>[],
+    };
+  }
+}
 
 class _FakeAuth extends ChangeNotifier implements AuthState {
   _FakeAuth({this.linkAdmin = true});
 
   final bool linkAdmin;
+  final fakeApi = _FakeApi();
+
+  @override
+  ApiClient? get api => fakeApi;
 
   @override
   bool get linkFeatureAvailable => true;
@@ -61,11 +86,11 @@ void main() {
     await tester.pumpAndSettle();
 
     // OU folder should have the folder-access button
-    final ouAccessBtn = find.byKey(const ValueKey('folder-access-OU=Accounting,DC=corp'));
+    final ouAccessBtn = find.byKey(const ValueKey('folder-access-Accounting'));
     expect(ouAccessBtn, findsOneWidget);
 
     // Tap the OU folder to expand it and reveal sub-groups
-    await tester.tap(find.text('OU=Accounting,DC=corp'));
+    await tester.tap(find.text('Accounting'));
     await tester.pumpAndSettle();
 
     final groupAccessBtn = find.byKey(const ValueKey('folder-access-Бухгалтерия'));
@@ -85,7 +110,31 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final ouAccessBtn = find.byKey(const ValueKey('folder-access-OU=Accounting,DC=corp'));
+    final ouAccessBtn = find.byKey(const ValueKey('folder-access-Accounting'));
     expect(ouAccessBtn, findsNothing);
+  });
+
+  testWidgets('LinkCatalogScreen sends raw OU target to group access API',
+      (tester) async {
+    final auth = _FakeAuth(linkAdmin: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChangeNotifierProvider<AuthState>.value(
+          value: auth,
+          child: const LinkCatalogScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final ouAccessBtn = find.byKey(const ValueKey('folder-access-Accounting'));
+    expect(ouAccessBtn, findsOneWidget);
+
+    await tester.tap(ouAccessBtn);
+    await tester.pumpAndSettle();
+
+    expect(auth.fakeApi.lastType, 'ou');
+    expect(auth.fakeApi.lastTarget, 'OU=Accounting,DC=corp');
+    expect(find.text('OU=Accounting,DC=corp'), findsOneWidget);
   });
 }

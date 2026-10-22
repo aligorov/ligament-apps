@@ -872,6 +872,7 @@ class ApiClient {
     String accessMode = 'view',
     String? clientSdp,
     String? resolution,
+    String? actionId,
   }) async {
     final res = await _post(
       _cleanUrl('/api/v1/app/link/sessions/request'),
@@ -879,6 +880,7 @@ class ApiClient {
       body: jsonEncode({
         'agent_id': agentId,
         'access_mode': accessMode,
+        if (actionId != null && actionId.isNotEmpty) 'action_id': actionId,
         if (clientSdp != null && clientSdp.isNotEmpty) 'client_sdp': clientSdp,
         if (resolution != null && resolution.isNotEmpty)
           'resolution': resolution,

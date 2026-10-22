@@ -80,7 +80,7 @@ void main() {
     final auth = _ArchiveAuth();
     await showHost(tester, auth);
     expect(find.text('TEST-PC'), findsOneWidget);
-    expect(find.byIcon(Icons.link_off), findsNothing);
+    expect(find.byIcon(Icons.delete_outline), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     auth.dispose();
   });
@@ -91,7 +91,7 @@ void main() {
     await showHost(tester, auth);
     await tester.tap(find.byTooltip('Удалить из LINK'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('История сохранится'), findsOneWidget);
+    expect(find.textContaining('будет удалён из каталога LINK'), findsOneWidget);
     await tester.enterText(
         find.widgetWithText(TextField, 'Причина (необязательно)'), 'Замена ПК');
     await tester.tap(find.text('Подтвердить'));
@@ -107,7 +107,7 @@ void main() {
       (tester) async {
     final auth = _ArchiveAuth(owner: true);
     await showHost(tester, auth);
-    await tester.tap(find.byTooltip('Отвязать мой ПК'));
+    await tester.tap(find.byTooltip('Удалить из LINK'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Отмена'));
     await tester.pumpAndSettle();
@@ -121,7 +121,7 @@ void main() {
     final auth = _ArchiveAuth(owner: true);
     auth.api.denied = true;
     await showHost(tester, auth);
-    await tester.tap(find.byTooltip('Отвязать мой ПК'));
+    await tester.tap(find.byTooltip('Удалить из LINK'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Подтвердить'));
     await tester.pumpAndSettle();

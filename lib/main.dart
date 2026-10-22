@@ -252,6 +252,7 @@ class LigamentApp extends StatefulWidget {
 class _LigamentAppState extends State<LigamentApp>
     with TrayListener, WindowListener {
   String? _lastTrayLocale;
+  bool? _wasLoggedIn;
 
   @override
   void initState() {
@@ -429,6 +430,20 @@ class _LigamentAppState extends State<LigamentApp>
     if (!kIsWeb &&
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       _updateTrayIfNeeded(auth);
+    }
+
+    if (_wasLoggedIn == true && !auth.isLoggedIn) {
+      _wasLoggedIn = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        LigamentApp.navigatorKey.currentState?.pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const ConnectScreen()),
+          (route) => false,
+        );
+      });
+    } else if (auth.isLoggedIn) {
+      _wasLoggedIn = true;
+    } else {
+      _wasLoggedIn = false;
     }
 
     return MaterialApp(

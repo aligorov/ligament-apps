@@ -416,6 +416,10 @@ class AppStrings {
   String get cpuLoad => isRu ? 'Загрузка процессора (CPU)' : 'CPU Usage';
   String get logoutAccount => isRu ? 'Выйти из учетной записи' : 'Log Out of Account';
   String get logoutBlocked => isRu ? 'Выход заблокирован системным администратором' : 'Logout blocked by system administrator';
+  String get logoutConfirmTitle => isRu ? 'Выход из учетной записи' : 'Log Out of Account';
+  String get logoutConfirmMessage => isRu
+      ? 'Вы действительно хотите выйти из учетной записи? Для повторного входа потребуется авторизация.'
+      : 'Are you sure you want to log out of your account? You will need to sign in again.';
   String platformCorporate(String p) => isRu ? 'Платформа: $p • Корпоративная защита' : 'Platform: $p • Enterprise Protection';
 
   // --- 2FA & Notifications ---

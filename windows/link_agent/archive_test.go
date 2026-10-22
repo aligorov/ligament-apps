@@ -22,12 +22,15 @@ func TestArchivedIdentityCleanupRequiresAuthenticatedServer(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			identity := testAgentIdentity(t)
+			expectedPubKey := append([]byte(nil), identity.PublicKey...)
 			id := identity.AgentID
 			if !test.sameID {
 				id = "00000000-0000-0000-0000-000000000000"
 			}
 			upgrader := websocket.Upgrader{}
+			doneHandler := make(chan struct{})
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(doneHandler)
 				conn, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					return
@@ -37,7 +40,7 @@ func TestArchivedIdentityCleanupRequiresAuthenticatedServer(t *testing.T) {
 				if err := conn.ReadJSON(&hello); err != nil {
 					return
 				}
-				if !VerifyHello(hello, identity.PublicKey) {
+				if !VerifyHello(hello, expectedPubKey) {
 					t.Error("invalid hello")
 					return
 				}
@@ -50,12 +53,18 @@ func TestArchivedIdentityCleanupRequiresAuthenticatedServer(t *testing.T) {
 					}
 				}
 			}))
-			defer server.Close()
+			defer func() {
+				server.Close()
+				select {
+				case <-doneHandler:
+				case <-time.After(time.Second):
+				}
+			}()
 			dialer := &websocket.Dialer{TLSClientConfig: server.Client().Transport.(*http.Transport).TLSClientConfig}
 			deleted := false
 			config := AgentConfig(server.URL, "TEST-PC", "windows", "11", "test", nil)
 			config.DeleteIdentity = func() error { deleted = true; return nil }
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			err := RunStoredAgent(ctx, config, func() (*Identity, error) { return identity, nil }, dialer, func(context.Context, []byte, func(any) error) error { return nil }, nil)
 			if deleted != test.wantDeleted {

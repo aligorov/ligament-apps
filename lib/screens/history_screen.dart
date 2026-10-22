@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
+import 'connect_screen.dart';
 
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
@@ -34,6 +35,12 @@ class HistoryScreen extends StatelessWidget {
               Navigator.of(ctx).pop();
               final auth = context.read<AuthState>();
               await auth.logout();
+              if (context.mounted) {
+                Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const ConnectScreen()),
+                  (route) => false,
+                );
+              }
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             child: Text(s.emergencyExit, style: const TextStyle(color: Colors.white)),

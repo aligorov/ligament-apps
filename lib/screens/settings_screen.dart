@@ -8,6 +8,7 @@ import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/rdp_service_settings_card.dart';
 import '../app_version.dart';
+import 'connect_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -19,6 +20,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // Обновление приложения (v1.1.49+): latest с сервера, когда есть.
   Map<String, dynamic>? _appUpdate;
+  bool _isLoggingOut = false;
 
   @override
   void initState() {
@@ -183,9 +185,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: () {
-                        final uri = Uri.parse('${auth.serverUrl}/me');
-                        launchUrl(uri, mode: LaunchMode.externalApplication);
+                      onPressed: () async {
+                        final base = auth.serverUrl?.replaceAll(RegExp(r'/+$'), '') ?? '';
+                        if (base.isEmpty) return;
+                        final uri = Uri.tryParse('$base/me');
+                        if (uri != null) {
+                          try {
+                            await launchUrl(uri, mode: LaunchMode.externalApplication);
+                          } catch (_) {}
+                        }
                       },
                       icon: const Icon(Icons.open_in_new, size: 16),
                       label: Text(s.webCabinetButton, style: const TextStyle(fontSize: 12)),
@@ -760,8 +768,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // Кнопка выхода
           ElevatedButton.icon(
-            onPressed: allowExit ? () => auth.logout() : null,
-            icon: const Icon(Icons.logout),
+            onPressed: (allowExit && !_isLoggingOut) ? () => _handleLogout(auth, s) : null,
+            icon: _isLoggingOut
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.logout),
             label: Text(allowExit ? s.logoutAccount : s.logoutBlocked),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.redAccent.withValues(alpha: 0.8),
@@ -786,7 +800,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onPressed: () async {
                       final url = Uri.tryParse('${_appUpdate!['release_url'] ?? ''}');
                       if (url != null && url.isScheme('https')) {
-                        await launchUrl(url, mode: LaunchMode.externalApplication);
+                        try {
+                          await launchUrl(url, mode: LaunchMode.externalApplication);
+                        } catch (_) {}
                       }
                     },
                     icon: const Icon(Icons.system_update_alt, size: 14, color: Color(0xFF38BDF8)),
@@ -861,6 +877,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _handleLogout(AuthState auth, AppStrings s) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Row(
+          children: [
+            const Icon(Icons.logout, color: Colors.redAccent),
+            const SizedBox(width: 8),
+            Text(s.logoutConfirmTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
+          ],
+        ),
+        content: Text(
+          s.logoutConfirmMessage,
+          style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(s.cancel, style: const TextStyle(color: Color(0xFF94A3B8))),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: Text(s.logoutAccount, style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isLoggingOut = true);
+    try {
+      await auth.logout();
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const ConnectScreen()),
+          (route) => false,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoggingOut = false);
+      }
+    }
   }
 
   Future<void> _handleTestDelivery(BuildContext context, AuthState auth, AppStrings s) async {
@@ -947,7 +1011,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Navigator.of(context).pop(); // закрываем лоадер
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Ошибка: $e'),
+            content: Text('${s.error}: $e'),
             backgroundColor: Colors.redAccent,
           ),
         );

@@ -23,9 +23,10 @@ const (
 	serviceName       = "LigamentLinkAgent"
 	serviceRegistry   = `SOFTWARE\Ligament\2FA`
 	windowsVersionKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion`
-	agentVersion      = "0.1.0"
 	stopWaitLimit     = 15 * time.Second
 )
+
+var agentVersion = "1.1.83"
 
 func main() {
 	isService, err := svc.IsWindowsService()

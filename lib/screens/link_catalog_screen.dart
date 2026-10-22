@@ -145,6 +145,7 @@ class _CatalogRow {
     required this.type,
     this.key = '',
     this.label = '',
+    this.target = '',
     this.memberCount = 0,
     this.onlineCount = 0,
     this.expanded = false,
@@ -154,6 +155,7 @@ class _CatalogRow {
   final _CatalogRowType type;
   final String key;
   final String label;
+  final String target;
   final int memberCount;
   final int onlineCount;
   final bool expanded;
@@ -255,11 +257,19 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     }
     final hosts = _searchIndex!.search(_query);
     final folders = <String, Map<String, List<Map<String, dynamic>>>>{};
+    final ouRawTargets = <String, String>{};
     for (final host in hosts) {
-      final formattedOU = formatOU(host['ad_ou']?.toString() ?? '');
+      final rawOU = host['ad_ou']?.toString().trim() ?? '';
+      final formattedOU = formatOU(rawOU);
       final ou = formattedOU.isNotEmpty
           ? formattedOU
           : (isRu ? 'Без подразделения' : 'Unassigned OU');
+      if (rawOU.isNotEmpty) {
+        final existing = ouRawTargets[ou];
+        if (existing == null || (!existing.contains('OU=') && rawOU.contains('OU='))) {
+          ouRawTargets[ou] = rawOU;
+        }
+      }
       final group = (host['group_name']?.toString().trim().isNotEmpty ?? false)
           ? host['group_name'].toString().trim()
           : (isRu ? 'Без группы' : 'Unassigned group');
@@ -336,7 +346,9 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                 style: const TextStyle(color: Colors.amber),
               ),
             ),
-          Expanded(child: _buildBody(auth, ouNames, folders, hosts, isRu)),
+          Expanded(
+              child: _buildBody(
+                  auth, ouNames, folders, ouRawTargets, hosts, isRu)),
         ],
       ),
     );
@@ -346,6 +358,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     AuthState auth,
     List<String> ouNames,
     Map<String, Map<String, List<Map<String, dynamic>>>> folders,
+    Map<String, String> ouRawTargets,
     List<Map<String, dynamic>> hosts,
     bool isRu,
   ) {
@@ -377,7 +390,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       );
     }
 
-    final rows = _visibleCatalogRows(ouNames, folders);
+    final rows = _visibleCatalogRows(ouNames, folders, ouRawTargets);
     return CustomScrollView(
       slivers: [
         SliverPadding(
@@ -396,10 +409,10 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     onTap: () => _toggleExpansion(row.key),
                     isOU: true,
                     isRu: isRu,
-                    onManageAccess: auth.isLinkAdmin
+                    onManageAccess: auth.isLinkAdmin && row.target.isNotEmpty
                         ? () => _showGroupAccessDialog(
                               type: 'ou',
-                              target: row.label,
+                              target: row.target,
                               label: row.label,
                               isRu: isRu,
                               auth: auth,
@@ -412,10 +425,12 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     onTap: () => _toggleExpansion(row.key),
                     isOU: false,
                     isRu: isRu,
-                    onManageAccess: auth.isLinkAdmin
+                    onManageAccess: auth.isLinkAdmin &&
+                            row.label !=
+                                (isRu ? 'Без группы' : 'Unassigned group')
                         ? () => _showGroupAccessDialog(
                               type: 'group',
-                              target: row.label,
+                              target: row.target,
                               label: row.label,
                               isRu: isRu,
                               auth: auth,
@@ -437,6 +452,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   List<_CatalogRow> _visibleCatalogRows(
     List<String> ouNames,
     Map<String, Map<String, List<Map<String, dynamic>>>> folders,
+    Map<String, String> ouRawTargets,
   ) {
     final rows = <_CatalogRow>[];
     for (final ou in ouNames) {
@@ -444,10 +460,12 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       final members = groups.values.expand((group) => group);
       final key = 'ou\u0000$ou';
       final expanded = _isExpanded(key);
+      final rawTarget = ouRawTargets[ou] ?? '';
       rows.add(_CatalogRow(
         type: _CatalogRowType.ou,
         key: key,
         label: ou,
+        target: rawTarget,
         memberCount:
             groups.values.fold<int>(0, (sum, group) => sum + group.length),
         onlineCount: members.where((host) => host['is_online'] == true).length,
@@ -464,6 +482,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           type: _CatalogRowType.group,
           key: groupKey,
           label: groupName,
+          target: groupName,
           memberCount: groups[groupName]!.length,
           expanded: groupExpanded,
         ));
@@ -1192,12 +1211,17 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
                         ),
                         Text(
                           widget.type == 'ou'
-                              ? (isRu
-                                  ? 'Подразделение (OU) Active Directory'
-                                  : 'Active Directory OU')
+                              ? (widget.target.isNotEmpty &&
+                                      widget.target != widget.label
+                                  ? widget.target
+                                  : (isRu
+                                      ? 'Подразделение (OU) Active Directory'
+                                      : 'Active Directory OU'))
                               : (isRu
                                   ? 'Группа компьютеров'
                                   : 'Computer group'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                               color: Color(0xFF94A3B8), fontSize: 11),
                         ),

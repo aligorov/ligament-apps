@@ -102,7 +102,7 @@ class LocalDetectService {
     _server = null;
     _wakeToken = null;
     try {
-      await server?.close();
+      await server?.close(force: true);
     } catch (e) {
       debugPrint('local_detect: ошибка остановки слушателя: $e');
     }

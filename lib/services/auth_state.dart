@@ -1095,12 +1095,14 @@ class AuthState extends ChangeNotifier {
     _machineRetryTimer?.cancel();
     _machineRetryTimer = null;
     try {
-      await api?.logout();
+      await api?.logout().timeout(const Duration(seconds: 3));
     } catch (_) {}
 
     // Этап D: сессия устройства завершена — локальный детект больше не
     // должен отвечать device_id этого входа.
-    await localDetect.stop();
+    try {
+      await localDetect.stop().timeout(const Duration(seconds: 2));
+    } catch (_) {}
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();

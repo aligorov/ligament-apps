@@ -17,7 +17,7 @@ import (
 	linkagent "ligament-apps/windows/link_agent"
 )
 
-const unixAgentVersion = "0.1.0"
+var unixAgentVersion = "1.1.83"
 
 func readUnixOSVersion() string {
 	if runtime.GOOS == "darwin" {

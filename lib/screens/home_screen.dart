@@ -17,6 +17,7 @@ import 'approval_modal.dart';
 import 'browser_sso_dialog.dart';
 import 'identity_mismatch_banner.dart';
 import 'apps_screen.dart';
+import 'connect_screen.dart';
 import 'history_screen.dart';
 import 'notification_popup_dialog.dart';
 import 'notifications_screen.dart';
@@ -72,6 +73,16 @@ class _HomeScreenState extends State<HomeScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final auth = context.read<AuthState>();
+    if (!auth.isLoggedIn) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const ConnectScreen()),
+          (route) => false,
+        );
+      });
+      return;
+    }
     _checkPrompts(auth);
     _checkBrowserSsoPrompt(auth);
     _checkPendingRdpDeepLink(auth);
