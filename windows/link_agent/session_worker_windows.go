@@ -37,14 +37,14 @@ func NewWindowsSessionWorkerLauncher() *WindowsSessionWorkerLauncher {
 	return &WindowsSessionWorkerLauncher{}
 }
 
-func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer, offerFrame []byte) (SessionWorkerProcess, error) {
+func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, offer SessionOffer, offerFrame []byte) (SessionWorkerProcess, error) {
 	if len(offerFrame) == 0 || len(offerFrame) > linkHostFrameLimit {
 		return nil, &WorkerLaunchError{
 			Reason: ReasonHostWorkerUnavailable,
 			Err:    errors.New("link agent: invalid initial worker frame size"),
 		}
 	}
-	sess, err := ResolveInteractiveSession()
+	sess, desktop, err := ResolveTargetSession(offer.AccessType == "unattended")
 	if err != nil {
 		if errors.Is(err, ErrNoActiveInteractiveUser) {
 			return nil, &WorkerLaunchError{Reason: ReasonHostNoActiveUser, Err: err}
@@ -103,7 +103,7 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer,
 			Err:    fmt.Errorf("link agent: create worker named pipe: %w", err),
 		}
 	}
-	process, err := startInteractiveLinkHost(pipeName, sessionID)
+	process, err := startInteractiveLinkHost(pipeName, sessionID, desktop)
 	if err != nil {
 		_ = windows.CloseHandle(pipe)
 		return nil, err
@@ -130,7 +130,7 @@ type launchedProcess struct {
 	job windows.Handle
 }
 
-func startInteractiveLinkHost(pipeName string, sessionID uint32) (launchedProcess, error) {
+func startInteractiveLinkHost(pipeName string, sessionID uint32, desktopName string) (launchedProcess, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return launchedProcess{}, &WorkerLaunchError{
@@ -166,7 +166,10 @@ func startInteractiveLinkHost(pipeName string, sessionID uint32) (launchedProces
 			Err:    fmt.Errorf("link agent: encode Flutter host directory: %w", err),
 		}
 	}
-	desktop, err := windows.UTF16PtrFromString(`winsta0\default`)
+	if desktopName == "" {
+		desktopName = `winsta0\default`
+	}
+	desktop, err := windows.UTF16PtrFromString(desktopName)
 	if err != nil {
 		return launchedProcess{}, &WorkerLaunchError{Reason: ReasonHostWorkerLaunchFailed, Err: err}
 	}

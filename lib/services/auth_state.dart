@@ -203,6 +203,31 @@ class AuthState extends ChangeNotifier {
   String? linkHostsError;
   DateTime? _linkHostsUpdatedAt;
 
+  /// Осведомленность о сетевом периметре (Perimeter Awareness).
+  String? clientIp;
+  String perimeter = 'internal'; // 'internal' | 'external'
+  bool get isExternalPerimeter => perimeter == 'external';
+
+  void _updatePerimeter(Map<String, dynamic>? data) {
+    if (data == null) return;
+    if (data['perimeter'] != null && data['perimeter'].toString().isNotEmpty) {
+      perimeter = data['perimeter'].toString();
+    }
+    if (data['client_ip'] != null && data['client_ip'].toString().isNotEmpty) {
+      clientIp = data['client_ip'].toString();
+    }
+  }
+
+  /// Проверка второго фактора (Step-Up 2FA) при подключении к ПК из внешнего периметра
+  Future<String> verifyStepUp({required String totpCode}) async {
+    if (api == null) throw StateError('Not connected');
+    final resp = await api!.verifyLinkStepUp(totpCode: totpCode);
+    if (resp['ok'] == true && resp['stepup_token'] != null) {
+      return resp['stepup_token'].toString();
+    }
+    throw StateError(resp['error']?.toString() ?? 'Step-up verification failed');
+  }
+
   /// device_id этой сессии (выдаётся сервером при логине, хранится в prefs
   /// под тем же ключом, что у LocalDetectService). Режиму «Экран» (этап
   /// 2.4, план §5.2) он нужен, чтобы отличить инициатора от цели: пуш
@@ -640,6 +665,7 @@ class AuthState extends ChangeNotifier {
 
       try {
         currentUser = await api!.getProfile();
+        _updatePerimeter(currentUser);
         // Этап D «умный 2FA»: восстанавливаем локальный детект по device_id,
         // сохранённому при логине (сессия устройства живёт и через рестарт
         // приложения, пока не был logout).
@@ -1142,6 +1168,8 @@ class AuthState extends ChangeNotifier {
     }
     token = respToken;
     currentUser = Map<String, dynamic>.from(respUser);
+    _updatePerimeter(resp);
+    _updatePerimeter(currentUser);
     currentPosture = (resp['security_posture'] is Map)
         ? Map<String, dynamic>.from(resp['security_posture'] as Map)
         : null;
@@ -1522,6 +1550,7 @@ class AuthState extends ChangeNotifier {
         return;
       }
       currentUser = p;
+      _updatePerimeter(p);
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка обновления профиля: $e');

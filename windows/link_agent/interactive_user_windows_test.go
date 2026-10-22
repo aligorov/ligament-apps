@@ -52,4 +52,25 @@ func TestResolveInteractiveSession(t *testing.T) {
 			t.Fatalf("CurrentInteractiveUser() = %q, want empty (must not choose randomly)", user)
 		}
 	})
+
+	t.Run("unattended logon screen fallback", func(t *testing.T) {
+		enumerateInteractiveSessions = func() ([]InteractiveSession, error) {
+			return nil, nil
+		}
+		origConsole := getActiveConsoleSessionID
+		defer func() { getActiveConsoleSessionID = origConsole }()
+		getActiveConsoleSessionID = func() uint32 { return 1 }
+
+		// Attended should fail with no active user
+		sess, _, err := ResolveTargetSession(false)
+		if sess != nil || !errors.Is(err, ErrNoActiveInteractiveUser) {
+			t.Fatalf("attended: got sess=%v, err=%v, want ErrNoActiveInteractiveUser", sess, err)
+		}
+
+		// Unattended should resolve console session at winlogon desktop
+		sess, desktop, err := ResolveTargetSession(true)
+		if err != nil || sess == nil || sess.SessionID != 1 || desktop != `winsta0\Winlogon` {
+			t.Fatalf("unattended: got sess=%v, desktop=%q, err=%v, want SessionID=1, winsta0\\Winlogon", sess, desktop, err)
+		}
+	})
 }

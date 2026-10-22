@@ -13,6 +13,19 @@ var wtsapi = windows.NewLazySystemDLL("wtsapi32.dll")
 var procWTSQuerySessionInformation = wtsapi.NewProc("WTSQuerySessionInformationW")
 var procWTSEnumerateSessions = wtsapi.NewProc("WTSEnumerateSessionsW")
 
+var kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+var procWTSGetActiveConsoleSessionId = kernel32.NewProc("WTSGetActiveConsoleSessionId")
+
+var getActiveConsoleSessionID = defaultGetActiveConsoleSessionID
+
+func defaultGetActiveConsoleSessionID() uint32 {
+	if procWTSGetActiveConsoleSessionId.Find() != nil {
+		return 0xFFFFFFFF
+	}
+	r, _, _ := procWTSGetActiveConsoleSessionId.Call()
+	return uint32(r)
+}
+
 type wtsSessionInfo struct {
 	SessionID       uint32
 	WinStationName  *uint16
@@ -50,6 +63,33 @@ func defaultEnumerateInteractiveSessions() ([]InteractiveSession, error) {
 	return active, nil
 }
 
+// ResolveTargetSession determines the session and desktop to attach to.
+// If unattended is true and no user is logged in, it targets the active console session ID
+// (logon screen / lock screen) with desktop winsta0\Winlogon.
+func ResolveTargetSession(unattended bool) (*InteractiveSession, string, error) {
+	active, err := enumerateInteractiveSessions()
+	if err != nil {
+		return nil, "", err
+	}
+	if len(active) == 1 {
+		return &active[0], `winsta0\default`, nil
+	}
+	if len(active) > 1 {
+		return nil, "", ErrAmbiguousInteractiveSession
+	}
+	// len(active) == 0: no interactive user logged in
+	if unattended {
+		consoleID := getActiveConsoleSessionID()
+		if consoleID != 0xFFFFFFFF && consoleID != 0 {
+			return &InteractiveSession{
+				SessionID: consoleID,
+				Username:  "",
+			}, `winsta0\Winlogon`, nil
+		}
+	}
+	return nil, "", ErrNoActiveInteractiveUser
+}
+
 // ResolveInteractiveSession inspects Terminal Services sessions on the system.
 // It returns:
 // - (session, nil) if exactly one active interactive user session exists (Console or RDP).
@@ -58,17 +98,8 @@ func defaultEnumerateInteractiveSessions() ([]InteractiveSession, error) {
 //
 // It never selects Session 0, and never selects a session without a logged-in user.
 func ResolveInteractiveSession() (*InteractiveSession, error) {
-	active, err := enumerateInteractiveSessions()
-	if err != nil {
-		return nil, err
-	}
-	if len(active) == 0 {
-		return nil, ErrNoActiveInteractiveUser
-	}
-	if len(active) > 1 {
-		return nil, ErrAmbiguousInteractiveSession
-	}
-	return &active[0], nil
+	sess, _, err := ResolveTargetSession(false)
+	return sess, err
 }
 
 // CurrentInteractiveUser returns the username of the single active interactive WTS

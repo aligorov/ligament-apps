@@ -297,6 +297,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       case 'p2p_connected':
         return strings.p2pConnected;
       case 'disconnected':
+        if (_pcGraceTimer != null) {
+          return strings.isRu
+              ? 'Восстановление соединения… ($_graceSecondsLeft с)'
+              : 'Reconnecting… ($_graceSecondsLeft s)';
+        }
         return '${strings.isRu ? 'Отключено' : 'Disconnected'} (${_statusArg ?? ''})';
       case 'stream_active':
         return strings.streamActive;
@@ -357,8 +362,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   static const Duration _offerStageTimeout = Duration(seconds: 20);
   static const Duration _trackStageTimeout = Duration(seconds: 20);
   static const Duration _firstFrameTimeout = Duration(seconds: 15);
-  // Ш4: grace-окно перед завершением по Failed/Closed P2P.
-  static const Duration _pcGraceTimeout = Duration(seconds: 5);
+  // Ш4: grace-окно перед завершением по Failed/Closed P2P (60 секунд для устойчивого восстановления).
+  static const Duration _pcGraceTimeout = Duration(seconds: 60);
+  int _graceSecondsLeft = 60;
+  Timer? _graceCountdownTimer;
+  String? _stepUpToken;
+
   Timer? _offerStageTimer;
   Timer? _trackStageTimer;
   Timer? _firstFrameStageTimer;
@@ -537,16 +546,187 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  /// Ш4: grace-таймер завершения по Failed/Closed; отменяется при
-  /// восстановлении (Connected) и перезапускается на Disconnected —
-  /// ICE restart должен успеть отработать.
+  /// Ш4: grace-таймер завершения по Failed/Closed (60-секундное окно восстановления).
   void _schedulePcGraceTermination() {
     if (!mounted || _isCleanedUp) return;
-    _pcGraceTimer?.cancel();
+    if (_pcGraceTimer != null) return;
+
+    _graceSecondsLeft = 60;
+    _graceCountdownTimer?.cancel();
+    _graceCountdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted || _isCleanedUp || _pcGraceTimer == null) {
+        t.cancel();
+        return;
+      }
+      setState(() {
+        _graceSecondsLeft--;
+        if (_graceSecondsLeft < 0) _graceSecondsLeft = 0;
+      });
+    });
+
     _pcGraceTimer = Timer(_pcGraceTimeout, () {
+      _graceCountdownTimer?.cancel();
+      _graceCountdownTimer = null;
       if (!mounted || _isCleanedUp) return;
       _onSessionTerminated('pc_failed');
     });
+
+    _triggerIceRestart();
+  }
+
+  void _triggerIceRestart() {
+    try {
+      if (_peerConnection != null) {
+        _peerConnection!.restartIce();
+      }
+    } catch (e) {
+      debugPrint('support_operator: restartIce error: $e');
+    }
+    if (!widget.isLink) {
+      _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
+    }
+  }
+
+  Future<String?> _promptStepUpAuth() async {
+    final auth = context.read<AuthState>();
+    final controller = TextEditingController();
+    String? error;
+    bool isSubmitting = false;
+
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final isRu = Localizations.localeOf(context).languageCode == 'ru';
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0F172A),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: Color(0xFFD97706), width: 1.5),
+              ),
+              title: Row(
+                children: [
+                  const Icon(Icons.security, color: Color(0xFFF59E0B), size: 24),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      isRu ? 'Внешний периметр: Step-Up 2FA' : 'External Perimeter: Step-Up 2FA',
+                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isRu
+                        ? 'Вы подключаетесь к ПК из внешней сети (${auth.clientIp ?? "внешний IP"}).\nДля авторизации сессии введите 6-значный код TOTP из приложения-аутентификатора:'
+                        : 'You are connecting from an external network (${auth.clientIp ?? "public IP"}).\nEnter the 6-digit TOTP code from your authenticator app:',
+                    style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      letterSpacing: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                    decoration: InputDecoration(
+                      counterText: '',
+                      hintText: '000000',
+                      hintStyle: const TextStyle(color: Color(0xFF475569), letterSpacing: 8),
+                      filled: true,
+                      fillColor: const Color(0xFF1E293B),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFF334155)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFFF59E0B), width: 2),
+                      ),
+                    ),
+                    onSubmitted: (val) async {
+                      if (val.trim().length == 6 && !isSubmitting) {
+                        setDialogState(() {
+                          isSubmitting = true;
+                          error = null;
+                        });
+                        try {
+                          final token = await auth.verifyStepUp(totpCode: val.trim());
+                          if (ctx.mounted) Navigator.of(ctx).pop(token);
+                        } catch (err) {
+                          setDialogState(() {
+                            isSubmitting = false;
+                            error = isRu ? 'Неверный код TOTP' : 'Invalid TOTP code';
+                          });
+                        }
+                      }
+                    },
+                  ),
+                  if (error != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      error!,
+                      style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSubmitting ? null : () => Navigator.of(ctx).pop(null),
+                  child: Text(isRu ? 'Отмена' : 'Cancel', style: const TextStyle(color: Color(0xFF94A3B8))),
+                ),
+                FilledButton(
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                          final code = controller.text.trim();
+                          if (code.length != 6) {
+                            setDialogState(() {
+                              error = isRu ? 'Введите 6 цифр' : 'Enter 6 digits';
+                            });
+                            return;
+                          }
+                          setDialogState(() {
+                            isSubmitting = true;
+                            error = null;
+                          });
+                          try {
+                            final token = await auth.verifyStepUp(totpCode: code);
+                            if (ctx.mounted) Navigator.of(ctx).pop(token);
+                          } catch (err) {
+                            setDialogState(() {
+                              isSubmitting = false;
+                              error = isRu ? 'Неверный код TOTP' : 'Invalid TOTP code';
+                            });
+                          }
+                        },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFD97706),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: isSubmitting
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(isRu ? 'Подтвердить' : 'Confirm'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   bool _sessionTerminatedHandled = false;
@@ -562,6 +742,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _cancelStageTimers();
     _pcGraceTimer?.cancel();
     _pcGraceTimer = null;
+    _graceCountdownTimer?.cancel();
+    _graceCountdownTimer = null;
     _dataChannelPingTimer?.cancel();
     _dataChannelPingTimer = null;
     _leaseTimer?.cancel();
@@ -970,6 +1152,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         agentId: targetAgentId,
         accessMode: accessMode == 'view_only' ? 'view' : accessMode,
         clientSdp: offer.sdp,
+        stepUpToken: _stepUpToken,
       );
       final id = session['session_id']?.toString();
       if (id == null || id.isEmpty) {
@@ -1015,6 +1198,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } catch (e) {
       debugPrint('support_operator (link): error starting session: $e');
       if (mounted) {
+        if (e is ApiException && (e.statusCode == 403 || e.message.contains('external_perimeter_stepup_required'))) {
+          final token = await _promptStepUpAuth();
+          if (token != null && token.isNotEmpty) {
+            _stepUpToken = token;
+            unawaited(_startLinkConnection());
+            return;
+          }
+        }
         _setStatus('conn_error', e.toString());
       }
     }

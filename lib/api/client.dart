@@ -915,6 +915,8 @@ class ApiClient {
     String? clientSdp,
     String? resolution,
     String? actionId,
+    String? sessionKind,
+    String? stepUpToken,
   }) async {
     final res = await _post(
       _cleanUrl('/api/v1/app/link/sessions/request'),
@@ -926,6 +928,10 @@ class ApiClient {
         if (clientSdp != null && clientSdp.isNotEmpty) 'client_sdp': clientSdp,
         if (resolution != null && resolution.isNotEmpty)
           'resolution': resolution,
+        if (sessionKind != null && sessionKind.isNotEmpty)
+          'session_kind': sessionKind,
+        if (stepUpToken != null && stepUpToken.isNotEmpty)
+          'stepup_token': stepUpToken,
       }),
     );
     final data = _decodeJsonMap(res.bodyBytes);
@@ -933,6 +939,23 @@ class ApiClient {
     throw ApiException(
       res.statusCode,
       data['error']?.toString() ?? 'link_session_request_failed',
+    );
+  }
+
+  /// Verifies operator Step-Up 2FA when connecting from external perimeter.
+  Future<Map<String, dynamic>> verifyLinkStepUp({required String totpCode}) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/stepup/verify'),
+      headers: _headers(),
+      body: jsonEncode({
+        'totp_code': totpCode.trim(),
+      }),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'stepup_verify_failed',
     );
   }
 

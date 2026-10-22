@@ -250,6 +250,12 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
     final isRu = auth.isRu;
+    bool isExternal = false;
+    String? clientIp;
+    try {
+      isExternal = auth.isExternalPerimeter;
+      clientIp = auth.clientIp;
+    } catch (_) {}
     if (!identical(_indexedHosts, auth.linkHosts) ||
         _searchIndex?.length != auth.linkHosts.length) {
       _indexedHosts = auth.linkHosts;
@@ -306,8 +312,58 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       ),
       body: Column(
         children: [
+          // Live Perimeter Awareness (внутренний / внешний периметр)
+          if (clientIp != null || isExternal)
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: isExternal
+                    ? const Color(0xFF451A03)
+                    : const Color(0xFF064E3B),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isExternal
+                      ? const Color(0xFFD97706)
+                      : const Color(0xFF059669),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    isExternal
+                        ? Icons.cloud_outlined
+                        : Icons.verified_user_outlined,
+                    size: 18,
+                    color: isExternal
+                        ? const Color(0xFFF59E0B)
+                        : const Color(0xFF34D399),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      isExternal
+                          ? (isRu
+                              ? 'Внешний периметр (${clientIp ?? "внешний IP"}) · Подключение требует Step-Up 2FA'
+                              : 'External perimeter (${clientIp ?? "public IP"}) · Step-Up 2FA required')
+                          : (isRu
+                              ? 'Корпоративная сеть (${clientIp ?? "внутренний IP"}) · Доверенный периметр'
+                              : 'Corporate network (${clientIp ?? "internal IP"}) · Trusted perimeter'),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isExternal
+                            ? const Color(0xFFFDE68A)
+                            : const Color(0xFFA7F3D0),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: TextField(
               controller: _search,
               onChanged: (value) => setState(() => _query = value),
