@@ -61,6 +61,12 @@ class MockAuthState extends ChangeNotifier implements AuthState {
   bool linkHostsLoading = false;
 
   @override
+  bool get isLinkAdmin => false;
+
+  @override
+  bool get isLinkOperator => false;
+
+  @override
   String? linkHostsError;
 
   String? lastSubmittedCode;

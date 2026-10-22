@@ -28,6 +28,12 @@ class _CatalogAuthState extends ChangeNotifier implements AuthState {
   bool get isRu => true;
 
   @override
+  bool get isLinkAdmin => false;
+
+  @override
+  bool get isLinkOperator => false;
+
+  @override
   Future<void> loadLinkHosts() async {}
 
   @override

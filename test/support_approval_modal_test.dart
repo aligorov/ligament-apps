@@ -9,6 +9,10 @@ class _ApprovalAuth extends ChangeNotifier implements AuthState {
   @override
   String get localeCode => 'ru';
   @override
+  bool get isLinkAdmin => false;
+  @override
+  bool get isLinkOperator => false;
+  @override
   Map<String, dynamic>? activeSupportPrompt = {
     'session_id': 'sos-test',
     'number_match': '27',

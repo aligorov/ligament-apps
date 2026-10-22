@@ -40,13 +40,16 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
     _expanded = expanded;
     _windowUpdates = _windowUpdates.then((_) async {
       if (!mounted) return;
-      await windowManager.setMinimumSize(const Size(460, 120));
+      await windowManager.setMinimumSize(const Size(400, 72));
       await windowManager
-          .setSize(expanded ? const Size(560, 760) : const Size(800, 160));
-      await windowManager.center();
+          .setSize(expanded ? const Size(560, 760) : const Size(480, 84));
       if (expanded) {
+        await windowManager.center();
         await windowManager.show();
         await windowManager.focus();
+      } else {
+        await windowManager.setAlwaysOnTop(true);
+        await windowManager.show();
       }
     }).catchError((Object error) {
       debugPrint('link_host: window layout unavailable: ${error.runtimeType}');
@@ -96,12 +99,14 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
               }
               final closing = state.phase == LinkHostWorkerPhase.closing ||
                   state.phase == LinkHostWorkerPhase.closed;
+              final isUnattended = state.accessType == 'unattended';
               final status = switch (state.phase) {
                 LinkHostWorkerPhase.starting => 'Подготовка защищённого канала',
                 LinkHostWorkerPhase.awaitingConsent => 'Ожидание подтверждения',
                 LinkHostWorkerPhase.connecting =>
-                  'Удалённое подключение устанавливается',
-                LinkHostWorkerPhase.active => 'Удалённая сессия активна',
+                  isUnattended ? 'Подключение администратора…' : 'Удалённое подключение устанавливается',
+                LinkHostWorkerPhase.active =>
+                  isUnattended ? 'Сеанс удалённого доступа' : 'Удалённая сессия активна',
                 LinkHostWorkerPhase.closing => 'Отключение…',
                 LinkHostWorkerPhase.closed => 'Сессия завершена',
               };
@@ -124,7 +129,9 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
                               fontWeight: FontWeight.w700)),
                       const SizedBox(height: 4),
                       Text(
-                          '${state.operatorName} · ${state.accessMode == 'control' ? 'Управление' : 'Просмотр'}',
+                          '${state.operatorName.isNotEmpty ? state.operatorName : "Оператор"} · ${state.accessMode == 'control' ? 'Управление' : 'Просмотр'}${isUnattended ? " (без кода)" : ""}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                               color: Color(0xFFB7C8BE), fontSize: 12)),
                     ],

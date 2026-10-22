@@ -46,6 +46,10 @@ class _ArchiveAuth extends ChangeNotifier implements AuthState {
   @override
   bool get isRu => true;
   @override
+  bool get isLinkAdmin => false;
+  @override
+  bool get isLinkOperator => false;
+  @override
   String get localeCode => 'ru';
   @override
   Future<void> loadLinkHosts() async {

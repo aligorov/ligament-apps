@@ -47,6 +47,13 @@ class ApiClient {
         .timeout(_requestTimeout);
   }
 
+  Future<http.Response> _patch(String url,
+      {Map<String, String>? headers, String? body}) {
+    return http
+        .patch(Uri.parse(url), headers: headers, body: body)
+        .timeout(_requestTimeout);
+  }
+
   String _cleanUrl(String path) {
     var base = baseUrl.trim();
     if (base.endsWith('/')) {
@@ -765,6 +772,30 @@ class ApiClient {
       throw ApiException(
           res.statusCode, data['error']?.toString() ?? 'link_archive_failed');
     }
+  }
+
+  /// Updates Link host settings (e.g. unattended access). Accessible to Link admins.
+  Future<Map<String, dynamic>> updateLinkHost(
+    String agentId, {
+    bool? unattendedEnabled,
+  }) async {
+    final body = <String, dynamic>{};
+    if (unattendedEnabled != null) {
+      body['unattended_enabled'] = unattendedEnabled;
+    }
+    final res = await _patch(
+      _cleanUrl('/api/v1/app/link/hosts/${Uri.encodeComponent(agentId)}'),
+      headers: _headers(),
+      body: jsonEncode(body),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode != 200 || data['ok'] != true) {
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'link_host_update_failed',
+      );
+    }
+    return data;
   }
 
   /// Issues a short-lived, one-use credential for binding the current Windows

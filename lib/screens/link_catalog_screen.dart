@@ -378,7 +378,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   ),
                 _CatalogRowType.host => Padding(
                     padding: const EdgeInsets.only(left: 28),
-                    child: _hostRow(row.host!, isRu),
+                    child: _hostRow(row.host!, isRu, auth),
                   ),
               };
             },
@@ -478,7 +478,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     );
   }
 
-  Widget _hostRow(Map<String, dynamic> host, bool isRu) {
+  Widget _hostRow(Map<String, dynamic> host, bool isRu, AuthState auth) {
     final online = host['is_online'] == true;
     final unknown = host['is_online'] == null;
     final hostname = host['hostname']?.toString().trim();
@@ -487,6 +487,8 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         .join(' ');
     final status = host['status']?.toString() ?? 'enrolled';
     final localIPs = host['local_ips'];
+    final isUnattended = host['unattended_enabled'] == true;
+    final canManage = host['can_manage_access'] == true || auth.isLinkAdmin;
     return Container(
       constraints: const BoxConstraints(minHeight: 46),
       child: Padding(
@@ -562,6 +564,36 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
               ),
             ),
             IconButton(
+              tooltip: canManage
+                  ? (isUnattended
+                      ? (isRu
+                          ? 'Неконтролируемый доступ (включён). Нажмите для выключения'
+                          : 'Unattended access (ON). Click to disable')
+                      : (isRu
+                          ? 'Обычный доступ (требует подтверждения). Нажмите для включения неконтролируемого доступа'
+                          : 'Attended access (requires code). Click to enable unattended'))
+                  : (isUnattended
+                      ? (isRu
+                          ? 'Неконтролируемый доступ разрешён администратором'
+                          : 'Unattended access enabled by administrator')
+                      : (isRu
+                          ? 'Требуется подтверждение кодом'
+                          : 'Confirmation code required')),
+              onPressed: canManage
+                  ? () => _toggleUnattended(host, !isUnattended, isRu)
+                  : null,
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 32, height: 34),
+              padding: EdgeInsets.zero,
+              icon: Icon(
+                isUnattended ? Icons.shield : Icons.shield_outlined,
+                color: isUnattended
+                    ? const Color(0xFF22C55E)
+                    : const Color(0xFF64748B),
+                size: 16,
+              ),
+            ),
+            IconButton(
               tooltip: isRu ? 'Сведения о компьютере' : 'Computer details',
               onPressed: () => _showHostDetails(host, isRu),
               visualDensity: VisualDensity.compact,
@@ -593,6 +625,42 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         ),
       ),
     );
+  }
+
+  Future<void> _toggleUnattended(
+      Map<String, dynamic> host, bool enabled, bool isRu) async {
+    final agentId = host['id']?.toString();
+    if (agentId == null || agentId.isEmpty) return;
+    final auth = context.read<AuthState>();
+    final api = auth.api;
+    if (api == null) return;
+    setState(() {
+      host['unattended_enabled'] = enabled;
+    });
+    try {
+      await api.updateLinkHost(agentId, unattendedEnabled: enabled);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(enabled
+            ? (isRu
+                ? 'Неконтролируемый доступ включён для ${host['hostname'] ?? agentId}'
+                : 'Unattended access enabled for ${host['hostname'] ?? agentId}')
+            : (isRu
+                ? 'Неконтролируемый доступ выключен (требуется подтверждение кодом)'
+                : 'Unattended access disabled (requires consent code)')),
+        duration: const Duration(seconds: 2),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        host['unattended_enabled'] = !enabled;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(isRu
+            ? 'Не удалось изменить настройки доступа: $e'
+            : 'Could not update access settings: $e'),
+      ));
+    }
   }
 
   Future<void> _archiveHost(Map<String, dynamic> host, bool isRu) async {
@@ -764,6 +832,12 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       (
         isRu ? 'Отпечаток ключа' : 'Fingerprint',
         host['fingerprint']?.toString() ?? notDetected,
+      ),
+      (
+        isRu ? 'Неконтролируемый доступ' : 'Unattended access',
+        host['unattended_enabled'] == true
+            ? (isRu ? '🛡 Разрешён администратором (вход без кода)' : '🛡 Enabled (direct connect without code)')
+            : (isRu ? '🔒 Выключен (требуется согласие на хосте)' : '🔒 Disabled (requires consent on host)'),
       ),
     ];
     await showDialog<void>(
