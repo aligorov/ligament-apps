@@ -123,6 +123,20 @@ void main() {
         isTrue,
       );
 
+      expect(
+        LinkHostSession.isValidControlInput({
+          'type': 'ping',
+        }),
+        isTrue,
+      );
+
+      expect(
+        LinkHostSession.isValidControlInput({
+          'type': 'pong',
+        }),
+        isTrue,
+      );
+
       // Invalid inputs
       expect(
         LinkHostSession.isValidControlInput({

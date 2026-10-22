@@ -1055,6 +1055,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final type = linkSignalType(event, message);
 
     if (type == 'session_answer' && !_linkRemoteDescriptionSet) {
+      if (message['stage'] == 'consent') {
+        debugPrint('support_operator (link): host waiting for consent');
+        final code = message['confirmation_code']?.toString();
+        if (mounted) {
+          setState(() {
+            if (code != null && code.isNotEmpty) {
+              _currentNumberMatch = code;
+            }
+            _statusKey = 'waiting_consent';
+          });
+        }
+        return;
+      }
       if (message['accepted'] != true) {
         _linkHostAnswerTimer?.cancel();
         _linkHostAnswerTimer = null;

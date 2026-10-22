@@ -29,7 +29,9 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
   }
 
   void _syncWindow() {
-    final expanded = widget.state.phase == LinkHostWorkerPhase.awaitingConsent;
+    final expanded =
+        widget.state.phase == LinkHostWorkerPhase.awaitingConsent ||
+        widget.state.phase == LinkHostWorkerPhase.starting;
     if (_expanded == expanded) return;
     _expanded = expanded;
     _windowUpdates = _windowUpdates.then((_) async {
