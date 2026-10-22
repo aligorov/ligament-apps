@@ -84,6 +84,11 @@ class AppStrings {
   String get btnBackToPassword => isRu ? '← Вернуться к вводу пароля' : '← Back to password';
   String get changeServer => isRu ? 'Сменить сервер' : 'Change Server';
   String get loginErrorPrefix => isRu ? 'Ошибка входа' : 'Login error';
+  String get pushWaitingPrompt => isRu ? 'Запрос подтверждения отправлен на телефон' : 'Confirmation request sent to your phone';
+  String get pushWaitingHelp => isRu ? 'Подтвердите вход на мобильном устройстве или введите код ниже' : 'Confirm login on mobile device or enter code below';
+  String get errLoginDeniedOnDevice => isRu ? 'Вход отклонён на мобильном устройстве' : 'Login was denied on mobile device';
+  String get errChallengeExpired => isRu ? 'Время ожидания подтверждения истекло' : 'Confirmation request timed out';
+  String get orEnterCodePrompt => isRu ? 'Или введите одноразовый код (TOTP/SMS/TG):' : 'Or enter one-time code (TOTP/SMS/TG):';
 
   // --- Home Screen ---
   String get navHome => isRu ? 'Главная' : 'Home';

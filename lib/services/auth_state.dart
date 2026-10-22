@@ -1043,6 +1043,93 @@ class AuthState extends ChangeNotifier {
       windowsIdentity: WindowsIdentity.snapshot(),
     );
 
+    await _finalizeLogin(resp, base);
+  }
+
+  /// Обмен подтверждённого push-челленджа на Bearer-токен устройства (десктоп).
+  Future<Map<String, dynamic>> loginClaim({
+    required String challengeId,
+    required String claimToken,
+  }) async {
+    final base = serverUrl;
+    if (base == null || base.isEmpty) {
+      throw Exception(
+          isRu ? 'Не указан адрес сервера' : 'Server address is required');
+    }
+    final client = api;
+    if (client == null) {
+      throw Exception(isRu
+          ? 'Клиент API не инициализирован — укажите адрес сервера заново'
+          : 'API client is not initialized — re-enter the server address');
+    }
+
+    final deviceInfo = DeviceInfoPlugin();
+    String deviceName = 'Device';
+    String osVersion = '';
+    String platform = 'unknown';
+
+    if (kIsWeb) {
+      platform = detectWebPlatform(webUserAgent(),
+          maxTouchPoints: webMaxTouchPoints());
+    } else {
+      try {
+        if (Platform.isWindows) {
+          platform = 'windows';
+          final wInfo = await deviceInfo.windowsInfo;
+          deviceName = wInfo.computerName;
+          osVersion = wInfo.displayVersion;
+        } else if (Platform.isAndroid) {
+          platform = 'android';
+          final aInfo = await deviceInfo.androidInfo;
+          deviceName = '${aInfo.brand} ${aInfo.model}';
+          osVersion = 'Android ${aInfo.version.release}';
+        } else if (Platform.isIOS) {
+          platform = 'ios';
+          final iInfo = await deviceInfo.iosInfo;
+          deviceName = iInfo.name;
+          osVersion = '${iInfo.systemName} ${iInfo.systemVersion}';
+        } else if (Platform.isMacOS) {
+          platform = 'macos';
+          final mInfo = await deviceInfo.macOsInfo;
+          deviceName = mInfo.computerName;
+          osVersion = 'macOS ${mInfo.majorVersion}.${mInfo.minorVersion}';
+        } else if (Platform.isLinux) {
+          platform = 'linux';
+          final lInfo = await deviceInfo.linuxInfo;
+          deviceName = lInfo.name;
+          osVersion = 'Linux';
+        }
+      } catch (_) {}
+    }
+
+    Map<String, dynamic> initialPosture = const {};
+    try {
+      initialPosture = await telemetry.collectPosture();
+    } catch (e) {
+      debugPrint(
+          'auth_state: телеметрия при claim не собрана, продолжаем без неё: $e');
+    }
+
+    final resp = await client.loginClaim(
+      challengeId: challengeId,
+      claimToken: claimToken,
+      deviceName: deviceName,
+      platform: platform,
+      osVersion: osVersion,
+      appVersion: appVersion,
+      securityPosture: initialPosture,
+      windowsIdentity: WindowsIdentity.snapshot(),
+    );
+
+    if (resp['token'] == null) {
+      return resp;
+    }
+
+    await _finalizeLogin(resp, base);
+    return resp;
+  }
+
+  Future<void> _finalizeLogin(Map<String, dynamic> resp, String base) async {
     // Разбор ответа сервера — безопасно: отсутствие токена/профиля даёт
     // понятную ошибку вместо TypeError/null-краша, отсутствующий
     // security_posture — просто null (сервер досчитает комплаенс сам).

@@ -8,8 +8,9 @@ class ApiException implements Exception {
   final int statusCode;
   final String code;
   final String message;
+  final Map<String, dynamic>? details;
 
-  ApiException(this.statusCode, this.code, [this.message = '']);
+  ApiException(this.statusCode, this.code, [this.message = '', this.details]);
 
   @override
   String toString() => 'ApiException($statusCode, $code, $message)';
@@ -180,7 +181,48 @@ class ApiClient {
       return data;
     }
     throw ApiException(
-        res.statusCode, data['error']?.toString() ?? 'login_failed');
+        res.statusCode, data['error']?.toString() ?? 'login_failed', '', data);
+  }
+
+  /// Обмен подтверждённого push-челленджа на Bearer-токен устройства
+  Future<Map<String, dynamic>> loginClaim({
+    required String challengeId,
+    required String claimToken,
+    required String deviceName,
+    required String platform,
+    String osVersion = '',
+    String appVersion = kAppVersion,
+    String pushToken = '',
+    Map<String, dynamic>? securityPosture,
+    Map<String, dynamic>? windowsIdentity,
+  }) async {
+    final payload = {
+      'challenge_id': challengeId,
+      'claim_token': claimToken,
+      'device_name': deviceName,
+      'platform': platform,
+      'os_version': osVersion,
+      'app_version': appVersion,
+      'push_token': pushToken,
+      'security_posture': securityPosture ?? {},
+      if (windowsIdentity != null) 'windows_identity': windowsIdentity,
+    };
+
+    final res = await _post(
+      _cleanUrl('/api/v1/app/login/claim'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+
+    final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    if (res.statusCode == 200) {
+      if (data['token'] != null) {
+        token = data['token'] as String?;
+      }
+      return data;
+    }
+    throw ApiException(
+        res.statusCode, data['error']?.toString() ?? 'claim_failed', '', data);
   }
 
   /// Выход устройства (деактивация сессии)
