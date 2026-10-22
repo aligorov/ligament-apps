@@ -10,6 +10,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'input_injector.dart';
 import 'link_host_readiness.dart';
 import '../models/link_control_messages.dart';
+import '../models/link_session_policy.dart';
 
 typedef LinkHostSignalSender = Future<void> Function(
   Map<String, dynamic> frame,
@@ -240,7 +241,7 @@ class LinkHostSession {
       await send({
         'type': 'signal',
         'session_id': sessionId,
-        'signal': {'candidate': candidate},
+        'signal': {'type': 'candidate', 'candidate': candidate},
       });
     } catch (_) {
       await _reject('signaling_failed');
@@ -624,7 +625,10 @@ Future<void> _runConnectedLinkHostWorker(
   final session = LinkHostSession(
     sessionId: sessionId,
     accessMode: accessMode,
-    peer: FlutterLinkHostPeer(onConnected: state.markActive),
+    peer: FlutterLinkHostPeer(
+      onConnected: state.markActive,
+      policy: LinkSessionPolicy.fromWire(offer['dlp']),
+    ),
     send: (frame) {
       final next = outgoing.then((_) async {
         if (unixTransport != null) {
@@ -717,9 +721,13 @@ Future<void> _runConnectedLinkHostWorker(
 
 /// Flutter WebRTC peer implementation used by the interactive Link worker.
 class FlutterLinkHostPeer implements LinkHostPeer {
-  FlutterLinkHostPeer({this.onConnected});
+  FlutterLinkHostPeer({
+    this.onConnected,
+    this.policy = const LinkSessionPolicy(),
+  });
 
   final VoidCallback? onConnected;
+  final LinkSessionPolicy policy;
 
   RTCPeerConnection? _peer;
   MediaStream? _stream;
@@ -818,8 +826,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       onCandidate(Map<String, dynamic>.from(candidate.toMap()));
     };
     peer.onDataChannel = (channel) {
-      if (!_allowControl ||
-          (channel.label != 'link-control-v1' && channel.label != 'control') ||
+      if ((channel.label != 'link-control-v1' && channel.label != 'control') ||
           _control != null) {
         unawaited(channel.close());
         return;
@@ -925,7 +932,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   }
 
   void _executeInput(Map<String, dynamic> input) {
-    if (!_allowControl || _closed) return;
+    if (_closed || !policy.allows(input, allowControl: _allowControl)) return;
     final injector = InputInjector.instance;
     final type = input['type'];
     try {
@@ -963,7 +970,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         }
       } else if (type == 'clipboard_get') {
         Clipboard.getData(Clipboard.kTextPlain).then((clip) {
+          if (_closed || !policy.allowClipboardOut || !_allowControl) return;
           final text = clip?.text ?? '';
+          if (text.length > LinkSessionPolicy.maxClipboardLength) return;
           _control?.send(RTCDataChannelMessage(jsonEncode({
             'type': 'clipboard_data',
             'text': text,

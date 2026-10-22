@@ -300,6 +300,16 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           ),
           if (auth.linkHostsLoading)
             const LinearProgressIndicator(minHeight: 2),
+          if (auth.linkHostsError != null && auth.linkHosts.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(
+                isRu
+                    ? 'Не удалось обновить каталог. Доступность ПК неизвестна.'
+                    : 'Inventory refresh failed. PC availability is unknown.',
+                style: const TextStyle(color: Colors.amber),
+              ),
+            ),
           Expanded(child: _buildBody(auth, ouNames, folders, hosts, isRu)),
         ],
       ),
@@ -470,6 +480,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
 
   Widget _hostRow(Map<String, dynamic> host, bool isRu) {
     final online = host['is_online'] == true;
+    final unknown = host['is_online'] == null;
     final hostname = host['hostname']?.toString().trim();
     final os = [host['os_family'], host['os_version']]
         .where((part) => part != null && part.toString().isNotEmpty)
@@ -534,13 +545,15 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   ? 'Доступность агента. Экран и управление проверяются при подключении.'
                   : 'Agent availability. Screen and control are checked when connecting.',
               child: Text(
-                online
-                    ? (isRu ? 'Онлайн' : 'Online')
-                    : status == 'revoked'
-                        ? (isRu ? 'Отозван' : 'Revoked')
-                        : status == 'suspended'
-                            ? (isRu ? 'Приостановлен' : 'Suspended')
-                            : (isRu ? 'Офлайн' : 'Offline'),
+                unknown
+                    ? (isRu ? 'Неизвестно' : 'Unknown')
+                    : online
+                        ? (isRu ? 'Онлайн' : 'Online')
+                        : status == 'revoked'
+                            ? (isRu ? 'Отозван' : 'Revoked')
+                            : status == 'suspended'
+                                ? (isRu ? 'Приостановлен' : 'Suspended')
+                                : (isRu ? 'Офлайн' : 'Offline'),
                 style: TextStyle(
                     color: online
                         ? const Color(0xFF4ADE80)

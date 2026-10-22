@@ -3,6 +3,7 @@
 package linkagent
 
 import (
+	"errors"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,42 +19,68 @@ type wtsSessionInfo struct {
 	ConnectionState uint32
 }
 
-// CurrentInteractiveUser returns the username of an active interactive WTS
-// session, preferring the physical console and supporting active RDP sessions.
-// It never falls back to the LocalSystem service identity.
-func CurrentInteractiveUser() string {
+var enumerateInteractiveSessions = defaultEnumerateInteractiveSessions
+
+func defaultEnumerateInteractiveSessions() ([]InteractiveSession, error) {
 	if procWTSEnumerateSessions.Find() != nil || procWTSQuerySessionInformation.Find() != nil {
-		return ""
+		return nil, errors.New("link agent: WTS API unavailable")
 	}
 	var sessions *wtsSessionInfo
 	var count uint32
 	result, _, _ := procWTSEnumerateSessions.Call(0, 0, 1,
 		uintptr(unsafe.Pointer(&sessions)), uintptr(unsafe.Pointer(&count)))
 	if result == 0 || sessions == nil || count == 0 || count > 1024 {
-		return ""
+		return nil, nil
 	}
 	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(sessions)))
-	active := make([]uint32, 0, count)
+	var active []InteractiveSession
 	for _, session := range unsafe.Slice(sessions, count) {
-		if session.ConnectionState == 0 { // WTSActive
-			active = append(active, session.SessionID)
+		if session.SessionID == 0 {
+			continue // Session 0 is reserved for non-interactive system services.
 		}
-	}
-	consoleSession := windows.WTSGetActiveConsoleSessionId()
-	if consoleSession != 0xffffffff {
-		for index, id := range active {
-			if id == consoleSession {
-				active[0], active[index] = active[index], active[0]
-				break
+		if session.ConnectionState == 0 { // WTSActive
+			if username := queryWTSUsername(session.SessionID); username != "" {
+				active = append(active, InteractiveSession{
+					SessionID: session.SessionID,
+					Username:  username,
+				})
 			}
 		}
 	}
-	for _, sessionID := range active {
-		if username := queryWTSUsername(sessionID); username != "" {
-			return username
-		}
+	return active, nil
+}
+
+// ResolveInteractiveSession inspects Terminal Services sessions on the system.
+// It returns:
+// - (session, nil) if exactly one active interactive user session exists (Console or RDP).
+// - (nil, ErrNoActiveInteractiveUser) if no active user session exists.
+// - (nil, ErrAmbiguousInteractiveSession) if multiple active user sessions exist.
+//
+// It never selects Session 0, and never selects a session without a logged-in user.
+func ResolveInteractiveSession() (*InteractiveSession, error) {
+	active, err := enumerateInteractiveSessions()
+	if err != nil {
+		return nil, err
 	}
-	return ""
+	if len(active) == 0 {
+		return nil, ErrNoActiveInteractiveUser
+	}
+	if len(active) > 1 {
+		return nil, ErrAmbiguousInteractiveSession
+	}
+	return &active[0], nil
+}
+
+// CurrentInteractiveUser returns the username of the single active interactive WTS
+// session (supporting console or RDP). If there is no active user or if multiple
+// users are active, it returns empty string rather than guessing.
+// It never falls back to the LocalSystem service identity.
+func CurrentInteractiveUser() string {
+	sess, err := ResolveInteractiveSession()
+	if err != nil || sess == nil {
+		return ""
+	}
+	return sess.Username
 }
 
 func queryWTSUsername(sessionID uint32) string {

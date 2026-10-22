@@ -37,38 +37,59 @@ func NewUnixSessionWorkerLauncher() *UnixSessionWorkerLauncher {
 
 func (*UnixSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer, offerFrame []byte) (SessionWorkerProcess, error) {
 	if len(offerFrame) == 0 || len(offerFrame) > unixWorkerFrameLimit {
-		return nil, errors.New("link agent: invalid initial worker frame size")
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerUnavailable,
+			Err:    errors.New("link agent: invalid initial worker frame size"),
+		}
 	}
 	base, err := os.MkdirTemp("/tmp", "ligament-link-")
 	if err != nil {
-		return nil, fmt.Errorf("link agent: create private worker directory: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: create private worker directory: %w", err),
+		}
 	}
 	if err := os.Chmod(base, 0700); err != nil {
 		_ = os.RemoveAll(base)
-		return nil, fmt.Errorf("link agent: protect worker directory: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: protect worker directory: %w", err),
+		}
 	}
 	socketPath := filepath.Join(base, "worker.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
 	if err != nil {
 		_ = os.RemoveAll(base)
-		return nil, fmt.Errorf("link agent: create worker socket: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: create worker socket: %w", err),
+		}
 	}
 	if err := os.Chmod(socketPath, 0600); err != nil {
 		_ = listener.Close()
 		_ = os.RemoveAll(base)
-		return nil, fmt.Errorf("link agent: protect worker socket: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: protect worker socket: %w", err),
+		}
 	}
 	executable, err := os.Executable()
 	if err != nil {
 		_ = listener.Close()
 		_ = os.RemoveAll(base)
-		return nil, fmt.Errorf("link agent: locate agent executable: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: locate agent executable: %w", err),
+		}
 	}
 	appPath := filepath.Join(filepath.Dir(executable), "ligament_authenticator")
 	if info, err := os.Stat(appPath); err != nil || info.IsDir() || info.Mode()&0111 == 0 {
 		_ = listener.Close()
 		_ = os.RemoveAll(base)
-		return nil, errors.New("link agent: interactive Flutter host is not installed beside the agent")
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerNotInstalled,
+			Err:    errors.New("link agent: interactive Flutter host is not installed beside the agent"),
+		}
 	}
 	cmd := exec.Command(appPath, "--link-host=unix:"+socketPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -77,7 +98,10 @@ func (*UnixSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer, of
 	if err := cmd.Start(); err != nil {
 		_ = listener.Close()
 		_ = os.RemoveAll(base)
-		return nil, fmt.Errorf("link agent: start interactive Flutter host: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: start interactive Flutter host: %w", err),
+		}
 	}
 	process := &unixSessionWorkerProcess{
 		cmd: cmd, base: base, done: make(chan error, 1), closed: make(chan struct{}),
@@ -89,12 +113,18 @@ func (*UnixSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer, of
 	_ = listener.Close()
 	if err != nil {
 		_ = process.Close()
-		return nil, err
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    err,
+		}
 	}
 	process.conn = conn
 	if err := process.Send(ctx, offerFrame); err != nil {
 		_ = process.Close()
-		return nil, fmt.Errorf("link agent: send offer to Unix worker: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: send offer to Unix worker: %w", err),
+		}
 	}
 	go func() {
 		select {

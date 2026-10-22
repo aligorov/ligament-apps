@@ -18,6 +18,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../api/client.dart';
+import '../models/link_session_policy.dart';
 import '../widgets/remote_pointer_surface.dart';
 import '../services/remote_keyboard.dart';
 import '../services/auth_state.dart';
@@ -481,8 +482,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  bool get _isViewOnlySession =>
-      widget.sessionData['access_mode']?.toString() == 'view_only';
+  bool get _isViewOnlySession {
+    final mode =
+        widget.linkAccessMode ?? widget.sessionData['access_mode']?.toString();
+    return mode == 'view_only' || mode == 'view';
+  }
 
   bool get _canSendFiles =>
       !_isViewOnlySession && _isDataChannelActive && !_isSendingFile;
@@ -592,6 +596,49 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   String _terminationNotice(AppStrings strings, String reasonKey) {
     switch (reasonKey) {
+      case 'host_accessibility_permission_required':
+        return strings.isRu
+            ? 'На целевом Mac разрешите управление в настройках «Универсальный доступ».'
+            : 'Allow Accessibility access on the target Mac.';
+      case 'host_screen_capture_unavailable':
+        return strings.isRu
+            ? 'Хост не смог захватить экран. Проверьте разрешение записи экрана и активный рабочий стол.'
+            : 'Host screen capture failed. Check screen recording permission and the active desktop.';
+      case 'host_wayland_control_unavailable':
+        return strings.isRu
+            ? 'Управление Wayland пока не поддерживается. Используйте X11 или просмотр.'
+            : 'Wayland control is not supported yet. Use X11 or view mode.';
+      case 'host_linux_input_unavailable':
+        return strings.isRu
+            ? 'На Linux-хосте недоступен ввод X11. Проверьте графическую сессию и xdotool.'
+            : 'X11 input is unavailable on the Linux host. Check the graphical session and xdotool.';
+      case 'host_no_active_user':
+        return strings.isRu
+            ? 'На целевом ПК нет активного пользователя в системе.'
+            : 'No active user session on the target PC.';
+      case 'host_session_ambiguous':
+        return strings.isRu
+            ? 'На целевом ПК активно несколько сессий. Выбор сессии неоднозначен.'
+            : 'Multiple active user sessions on the target PC.';
+      case 'host_worker_not_installed':
+        return strings.isRu
+            ? 'Компонент рабочего места Link не установлен на целевом ПК.'
+            : 'Link worker component is not installed on the target PC.';
+      case 'host_worker_launch_failed':
+        return strings.isRu
+            ? 'Не удалось запустить рабочий процесс Link на целевом ПК.'
+            : 'Failed to launch Link worker process on the target PC.';
+      case 'host_worker_unavailable':
+      case 'host_ready_timeout':
+      case 'host_worker_failed':
+        return strings.isRu
+            ? 'Хост не подготовил рабочий стол. Проверьте службу Link и журнал на целевом ПК.'
+            : 'The host desktop is not ready. Check the Link service and host log.';
+      case 'number_matching_failed':
+      case 'number_matching_required':
+        return strings.isRu
+            ? 'Подтверждение числа на целевом ПК не выполнено.'
+            : 'Number confirmation on the target PC was not completed.';
       case 'session_ended':
         return strings.sessionEndedByUser;
       case 'pc_failed':
@@ -644,7 +691,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _loadChatHistory() async {
-    if (widget.isLink || widget.ownerMode || widget.sessionData['owner'] == true) return;
+    if (widget.isLink ||
+        widget.ownerMode ||
+        widget.sessionData['owner'] == true) {
+      return;
+    }
     final auth = context.read<AuthState>();
     if (auth.api == null || widget.sessionId.isEmpty) return;
     try {
@@ -692,8 +743,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _expandWindowForOperator();
     _isChatOnly = widget.isChatOnly;
     _currentNumberMatch = widget.numberMatch;
-    final accessMode = widget.sessionData['access_mode']?.toString();
-    _isControlEnabled = accessMode != 'view_only';
+    _isControlEnabled = !_isViewOnlySession;
     _loadChatHistory();
     if (_isChatOnly && !widget.isLink) {
       _statusKey = 'chat';
@@ -865,16 +915,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
       );
 
+      // View sessions need monitor discovery/selection too. The host enforces
+      // access mode and DLP for every input command, not channel presence.
       final accessMode = widget.linkAccessMode ??
           widget.sessionData['access_mode']?.toString() ??
           'control';
-      if (accessMode != 'view_only' && accessMode != 'view') {
-        final channel = await peer.createDataChannel(
-          'link-control-v1',
-          RTCDataChannelInit()..ordered = true,
-        );
-        _setupDataChannel(channel);
-      }
+      final channel = await peer.createDataChannel(
+        'link-control-v1',
+        RTCDataChannelInit()..ordered = true,
+      );
+      _setupDataChannel(channel);
 
       final offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
@@ -969,7 +1019,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final payload = event['payload'];
     if (payload is! Map) return;
     final message = Map<String, dynamic>.from(payload);
-    final type = event['type']?.toString() ?? message['type']?.toString();
+    final type = linkSignalType(event, message);
 
     if (type == 'session_answer' && !_linkRemoteDescriptionSet) {
       if (message['accepted'] != true) {
@@ -977,7 +1027,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _linkHostAnswerTimer = null;
         final reason = message['reason']?.toString();
         debugPrint('support_operator (link): rejected by host: $reason');
-        _onSessionTerminated('session_ended');
+        _onSessionTerminated(reason ?? 'host_worker_failed');
         return;
       }
       final sdp = message['sdp']?.toString();

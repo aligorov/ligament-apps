@@ -201,6 +201,7 @@ class AuthState extends ChangeNotifier {
   bool linkFeatureAvailable = true;
   bool linkHostsLoading = false;
   String? linkHostsError;
+  DateTime? _linkHostsUpdatedAt;
 
   /// device_id этой сессии (выдаётся сервером при логине, хранится в prefs
   /// под тем же ключом, что у LocalDetectService). Режиму «Экран» (этап
@@ -1134,6 +1135,7 @@ class AuthState extends ChangeNotifier {
     linkHostsLoading = false;
     linkHostsError = null;
     pendingChallenges.clear();
+    _linkHostsUpdatedAt = null;
     allowedApps.clear();
     history.clear();
     notifications.clear();
@@ -1212,6 +1214,11 @@ class AuthState extends ChangeNotifier {
   /// feature's data while preserving network and server errors for the UI.
   Future<void> loadLinkHosts() async {
     if (api == null || linkHostsLoading) return;
+    if (_linkHostsUpdatedAt == null ||
+        DateTime.now().difference(_linkHostsUpdatedAt!) >
+            const Duration(seconds: 45)) {
+      _markLinkPresenceUnknown();
+    }
     final expectedEpoch = _authEpoch;
     linkHostsLoading = true;
     linkHostsError = null;
@@ -1220,6 +1227,7 @@ class AuthState extends ChangeNotifier {
       final hosts = await api!.getLinkHosts();
       if (_authEpoch == expectedEpoch && isLoggedIn) {
         linkHosts = hosts;
+        _linkHostsUpdatedAt = DateTime.now();
         linkFeatureAvailable = true;
       }
     } on ApiException catch (e) {
@@ -1229,11 +1237,13 @@ class AuthState extends ChangeNotifier {
           linkHosts = [];
         } else {
           linkHostsError = e.code;
+          _markLinkPresenceUnknown();
         }
       }
     } catch (e) {
       if (_authEpoch == expectedEpoch && isLoggedIn) {
         linkHostsError = e.toString();
+        _markLinkPresenceUnknown();
       }
     } finally {
       if (_authEpoch == expectedEpoch) {
@@ -1241,6 +1251,15 @@ class AuthState extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  void _markLinkPresenceUnknown() {
+    linkHosts = linkHosts
+        .map((host) => <String, dynamic>{
+              ...host,
+              'is_online': null,
+            })
+        .toList();
   }
 
   /// Регистрация машины доступа и экземпляра сессии (Sharer/Viewer), запуск heartbeat (V01)

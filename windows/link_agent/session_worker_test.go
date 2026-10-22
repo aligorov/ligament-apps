@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -228,5 +229,79 @@ func TestValidWorkerResponseAllowsOnlyScopedLocalDisconnect(t *testing.T) {
 	wrongReason := []byte(`{"type":"session_terminate","session_id":"` + testSessionID + `","payload":{"session_id":"` + testSessionID + `","reason":"revoke_other_session"}}`)
 	if validWorkerResponse(wrongReason, testSessionID) {
 		t.Fatal("accepted a worker termination reason other than local disconnect")
+	}
+}
+
+type errorLauncher struct {
+	err error
+}
+
+func (l *errorLauncher) Launch(context.Context, SessionOffer, []byte) (SessionWorkerProcess, error) {
+	return nil, l.err
+}
+
+func TestSessionWorkerBrokerPropagatesSafeRejectionReasons(t *testing.T) {
+	reasons := []string{
+		ReasonHostNoActiveUser,
+		ReasonHostSessionAmbiguous,
+		ReasonHostWorkerNotInstalled,
+		ReasonHostWorkerLaunchFailed,
+		ReasonHostWorkerUnavailable,
+	}
+	for _, reason := range reasons {
+		t.Run(reason, func(t *testing.T) {
+			launcher := &errorLauncher{
+				err: &WorkerLaunchError{Reason: reason, Err: errors.New("underlying detail")},
+			}
+			broker := NewSessionWorkerBroker(launcher)
+			sent := make(chan []byte, 1)
+			err := broker.Handler(context.Background(), []byte(`{"type":"session_offer","payload":{"session_id":"`+testSessionID+`","operator_id":"`+testOperatorID+`","access_type":"attended","access_mode":"view","sdp":"v=0","ice_servers":[],"dlp":{}}}`), func(message any) error {
+				raw, ok := message.(json.RawMessage)
+				if !ok {
+					return errors.New("unexpected response type")
+				}
+				sent <- raw
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []byte
+			select {
+			case got = <-sent:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for rejected session_answer")
+			}
+			var envelope struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Accepted bool   `json:"accepted"`
+					Reason   string `json:"reason"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(got, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Type != "session_answer" || envelope.Payload.Accepted || envelope.Payload.Reason != reason {
+				t.Fatalf("reason = %q, want %q; payload = %s", envelope.Payload.Reason, reason, got)
+			}
+		})
+	}
+}
+
+func TestClassifyWorkerLaunchError(t *testing.T) {
+	if classifyWorkerLaunchError(nil) != "" {
+		t.Fatal("expected empty string for nil error")
+	}
+	if classifyWorkerLaunchError(errors.New("generic error")) != ReasonHostWorkerUnavailable {
+		t.Fatal("expected fallback to host_worker_unavailable")
+	}
+	custom := &WorkerLaunchError{Reason: ReasonHostNoActiveUser, Err: errors.New("no user")}
+	if classifyWorkerLaunchError(custom) != ReasonHostNoActiveUser {
+		t.Fatalf("got %q, want %q", classifyWorkerLaunchError(custom), ReasonHostNoActiveUser)
+	}
+	wrapped := fmt.Errorf("wrapped: %w", custom)
+	if classifyWorkerLaunchError(wrapped) != ReasonHostNoActiveUser {
+		t.Fatalf("got %q, want %q", classifyWorkerLaunchError(wrapped), ReasonHostNoActiveUser)
 	}
 }

@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/screens/link_host_overlay.dart';
 import 'package:ligament_authenticator/services/link_host_session.dart';
+import 'package:ligament_authenticator/models/link_session_policy.dart';
 
 const _sessionId = '10000000-0000-4000-8000-000000000001';
 const _viewOffer = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96';
@@ -193,9 +194,14 @@ void main() {
       'type': 'signal',
       'session_id': _sessionId,
       'signal': {
+        'type': 'candidate',
         'candidate': {'candidate': 'candidate:1'}
       },
     });
+    // Exercise the operator's actual normalizer after server persistence.
+    final signal = Map<String, dynamic>.from(sent[1]['signal'] as Map);
+    expect(linkSignalType({'type': signal['type'], 'payload': signal}, signal),
+        'candidate');
   });
 
   test('buffers early candidates and applies them after local answer',

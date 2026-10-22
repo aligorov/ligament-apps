@@ -39,31 +39,53 @@ func NewWindowsSessionWorkerLauncher() *WindowsSessionWorkerLauncher {
 
 func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer, offerFrame []byte) (SessionWorkerProcess, error) {
 	if len(offerFrame) == 0 || len(offerFrame) > linkHostFrameLimit {
-		return nil, errors.New("link agent: invalid initial worker frame size")
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerUnavailable,
+			Err:    errors.New("link agent: invalid initial worker frame size"),
+		}
 	}
-	sessionID := windows.WTSGetActiveConsoleSessionId()
-	if sessionID == 0 || sessionID == 0xffffffff {
-		return nil, errors.New("link agent: no active console session")
+	sess, err := ResolveInteractiveSession()
+	if err != nil {
+		if errors.Is(err, ErrNoActiveInteractiveUser) {
+			return nil, &WorkerLaunchError{Reason: ReasonHostNoActiveUser, Err: err}
+		}
+		if errors.Is(err, ErrAmbiguousInteractiveSession) {
+			return nil, &WorkerLaunchError{Reason: ReasonHostSessionAmbiguous, Err: err}
+		}
+		return nil, &WorkerLaunchError{Reason: ReasonHostWorkerLaunchFailed, Err: err}
 	}
+	sessionID := sess.SessionID
 
 	pipeName, err := newLinkHostPipeName()
 	if err != nil {
-		return nil, err
+		return nil, &WorkerLaunchError{Reason: ReasonHostWorkerLaunchFailed, Err: err}
 	}
 	if !workerPipeNameIsValid(pipeName) {
-		return nil, errors.New("link agent: generated invalid worker pipe name")
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    errors.New("link agent: generated invalid worker pipe name"),
+		}
 	}
 	pipeNameUTF16, err := windows.UTF16PtrFromString(pipeName)
 	if err != nil {
-		return nil, fmt.Errorf("link agent: encode worker pipe name: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: encode worker pipe name: %w", err),
+		}
 	}
 	sd, err := windows.SecurityDescriptorFromString(linkHostPipeSDDL)
 	if err != nil {
-		return nil, fmt.Errorf("link agent: create worker pipe ACL: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: create worker pipe ACL: %w", err),
+		}
 	}
 	absSD, err := sd.ToAbsolute()
 	if err != nil {
-		return nil, fmt.Errorf("link agent: prepare worker pipe ACL: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: prepare worker pipe ACL: %w", err),
+		}
 	}
 	security := windows.SecurityAttributes{
 		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
@@ -76,7 +98,10 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer,
 		1, linkHostFrameLimit, linkHostFrameLimit, 0, &security,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("link agent: create worker named pipe: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: create worker named pipe: %w", err),
+		}
 	}
 	process, err := startInteractiveLinkHost(pipeName, sessionID)
 	if err != nil {
@@ -88,11 +113,14 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer,
 	}
 	if err := worker.acceptChild(ctx, process.ProcessId); err != nil {
 		_ = worker.Close()
-		return nil, err
+		return nil, &WorkerLaunchError{Reason: ReasonHostWorkerLaunchFailed, Err: err}
 	}
 	if err := worker.Send(ctx, offerFrame); err != nil {
 		_ = worker.Close()
-		return nil, fmt.Errorf("link agent: send offer to interactive worker: %w", err)
+		return nil, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: send offer to interactive worker: %w", err),
+		}
 	}
 	return worker, nil
 }
@@ -105,49 +133,73 @@ type launchedProcess struct {
 func startInteractiveLinkHost(pipeName string, sessionID uint32) (launchedProcess, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return launchedProcess{}, fmt.Errorf("link agent: locate service executable: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: locate service executable: %w", err),
+		}
 	}
 	appPath := filepath.Join(filepath.Dir(executable), "ligament_authenticator.exe")
 	if info, err := os.Stat(appPath); err != nil || info.IsDir() {
-		return launchedProcess{}, errors.New("link agent: interactive Flutter host is not installed")
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerNotInstalled,
+			Err:    errors.New("link agent: interactive Flutter host is not installed"),
+		}
 	}
 	app, err := windows.UTF16PtrFromString(appPath)
 	if err != nil {
-		return launchedProcess{}, fmt.Errorf("link agent: encode Flutter host path: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: encode Flutter host path: %w", err),
+		}
 	}
 	command, err := windows.UTF16PtrFromString(fmt.Sprintf("\"%s\" --link-host=%s", appPath, pipeName))
 	if err != nil {
-		return launchedProcess{}, fmt.Errorf("link agent: encode Flutter host command: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: encode Flutter host command: %w", err),
+		}
 	}
 	directory, err := windows.UTF16PtrFromString(filepath.Dir(appPath))
 	if err != nil {
-		return launchedProcess{}, fmt.Errorf("link agent: encode Flutter host directory: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: encode Flutter host directory: %w", err),
+		}
 	}
 	desktop, err := windows.UTF16PtrFromString(`winsta0\default`)
 	if err != nil {
-		return launchedProcess{}, err
+		return launchedProcess{}, &WorkerLaunchError{Reason: ReasonHostWorkerLaunchFailed, Err: err}
 	}
 	token, err := systemTokenForSession(sessionID)
 	if err != nil {
-		return launchedProcess{}, err
+		return launchedProcess{}, &WorkerLaunchError{Reason: ReasonHostWorkerLaunchFailed, Err: err}
 	}
 	defer token.Close()
 	var environment *uint16
 	if err := windows.CreateEnvironmentBlock(&environment, token, false); err != nil {
-		return launchedProcess{}, fmt.Errorf("link agent: create worker environment: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: create worker environment: %w", err),
+		}
 	}
 	defer windows.DestroyEnvironmentBlock(environment)
 
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		return launchedProcess{}, fmt.Errorf("link agent: create worker job: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: create worker job: %w", err),
+		}
 	}
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		_ = windows.CloseHandle(job)
-		return launchedProcess{}, fmt.Errorf("link agent: configure worker job: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: configure worker job: %w", err),
+		}
 	}
 	startup := windows.StartupInfo{
 		Cb:         uint32(unsafe.Sizeof(windows.StartupInfo{})),
@@ -160,21 +212,30 @@ func startInteractiveLinkHost(pipeName string, sessionID uint32) (launchedProces
 	if err := windows.CreateProcessAsUser(token, app, command, nil, nil, false,
 		creationFlags, environment, directory, &startup, &created); err != nil {
 		_ = windows.CloseHandle(job)
-		return launchedProcess{}, fmt.Errorf("link agent: start Flutter host in console session: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: start Flutter host in interactive session: %w", err),
+		}
 	}
 	if err := windows.AssignProcessToJobObject(job, created.Process); err != nil {
 		_ = windows.TerminateProcess(created.Process, 1)
 		_ = windows.CloseHandle(created.Thread)
 		_ = windows.CloseHandle(created.Process)
 		_ = windows.CloseHandle(job)
-		return launchedProcess{}, fmt.Errorf("link agent: assign Flutter host job: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: assign Flutter host job: %w", err),
+		}
 	}
 	if _, err := windows.ResumeThread(created.Thread); err != nil {
 		_ = windows.TerminateJobObject(job, 1)
 		_ = windows.CloseHandle(created.Thread)
 		_ = windows.CloseHandle(created.Process)
 		_ = windows.CloseHandle(job)
-		return launchedProcess{}, fmt.Errorf("link agent: resume Flutter host: %w", err)
+		return launchedProcess{}, &WorkerLaunchError{
+			Reason: ReasonHostWorkerLaunchFailed,
+			Err:    fmt.Errorf("link agent: resume Flutter host: %w", err),
+		}
 	}
 	_ = windows.CloseHandle(created.Thread)
 	return launchedProcess{ProcessInformation: created, job: job}, nil

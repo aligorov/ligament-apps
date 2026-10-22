@@ -19,6 +19,53 @@ type SessionWorkerProcess interface {
 	Close() error
 }
 
+const (
+	ReasonHostNoActiveUser       = "host_no_active_user"
+	ReasonHostSessionAmbiguous   = "host_session_ambiguous"
+	ReasonHostWorkerNotInstalled = "host_worker_not_installed"
+	ReasonHostWorkerLaunchFailed = "host_worker_launch_failed"
+	ReasonHostWorkerUnavailable  = "host_worker_unavailable"
+)
+
+var (
+	ErrNoActiveInteractiveUser     = errors.New("link agent: no active interactive user")
+	ErrAmbiguousInteractiveSession = errors.New("link agent: ambiguous interactive user sessions")
+)
+
+// InteractiveSession holds the identified single active interactive session.
+type InteractiveSession struct {
+	SessionID uint32
+	Username  string
+}
+
+// WorkerLaunchError reports a specific safe reason when worker launch fails.
+type WorkerLaunchError struct {
+	Reason string
+	Err    error
+}
+
+func (e *WorkerLaunchError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("link agent: %s: %v", e.Reason, e.Err)
+	}
+	return "link agent: " + e.Reason
+}
+
+func (e *WorkerLaunchError) Unwrap() error {
+	return e.Err
+}
+
+func classifyWorkerLaunchError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var launchErr *WorkerLaunchError
+	if errors.As(err, &launchErr) && launchErr.Reason != "" {
+		return launchErr.Reason
+	}
+	return ReasonHostWorkerUnavailable
+}
+
 // SessionWorkerLauncher starts a worker in the selected interactive session.
 // The initial frame is the validated server offer envelope.
 type SessionWorkerLauncher interface {
@@ -78,7 +125,7 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 
 func (b *SessionWorkerBroker) start(ctx context.Context, offer SessionOffer, frame []byte, send func(any) error) error {
 	if b.launcher == nil {
-		return sendRejectedAnswer(send, offer.SessionID, "host_worker_unavailable")
+		return sendRejectedAnswer(send, offer.SessionID, ReasonHostWorkerUnavailable)
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
 	session := &workerSession{
@@ -103,7 +150,8 @@ func (b *SessionWorkerBroker) run(ctx context.Context, offer SessionOffer, frame
 	defer clear(frame)
 	process, err := b.launcher.Launch(ctx, offer, frame)
 	if err != nil {
-		_ = sendRejectedAnswer(send, offer.SessionID, "host_worker_unavailable")
+		reason := classifyWorkerLaunchError(err)
+		_ = sendRejectedAnswer(send, offer.SessionID, reason)
 		b.remove(offer.SessionID, session)
 		return
 	}

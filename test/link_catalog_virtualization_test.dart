@@ -35,6 +35,34 @@ class _CatalogAuthState extends ChangeNotifier implements AuthState {
 }
 
 void main() {
+  testWidgets('nonempty stale inventory exposes error and unknown status',
+      (tester) async {
+    final auth = _CatalogAuthState([
+      {
+        'hostname': 'STALE-PC',
+        'ad_ou': 'OU=Test',
+        'group_name': 'Test',
+        'is_online': null,
+        'os_family': 'windows',
+      }
+    ])
+      ..linkHostsError = 'network_unavailable';
+    await tester.pumpWidget(ChangeNotifierProvider<AuthState>.value(
+      value: auth,
+      child: const MaterialApp(home: LinkCatalogScreen()),
+    ));
+    await tester.pump();
+    expect(find.text('Не удалось обновить каталог. Доступность ПК неизвестна.'),
+        findsOneWidget);
+    await tester.tap(find.text('OU=Test'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Test'));
+    await tester.pumpAndSettle();
+    expect(find.text('Неизвестно'), findsOneWidget);
+    expect(find.text('Онлайн'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    auth.dispose();
+  });
   testWidgets('OU and group host rows are lazily rendered by SliverList',
       (tester) async {
     final hosts = List<Map<String, dynamic>>.generate(
