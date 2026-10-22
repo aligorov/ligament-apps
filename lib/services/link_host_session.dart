@@ -845,6 +845,16 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           final decoded = jsonDecode(message.text);
           if (decoded is Map) {
             final control = Map<String, dynamic>.from(decoded);
+            if (control['type'] == 'ping') {
+              try {
+                channel.send(RTCDataChannelMessage(jsonEncode({
+                  'type': 'pong',
+                  'timestamp': control['timestamp'] ??
+                      DateTime.now().millisecondsSinceEpoch,
+                })));
+              } catch (_) {}
+              return;
+            }
             if (_isValidInput(control)) _executeInput(control);
           }
         } on FormatException {
@@ -881,6 +891,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   static bool _isValidInput(Map<String, dynamic> input) {
     final type = input['type'];
+    if (type == 'ping' || type == 'pong') {
+      return true;
+    }
     if (type == 'mouse_move' || type == 'mouse_down' || type == 'mouse_up') {
       final x = input['x'];
       final y = input['y'];

@@ -363,6 +363,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Timer? _trackStageTimer;
   Timer? _firstFrameStageTimer;
   Timer? _pcGraceTimer;
+  Timer? _dataChannelPingTimer;
 
   final RemoteKeyboard _remoteKeyboard = RemoteKeyboard();
   final Set<String> _pressedKeys = {};
@@ -561,6 +562,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _cancelStageTimers();
     _pcGraceTimer?.cancel();
     _pcGraceTimer = null;
+    _dataChannelPingTimer?.cancel();
+    _dataChannelPingTimer = null;
     _leaseTimer?.cancel();
     _leaseTimer = null;
     _linkSignalTimer?.cancel();
@@ -842,6 +845,26 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         }
       };
 
+      peer.onIceConnectionState = (iceState) {
+        debugPrint('support_operator (link): ICE connection state: $iceState');
+        if (!mounted || _isCleanedUp) return;
+        if (iceState == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+            iceState == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+          _pcGraceTimer?.cancel();
+          _pcGraceTimer = null;
+        } else if (iceState ==
+            RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          if (_linkRemoteDescriptionSet) {
+            _schedulePcGraceTermination();
+          }
+        } else if (iceState ==
+            RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+          if (_linkRemoteDescriptionSet && _pcGraceTimer == null) {
+            _schedulePcGraceTermination();
+          }
+        }
+      };
+
       peer.onConnectionState = (state) {
         debugPrint('support_operator (link): connection state: $state');
         if (!mounted || _isCleanedUp) return;
@@ -859,6 +882,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _onSessionTerminated('session_ended');
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+          if (!_linkRemoteDescriptionSet) {
+            debugPrint(
+                'support_operator (link): ignoring failed state before remote description set');
+            return;
+          }
           setState(() {
             _isConnected = false;
             _currentNumberMatch = null;
@@ -868,6 +896,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _schedulePcGraceTermination();
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+          if (!_linkRemoteDescriptionSet) {
+            debugPrint(
+                'support_operator (link): ignoring disconnected state before remote description set');
+            return;
+          }
           setState(() {
             _isConnected = false;
             _currentNumberMatch = null;
@@ -1422,7 +1455,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         }
         _sendDataMessage({'type': 'screen_list'});
+        _dataChannelPingTimer?.cancel();
+        _dataChannelPingTimer =
+            Timer.periodic(const Duration(seconds: 5), (_) {
+          if (_isCleanedUp ||
+              _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
+            _dataChannelPingTimer?.cancel();
+            _dataChannelPingTimer = null;
+            return;
+          }
+          _sendDataMessage({
+            'type': 'ping',
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+          });
+        });
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
+        _dataChannelPingTimer?.cancel();
+        _dataChannelPingTimer = null;
         if (mounted) {
           setState(() {});
         }
@@ -1449,6 +1498,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       return;
     }
     final type = data['type']?.toString();
+    if (type == 'pong') {
+      _pcGraceTimer?.cancel();
+      _pcGraceTimer = null;
+      return;
+    }
     if (type == 'screen_list') {
       final list = data['screens'] as List<dynamic>? ?? [];
       final sel = data['selected_id']?.toString();
@@ -2417,6 +2471,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _cancelStageTimers();
     _pcGraceTimer?.cancel();
     _pcGraceTimer = null;
+    _dataChannelPingTimer?.cancel();
+    _dataChannelPingTimer = null;
     _leaseTimer?.cancel();
     _leaseTimer = null;
     _linkSignalTimer?.cancel();
@@ -3983,8 +4039,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     onPressed: _frameReady ? _takeScreenshot : null,
                   ),
 
-                  // Чат с пользователем (скрыт для владельца консоли ПК)
-                  if (!isOwner)
+                  // Чат с пользователем (скрыт для владельца консоли ПК и сессий LINK)
+                  if (!isOwner && !widget.isLink)
                     IconButton(
                       icon: Badge(
                         isLabelVisible: _unreadChatCount > 0,
@@ -4274,10 +4330,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             ),
           ),
 
-          // Карточка с контрольным числом (если сеанс еще авторизуется клиентом).
-          // В owner-режиме контрольного числа нет (§5.2: без number-match).
-          if (!isOwner &&
-              !_isConnected &&
+          // Карточка с контрольным числом (если сеанс ожидает подтверждения).
+          if (!_isConnected &&
               !_isChatOnly &&
               _currentNumberMatch != null &&
               _statusKey == 'waiting_consent')
@@ -4739,7 +4793,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           style: const TextStyle(
                               fontSize: 12, color: Colors.white)),
                     ),
-                    if (!isOwner)
+                    if (!isOwner && !widget.isLink)
                       TextButton.icon(
                         onPressed: _showOperatorChatModal,
                         icon: Badge(
