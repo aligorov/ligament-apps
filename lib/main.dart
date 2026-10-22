@@ -62,7 +62,7 @@ void main(List<String> args) async {
       runApp(LinkHostOverlay(state: workerState));
       await windowManager.waitUntilReadyToShow(
         const WindowOptions(
-          size: Size(800, 160),
+          size: Size(560, 760),
           minimumSize: Size(460, 120),
           center: true,
           backgroundColor: Color(0xFF10251D),

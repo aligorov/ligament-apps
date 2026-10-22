@@ -127,7 +127,7 @@ func (b *SessionWorkerBroker) start(ctx context.Context, offer SessionOffer, fra
 	if b.launcher == nil {
 		return sendRejectedAnswer(send, offer.SessionID, ReasonHostWorkerUnavailable)
 	}
-	workerCtx, cancel := context.WithCancel(ctx)
+	workerCtx, cancel := context.WithCancel(context.Background())
 	session := &workerSession{
 		cancel:   cancel,
 		outbound: make(chan []byte, maxQueuedWorkerSignals),

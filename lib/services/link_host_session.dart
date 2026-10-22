@@ -207,7 +207,7 @@ class LinkHostSession {
         }
         final candidateValue = signal['candidate'];
         if (candidateValue is! Map) {
-          await _reject('invalid_signal');
+          debugPrint('link_host: ignoring non-candidate signal: ${signal['type']}');
           return;
         }
         final candidate = Map<String, dynamic>.from(candidateValue);
@@ -221,8 +221,8 @@ class LinkHostSession {
         }
         try {
           await peer.addRemoteCandidate(candidate);
-        } catch (_) {
-          await _reject('invalid_candidate');
+        } catch (e) {
+          debugPrint('link_host: addRemoteCandidate failed (ignoring): $e');
         }
       case 'session_close':
       case 'session_revoke':
@@ -319,7 +319,9 @@ class LinkHostWorkerState extends ChangeNotifier {
     operatorName = String.fromCharCodes(trimmedOperator.runes.take(96));
     accessType = type;
     confirmationDigits = digits;
-    phase = LinkHostWorkerPhase.connecting;
+    phase = type == 'attended'
+        ? LinkHostWorkerPhase.awaitingConsent
+        : LinkHostWorkerPhase.connecting;
     notifyListeners();
   }
 
@@ -362,7 +364,8 @@ class LinkHostWorkerState extends ChangeNotifier {
   }
 
   void markActive() {
-    if (phase == LinkHostWorkerPhase.connecting) {
+    if (phase == LinkHostWorkerPhase.connecting ||
+        phase == LinkHostWorkerPhase.awaitingConsent) {
       phase = LinkHostWorkerPhase.active;
       notifyListeners();
     }

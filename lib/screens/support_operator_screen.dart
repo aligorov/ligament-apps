@@ -4346,8 +4346,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           // Карточка с контрольным числом (если сеанс ожидает подтверждения).
           if (!_isConnected &&
               !_isChatOnly &&
-              _currentNumberMatch != null &&
-              _statusKey == 'waiting_consent')
+              _currentNumberMatch != null)
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
