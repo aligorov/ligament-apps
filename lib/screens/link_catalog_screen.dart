@@ -369,12 +369,32 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     expanded: row.expanded,
                     onTap: () => _toggleExpansion(row.key),
                     isOU: true,
+                    isRu: isRu,
+                    onManageAccess: auth.isLinkAdmin
+                        ? () => _showGroupAccessDialog(
+                              type: 'ou',
+                              target: row.label,
+                              label: row.label,
+                              isRu: isRu,
+                              auth: auth,
+                            )
+                        : null,
                   ),
                 _CatalogRowType.group => _folderRow(
                     label: row.label,
                     expanded: row.expanded,
                     onTap: () => _toggleExpansion(row.key),
                     isOU: false,
+                    isRu: isRu,
+                    onManageAccess: auth.isLinkAdmin
+                        ? () => _showGroupAccessDialog(
+                              type: 'group',
+                              target: row.label,
+                              label: row.label,
+                              isRu: isRu,
+                              auth: auth,
+                            )
+                        : null,
                   ),
                 _CatalogRowType.host => Padding(
                     padding: const EdgeInsets.only(left: 28),
@@ -443,6 +463,8 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     required VoidCallback onTap,
     required bool isOU,
     String? subtitle,
+    VoidCallback? onManageAccess,
+    bool isRu = true,
   }) {
     return Card(
       color: isOU ? const Color(0xFF131B2B) : const Color(0xFF0F1725),
@@ -470,9 +492,25 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             ? null
             : Text(subtitle,
                 style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
-        trailing: Icon(
-          expanded ? Icons.expand_less : Icons.expand_more,
-          color: const Color(0xFF94A3B8),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onManageAccess != null)
+              IconButton(
+                key: ValueKey('folder-access-$label'),
+                tooltip: isRu ? 'Доступ операторов' : 'Operator access',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.manage_accounts_outlined,
+                    size: 20, color: Color(0xFF38BDF8)),
+                onPressed: onManageAccess,
+              ),
+            Icon(
+              expanded ? Icons.expand_less : Icons.expand_more,
+              color: const Color(0xFF94A3B8),
+            ),
+          ],
         ),
       ),
     );
@@ -927,6 +965,28 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     );
   }
 
+  Future<void> _showGroupAccessDialog({
+    required String type,
+    required String target,
+    required String label,
+    required bool isRu,
+    required AuthState auth,
+  }) async {
+    final api = auth.api;
+    if (api == null) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => _GroupAccessDialog(
+        api: api,
+        type: type,
+        target: target,
+        label: label,
+        isRu: isRu,
+      ),
+    );
+  }
+
   Widget _message(String text, IconData icon) => Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -942,4 +1002,359 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           ),
         ),
       );
+}
+
+class _GroupAccessDialog extends StatefulWidget {
+  const _GroupAccessDialog({
+    required this.api,
+    required this.type,
+    required this.target,
+    required this.label,
+    required this.isRu,
+  });
+
+  final dynamic api;
+  final String type;
+  final String target;
+  final String label;
+  final bool isRu;
+
+  @override
+  State<_GroupAccessDialog> createState() => _GroupAccessDialogState();
+}
+
+class _GroupOperatorItem {
+  _GroupOperatorItem({
+    required this.operatorUserId,
+    required this.username,
+    required this.displayName,
+    required this.email,
+    required this.hasAccess,
+    required this.allowUnattended,
+  });
+
+  final String operatorUserId;
+  final String username;
+  final String displayName;
+  final String email;
+  bool hasAccess;
+  bool allowUnattended;
+}
+
+class _GroupAccessDialogState extends State<_GroupAccessDialog> {
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+  List<_GroupOperatorItem> _operators = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final res = await widget.api.getLinkGroupAccess(
+        type: widget.type,
+        target: widget.target,
+      );
+      final rawOps = res['operators'] as List<dynamic>? ?? [];
+      final ops = <_GroupOperatorItem>[];
+      for (final raw in rawOps) {
+        if (raw is Map<String, dynamic>) {
+          ops.add(_GroupOperatorItem(
+            operatorUserId: raw['operator_user_id']?.toString() ?? '',
+            username: raw['username']?.toString() ?? '',
+            displayName: raw['display_name']?.toString() ?? '',
+            email: raw['email']?.toString() ?? '',
+            hasAccess: raw['has_access'] == true,
+            allowUnattended: raw['allow_unattended'] == true,
+          ));
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _operators = ops;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      final rules = _operators
+          .map((op) => {
+                'operator_user_id': op.operatorUserId,
+                'has_access': op.hasAccess,
+                'allow_unattended': op.allowUnattended,
+              })
+          .toList();
+      await widget.api.updateLinkGroupAccess(
+        type: widget.type,
+        target: widget.target,
+        rules: rules,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(widget.isRu
+            ? 'Права доступа к группе сохранены.'
+            : 'Group access rights updated.'),
+      ));
+    } catch (e) {
+      if (mounted) {
+        setState(() => _saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content:
+              Text('${widget.isRu ? "Ошибка сохранения" : "Save error"}: $e'),
+          backgroundColor: Colors.red.shade800,
+        ));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isRu = widget.isRu;
+    return Dialog(
+      backgroundColor: const Color(0xFF0F172A),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 540, maxHeight: 600),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0284C7).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.manage_accounts_outlined,
+                        color: Color(0xFF38BDF8), size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          widget.type == 'ou'
+                              ? (isRu
+                                  ? 'Подразделение (OU) Active Directory'
+                                  : 'Active Directory OU')
+                              : (isRu
+                                  ? 'Группа компьютеров'
+                                  : 'Computer group'),
+                          style: const TextStyle(
+                              color: Color(0xFF94A3B8), fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Color(0xFF94A3B8)),
+                  ),
+                ],
+              ),
+              const Divider(color: Color(0xFF1E293B), height: 24),
+              Text(
+                isRu
+                    ? 'Назначьте операторов, которым разрешено подключение к ПК этой группы:'
+                    : 'Assign operators allowed to connect to PCs in this group:',
+                style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: _buildContent(isRu),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed:
+                        _saving ? null : () => Navigator.of(context).pop(),
+                    child: Text(isRu ? 'Отмена' : 'Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _loading || _saving ? null : _save,
+                    icon: _saving
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.check, size: 18),
+                    label: Text(isRu ? 'Сохранить' : 'Save'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildContent(bool isRu) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.amber, size: 32),
+            const SizedBox(height: 8),
+            Text(_error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.amber, fontSize: 12)),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _load,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: Text(isRu ? 'Повторить' : 'Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+    if (_operators.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.person_off_outlined,
+                  color: Color(0xFF64748B), size: 36),
+              const SizedBox(height: 8),
+              Text(
+                isRu
+                    ? 'В системе нет активных операторов Link.\nНазначьте роль «Оператор Ligament Link» в настройках пользователей.'
+                    : 'No Link operators found.\nAssign "Link Operator" role in User Management.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      itemCount: _operators.length,
+      separatorBuilder: (_, __) =>
+          const Divider(color: Color(0xFF1E293B), height: 1),
+      itemBuilder: (context, index) {
+        final op = _operators[index];
+        final name = op.displayName.isNotEmpty ? op.displayName : op.username;
+        return ListTile(
+          dense: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          leading: CircleAvatar(
+            backgroundColor: const Color(0xFF1E293B),
+            child: Text(
+              name.isNotEmpty ? name[0].toUpperCase() : '?',
+              style: const TextStyle(
+                  color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
+            ),
+          ),
+          title: Text(
+            name,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(
+            op.email.isNotEmpty ? op.email : '@${op.username}',
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Tooltip(
+                message: isRu
+                    ? (op.allowUnattended
+                        ? 'Неконтролируемый доступ (без кода подтверждения) разрешён'
+                        : 'Нажмите для включения неконтролируемого доступа')
+                    : (op.allowUnattended
+                        ? 'Unattended access allowed'
+                        : 'Click to enable unattended access'),
+                child: IconButton(
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints.tightFor(width: 32, height: 32),
+                  onPressed: op.hasAccess
+                      ? () => setState(
+                          () => op.allowUnattended = !op.allowUnattended)
+                      : null,
+                  icon: Icon(
+                    op.allowUnattended ? Icons.shield : Icons.shield_outlined,
+                    color: op.hasAccess
+                        ? (op.allowUnattended
+                            ? const Color(0xFF22C55E)
+                            : const Color(0xFF64748B))
+                        : const Color(0xFF334155),
+                    size: 18,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Tooltip(
+                message: isRu
+                    ? (op.hasAccess ? 'Доступ разрешён' : 'Доступ запрещён')
+                    : (op.hasAccess ? 'Access granted' : 'Access denied'),
+                child: Switch(
+                  value: op.hasAccess,
+                  activeThumbColor: const Color(0xFF38BDF8),
+                  activeTrackColor: const Color(0xFF0284C7),
+                  onChanged: (val) {
+                    setState(() {
+                      op.hasAccess = val;
+                      if (!val) op.allowUnattended = false;
+                    });
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }

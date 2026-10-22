@@ -798,6 +798,52 @@ class ApiClient {
     return data;
   }
 
+  /// Fetches operators and their access rules for a specific group or OU.
+  Future<Map<String, dynamic>> getLinkGroupAccess({
+    required String type,
+    required String target,
+  }) async {
+    final uri = Uri.parse(_cleanUrl('/api/v1/app/link/group-access')).replace(
+      queryParameters: {
+        'type': type,
+        'target': target,
+      },
+    );
+    final res = await _get(uri.toString(), headers: _headers());
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode != 200) {
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'link_group_access_get_failed',
+      );
+    }
+    return data;
+  }
+
+  /// Sets operator access rules for a specific group or OU.
+  Future<void> updateLinkGroupAccess({
+    required String type,
+    required String target,
+    required List<Map<String, dynamic>> rules,
+  }) async {
+    final res = await _put(
+      _cleanUrl('/api/v1/app/link/group-access'),
+      headers: _headers(),
+      body: jsonEncode({
+        'type': type,
+        'target': target,
+        'rules': rules,
+      }),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode != 200 || data['status'] != 'ok') {
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'link_group_access_update_failed',
+      );
+    }
+  }
+
   /// Issues a short-lived, one-use credential for binding the current Windows
   /// host. The token is returned only to the authenticated app client.
   Future<LinkEnrollmentCredential> createLinkEnrollmentCredential() async {
