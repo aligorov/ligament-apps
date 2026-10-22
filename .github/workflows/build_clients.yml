@@ -233,6 +233,7 @@ jobs:
             libsecret-1-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
+            libpulse-dev \
             libayatana-appindicator3-dev \
             rpm \
             dpkg-dev
