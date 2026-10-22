@@ -628,6 +628,26 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final localIPs = host['local_ips'];
     final isUnattended = host['unattended_enabled'] == true;
     final canManage = host['can_manage_access'] == true || auth.isLinkAdmin;
+
+    final ownerDisplayName = (host['owner_display_name'] ?? '').toString().trim();
+    final ownerUsername = (host['owner_username'] ?? '').toString().trim();
+    final ownerPosition = (host['owner_position'] ?? '').toString().trim();
+    final interactiveUser = (host['interactive_username'] ?? '').toString().trim();
+
+    final effectiveName = ownerDisplayName.isNotEmpty
+        ? ownerDisplayName
+        : (ownerUsername.isNotEmpty
+            ? ownerUsername
+            : (interactiveUser.isNotEmpty ? interactiveUser : ''));
+    final effectiveLogin = ownerUsername.isNotEmpty
+        ? ownerUsername
+        : (ownerDisplayName.isEmpty && interactiveUser.isNotEmpty ? '' : interactiveUser);
+    final effectivePosition = ownerPosition.isNotEmpty
+        ? ownerPosition
+        : (host['ad_ou'] != null && host['ad_ou'].toString().trim().isNotEmpty
+            ? host['ad_ou'].toString().trim()
+            : '');
+
     return Container(
       constraints: const BoxConstraints(minHeight: 46),
       child: Padding(
@@ -661,9 +681,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                         else if (host['public_ip'] != null &&
                             host['public_ip'].toString().isNotEmpty)
                           host['public_ip'].toString(),
-                        if (host['interactive_username'] != null &&
-                            host['interactive_username'].toString().isNotEmpty)
-                          '👤 ${host['interactive_username']}',
+                        if (os.isNotEmpty) os,
                       ].where((s) => s.isNotEmpty).join(' • '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -673,14 +691,60 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   ],
                 )),
             Expanded(
-                flex: 2,
-                child: Text(
-                  os.isEmpty ? '—' : os,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
-                )),
+              flex: 4,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          effectiveName.isNotEmpty
+                              ? effectiveName
+                              : (isRu ? 'Владелец не назначен' : 'No owner assigned'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: effectiveName.isNotEmpty
+                                ? const Color(0xFFE2E8F0)
+                                : const Color(0xFF64748B),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (effectiveLogin.isNotEmpty && effectiveLogin != effectiveName) ...[
+                        const SizedBox(width: 4),
+                        Text(
+                          '($effectiveLogin)',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF94A3B8),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (effectivePosition.isNotEmpty) ...[
+                    const SizedBox(height: 1),
+                    Text(
+                      effectivePosition,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF64748B),
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
             Tooltip(
               message: isRu
                   ? 'Доступность агента. Экран и управление проверяются при подключении.'
@@ -889,9 +953,28 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       ),
       (
         isRu ? 'Владелец' : 'Owner',
-        (host['owner_username'] != null &&
-                host['owner_username'].toString().isNotEmpty)
-            ? host['owner_username'].toString()
+        [
+          if (host['owner_display_name'] != null &&
+              host['owner_display_name'].toString().trim().isNotEmpty)
+            host['owner_display_name'].toString().trim(),
+          if (host['owner_username'] != null &&
+              host['owner_username'].toString().trim().isNotEmpty)
+            '(${host['owner_username'].toString().trim()})',
+          if (host['owner_position'] != null &&
+              host['owner_position'].toString().trim().isNotEmpty)
+            '— ${host['owner_position'].toString().trim()}',
+        ].where((s) => s.isNotEmpty).join(' ').isNotEmpty
+            ? [
+                if (host['owner_display_name'] != null &&
+                    host['owner_display_name'].toString().trim().isNotEmpty)
+                  host['owner_display_name'].toString().trim(),
+                if (host['owner_username'] != null &&
+                    host['owner_username'].toString().trim().isNotEmpty)
+                  '(${host['owner_username'].toString().trim()})',
+                if (host['owner_position'] != null &&
+                    host['owner_position'].toString().trim().isNotEmpty)
+                  '— ${host['owner_position'].toString().trim()}',
+              ].where((s) => s.isNotEmpty).join(' ')
             : notDetected,
       ),
       (
