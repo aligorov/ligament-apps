@@ -106,6 +106,31 @@ List<Map<String, dynamic>> searchLinkHosts(
   return LinkHostSearchIndex(hosts).search(query);
 }
 
+/// Formats raw LDAP DN or OU path into clean hierarchical path:
+/// "OU=Администраторы,OU=IT-отдел,DC=corp,DC=local" -> "IT-отдел / Администраторы"
+String formatOU(String raw) {
+  final s = raw.trim();
+  if (s.isEmpty) return '';
+  if (!s.toUpperCase().contains('OU=')) {
+    return s;
+  }
+  final parts = s.split(',');
+  final ous = <String>[];
+  for (final p in parts) {
+    final trimmed = p.trim();
+    if (trimmed.toUpperCase().startsWith('OU=')) {
+      final name = trimmed.substring(3).trim();
+      if (name.isNotEmpty) {
+        ous.add(name);
+      }
+    }
+  }
+  if (ous.isEmpty) {
+    return s;
+  }
+  return ous.reversed.join(' / ');
+}
+
 class LinkCatalogScreen extends StatefulWidget {
   const LinkCatalogScreen({super.key});
 
@@ -231,8 +256,9 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final hosts = _searchIndex!.search(_query);
     final folders = <String, Map<String, List<Map<String, dynamic>>>>{};
     for (final host in hosts) {
-      final ou = (host['ad_ou']?.toString().trim().isNotEmpty ?? false)
-          ? host['ad_ou'].toString().trim()
+      final formattedOU = formatOU(host['ad_ou']?.toString() ?? '');
+      final ou = formattedOU.isNotEmpty
+          ? formattedOU
           : (isRu ? 'Без подразделения' : 'Unassigned OU');
       final group = (host['group_name']?.toString().trim().isNotEmpty ?? false)
           ? host['group_name'].toString().trim()
@@ -641,15 +667,13 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             ),
             if (host['can_archive'] == true || host['can_unlink'] == true)
               IconButton(
-                tooltip: host['can_archive'] == true
-                    ? (isRu ? 'Удалить из LINK' : 'Remove from LINK')
-                    : (isRu ? 'Отвязать мой ПК' : 'Unlink my PC'),
+                tooltip: isRu ? 'Удалить из LINK' : 'Remove from LINK',
                 onPressed: () => _archiveHost(host, isRu),
                 visualDensity: VisualDensity.compact,
                 constraints:
                     const BoxConstraints.tightFor(width: 32, height: 34),
                 padding: EdgeInsets.zero,
-                icon: const Icon(Icons.link_off, size: 16),
+                icon: const Icon(Icons.delete_outline, size: 16),
               ),
             IconButton(
               tooltip: isRu ? 'Подключиться' : 'Connect',
@@ -711,15 +735,13 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(host['can_archive'] == true
-            ? (isRu ? 'Удалить ПК из LINK?' : 'Remove PC from LINK?')
-            : (isRu ? 'Отвязать мой ПК?' : 'Unlink my PC?')),
+        title: Text(isRu ? 'Удалить ПК из LINK?' : 'Remove PC from LINK?'),
         content: SizedBox(
           width: 420,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(isRu
-                ? '${host['hostname'] ?? agentId}: доступ и текущие подключения будут прекращены. История сохранится. Для добавления заново потребуется регистрация агента.'
-                : '${host['hostname'] ?? agentId}: access and current connections will end. History is preserved. Adding this PC again requires agent enrollment.'),
+                ? 'Компьютер «${host['hostname'] ?? agentId}» будет удалён из каталога LINK, а активные подключения завершены.\n\n⚠️ Это действие относится ТОЛЬКО к удалённому доступу LINK и НЕ влияет на двухфакторную аутентификацию Windows Logon (вход в систему).\n\nДля повторного подключения через LINK потребуется зарегистрировать ПК заново.'
+                : 'Computer "${host['hostname'] ?? agentId}" will be removed from LINK catalog, and active connections will end.\n\n⚠️ This action applies ONLY to LINK remote access and DOES NOT affect Windows Logon (2FA credentials).\n\nRe-enrolling the agent will be required to connect via LINK again.'),
             const SizedBox(height: 16),
             TextField(
               onChanged: (value) => reason = value.trim(),

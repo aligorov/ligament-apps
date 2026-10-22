@@ -251,4 +251,18 @@ void main() {
       await server.close(force: true);
     }
   });
+
+  group('formatOU', () {
+    test('formats LDAP DN into clean root-to-leaf path', () {
+      expect(
+        formatOU('OU=Администраторы,OU=IT-отдел,OU=АС-Магистраль-Сервис,DC=asmagistral,DC=local'),
+        'АС-Магистраль-Сервис / IT-отдел / Администраторы',
+      );
+    });
+
+    test('returns plain string without OU= unchanged', () {
+      expect(formatOU('АС-Магистраль-Сервис / IT-отдел'), 'АС-Магистраль-Сервис / IT-отдел');
+      expect(formatOU(''), '');
+    });
+  });
 }
