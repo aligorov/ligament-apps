@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -346,7 +347,10 @@ func validWorkerResponse(frame []byte, sessionID string) bool {
 			Reason    string `json:"reason"`
 		}
 		return json.Unmarshal(envelope.Payload, &request) == nil &&
-			request.SessionID == sessionID && request.Reason == "host_local_disconnect"
+			request.SessionID == sessionID &&
+			(request.Reason == "host_local_disconnect" ||
+				request.Reason == "peer_failed" ||
+				strings.HasPrefix(request.Reason, "recorder_"))
 	case "session_answer":
 		var answer struct {
 			SessionID string `json:"session_id"`

@@ -287,9 +287,21 @@ class LinkHostSession {
 
   Future<void> _rejectOnce(String reason) async {
     if (_closed) return;
-    // An accepted session has already been committed by the server. Do not
-    // send a second session_answer; just release local media and input.
+    // An accepted session has already been committed by the server. Notify
+    // the server with session_terminate so the operator does not freeze.
     if (_ready) {
+      if (reason != 'invalid_session_scope') {
+        try {
+          await send({
+            'type': 'session_terminate',
+            'session_id': sessionId,
+            'payload': {
+              'session_id': sessionId,
+              'reason': reason,
+            },
+          });
+        } catch (_) {}
+      }
       await close();
       return;
     }
@@ -691,6 +703,18 @@ Future<void> _runConnectedLinkHostWorker(
         recorder?.start();
       },
       onControlInputObserved: recorder?.observeControlInput,
+      onFrameCaptured: recorder == null
+          ? null
+          : (kind, bytes, monitorId) {
+              recorder.enqueueFrame(
+                frameKind: kind,
+                payload: bytes,
+                monitorId: monitorId,
+                width: 1280,
+                height: 720,
+                codec: 'jpeg',
+              );
+            },
       policy: LinkSessionPolicy.fromWire(offer['dlp']),
     ),
     send: (frame) {
@@ -808,6 +832,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   FlutterLinkHostPeer({
     this.onConnected,
     this.onControlInputObserved,
+    this.onFrameCaptured,
     this.policy = const LinkSessionPolicy(),
   });
 
@@ -818,6 +843,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   final VoidCallback? onConnected;
   final void Function(Map<String, dynamic> input)? onControlInputObserved;
+  final void Function(String frameKind, Uint8List bytes, String monitorId)?
+      onFrameCaptured;
   final LinkSessionPolicy policy;
 
   RTCPeerConnection? _peer;
@@ -826,9 +853,49 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   ScreenRect? _screenRect;
   String? _selectedScreenId;
   Timer? _connectionGraceTimer;
+  Timer? _recorderFrameTimer;
+  DateTime? _lastFrameCaptureAt;
+  bool _capturingFrame = false;
   final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
   bool _allowControl = false;
   bool _closed = false;
+
+  Future<void> _captureRecorderSnapshot(String frameKind) async {
+    final cb = onFrameCaptured;
+    if (cb == null || _closed || _capturingFrame) return;
+    _capturingFrame = true;
+    try {
+      final srcId = _selectedScreenId ?? '0';
+      Uint8List? bytes;
+      try {
+        final raw = await WebRTC.invokeMethod(
+          'getDesktopSourceThumbnail',
+          <String, dynamic>{
+            'sourceId': srcId,
+            'thumbnailSize': {'width': 1280, 'height': 720},
+          },
+        );
+        if (raw is Uint8List && raw.isNotEmpty) {
+          bytes = raw;
+        }
+      } catch (_) {}
+      if (bytes == null || bytes.isEmpty) {
+        final tracks = _stream?.getVideoTracks() ?? const [];
+        if (tracks.isNotEmpty) {
+          final buf = await tracks.first.captureFrame();
+          final list = buf.asUint8List();
+          if (list.isNotEmpty) bytes = list;
+        }
+      }
+      if (bytes != null && bytes.isNotEmpty && !_closed) {
+        _lastFrameCaptureAt = DateTime.now();
+        cb(frameKind, bytes, srcId);
+      }
+    } catch (_) {
+    } finally {
+      _capturingFrame = false;
+    }
+  }
 
   Future<void> _sendScreenList() async {
     final control = _control;
@@ -960,6 +1027,14 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         _connectionGraceTimer?.cancel();
         _connectionGraceTimer = null;
         onConnected?.call();
+        if (onFrameCaptured != null) {
+          unawaited(_captureRecorderSnapshot('keyframe'));
+          _recorderFrameTimer?.cancel();
+          _recorderFrameTimer = Timer.periodic(
+            const Duration(seconds: 4),
+            (_) => unawaited(_captureRecorderSnapshot('periodic')),
+          );
+        }
       } else if (state ==
               RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
           state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
@@ -1109,8 +1184,17 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   void _executeInput(Map<String, dynamic> input) {
     if (_closed || !policy.allows(input, allowControl: _allowControl)) return;
     onControlInputObserved?.call(input);
-    final injector = InputInjector.instance;
     final type = input['type'];
+    if (onFrameCaptured != null &&
+        (type == 'mouse_down' || type == 'key_down' || type == 'hotkey')) {
+      final now = DateTime.now();
+      if (_lastFrameCaptureAt == null ||
+          now.difference(_lastFrameCaptureAt!) >=
+              const Duration(milliseconds: 1500)) {
+        unawaited(_captureRecorderSnapshot('activity'));
+      }
+    }
+    final injector = InputInjector.instance;
     try {
       if (type == 'mouse_move' || type == 'mouse_down' || type == 'mouse_up') {
         final x = (input['x'] as num).toDouble();
@@ -1486,6 +1570,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _closed = true;
     _connectionGraceTimer?.cancel();
     _connectionGraceTimer = null;
+    _recorderFrameTimer?.cancel();
+    _recorderFrameTimer = null;
     for (final dl in _activeDownloads.values) {
       dl.stallTimer?.cancel();
     }

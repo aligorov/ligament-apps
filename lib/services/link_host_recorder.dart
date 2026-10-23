@@ -55,8 +55,7 @@ class LinkRecordingConfig {
       contractVersion: raw['contract_version']?.toString() ?? 'v1',
       enabled: enabled && mode != 'exclude',
       mandatory: enabled && mandatory && mode != 'exclude',
-      requireFirstFrame:
-          enabled && (raw['require_first_frame'] == true || mandatory),
+      requireFirstFrame: enabled && raw['require_first_frame'] == true,
       effectiveMode: mode,
       aiAllowed: raw['ai_allowed'] == true && mode == 'record+AI',
       policyReason: raw['policy_reason']?.toString() ?? '',
@@ -180,6 +179,16 @@ class LinkHostRecorder {
 
   void start() {
     if (!config.enabled || _stopped || _flushTimer != null) return;
+    if (_nextSeq == 0 && _pendingEvents.isEmpty) {
+      _nextSeq++;
+      _pendingEvents.add({
+        'seq': _nextSeq,
+        'event_type': 'session_started',
+        'source': 'session_lifecycle',
+        'occurred_at': _clock().toUtc().toIso8601String(),
+        'metadata': {'mode': config.effectiveMode},
+      });
+    }
     _flushTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       unawaited(flushAndVerifyHealth());
     });
