@@ -2,7 +2,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 /// Единая точка правды о версии приложения (статический fallback).
 /// Держится синхронной с `version:` в pubspec.yaml — менять только вместе.
-const String kAppVersion = '1.1.89+115';
+const String kAppVersion = '1.1.90+116';
 
 String _runtimeAppVersion = kAppVersion;
 
