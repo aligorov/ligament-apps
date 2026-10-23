@@ -19,19 +19,28 @@ void main() {
     );
   });
 
-  test('sanitizes printable keys, passwords, and clipboard text on host', () {
+  test('records keyboard input, special keys, and sanitizes clipboard text on host', () {
     final now = DateTime.utc(2026, 10, 23, 12, 0);
 
-    // Печатные символы (ввод пароля) строго отбрасываются
+    // Печатные клавиши оператора записываются как key_input
+    final keyEv = LinkHostRecorder.sanitizeInputEvent(
+      {'type': 'key_down', 'key': 'p', 'char': 'p'},
+      occurredAt: now,
+    );
+    expect(keyEv, isNotNull);
+    expect(keyEv!['event_type'], 'key_input');
+    expect((keyEv['metadata'] as Map)['char'], 'p');
+
+    // Отпускание клавиши (key_up) не дублирует запись в журнале
     expect(
       LinkHostRecorder.sanitizeInputEvent(
-        {'type': 'key_down', 'key': 'p', 'char': 'p'},
+        {'type': 'key_up', 'key': 'p', 'char': 'p'},
         occurredAt: now,
       ),
       isNull,
     );
 
-    // Специальная клавиша Enter сохраняется без символа
+    // Специальная клавиша Enter сохраняется как special_key
     final enterEv = LinkHostRecorder.sanitizeInputEvent(
       {'type': 'key_down', 'key': 'Enter', 'char': '\n'},
       occurredAt: now,

@@ -15,6 +15,12 @@
 #include <windows.h>
 #include <wchar.h>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <thread>
 
 namespace {
 
@@ -25,6 +31,193 @@ HANDLE g_thread = nullptr;
 DWORD g_thread_id = 0;
 // Событие готовности хуков: установлены ли они в потоке успешно.
 HANDLE g_ready = nullptr;
+
+// Выделенный поток инъекции ввода без окон/хуков (Winlogon / UAC / Default):
+// в Windows поток с HWND (главный поток Flutter) не может вызывать
+// SetThreadDesktop(Winlogon), из-за чего при блокировке экрана (или простое)
+// мышь и клавиатура переставали работать на экране входа Windows.
+struct NativeInputTask {
+  enum Kind { kUnicode, kVk, kMouse, kSas } kind;
+  wchar_t ch = 0;
+  WORD vk = 0;
+  bool is_down = false;
+  int abs_x = 0;
+  int abs_y = 0;
+  int norm_vx = 0;
+  int norm_vy = 0;
+  DWORD mouse_flags = 0;
+  DWORD mouse_data = 0;
+};
+
+std::mutex g_input_mutex;
+std::condition_variable g_input_cv;
+std::deque<NativeInputTask> g_input_queue;
+bool g_input_worker_started = false;
+std::atomic<bool> g_keep_awake{false};
+std::atomic<bool> g_desktop_changed{false};
+std::wstring g_last_desktop_name;
+
+std::wstring QueryDesktopName(HDESK desk) {
+  if (!desk) return {};
+  wchar_t buf[256]{};
+  DWORD needed = 0;
+  if (!GetUserObjectInformationW(desk, UOI_NAME, buf, sizeof(buf), &needed)) {
+    return {};
+  }
+  return buf;
+}
+
+void AttachCurrentInputDesktop(HDESK* io_desk) {
+  HDESK current = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
+  if (!current) {
+    current = OpenDesktopW(L"Winlogon", 0, FALSE, MAXIMUM_ALLOWED);
+  }
+  if (!current) {
+    current = OpenDesktopW(L"Default", 0, FALSE, MAXIMUM_ALLOWED);
+  }
+  if (!current) return;
+
+  const std::wstring name = QueryDesktopName(current);
+  if (!name.empty() && name != g_last_desktop_name) {
+    if (!g_last_desktop_name.empty()) {
+      g_desktop_changed.store(true, std::memory_order_relaxed);
+    }
+    if (SetThreadDesktop(current)) {
+      if (*io_desk) CloseDesktop(*io_desk);
+      *io_desk = current;
+      g_last_desktop_name = name;
+      return;
+    }
+  }
+  CloseDesktop(current);
+}
+
+void ExecuteSendVk(WORD vk, bool is_down) {
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  input.ki.wVk = vk;
+  input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+  input.ki.dwFlags = is_down ? 0 : KEYEVENTF_KEYUP;
+  if (vk == VK_RCONTROL || vk == VK_RMENU || vk == VK_INSERT ||
+      vk == VK_DELETE || vk == VK_HOME || vk == VK_END || vk == VK_PRIOR ||
+      vk == VK_NEXT || (vk >= VK_LEFT && vk <= VK_DOWN)) {
+    input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+  }
+  if (SendInput(1, &input, sizeof(INPUT)) == 0) {
+    keybd_event( static_cast<BYTE>(vk), static_cast<BYTE>(input.ki.wScan), input.ki.dwFlags, 0);
+  }
+}
+
+void ExecuteSendUnicode(wchar_t ch, bool is_down) {
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  input.ki.wScan = ch;
+  input.ki.dwFlags = KEYEVENTF_UNICODE | (is_down ? 0 : KEYEVENTF_KEYUP);
+  SendInput(1, &input, sizeof(INPUT));
+}
+
+void ExecuteSendMouse(const NativeInputTask& t) {
+  if (t.mouse_flags & MOUSEEVENTF_MOVE) {
+    ClipCursor(nullptr);
+    SetCursorPos(t.abs_x, t.abs_y);
+  }
+  INPUT input = {};
+  input.type = INPUT_MOUSE;
+  input.mi.dx = t.norm_vx;
+  input.mi.dy = t.norm_vy;
+  input.mi.dwFlags = t.mouse_flags;
+  input.mi.mouseData = t.mouse_data;
+  if (SendInput(1, &input, sizeof(INPUT)) == 0) {
+    mouse_event(t.mouse_flags, t.norm_vx, t.norm_vy, t.mouse_data, 0);
+  }
+}
+
+void ExecuteSendSas() {
+  HMODULE sas = LoadLibraryExW(L"sas.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (sas) {
+    auto send_sas = reinterpret_cast<void(WINAPI*)(BOOL)>(GetProcAddress(sas, "SendSAS"));
+    if (send_sas) send_sas(FALSE);
+    FreeLibrary(sas);
+  }
+  ExecuteSendVk(VK_SPACE, true);
+  ExecuteSendVk(VK_SPACE, false);
+}
+
+void DesktopInputWorkerLoop() {
+  HWINSTA winsta = OpenWindowStationW(L"winsta0", FALSE, MAXIMUM_ALLOWED);
+  if (winsta) {
+    SetProcessWindowStation(winsta);
+  }
+  HDESK active_desk = nullptr;
+  auto last_awake_tick = std::chrono::steady_clock::now() - std::chrono::seconds(30);
+
+  for (;;) {
+    NativeInputTask task{};
+    bool has_task = false;
+    {
+      std::unique_lock<std::mutex> lock(g_input_mutex);
+      g_input_cv.wait_for(lock, std::chrono::milliseconds(1000), [] {
+        return !g_input_queue.empty();
+      });
+      if (!g_input_queue.empty()) {
+        task = g_input_queue.front();
+        g_input_queue.pop_front();
+        has_task = true;
+      }
+    }
+
+    AttachCurrentInputDesktop(&active_desk);
+
+    if (g_keep_awake.load(std::memory_order_relaxed)) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_awake_tick >= std::chrono::seconds(15)) {
+        last_awake_tick = now;
+        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+        INPUT keep_alive = {};
+        keep_alive.type = INPUT_MOUSE;
+        keep_alive.mi.dwFlags = MOUSEEVENTF_MOVE;
+        SendInput(1, &keep_alive, sizeof(INPUT));
+      }
+    }
+
+    if (!has_task) continue;
+    switch (task.kind) {
+      case NativeInputTask::kUnicode:
+        ExecuteSendUnicode(task.ch, task.is_down);
+        break;
+      case NativeInputTask::kVk:
+        ExecuteSendVk(task.vk, task.is_down);
+        break;
+      case NativeInputTask::kMouse:
+        ExecuteSendMouse(task);
+        break;
+      case NativeInputTask::kSas:
+        ExecuteSendSas();
+        break;
+    }
+  }
+}
+
+void EnqueueNativeInput(const NativeInputTask& task) {
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  if (!g_input_worker_started) {
+    g_input_worker_started = true;
+    std::thread(DesktopInputWorkerLoop).detach();
+  }
+  if (task.kind == NativeInputTask::kMouse &&
+      (task.mouse_flags == (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK)) &&
+      !g_input_queue.empty() &&
+      g_input_queue.back().kind == NativeInputTask::kMouse &&
+      g_input_queue.back().mouse_flags == task.mouse_flags) {
+    g_input_queue.back() = task;
+  } else {
+    if (g_input_queue.size() >= 512) {
+      g_input_queue.pop_front();
+    }
+    g_input_queue.push_back(task);
+  }
+  g_input_cv.notify_one();
+}
 
 LRESULT CALLBACK KeyboardLLProc(int n_code, WPARAM w_param, LPARAM l_param) {
   if (n_code >= 0 && g_blocked.load(std::memory_order_relaxed)) {
@@ -96,21 +289,53 @@ __declspec(dllexport) int ligament_remove_input_block(void) {
 }
 
 // A-07 (аудит 2026-10-10): надёжный ввод Unicode-символов (русская/кириллическая
-// раскладка, спецсимволы) через аппаратный SendInput(KEYEVENTF_UNICODE).
+// раскладка, спецсимволы) через выделенный поток с AttachInputDesktop (Winlogon/Default).
 __declspec(dllexport) void ligament_send_unicode_char(wchar_t ch, bool is_down) {
-  INPUT input = {};
-  input.type = INPUT_KEYBOARD;
-  input.ki.wScan = ch;
-  input.ki.dwFlags = KEYEVENTF_UNICODE | (is_down ? 0 : KEYEVENTF_KEYUP);
-  SendInput(1, &input, sizeof(INPUT));
+  NativeInputTask task{};
+  task.kind = NativeInputTask::kUnicode;
+  task.ch = ch;
+  task.is_down = is_down;
+  EnqueueNativeInput(task);
 }
 
 __declspec(dllexport) void ligament_send_vk(WORD vk, bool is_down) {
-  INPUT input = {};
-  input.type = INPUT_KEYBOARD;
-  input.ki.wVk = vk;
-  input.ki.dwFlags = is_down ? 0 : KEYEVENTF_KEYUP;
-  SendInput(1, &input, sizeof(INPUT));
+  NativeInputTask task{};
+  task.kind = NativeInputTask::kVk;
+  task.vk = vk;
+  task.is_down = is_down;
+  EnqueueNativeInput(task);
+}
+
+__declspec(dllexport) void ligament_send_mouse(int abs_x, int abs_y, int norm_vx, int norm_vy, DWORD flags, DWORD mouse_data) {
+  NativeInputTask task{};
+  task.kind = NativeInputTask::kMouse;
+  task.abs_x = abs_x;
+  task.abs_y = abs_y;
+  task.norm_vx = norm_vx;
+  task.norm_vy = norm_vy;
+  task.mouse_flags = flags;
+  task.mouse_data = mouse_data;
+  EnqueueNativeInput(task);
+}
+
+__declspec(dllexport) void ligament_send_sas(void) {
+  NativeInputTask task{};
+  task.kind = NativeInputTask::kSas;
+  EnqueueNativeInput(task);
+}
+
+__declspec(dllexport) void ligament_set_keep_awake(bool active) {
+  g_keep_awake.store(active, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  if (!g_input_worker_started) {
+    g_input_worker_started = true;
+    std::thread(DesktopInputWorkerLoop).detach();
+  }
+  g_input_cv.notify_one();
+}
+
+__declspec(dllexport) int ligament_consume_desktop_changed(void) {
+  return g_desktop_changed.exchange(false, std::memory_order_relaxed) ? 1 : 0;
 }
 
 // C4 (Релиз C): честный резолвинг 3+ мониторов на Windows через EnumDisplayMonitors.

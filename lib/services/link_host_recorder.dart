@@ -147,11 +147,16 @@ class LinkHostRecorder {
 
   static const Set<String> _allowedNonPrintableKeys = {
     'enter', 'return', 'tab', 'escape', 'esc', 'backspace', 'delete', 'insert',
-    'home', 'end', 'pageup', 'pagedown',
-    'arrowup', 'arrowdown', 'arrowleft', 'arrowright',
-    'up', 'down', 'left', 'right',
+    'home', 'end', 'pageup', 'page up', 'pagedown', 'page down',
+    'arrowup', 'arrow up', 'arrowdown', 'arrow down',
+    'arrowleft', 'arrow left', 'arrowright', 'arrow right',
+    'up', 'down', 'left', 'right', 'space',
+    'capslock', 'caps lock', 'numlock', 'num lock', 'scrolllock', 'scroll lock',
     'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
-    'control', 'ctrl', 'alt', 'shift', 'meta', 'win', 'super',
+    'control', 'ctrl', 'control left', 'control right', 'ctrl left', 'ctrl right',
+    'alt', 'alt left', 'alt right',
+    'shift', 'shift left', 'shift right',
+    'meta', 'meta left', 'meta right', 'win', 'super',
   };
 
   final String sessionId;
@@ -239,25 +244,43 @@ class LinkHostRecorder {
           'occurred_at': occurredAt.toUtc().toIso8601String(),
           'metadata': {'action': action},
         };
-      case 'key_down':
       case 'key_up':
-        final keyName = (raw['key']?.toString() ?? '').trim().toLowerCase();
-        if (!_allowedNonPrintableKeys.contains(keyName)) {
-          // Печатные символы и пароли никогда не сохраняются.
-          return null;
+        return null;
+      case 'key_down':
+        final rawKeyStr = raw['key']?.toString() ?? '';
+        final rawCharStr = raw['char']?.toString() ?? '';
+        final keyName = (rawKeyStr == ' ' || rawCharStr == ' ')
+            ? 'space'
+            : rawKeyStr.trim().toLowerCase();
+        if (keyName.isEmpty) return null;
+        if (_allowedNonPrintableKeys.contains(keyName)) {
+          return {
+            'event_type': 'special_key',
+            'source': 'remote_operator',
+            'occurred_at': occurredAt.toUtc().toIso8601String(),
+            'metadata': {'action': 'key_down', 'key': keyName},
+          };
         }
         return {
-          'event_type': 'special_key',
+          'event_type': 'key_input',
           'source': 'remote_operator',
           'occurred_at': occurredAt.toUtc().toIso8601String(),
-          'metadata': {'action': type, 'key': keyName},
+          'metadata': {
+            'action': 'key_down',
+            'key': rawKeyStr.trim(),
+            if (rawCharStr.isNotEmpty) 'char': rawCharStr,
+          },
         };
       case 'text_input':
+        final text = raw['text']?.toString() ?? '';
         return {
-          'event_type': 'text_input_redacted',
+          'event_type': 'text_input',
           'source': 'remote_operator',
           'occurred_at': occurredAt.toUtc().toIso8601String(),
-          'metadata': {'redacted': true},
+          'metadata': {
+            'text': text,
+            'length': text.length,
+          },
         };
       case 'clipboard_set':
       case 'clipboard_get':

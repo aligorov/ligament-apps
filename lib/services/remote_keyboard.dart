@@ -7,9 +7,13 @@ class RemoteKeyboard {
 
   Map<String, dynamic> message(KeyEvent event) {
     final down = event is KeyDownEvent || event is KeyRepeatEvent;
+    final rawLabel = event.logicalKey.keyLabel;
+    final keyLabel = rawLabel.isNotEmpty
+        ? rawLabel
+        : (event.logicalKey.debugName ?? event.physicalKey.debugName ?? 'Key');
     final identity = _pressed[event.physicalKey] ??
         {
-          'key': event.logicalKey.keyLabel,
+          'key': keyLabel,
           if (_virtualKey(event.physicalKey) case final int code)
             'keyCode': code,
           if (event.character case final String text when text.isNotEmpty)

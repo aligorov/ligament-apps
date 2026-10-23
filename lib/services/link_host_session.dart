@@ -854,6 +854,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   String? _selectedScreenId;
   Timer? _connectionGraceTimer;
   Timer? _recorderFrameTimer;
+  Timer? _desktopSwitchTimer;
   DateTime? _lastFrameCaptureAt;
   bool _capturingFrame = false;
   final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
@@ -986,16 +987,23 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       onCandidate(Map<String, dynamic>.from(candidate.toMap()));
     };
     peer.onDataChannel = (channel) {
-      if ((channel.label != 'link-control-v1' && channel.label != 'control') ||
-          _control != null) {
+      if (channel.label != 'link-control-v1' && channel.label != 'control') {
         unawaited(channel.close());
         return;
+      }
+      final prevControl = _control;
+      if (prevControl != null && !identical(prevControl, channel)) {
+        prevControl.onMessage = null;
+        unawaited(prevControl.close());
       }
       _control = channel;
       channel.onDataChannelState = (state) {
         if (state == RTCDataChannelState.RTCDataChannelOpen) {
           _sendScreenList();
         } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
+          if (identical(_control, channel)) {
+            _control = null;
+          }
           InputInjector.instance.releaseAllPressed();
         }
       };
@@ -1026,6 +1034,21 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
         _connectionGraceTimer?.cancel();
         _connectionGraceTimer = null;
+        InputInjector.instance.setKeepSessionAwake(true);
+        if (!kIsWeb && Platform.isWindows) {
+          _desktopSwitchTimer?.cancel();
+          _desktopSwitchTimer = Timer.periodic(
+            const Duration(seconds: 2),
+            (_) {
+              if (!_closed && InputInjector.instance.consumeDesktopChanged()) {
+                final screenId = _selectedScreenId;
+                if (screenId != null && screenId.isNotEmpty) {
+                  unawaited(switchScreen(screenId));
+                }
+              }
+            },
+          );
+        }
         onConnected?.call();
         if (onFrameCaptured != null) {
           unawaited(_captureRecorderSnapshot('keyframe'));
@@ -1572,6 +1595,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _connectionGraceTimer = null;
     _recorderFrameTimer?.cancel();
     _recorderFrameTimer = null;
+    _desktopSwitchTimer?.cancel();
+    _desktopSwitchTimer = null;
+    InputInjector.instance.setKeepSessionAwake(false);
     for (final dl in _activeDownloads.values) {
       dl.stallTimer?.cancel();
     }

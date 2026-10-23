@@ -132,6 +132,10 @@ class InputInjector {
   int Function()? _nativeRemoveBlock;
   void Function(int, bool)? _nativeSendUnicode;
   void Function(int, bool)? _nativeSendVk;
+  void Function(int, int, int, int, int, int)? _nativeSendMouse;
+  void Function()? _nativeSendSas;
+  void Function(bool)? _nativeSetKeepAwake;
+  int Function()? _nativeConsumeDesktopChanged;
   int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
       _nativeGetMonitorRectByIndex;
   // Инцидент 2026-10-12 («перепутаны дисплеи»): rect по индексу УСТРОЙСТВА
@@ -237,6 +241,15 @@ class InputInjector {
             'ligament_send_unicode_char');
         _nativeSendVk = exe.lookupFunction<ffi.Void Function(ffi.Uint16, ffi.Bool), void Function(int, bool)>(
             'ligament_send_vk');
+        _nativeSendMouse = exe.lookupFunction<
+            ffi.Void Function(ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32, ffi.Uint32, ffi.Uint32),
+            void Function(int, int, int, int, int, int)>('ligament_send_mouse');
+        _nativeSendSas = exe.lookupFunction<ffi.Void Function(), void Function()>(
+            'ligament_send_sas');
+        _nativeSetKeepAwake = exe.lookupFunction<ffi.Void Function(ffi.Bool), void Function(bool)>(
+            'ligament_set_keep_awake');
+        _nativeConsumeDesktopChanged = exe.lookupFunction<ffi.Int32 Function(), int Function()>(
+            'ligament_consume_desktop_changed');
         _nativeGetMonitorRectByIndex = exe.lookupFunction<
             ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
             int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
@@ -560,15 +573,20 @@ class InputInjector {
       _postMacMouseEvent(5, px.toDouble(), py.toDouble(), 0); // 5 = kCGEventMouseMoved
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
-      _winClipCursor?.call(ffi.Pointer.fromAddress(0));
-      _winSetCursorPos?.call(px, py);
       final virt = getVirtualDesktopRect();
       final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
       final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
       const mouseEventfMove = 0x0001;
       const mouseEventfAbsolute = 0x8000;
       const mouseEventfVirtualDesk = 0x4000;
-      _winMouseEvent?.call(mouseEventfMove | mouseEventfAbsolute | mouseEventfVirtualDesk, normVx, normVy, 0, 0);
+      const flags = mouseEventfMove | mouseEventfAbsolute | mouseEventfVirtualDesk;
+      if (_nativeSendMouse != null) {
+        _nativeSendMouse!(px, py, normVx, normVy, flags, 0);
+      } else {
+        _winClipCursor?.call(ffi.Pointer.fromAddress(0));
+        _winSetCursorPos?.call(px, py);
+        _winMouseEvent?.call(flags, normVx, normVy, 0, 0);
+      }
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
       Process.run('xdotool', ['mousemove', px.toString(), py.toString()]);
@@ -672,14 +690,13 @@ class InputInjector {
       }
     } else if (Platform.isWindows) {
       final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
-      _winClipCursor?.call(ffi.Pointer.fromAddress(0));
-      _winSetCursorPos?.call(px, py);
       final virt = getVirtualDesktopRect();
       final normVx = normalizeVirtualDeskAxis(px, virt.x, virt.width);
       final normVy = normalizeVirtualDeskAxis(py, virt.y, virt.height);
+      const mouseEventfMove = 0x0001;
       const mouseEventfAbsolute = 0x8000;
       const mouseEventfVirtualDesk = 0x4000;
-      const baseFlags = mouseEventfAbsolute | mouseEventfVirtualDesk;
+      const baseFlags = mouseEventfMove | mouseEventfAbsolute | mouseEventfVirtualDesk;
 
       const leftDown = 0x0002;
       const leftUp = 0x0004;
@@ -710,13 +727,23 @@ class InputInjector {
         mouseData = 2; // XBUTTON2
       }
 
+      void sendWinMouseFlag(int flag) {
+        if (_nativeSendMouse != null) {
+          _nativeSendMouse!(px, py, normVx, normVy, flag | baseFlags, mouseData);
+        } else {
+          _winClipCursor?.call(ffi.Pointer.fromAddress(0));
+          _winSetCursorPos?.call(px, py);
+          _winMouseEvent?.call(flag | baseFlags, normVx, normVy, mouseData, 0);
+        }
+      }
+
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, mouseData, 0);
+        sendWinMouseFlag(flagDown);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, mouseData, 0);
+        sendWinMouseFlag(flagUp);
       } else {
-        _winMouseEvent?.call(flagDown | baseFlags, normVx, normVy, mouseData, 0);
-        _winMouseEvent?.call(flagUp | baseFlags, normVx, normVy, mouseData, 0);
+        sendWinMouseFlag(flagDown);
+        sendWinMouseFlag(flagUp);
       }
     } else if (Platform.isLinux) {
       final (px, py) = absoluteFromNorm(normX, normY, screenRect: screenRect);
@@ -778,7 +805,11 @@ class InputInjector {
     } else if (Platform.isWindows) {
       final dy = quantizeWindowsWheelDelta(deltaY);
       if (dy != 0) {
-        _winMouseEvent?.call(0x0800, 0, 0, dy, 0); // 0x0800 = MOUSEEVENTF_WHEEL
+        if (_nativeSendMouse != null) {
+          _nativeSendMouse!(0, 0, 0, 0, 0x0800, dy & 0xFFFFFFFF);
+        } else {
+          _winMouseEvent?.call(0x0800, 0, 0, dy, 0); // 0x0800 = MOUSEEVENTF_WHEEL
+        }
       }
     } else if (Platform.isLinux) {
       final click = deltaY > 0 ? '5' : '4';
@@ -915,6 +946,41 @@ class InputInjector {
     }
   }
 
+  /// Удерживает сеанс Windows от ухода в блокировку экрана/сон во время активной сессии.
+  void setKeepSessionAwake(bool active) {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      _nativeSetKeepAwake?.call(active);
+    } catch (_) {}
+  }
+
+  /// Проверяет и сбрасывает флаг смены активного рабочего стола Windows (Default <-> Winlogon).
+  bool consumeDesktopChanged() {
+    if (kIsWeb || !Platform.isWindows) return false;
+    try {
+      return (_nativeConsumeDesktopChanged?.call() ?? 0) != 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _sendWinCombo(List<int> keys) {
+    for (final key in keys) {
+      if (_nativeSendVk != null) {
+        _nativeSendVk!(key, true);
+      } else {
+        _winKeybdEvent?.call(key, 0, 0, 0);
+      }
+    }
+    for (final key in keys.reversed) {
+      if (_nativeSendVk != null) {
+        _nativeSendVk!(key, false);
+      } else {
+        _winKeybdEvent?.call(key, 0, 0x0002, 0);
+      }
+    }
+  }
+
   /// Вызов системных горячих клавиш (Пуск, Ctrl+Alt+Del, Alt+Tab и т.д.)
   Future<void> triggerHotkey(String hotkey) async {
     if (kIsWeb) return;
@@ -927,118 +993,76 @@ class InputInjector {
       const vkEscape = 0x1B;
       const vkLWin = 0x5B;
       const vkF4 = 0x73;
-      const keyUp = 0x0002;
 
       switch (hotkey) {
         case 'win_space':
         case 'alt_shift':
         case 'ctrl_shift':
-          final keys = hotkey == 'win_space' ? [vkLWin, 0x20]
-              : hotkey == 'alt_shift' ? [vkMenu, vkShift] : [vkControl, vkShift];
-          for (final key in keys) { _winKeybdEvent?.call(key, 0, 0, 0); }
-          for (final key in keys.reversed) { _winKeybdEvent?.call(key, 0, keyUp, 0); }
+          final keys = hotkey == 'win_space'
+              ? [vkLWin, 0x20]
+              : hotkey == 'alt_shift'
+                  ? [vkMenu, vkShift]
+                  : [vkControl, vkShift];
+          _sendWinCombo(keys);
           break;
         case 'win_key':
-          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
-          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          _sendWinCombo([vkLWin]);
           break;
         case 'win_r':
-          final vkR = 'R'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
-          _winKeybdEvent?.call(vkR, 0, 0, 0);
-          _winKeybdEvent?.call(vkR, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          _sendWinCombo([vkLWin, 'R'.codeUnitAt(0)]);
           break;
         case 'win_d':
-          final vkD = 'D'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
-          _winKeybdEvent?.call(vkD, 0, 0, 0);
-          _winKeybdEvent?.call(vkD, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          _sendWinCombo([vkLWin, 'D'.codeUnitAt(0)]);
           break;
         case 'win_e':
-          final vkE = 'E'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
-          _winKeybdEvent?.call(vkE, 0, 0, 0);
-          _winKeybdEvent?.call(vkE, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          _sendWinCombo([vkLWin, 'E'.codeUnitAt(0)]);
           break;
         case 'win_x':
-          final vkX = 'X'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
-          _winKeybdEvent?.call(vkX, 0, 0, 0);
-          _winKeybdEvent?.call(vkX, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          _sendWinCombo([vkLWin, 'X'.codeUnitAt(0)]);
           break;
         case 'win_i':
-          final vkI = 'I'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
-          _winKeybdEvent?.call(vkI, 0, 0, 0);
-          _winKeybdEvent?.call(vkI, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          _sendWinCombo([vkLWin, 'I'.codeUnitAt(0)]);
           break;
         case 'win_l':
+        case 'lock_screen':
           _winLockWorkStation?.call();
           break;
         case 'ctrl_c':
-          final vkC = 'C'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkControl, 0, 0, 0);
-          _winKeybdEvent?.call(vkC, 0, 0, 0);
-          _winKeybdEvent?.call(vkC, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
+          _sendWinCombo([vkControl, 'C'.codeUnitAt(0)]);
           break;
         case 'ctrl_v':
         case 'paste':
-          final vkV = 'V'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkControl, 0, 0, 0);
-          _winKeybdEvent?.call(vkV, 0, 0, 0);
-          _winKeybdEvent?.call(vkV, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
+          _sendWinCombo([vkControl, 'V'.codeUnitAt(0)]);
           break;
         case 'ctrl_a':
-          final vkA = 'A'.codeUnitAt(0);
-          _winKeybdEvent?.call(vkControl, 0, 0, 0);
-          _winKeybdEvent?.call(vkA, 0, 0, 0);
-          _winKeybdEvent?.call(vkA, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
+          _sendWinCombo([vkControl, 'A'.codeUnitAt(0)]);
+          break;
+        case 'ctrl_alt_del':
+          if (_nativeSendSas != null) {
+            _nativeSendSas!();
+          } else {
+            _sendWinCombo([vkControl, vkShift, vkEscape]);
+          }
           break;
         case 'task_mgr':
-        case 'ctrl_alt_del':
         case 'ctrl_shift_esc':
-          // Ctrl+Shift+Esc гарантированно открывает Диспетчер задач без требования SAS
-          _winKeybdEvent?.call(vkControl, 0, 0, 0);
-          _winKeybdEvent?.call(vkShift, 0, 0, 0);
-          _winKeybdEvent?.call(vkEscape, 0, 0, 0);
-          _winKeybdEvent?.call(vkEscape, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkShift, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
+          _sendWinCombo([vkControl, vkShift, vkEscape]);
           break;
         case 'alt_tab':
-          _winKeybdEvent?.call(vkMenu, 0, 0, 0);
-          _winKeybdEvent?.call(vkTab, 0, 0, 0);
-          _winKeybdEvent?.call(vkTab, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkMenu, 0, keyUp, 0);
+          _sendWinCombo([vkMenu, vkTab]);
           break;
         case 'alt_f4':
-          _winKeybdEvent?.call(vkMenu, 0, 0, 0);
-          _winKeybdEvent?.call(vkF4, 0, 0, 0);
-          _winKeybdEvent?.call(vkF4, 0, keyUp, 0);
-          _winKeybdEvent?.call(vkMenu, 0, keyUp, 0);
+          _sendWinCombo([vkMenu, vkF4]);
           break;
         case 'esc':
-          _winKeybdEvent?.call(vkEscape, 0, 0, 0);
-          _winKeybdEvent?.call(vkEscape, 0, keyUp, 0);
+          _sendWinCombo([vkEscape]);
           break;
         case 'enter':
         case 'return':
-          const vkReturn = 0x0D;
-          _winKeybdEvent?.call(vkReturn, 0, 0, 0);
-          _winKeybdEvent?.call(vkReturn, 0, keyUp, 0);
+          _sendWinCombo([0x0D]);
           break;
         case 'space':
-          const vkSpace = 0x20;
-          _winKeybdEvent?.call(vkSpace, 0, 0, 0);
-          _winKeybdEvent?.call(vkSpace, 0, keyUp, 0);
+          _sendWinCombo([0x20]);
           break;
       }
     } else if (Platform.isMacOS) {
