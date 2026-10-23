@@ -88,7 +88,9 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
                     'access_mode': state.accessMode == 'control'
                         ? 'full_control'
                         : 'view_only',
-                    'problem_summary': 'Ligament Link',
+                    'problem_summary': state.recordingEnabled
+                        ? 'Ligament Link · Ведётся запись сессии'
+                        : 'Ligament Link',
                     'category': 'it',
                   },
                   // Only length reaches the host; the server verifies the digits.
@@ -129,7 +131,7 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
                               fontWeight: FontWeight.w700)),
                       const SizedBox(height: 4),
                       Text(
-                          '${state.operatorName.isNotEmpty ? state.operatorName : "Оператор"} · ${state.accessMode == 'control' ? 'Управление' : 'Просмотр'}${isUnattended ? " (без кода)" : ""}',
+                          '${state.operatorName.isNotEmpty ? state.operatorName : "Оператор"} · ${state.accessMode == 'control' ? 'Управление' : 'Просмотр'}${isUnattended ? " (без кода)" : ""}${state.recordingEnabled ? " · ⏺ Запись сессии" : ""}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(

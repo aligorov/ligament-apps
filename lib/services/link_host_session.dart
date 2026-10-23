@@ -9,6 +9,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'input_injector.dart';
 import 'link_host_readiness.dart';
+import 'link_host_recorder.dart';
 import 'support_service.dart'
     show assembleFileChunks, resolveNonCollidingFilePath;
 import '../models/link_control_messages.dart';
@@ -341,11 +342,18 @@ class LinkHostWorkerState extends ChangeNotifier {
   String accessType = 'attended';
   String confirmationCode = '';
   int confirmationDigits = 2;
+  bool recordingEnabled = false;
+  bool recordingMandatory = false;
+  String recordingReason = '';
 
   Future<void> get disconnectRequested => _disconnect.future;
 
   void showSession(String id, String mode, String operator,
-      {String type = 'attended', int digits = 2}) {
+      {String type = 'attended',
+      int digits = 2,
+      bool recording = false,
+      bool mandatoryRecording = false,
+      String policyReason = ''}) {
     confirmationCode = '';
     sessionId = id;
     accessMode = mode;
@@ -353,6 +361,9 @@ class LinkHostWorkerState extends ChangeNotifier {
     operatorName = String.fromCharCodes(trimmedOperator.runes.take(96));
     accessType = type;
     confirmationDigits = digits;
+    recordingEnabled = recording;
+    recordingMandatory = mandatoryRecording;
+    recordingReason = policyReason;
     phase = type == 'attended'
         ? LinkHostWorkerPhase.awaitingConsent
         : LinkHostWorkerPhase.connecting;
@@ -637,12 +648,16 @@ Future<void> _runConnectedLinkHostWorker(
     await unixTransport?.close();
     throw const FormatException('Invalid Link session offer bootstrap');
   }
+  final recordingConfig = LinkRecordingConfig.fromWire(offer['recording']);
   state.showSession(
     sessionId,
     accessMode,
     operatorName is String ? operatorName : '',
     type: accessType as String,
     digits: confirmationDigits is int ? confirmationDigits : 0,
+    recording: recordingConfig.isActive,
+    mandatoryRecording: recordingConfig.mandatory,
+    policyReason: recordingConfig.policyReason,
   );
   final iceServers = <Map<String, dynamic>>[];
   if (iceRaw is List) {
@@ -659,11 +674,23 @@ Future<void> _runConnectedLinkHostWorker(
     }
   }
   Future<void> outgoing = Future<void>.value();
-  final session = LinkHostSession(
+  late final LinkHostSession session;
+  final recorder = recordingConfig.isActive
+      ? LinkHostRecorder(
+          sessionId: sessionId,
+          config: recordingConfig,
+          onMandatoryViolation: (reason) => unawaited(session.reject(reason)),
+        )
+      : null;
+  session = LinkHostSession(
     sessionId: sessionId,
     accessMode: accessMode,
     peer: FlutterLinkHostPeer(
-      onConnected: state.markActive,
+      onConnected: () {
+        state.markActive();
+        recorder?.start();
+      },
+      onControlInputObserved: recorder?.observeControlInput,
       policy: LinkSessionPolicy.fromWire(offer['dlp']),
     ),
     send: (frame) {
@@ -744,6 +771,7 @@ Future<void> _runConnectedLinkHostWorker(
     }
   } finally {
     timer.cancel();
+    await recorder?.stop(reason: 'session_ended');
     await session.close();
     if (unixTransport != null) {
       await unixTransport.close();

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 /// Конфигурация записи сессии, получаемая хостом в `session_offer.recording` (Contract v1).
@@ -33,6 +34,9 @@ class LinkRecordingConfig {
   final Duration leaseTtl;
   final Duration maxAckLag;
   final int maxQueueBytes;
+
+  bool get isActive =>
+      enabled && effectiveMode != 'exclude' && ingestUrl.isNotEmpty;
 
   static LinkRecordingConfig fromWire(Object? raw) {
     if (raw is! Map) return const LinkRecordingConfig();
@@ -91,14 +95,53 @@ class LinkHostRecorder {
   LinkHostRecorder({
     required this.sessionId,
     required this.config,
-    required this.sendBatch,
+    LinkRecorderBatchSender? sendBatch,
     this.onMandatoryViolation,
     DateTime Function()? clock,
-  }) : _clock = clock ?? DateTime.now {
+  })  : _clock = clock ?? DateTime.now,
+        sendBatch = sendBatch ??
+            ((batch) => _defaultHttpSendBatch(
+                  config.ingestUrl,
+                  config.ingestToken,
+                  batch,
+                )) {
     if (sessionId.toLowerCase().startsWith('link_')) {
       throw const FormatException(
         'Temporary link_<agentId> identifier is forbidden for Recorder archive',
       );
+    }
+  }
+
+  static Future<LinkRecorderBatchAck> _defaultHttpSendBatch(
+    String ingestUrl,
+    String ingestToken,
+    Map<String, dynamic> batch,
+  ) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final request = await client.postUrl(Uri.parse(ingestUrl));
+      request.headers.contentType = ContentType.json;
+      if (ingestToken.isNotEmpty) {
+        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $ingestToken');
+      }
+      request.add(utf8.encode(jsonEncode(batch)));
+      final response = await request.close().timeout(const Duration(seconds: 10));
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('Recorder ingest status ${response.statusCode}');
+      }
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) {
+        throw const FormatException('Invalid Recorder ACK JSON');
+      }
+      return LinkRecorderBatchAck(
+        ackHighWatermarkSeq: (decoded['ack_high_watermark_seq'] as num?)?.toInt() ?? 0,
+        firstFrameAcked: decoded['first_frame_acked'] == true,
+        leaseExpiresAt: DateTime.tryParse(decoded['lease_expires_at']?.toString() ?? '') ??
+            DateTime.now().toUtc().add(const Duration(seconds: 45)),
+      );
+    } finally {
+      client.close(force: false);
     }
   }
 
@@ -125,12 +168,29 @@ class LinkHostRecorder {
   bool _firstFrameAcked = false;
   DateTime? _lastAckAt;
   DateTime? _leaseExpiresAt;
+  Timer? _flushTimer;
   bool _stopped = false;
 
   int get nextSeq => _nextSeq;
   int get ackedSeq => _ackedSeq;
   bool get isFirstFrameAcked => !config.enabled || _firstFrameAcked;
   int get queuedBytes => _queuedBytes;
+
+  void start() {
+    if (!config.enabled || _stopped || _flushTimer != null) return;
+    _flushTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      unawaited(flushAndVerifyHealth());
+    });
+  }
+
+  Future<void> stop({String reason = ''}) async {
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    if (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
+      await flushAndVerifyHealth();
+    }
+    _stopped = true;
+  }
 
   /// Очищает команду управления от печатных символов, паролей и текста буфера обмена (Раздел 4.2).
   static Map<String, dynamic>? sanitizeInputEvent(
