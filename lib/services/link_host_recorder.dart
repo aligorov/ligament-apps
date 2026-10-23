@@ -168,6 +168,8 @@ class LinkHostRecorder {
 
   final List<Map<String, dynamic>> _pendingFrames = [];
   final List<Map<String, dynamic>> _pendingEvents = [];
+  Uint8List? _lastFramePayload;
+  String? _lastMonitorId;
   int _queuedBytes = 0;
   int _nextSeq = 0;
   int _ackedSeq = 0;
@@ -333,7 +335,17 @@ class LinkHostRecorder {
     }
   }
 
+  static bool _bytesEqual(Uint8List a, Uint8List b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   /// Добавляет кадр в ограниченную очередь (Инвариант 7, 8, 9).
+  /// Для периодических снимков (`periodic`) пропускает дубликаты, если экран не изменился.
   bool enqueueFrame({
     required String frameKind,
     required Uint8List payload,
@@ -343,6 +355,13 @@ class LinkHostRecorder {
     String codec = 'webp',
   }) {
     if (!config.enabled || _stopped) return true;
+    if (frameKind == 'periodic' &&
+        _lastFramePayload != null &&
+        _lastMonitorId == monitorId &&
+        _bytesEqual(_lastFramePayload!, payload)) {
+      // Экран находится в состоянии покоя (простой) — не засоряем архив идентичными кадрами.
+      return true;
+    }
     if (_queuedBytes + payload.length > config.maxQueueBytes) {
       // Фиксируем явный gap_marker вместо бесконтрольного роста RAM.
       _nextSeq++;
@@ -361,6 +380,8 @@ class LinkHostRecorder {
       }
       return false;
     }
+    _lastFramePayload = Uint8List.fromList(payload);
+    _lastMonitorId = monitorId;
     _nextSeq++;
     _queuedBytes += payload.length;
     _pendingFrames.add({
@@ -392,7 +413,11 @@ class LinkHostRecorder {
     final now = _clock().toUtc();
 
     if (_pendingFrames.isEmpty && _pendingEvents.isEmpty) {
-      return _checkLeaseAndLag(now);
+      final needsLeaseKeepalive = _lastAckAt != null &&
+          now.difference(_lastAckAt!) >= const Duration(seconds: 10);
+      if (!needsLeaseKeepalive) {
+        return _checkLeaseAndLag(now);
+      }
     }
 
     final batch = {

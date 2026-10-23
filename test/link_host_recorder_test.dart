@@ -143,4 +143,45 @@ void main() {
     expect(ok2, isFalse);
     expect(stopReason, 'recorder_first_frame_unavailable');
   });
+
+  test('skips duplicate periodic idle frames on host while maintaining lease keepalive', () async {
+    var currentNow = DateTime.utc(2026, 10, 23, 12, 0);
+    final sentBatches = <Map<String, dynamic>>[];
+
+    late final LinkHostRecorder recorder;
+    recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(
+        enabled: true,
+        mandatory: true,
+        requireFirstFrame: true,
+        effectiveMode: 'record_only',
+        maxAckLag: Duration(seconds: 30),
+      ),
+      clock: () => currentNow,
+      sendBatch: (batch) async {
+        sentBatches.add(batch);
+        return LinkRecorderBatchAck(
+          ackHighWatermarkSeq: recorder.nextSeq,
+          firstFrameAcked: true,
+          leaseExpiresAt: currentNow.add(const Duration(seconds: 45)),
+        );
+      },
+    );
+
+    final staticPixels = Uint8List.fromList([10, 20, 30, 40]);
+    final changedPixels = Uint8List.fromList([99, 88, 77, 66]);
+
+    recorder.enqueueFrame(frameKind: 'keyframe', payload: staticPixels);
+    recorder.enqueueFrame(frameKind: 'periodic', payload: staticPixels);
+    recorder.enqueueFrame(frameKind: 'periodic', payload: staticPixels);
+    recorder.enqueueFrame(frameKind: 'periodic', payload: changedPixels);
+
+    // Должны быть поставлены только seq=1 (keyframe) и seq=2 (изменившийся periodic)
+    expect(recorder.nextSeq, 2);
+    final ok = await recorder.flushAndVerifyHealth();
+    expect(ok, isTrue);
+    expect(sentBatches.length, 1);
+    expect((sentBatches.first['frames'] as List).length, 2);
+  });
 }
