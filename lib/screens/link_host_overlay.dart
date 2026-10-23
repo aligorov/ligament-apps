@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../i18n/app_strings.dart';
@@ -15,7 +18,8 @@ class LinkHostOverlay extends StatefulWidget {
   State<LinkHostOverlay> createState() => _LinkHostOverlayState();
 }
 
-class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
+class _LinkHostOverlayState extends State<LinkHostOverlay>
+    with WindowListener, TrayListener {
   bool? _expanded;
   Future<void> _windowUpdates = Future<void>.value();
 
@@ -23,9 +27,43 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
   void initState() {
     super.initState();
     windowManager.addListener(this);
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      trayManager.addListener(this);
+      _initTray();
+    }
     widget.state.addListener(_syncWindow);
     unawaited(windowManager.setPreventClose(true));
     _syncWindow();
+  }
+
+  Future<void> _initTray() async {
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return;
+    }
+    try {
+      await trayManager.setIcon(
+        Platform.isWindows
+            ? 'assets/icons/app_icon.ico'
+            : 'assets/icons/app_icon.png',
+      );
+      final menu = Menu(
+        items: [
+          MenuItem(
+            key: 'show',
+            label: 'Показать панель сессии',
+          ),
+          MenuItem.separator(),
+          MenuItem(
+            key: 'disconnect',
+            label: 'Отключить сессию',
+          ),
+        ],
+      );
+      await trayManager.setContextMenu(menu);
+      await trayManager.setToolTip('Ligament Link: Сеанс удалённого доступа');
+    } catch (_) {}
   }
 
   void _syncWindow() {
@@ -35,19 +73,6 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
         phase == LinkHostWorkerPhase.closed) {
       return;
     }
-    if (widget.state.accessType == 'unattended') {
-      if (_expanded != false) {
-        _expanded = false;
-        _windowUpdates = _windowUpdates.then((_) async {
-          if (!mounted) return;
-          await windowManager.hide();
-        }).catchError((Object error) {
-          debugPrint(
-              'link_host: window layout unavailable: ${error.runtimeType}');
-        });
-      }
-      return;
-    }
     final expanded = phase == LinkHostWorkerPhase.awaitingConsent;
     if (_expanded == expanded) return;
     _expanded = expanded;
@@ -55,7 +80,7 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
       if (!mounted) return;
       await windowManager.setMinimumSize(const Size(400, 72));
       await windowManager
-          .setSize(expanded ? const Size(560, 760) : const Size(480, 84));
+          .setSize(expanded ? const Size(560, 760) : const Size(560, 84));
       if (expanded) {
         await windowManager.center();
         await windowManager.show();
@@ -71,6 +96,13 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
 
   @override
   void dispose() {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        trayManager.removeListener(this);
+        trayManager.destroy();
+      } catch (_) {}
+    }
     widget.state.removeListener(_syncWindow);
     windowManager.removeListener(this);
     super.dispose();
@@ -78,6 +110,46 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
 
   @override
   void onWindowClose() => widget.state.requestDisconnect();
+
+  @override
+  void onWindowMinimize() => _minimizeToTray();
+
+  @override
+  void onTrayIconMouseDown() {
+    _restoreOverlay();
+  }
+
+  @override
+  void onTrayMenuItemClick(MenuItem menuItem) {
+    if (menuItem.key == 'show') {
+      _restoreOverlay();
+    } else if (menuItem.key == 'disconnect') {
+      widget.state.requestDisconnect();
+    }
+  }
+
+  void _restoreOverlay() {
+    _windowUpdates = _windowUpdates.then((_) async {
+      if (!mounted) return;
+      if (await windowManager.isMinimized()) {
+        await windowManager.restore();
+      }
+      await windowManager.show();
+      await windowManager.focus();
+      await windowManager.setAlwaysOnTop(true);
+    }).catchError((Object error) {
+      debugPrint('link_host: restore overlay failed: $error');
+    });
+  }
+
+  void _minimizeToTray() {
+    _windowUpdates = _windowUpdates.then((_) async {
+      if (!mounted) return;
+      await windowManager.hide();
+    }).catchError((Object error) {
+      debugPrint('link_host: minimize to tray failed: $error');
+    });
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -151,11 +223,28 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
                               color: Color(0xFFB7C8BE), fontSize: 12)),
                     ],
                   )),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: closing ? null : _minimizeToTray,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFB7C8BE),
+                      side: const BorderSide(color: Color(0xFF2D5A46)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    icon: const Icon(Icons.vertical_align_bottom, size: 16),
+                    label: const Text('Свернуть в трей',
+                        style: TextStyle(fontSize: 12)),
+                  ),
+                  const SizedBox(width: 8),
                   FilledButton(
                       onPressed: closing ? null : state.requestDisconnect,
                       style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFFB42318)),
+                          backgroundColor: const Color(0xFFB42318),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          visualDensity: VisualDensity.compact),
                       child: const Text('Отключить')),
                 ]),
               );

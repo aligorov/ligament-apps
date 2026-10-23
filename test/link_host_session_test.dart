@@ -141,6 +141,7 @@ void main() {
 
     expect(find.text('Удалённая сессия активна'), findsOneWidget);
     expect(find.text('Иванов Иван · Управление'), findsOneWidget);
+    expect(find.text('Свернуть в трей'), findsOneWidget);
     await tester.tap(find.text('Отключить'));
     await tester.pump();
 

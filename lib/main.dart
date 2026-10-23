@@ -73,7 +73,7 @@ void main(List<String> args) async {
           await windowManager.setAlwaysOnTop(true);
           await windowManager.setPreventClose(true);
           await windowManager.setClosable(false);
-          await windowManager.setMinimizable(false);
+          await windowManager.setMinimizable(true);
           await windowManager.setMaximizable(false);
         },
       );
