@@ -946,10 +946,12 @@ class SupportService extends ChangeNotifier {
           debugPrint(
               'support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
           const captureTimeout = Duration(seconds: 45);
+          final wantLoopbackAudio =
+              !kIsWeb && (Platform.isWindows || Platform.isLinux);
           try {
             screenStream =
                 await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-              'audio': false,
+              'audio': wantLoopbackAudio,
               'video': {
                 'deviceId': {'exact': selectedSource.id},
                 'cursor': 'always',
@@ -961,16 +963,27 @@ class SupportService extends ChangeNotifier {
                   .getDisplayMedia(<String, dynamic>{
                 'audio': false,
                 'video': {
-                  'deviceId': selectedSource.id,
+                  'deviceId': {'exact': selectedSource.id},
                   'cursor': 'always',
                 },
               }).timeout(captureTimeout);
             } catch (_) {
-              screenStream = await navigator.mediaDevices
-                  .getDisplayMedia(<String, dynamic>{
-                'audio': false,
-                'video': true,
-              }).timeout(captureTimeout);
+              try {
+                screenStream = await navigator.mediaDevices
+                    .getDisplayMedia(<String, dynamic>{
+                  'audio': false,
+                  'video': {
+                    'deviceId': selectedSource.id,
+                    'cursor': 'always',
+                  },
+                }).timeout(captureTimeout);
+              } catch (_) {
+                screenStream = await navigator.mediaDevices
+                    .getDisplayMedia(<String, dynamic>{
+                  'audio': false,
+                  'video': true,
+                }).timeout(captureTimeout);
+              }
             }
           }
         } else {
@@ -994,6 +1007,9 @@ class SupportService extends ChangeNotifier {
       _requireCaptureEpoch(epoch);
 
       for (final track in _localStream!.getVideoTracks()) {
+        await _peerConnection!.addTrack(track, _localStream!);
+      }
+      for (final track in _localStream!.getAudioTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
       }
 

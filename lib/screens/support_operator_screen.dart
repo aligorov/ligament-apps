@@ -501,6 +501,32 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool get _canSendFiles =>
       !_isViewOnlySession && _isDataChannelActive && !_isSendingFile;
 
+  MediaStreamTrack? _remoteAudioTrack;
+  bool _isAudioMuted = false;
+
+  void _toggleRemoteAudio() {
+    final nextMuted = !_isAudioMuted;
+    setState(() {
+      _isAudioMuted = nextMuted;
+    });
+    final audioTrack = _remoteAudioTrack;
+    if (audioTrack != null) {
+      audioTrack.enabled = !nextMuted;
+      try {
+        unawaited(Helper.setVolume(nextMuted ? 0.0 : 1.0, audioTrack));
+      } catch (_) {}
+    }
+    final stream = _remoteRenderer.srcObject;
+    if (stream != null) {
+      for (final track in stream.getAudioTracks()) {
+        track.enabled = !nextMuted;
+        try {
+          unawaited(Helper.setVolume(nextMuted ? 0.0 : 1.0, track));
+        } catch (_) {}
+      }
+    }
+  }
+
   /// Ш3/A-20: сброс стадийной готовности при переподключении (§4.3).
   void _resetStageReadiness() {
     _isConnected = false;
@@ -1124,13 +1150,37 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         debugPrint(
             'support_operator (link): remote track: ${event.track.kind}');
         if (!mounted || _isCleanedUp) return;
+        if (event.track.kind == 'audio') {
+          _remoteAudioTrack = event.track;
+          event.track.enabled = !_isAudioMuted;
+          try {
+            await Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, event.track);
+          } catch (_) {}
+          if (_remoteRenderer.srcObject != null && event.streams.isEmpty) {
+            try {
+              await _remoteRenderer.srcObject!.addTrack(event.track);
+            } catch (_) {}
+          }
+          if (mounted) setState(() {});
+          return;
+        }
         MediaStream? stream;
         if (event.streams.isNotEmpty) {
           stream = event.streams[0];
+          for (final audio in stream.getAudioTracks()) {
+            _remoteAudioTrack = audio;
+            audio.enabled = !_isAudioMuted;
+            try {
+              unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
+            } catch (_) {}
+          }
         } else {
           try {
             stream = await createLocalMediaStream('remote_stream');
             await stream.addTrack(event.track);
+            if (_remoteAudioTrack != null) {
+              await stream.addTrack(_remoteAudioTrack!);
+            }
           } catch (_) {}
         }
         if (mounted && stream != null) {
@@ -1154,6 +1204,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       await peer.addTransceiver(
         kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+        init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
+      );
+      await peer.addTransceiver(
+        kind: RTCRtpMediaType.RTCRtpMediaTypeAudio,
         init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
       );
 
@@ -1662,16 +1716,40 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       debugPrint(
           'support_operator: remote track received: ${event.track.kind}');
       if (mounted) {
+        if (event.track.kind == 'audio') {
+          _remoteAudioTrack = event.track;
+          event.track.enabled = !_isAudioMuted;
+          try {
+            await Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, event.track);
+          } catch (_) {}
+          if (_remoteRenderer.srcObject != null && event.streams.isEmpty) {
+            try {
+              await _remoteRenderer.srcObject!.addTrack(event.track);
+            } catch (_) {}
+          }
+          if (mounted) setState(() {});
+          return;
+        }
         // Ш3/A-06: трек пришёл — offer/track стадии пройдены (Д5: трек ≠ кадр)
         _cancelOfferStageTimer();
         _cancelTrackStageTimer();
         MediaStream? stream;
         if (event.streams.isNotEmpty) {
           stream = event.streams[0];
+          for (final audio in stream.getAudioTracks()) {
+            _remoteAudioTrack = audio;
+            audio.enabled = !_isAudioMuted;
+            try {
+              unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
+            } catch (_) {}
+          }
         } else {
           try {
             stream = await createLocalMediaStream('remote_stream');
             await stream.addTrack(event.track);
+            if (_remoteAudioTrack != null) {
+              await stream.addTrack(_remoteAudioTrack!);
+            }
           } catch (e) {
             debugPrint('support_operator: fallback media stream error: $e');
           }
@@ -1916,7 +1994,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _startTrackStageTimer();
             final answer = await _peerConnection!.createAnswer({
               'offerToReceiveVideo': 1,
-              'offerToReceiveAudio': 0,
+              'offerToReceiveAudio': 1,
             });
             await _peerConnection!.setLocalDescription(answer);
             _sendWsSignal({'sdp': answer.toMap()});
@@ -4150,6 +4228,27 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ),
                     ],
                     onSelected: _setVideoQuality,
+                  ),
+
+                  // Звук удалённого ПК (системное аудио)
+                  IconButton(
+                    icon: Icon(
+                      _isAudioMuted ? Icons.volume_off : Icons.volume_up,
+                      color: _isAudioMuted
+                          ? const Color(0xFFEF4444)
+                          : (_remoteAudioTrack != null
+                              ? const Color(0xFF38BDF8)
+                              : const Color(0xFF94A3B8)),
+                      size: 19,
+                    ),
+                    tooltip: _isAudioMuted
+                        ? (strings.isRu
+                            ? 'Включить звук удалённого ПК'
+                            : 'Unmute remote PC audio')
+                        : (strings.isRu
+                            ? 'Выключить звук удалённого ПК'
+                            : 'Mute remote PC audio'),
+                    onPressed: _isConnected ? _toggleRemoteAudio : null,
                   ),
 
                   // Блокировка ввода

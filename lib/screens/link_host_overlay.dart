@@ -30,12 +30,25 @@ class _LinkHostOverlayState extends State<LinkHostOverlay> with WindowListener {
 
   void _syncWindow() {
     final phase = widget.state.phase;
-    if (phase == LinkHostWorkerPhase.closing ||
+    if (phase == LinkHostWorkerPhase.starting ||
+        phase == LinkHostWorkerPhase.closing ||
         phase == LinkHostWorkerPhase.closed) {
       return;
     }
-    final expanded = phase == LinkHostWorkerPhase.awaitingConsent ||
-        phase == LinkHostWorkerPhase.starting;
+    if (widget.state.accessType == 'unattended') {
+      if (_expanded != false) {
+        _expanded = false;
+        _windowUpdates = _windowUpdates.then((_) async {
+          if (!mounted) return;
+          await windowManager.hide();
+        }).catchError((Object error) {
+          debugPrint(
+              'link_host: window layout unavailable: ${error.runtimeType}');
+        });
+      }
+      return;
+    }
+    final expanded = phase == LinkHostWorkerPhase.awaitingConsent;
     if (_expanded == expanded) return;
     _expanded = expanded;
     _windowUpdates = _windowUpdates.then((_) async {

@@ -75,7 +75,6 @@ void main(List<String> args) async {
           await windowManager.setClosable(false);
           await windowManager.setMinimizable(false);
           await windowManager.setMaximizable(false);
-          await windowManager.show();
         },
       );
       await runLinkHostWorker(
