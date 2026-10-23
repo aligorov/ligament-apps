@@ -582,8 +582,35 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } catch (e) {
       debugPrint('support_operator: restartIce error: $e');
     }
-    if (!widget.isLink) {
+    if (widget.isLink) {
+      unawaited(_performLinkIceRestart());
+    } else {
       _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
+    }
+  }
+
+  Future<void> _performLinkIceRestart() async {
+    final peer = _peerConnection;
+    final sessionId = _linkSessionId;
+    final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
+    final api = auth?.api;
+    if (peer == null || sessionId == null || api == null || _isCleanedUp) {
+      return;
+    }
+    try {
+      final offer = await peer.createOffer({'iceRestart': true});
+      if (_isCleanedUp || _peerConnection != peer) return;
+      await peer.setLocalDescription(offer);
+      _linkRemoteDescriptionSet = false;
+      await api.sendLinkSessionSignal(
+        sessionId: sessionId,
+        signal: {
+          'type': 'ice_restart',
+          'sdp': offer.sdp,
+        },
+      );
+    } catch (e) {
+      debugPrint('support_operator (link): ICE restart renegotiation error: $e');
     }
   }
 
@@ -1197,8 +1224,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _pollLinkSignals();
     } catch (e) {
       debugPrint('support_operator (link): error starting session: $e');
+      final failedPeer = _peerConnection;
+      _peerConnection = null;
+      _linkQueuedCandidates.clear();
+      if (failedPeer != null) {
+        failedPeer.onIceCandidate = null;
+        failedPeer.onIceConnectionState = null;
+        failedPeer.onConnectionState = null;
+        failedPeer.onTrack = null;
+        unawaited(failedPeer.close());
+      }
       if (mounted) {
-        if (e is ApiException && (e.statusCode == 403 || e.message.contains('external_perimeter_stepup_required'))) {
+        if (e is ApiException &&
+            e.statusCode == 403 &&
+            e.message.contains('external_perimeter_stepup_required')) {
           final token = await _promptStepUpAuth();
           if (token != null && token.isNotEmpty) {
             _stepUpToken = token;
@@ -1329,8 +1368,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     try {
       await api.heartbeatLinkSession(id);
     } catch (e) {
-      debugPrint('support_operator (link): heartbeat failed: $e');
-      _onSessionTerminated('ended_by_server');
+      if (e is ApiException &&
+          (e.statusCode == 409 ||
+              e.statusCode == 404 ||
+              e.statusCode == 410 ||
+              e.statusCode == 403)) {
+        debugPrint(
+            'support_operator (link): heartbeat ended by server (${e.statusCode}): $e');
+        _onSessionTerminated('ended_by_server');
+      } else {
+        debugPrint(
+            'support_operator (link): transient heartbeat error (ignored): $e');
+      }
     }
   }
 

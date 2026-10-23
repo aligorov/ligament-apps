@@ -76,6 +76,27 @@ type workerSession struct {
 	cancel   context.CancelFunc
 	process  SessionWorkerProcess
 	outbound chan []byte
+	sendMu   sync.RWMutex
+	send     func(any) error
+}
+
+func (s *workerSession) setSender(send func(any) error) {
+	if send == nil {
+		return
+	}
+	s.sendMu.Lock()
+	s.send = send
+	s.sendMu.Unlock()
+}
+
+func (s *workerSession) sendFrame(msg any) error {
+	s.sendMu.RLock()
+	fn := s.send
+	s.sendMu.RUnlock()
+	if fn == nil {
+		return errors.New("link agent: no active WSS sender")
+	}
+	return fn(msg)
 }
 
 // SessionWorkerBroker routes WSS session offers/signals to per-session
@@ -93,9 +114,22 @@ func NewSessionWorkerBroker(launcher SessionWorkerLauncher) *SessionWorkerBroker
 	}
 }
 
-// Handler is an AgentMessageHandler suitable for RunAgent. The connection
-// context owns worker processes so a lost WSS connection tears down media.
+// RebindSender updates the outbound WSS sender for all active worker sessions
+// after a control-channel reconnect so running sessions do not drop.
+func (b *SessionWorkerBroker) RebindSender(send func(any) error) {
+	if send == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, s := range b.sessions {
+		s.setSender(send)
+	}
+}
+
+// Handler is an AgentMessageHandler suitable for RunAgent.
 func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send func(any) error) error {
+	b.RebindSender(send)
 	var envelope Envelope
 	if err := json.Unmarshal(message, &envelope); err != nil {
 		return fmt.Errorf("link agent: decode worker envelope: %w", err)
@@ -131,9 +165,11 @@ func (b *SessionWorkerBroker) start(ctx context.Context, offer SessionOffer, fra
 	session := &workerSession{
 		cancel:   cancel,
 		outbound: make(chan []byte, maxQueuedWorkerSignals),
+		send:     send,
 	}
 	b.mu.Lock()
-	if _, exists := b.sessions[offer.SessionID]; exists {
+	if existing, exists := b.sessions[offer.SessionID]; exists {
+		existing.setSender(send)
 		b.mu.Unlock()
 		cancel()
 		return nil // Duplicate offer is idempotent; never launch a second desktop worker.
@@ -142,16 +178,16 @@ func (b *SessionWorkerBroker) start(ctx context.Context, offer SessionOffer, fra
 	b.mu.Unlock()
 
 	offerFrame := append([]byte(nil), frame...)
-	go b.run(workerCtx, offer, offerFrame, session, send)
+	go b.run(workerCtx, offer, offerFrame, session)
 	return nil
 }
 
-func (b *SessionWorkerBroker) run(ctx context.Context, offer SessionOffer, frame []byte, session *workerSession, send func(any) error) {
+func (b *SessionWorkerBroker) run(ctx context.Context, offer SessionOffer, frame []byte, session *workerSession) {
 	defer clear(frame)
 	process, err := b.launcher.Launch(ctx, offer, frame)
 	if err != nil {
 		reason := classifyWorkerLaunchError(err)
-		_ = sendRejectedAnswer(send, offer.SessionID, reason)
+		_ = sendRejectedAnswer(session.sendFrame, offer.SessionID, reason)
 		b.remove(offer.SessionID, session)
 		return
 	}
@@ -220,10 +256,7 @@ func (b *SessionWorkerBroker) run(ctx context.Context, offer SessionOffer, frame
 				clear(response)
 				return
 			}
-			if err := send(json.RawMessage(response)); err != nil {
-				clear(response)
-				return
-			}
+			_ = session.sendFrame(json.RawMessage(response))
 			clear(response)
 		}
 	}

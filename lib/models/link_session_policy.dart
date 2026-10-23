@@ -3,6 +3,7 @@ class LinkSessionPolicy {
   const LinkSessionPolicy({
     this.allowClipboardIn = false,
     this.allowClipboardOut = false,
+    this.allowFileTransfer = false,
   });
 
   factory LinkSessionPolicy.fromWire(Object? value) {
@@ -10,16 +11,20 @@ class LinkSessionPolicy {
     return LinkSessionPolicy(
       allowClipboardIn: value['allow_clipboard_in'] == true,
       allowClipboardOut: value['allow_clipboard_out'] == true,
+      allowFileTransfer: value['allow_file_transfer'] == true,
     );
   }
 
   final bool allowClipboardIn;
   final bool allowClipboardOut;
+  final bool allowFileTransfer;
   static const maxClipboardLength = 65536;
 
   bool allows(Map<String, dynamic> input, {required bool allowControl}) {
-    if (input['type'] == 'screen_list' || input['type'] == 'switch_screen') {
-      return true; // Screen selection is not keyboard/mouse/clipboard control.
+    if (input['type'] == 'screen_list' ||
+        input['type'] == 'switch_screen' ||
+        input['type'] == 'video_quality') {
+      return true; // Screen/quality selection is not keyboard/mouse/clipboard control.
     }
     if (!allowControl) return false;
     switch (input['type']) {
@@ -30,6 +35,10 @@ class LinkSessionPolicy {
             text.length <= maxClipboardLength;
       case 'clipboard_get':
         return allowClipboardOut;
+      case 'file_start':
+      case 'file_chunk':
+      case 'file_end':
+        return allowFileTransfer;
       default:
         return const {
           'mouse_move',
@@ -39,7 +48,9 @@ class LinkSessionPolicy {
           'key_down',
           'key_up',
           'hotkey',
+          'text_input',
           'block_input',
+          'reboot',
         }.contains(input['type']);
     }
   }

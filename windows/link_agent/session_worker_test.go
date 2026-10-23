@@ -305,3 +305,44 @@ func TestClassifyWorkerLaunchError(t *testing.T) {
 		t.Fatalf("got %q, want %q", classifyWorkerLaunchError(wrapped), ReasonHostNoActiveUser)
 	}
 }
+
+func TestSessionWorkerBrokerRebindSenderAndRepeatedSessionAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	process := newFakeSessionWorker()
+	launcher := &fakeSessionWorkerLauncher{process: process, started: make(chan SessionOffer, 1)}
+	broker := NewSessionWorkerBroker(launcher)
+	defer broker.stop(testSessionID)
+
+	offer := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","access_type":"unattended","access_mode":"control","sdp":"v=0 offer1","ice_servers":[],"dlp":{}}}`)
+	firstSender := func(any) error { return errors.New("old socket closed") }
+	if err := broker.Handler(ctx, offer, firstSender); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-launcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker launch not requested")
+	}
+
+	reboundCh := make(chan json.RawMessage, 2)
+	broker.RebindSender(func(message any) error {
+		if raw, ok := message.(json.RawMessage); ok {
+			reboundCh <- append(json.RawMessage(nil), raw...)
+		}
+		return nil
+	})
+
+	answer1, _ := MarshalSessionAnswer(testSessionID, true, "", "v=0 answer1")
+	process.responses <- answer1
+	answer2, _ := MarshalSessionAnswer(testSessionID, true, "", "v=0 answer2-ice-restart")
+	process.responses <- answer2
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-reboundCh:
+		case <-time.After(time.Second):
+			t.Fatalf("did not receive answer #%d over rebound WSS sender", i+1)
+		}
+	}
+}

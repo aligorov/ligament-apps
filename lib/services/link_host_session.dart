@@ -9,6 +9,8 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'input_injector.dart';
 import 'link_host_readiness.dart';
+import 'support_service.dart'
+    show assembleFileChunks, resolveNonCollidingFilePath;
 import '../models/link_control_messages.dart';
 import '../models/link_session_policy.dart';
 
@@ -25,6 +27,7 @@ abstract interface class LinkHostPeer {
     required void Function() onFailure,
   });
 
+  Future<String> renegotiateOffer(String offerSdp);
   Future<void> addRemoteCandidate(Map<String, dynamic> candidate);
   Future<void> close();
 }
@@ -202,6 +205,37 @@ class LinkHostSession {
               signal['consent_nonce'] == _consentNonce) {
             _authorization!.complete(signal['authorized'] == true);
             _consentNonce = null;
+          }
+          return;
+        }
+        if (signal['type'] == 'ice_restart' ||
+            signal['type'] == 'offer' ||
+            signal['type'] == 'request_offer') {
+          final sdp = signal['sdp'];
+          if (_ready &&
+              !_closed &&
+              sdp is String &&
+              sdp.isNotEmpty &&
+              utf8.encode(sdp).length <= maxOfferSdpBytes) {
+            try {
+              final answer = await peer.renegotiateOffer(sdp);
+              if (!_closed &&
+                  answer.isNotEmpty &&
+                  utf8.encode(answer).length <= maxOfferSdpBytes) {
+                await send({
+                  'type': 'session_answer',
+                  'session_id': sessionId,
+                  'payload': {
+                    'session_id': sessionId,
+                    'accepted': true,
+                    'consent_granted': true,
+                    'sdp': answer,
+                  },
+                });
+              }
+            } catch (e) {
+              debugPrint('link_host: ice_restart renegotiation failed: $e');
+            }
           }
           return;
         }
@@ -722,12 +756,36 @@ Future<void> _runConnectedLinkHostWorker(
   }
 }
 
+class _LinkActiveFileDownload {
+  _LinkActiveFileDownload({
+    required this.id,
+    required this.filename,
+    required this.totalSize,
+    required this.totalChunks,
+    this.expectedChecksum,
+  });
+
+  final String id;
+  final String filename;
+  final int totalSize;
+  final int totalChunks;
+  final String? expectedChecksum;
+  final Map<int, List<int>> chunks = {};
+  int receivedBytes = 0;
+  Timer? stallTimer;
+}
+
 /// Flutter WebRTC peer implementation used by the interactive Link worker.
 class FlutterLinkHostPeer implements LinkHostPeer {
   FlutterLinkHostPeer({
     this.onConnected,
     this.policy = const LinkSessionPolicy(),
   });
+
+  static const Duration connectionGracePeriod = Duration(seconds: 60);
+  static const int _maxFileTransferBytes = 50 * 1024 * 1024;
+  static const int _maxConcurrentDownloads = 4;
+  static const Duration _downloadStallTimeout = Duration(seconds: 30);
 
   final VoidCallback? onConnected;
   final LinkSessionPolicy policy;
@@ -737,6 +795,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   RTCDataChannel? _control;
   ScreenRect? _screenRect;
   String? _selectedScreenId;
+  Timer? _connectionGraceTimer;
+  final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
   bool _allowControl = false;
   bool _closed = false;
 
@@ -867,9 +927,21 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     };
     peer.onConnectionState = (state) {
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+        _connectionGraceTimer?.cancel();
+        _connectionGraceTimer = null;
         onConnected?.call();
-      } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+      } else if (state ==
+              RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        _connectionGraceTimer ??= Timer(connectionGracePeriod, () {
+          _connectionGraceTimer = null;
+          if (!_closed) {
+            onFailure();
+          }
+        });
+      } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+        _connectionGraceTimer?.cancel();
+        _connectionGraceTimer = null;
         onFailure();
       }
     };
@@ -885,6 +957,20 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     for (final track in capture.getVideoTracks()) {
       await peer.addTrack(track, capture);
     }
+    final answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    return answer.sdp ?? '';
+  }
+
+  @override
+  Future<String> renegotiateOffer(String offerSdp) async {
+    final peer = _peer;
+    if (_closed || peer == null) {
+      throw StateError('Link host peer is not active');
+    }
+    _connectionGraceTimer?.cancel();
+    _connectionGraceTimer = null;
+    await peer.setRemoteDescription(RTCSessionDescription(offerSdp, 'offer'));
     final answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
     return answer.sdp ?? '';
@@ -944,6 +1030,49 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (type == 'block_input') {
       return input['blocked'] is bool;
     }
+    if (type == 'text_input') {
+      final text = input['text'];
+      return text is String && text.isNotEmpty && text.length <= 4096;
+    }
+    if (type == 'video_quality') {
+      final quality = input['quality'];
+      final bitrate = input['bitrate'];
+      return (quality is String &&
+              const {'best', 'balanced', 'low', 'high', 'medium'}
+                  .contains(quality)) ||
+          (bitrate is int && bitrate >= 100000 && bitrate <= 20000000);
+    }
+    if (type == 'reboot') {
+      return true;
+    }
+    if (type == 'file_start') {
+      final id = input['transfer_id'] ?? input['id'];
+      final filename = input['filename'];
+      final size = input['size'];
+      final chunks = input['total_chunks'];
+      return id is String &&
+          id.isNotEmpty &&
+          filename is String &&
+          filename.isNotEmpty &&
+          (size == null ||
+              (size is int && size >= 0 && size <= _maxFileTransferBytes)) &&
+          (chunks == null || (chunks is int && chunks > 0 && chunks <= 8192));
+    }
+    if (type == 'file_chunk') {
+      final id = input['transfer_id'] ?? input['id'];
+      final idx = input['chunk_index'];
+      final data = input['data'];
+      return id is String &&
+          id.isNotEmpty &&
+          idx is int &&
+          idx >= 0 &&
+          data is String &&
+          data.isNotEmpty;
+    }
+    if (type == 'file_end') {
+      final id = input['transfer_id'] ?? input['id'];
+      return id is String && id.isNotEmpty;
+    }
     return false;
   }
 
@@ -972,6 +1101,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         LinkKeyMessage.tryParse(input)?.inject(injector.keyAction);
       } else if (type == 'hotkey') {
         injector.triggerHotkey(input['action'] as String);
+      } else if (type == 'text_input') {
+        unawaited(_handleTextInput(input['text']?.toString() ?? ''));
       } else if (type == 'screen_list') {
         _sendScreenList();
       } else if (type == 'switch_screen') {
@@ -979,6 +1110,16 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         if (screenId != null) {
           switchScreen(screenId);
         }
+      } else if (type == 'video_quality') {
+        _handleVideoQuality(input);
+      } else if (type == 'reboot') {
+        _handleRemoteReboot();
+      } else if (type == 'file_start') {
+        _handleFileStart(input);
+      } else if (type == 'file_chunk') {
+        _handleFileChunk(input);
+      } else if (type == 'file_end') {
+        unawaited(_handleFileEnd(input));
       } else if (type == 'clipboard_set') {
         final text = input['text']?.toString() ?? '';
         if (text.length <= 65536) {
@@ -995,12 +1136,270 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           })));
         });
       } else if (type == 'block_input') {
-        injector.setInputBlocked(input['blocked'] == true);
+        final blocked = input['blocked'] == true;
+        injector.setInputBlocked(blocked);
+        _sendControlJson({
+          'type': 'block_input_ack',
+          'blocked': blocked,
+        });
       }
     } catch (_) {
-      _control?.send(RTCDataChannelMessage(jsonEncode({
+      if (type == 'block_input') {
+        _sendControlJson({
+          'type': 'block_input_ack',
+          'blocked': false,
+          'error': 'input_rejected',
+        });
+        return;
+      }
+      _sendControlJson({
         'type': 'input_error',
-      })));
+      });
+    }
+  }
+
+  void _sendControlJson(Map<String, dynamic> payload) {
+    final control = _control;
+    if (_closed ||
+        control == null ||
+        control.state != RTCDataChannelState.RTCDataChannelOpen) {
+      return;
+    }
+    try {
+      control.send(RTCDataChannelMessage(jsonEncode(payload)));
+    } catch (_) {}
+  }
+
+  Future<void> _handleTextInput(String text) async {
+    if (text.isEmpty || text.length > 4096 || _closed) return;
+    final injector = InputInjector.instance;
+    if (!kIsWeb && Platform.isWindows) {
+      for (int i = 0; i < text.length; i++) {
+        injector.keyAction(action: 'down', key: text[i], char: text[i]);
+        injector.keyAction(action: 'up', key: text[i], char: text[i]);
+      }
+    } else if (!kIsWeb && Platform.isMacOS) {
+      await Clipboard.setData(ClipboardData(text: text));
+      await injector.triggerHotkey('cmd_v');
+    } else if (!kIsWeb && Platform.isLinux) {
+      await Process.run('xdotool', ['type', '--', text]);
+    } else {
+      await Clipboard.setData(ClipboardData(text: text));
+      await injector.triggerHotkey('ctrl_v');
+    }
+  }
+
+  void _handleVideoQuality(Map<String, dynamic> input) {
+    final peer = _peer;
+    if (peer == null || _closed) return;
+    final quality = input['quality']?.toString() ?? 'balanced';
+    final int bitrate;
+    switch (quality) {
+      case 'best':
+      case 'high':
+        bitrate = 4000000;
+        break;
+      case 'low':
+        bitrate = 800000;
+        break;
+      case 'balanced':
+      case 'medium':
+      default:
+        bitrate = (input['bitrate'] as num?)?.toInt() ?? 2500000;
+        break;
+    }
+    unawaited(() async {
+      try {
+        final senders = await peer.getSenders();
+        for (final sender in senders) {
+          if (sender.track?.kind == 'video') {
+            final params = sender.parameters;
+            final encodings = params.encodings;
+            if (encodings != null && encodings.isNotEmpty) {
+              for (final enc in encodings) {
+                enc.maxBitrate = bitrate;
+              }
+              await sender.setParameters(params);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('link_host: set video_quality failed: $e');
+      }
+    }());
+  }
+
+  void _handleRemoteReboot() {
+    try {
+      if (!kIsWeb && Platform.isWindows) {
+        Process.run('shutdown', [
+          '/r',
+          '/t',
+          '5',
+          '/f',
+          '/c',
+          'Reboot requested by remote operator',
+        ]);
+      } else if (!kIsWeb && Platform.isLinux) {
+        Process.run('systemctl', ['reboot']).catchError((_) {
+          return Process.run('shutdown', ['-r', 'now']);
+        });
+      } else if (!kIsWeb && Platform.isMacOS) {
+        Process.run('shutdown', ['-r', 'now']);
+      }
+    } catch (e) {
+      debugPrint('link_host: reboot failed: $e');
+    }
+  }
+
+  void _handleFileStart(Map<String, dynamic> input) {
+    final transferId =
+        input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    if (transferId.isEmpty) return;
+    final filename = input['filename']?.toString() ??
+        'file_${DateTime.now().millisecondsSinceEpoch}';
+    final size = (input['size'] as num?)?.toInt() ?? 0;
+    final totalChunks = (input['total_chunks'] as num?)?.toInt() ?? 1;
+    if (size < 0 ||
+        size > _maxFileTransferBytes ||
+        totalChunks <= 0 ||
+        _activeDownloads.length >= _maxConcurrentDownloads) {
+      _sendControlJson({
+        'type': 'file_ack',
+        'transfer_id': transferId,
+        'ok': false,
+      });
+      return;
+    }
+    _activeDownloads.remove(transferId)?.stallTimer?.cancel();
+    final dl = _LinkActiveFileDownload(
+      id: transferId,
+      filename: filename,
+      totalSize: size,
+      totalChunks: totalChunks,
+      expectedChecksum: input['checksum']?.toString(),
+    );
+    dl.stallTimer = Timer(_downloadStallTimeout, () {
+      _activeDownloads.remove(transferId);
+      _sendControlJson({
+        'type': 'file_ack',
+        'transfer_id': transferId,
+        'ok': false,
+      });
+    });
+    _activeDownloads[transferId] = dl;
+  }
+
+  void _handleFileChunk(Map<String, dynamic> input) {
+    final transferId =
+        input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    final chunkIndex = (input['chunk_index'] as num?)?.toInt() ?? -1;
+    final base64Data = input['data']?.toString() ?? '';
+    final dl = _activeDownloads[transferId];
+    if (dl == null || base64Data.isEmpty) return;
+    try {
+      final bytes = base64Decode(base64Data);
+      if (chunkIndex < 0 || chunkIndex >= dl.totalChunks) return;
+      if (!dl.chunks.containsKey(chunkIndex)) {
+        dl.receivedBytes += bytes.length;
+      }
+      if (dl.receivedBytes > _maxFileTransferBytes) {
+        _activeDownloads.remove(transferId)?.stallTimer?.cancel();
+        _sendControlJson({
+          'type': 'file_ack',
+          'transfer_id': transferId,
+          'ok': false,
+        });
+        return;
+      }
+      dl.chunks[chunkIndex] = bytes;
+      dl.stallTimer?.cancel();
+      dl.stallTimer = Timer(_downloadStallTimeout, () {
+        _activeDownloads.remove(transferId);
+        _sendControlJson({
+          'type': 'file_ack',
+          'transfer_id': transferId,
+          'ok': false,
+        });
+      });
+    } catch (_) {
+      _activeDownloads.remove(transferId)?.stallTimer?.cancel();
+      _sendControlJson({
+        'type': 'file_ack',
+        'transfer_id': transferId,
+        'ok': false,
+      });
+    }
+  }
+
+  Future<void> _handleFileEnd(Map<String, dynamic> input) async {
+    final transferId =
+        input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    final dl = _activeDownloads.remove(transferId);
+    dl?.stallTimer?.cancel();
+    if (dl == null) return;
+    final endChecksum = input['checksum']?.toString();
+    final checksum = (endChecksum != null && endChecksum.isNotEmpty)
+        ? endChecksum
+        : dl.expectedChecksum;
+    final result = assembleFileChunks(
+      dl.chunks,
+      dl.totalChunks,
+      expectedSize: dl.totalSize > 0 ? dl.totalSize : null,
+      expectedChecksum: checksum,
+    );
+    if (!result.isOk || result.bytes == null) {
+      _sendControlJson({
+        'type': 'file_ack',
+        'transfer_id': transferId,
+        'ok': false,
+      });
+      _sendControlJson({
+        'type': 'file_reject',
+        'transfer_id': transferId,
+        'filename': dl.filename,
+        'reason': result.error ?? 'invalid_file',
+      });
+      return;
+    }
+
+    String? targetPath;
+    try {
+      final home = Platform.environment['USERPROFILE'] ??
+          Platform.environment['HOME'] ??
+          Directory.systemTemp.path;
+      final dir = Directory(
+          '$home${Platform.pathSeparator}Downloads${Platform.pathSeparator}LigamentSupport');
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      targetPath = resolveNonCollidingFilePath(dir.path, dl.filename);
+      final partFile = File('$targetPath.part');
+      await partFile.writeAsBytes(result.bytes!, flush: true);
+      await partFile.rename(targetPath);
+      if (!kIsWeb && Platform.isWindows) {
+        try {
+          await File('$targetPath:Zone.Identifier')
+              .writeAsString('[ZoneTransfer]\r\nZoneId=3\r\n');
+        } catch (_) {}
+      }
+      _sendControlJson({
+        'type': 'file_ack',
+        'transfer_id': transferId,
+        'ok': true,
+      });
+    } catch (_) {
+      if (targetPath != null) {
+        try {
+          final partFile = File('$targetPath.part');
+          if (await partFile.exists()) await partFile.delete();
+        } catch (_) {}
+      }
+      _sendControlJson({
+        'type': 'file_ack',
+        'transfer_id': transferId,
+        'ok': false,
+      });
     }
   }
 
@@ -1054,12 +1453,19 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _connectionGraceTimer?.cancel();
+    _connectionGraceTimer = null;
+    for (final dl in _activeDownloads.values) {
+      dl.stallTimer?.cancel();
+    }
+    _activeDownloads.clear();
     final control = _control;
     _control = null;
     if (control != null) {
       control.onMessage = null;
       await control.close();
     }
+    InputInjector.instance.setInputBlocked(false);
     InputInjector.instance.releaseAllPressed();
     InputInjector.instance.setActiveMonitorRect(null);
     final stream = _stream;

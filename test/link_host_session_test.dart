@@ -35,6 +35,14 @@ class _FakeLinkHostPeer implements LinkHostPeer {
   }
 
   @override
+  Future<String> renegotiateOffer(String offerSdp) async {
+    renegotiatedOffers.add(offerSdp);
+    return 'v=0 answer-renegotiated';
+  }
+
+  final List<String> renegotiatedOffers = [];
+
+  @override
   Future<void> addRemoteCandidate(Map<String, dynamic> candidate) async {
     candidates.add(candidate);
   }
@@ -290,5 +298,83 @@ void main() {
     await rejecting.start(offerSdp: _viewOffer, iceServers: const []);
     expect(peer.candidateCallback, isNull);
     expect((sent.single['payload'] as Map)['reason'], 'invalid_offer_media');
+  });
+
+  test('renegotiates ice_restart offer on active session and sends new answer',
+      () async {
+    final peer = _FakeLinkHostPeer();
+    final sent = <Map<String, dynamic>>[];
+    final session = LinkHostSession(
+      sessionId: _sessionId,
+      accessMode: 'control',
+      peer: peer,
+      send: (frame) async => sent.add(frame),
+    );
+    await session.start(offerSdp: _controlOffer, iceServers: const []);
+    expect(sent, hasLength(1));
+
+    await session.receive({
+      'type': 'signal',
+      'session_id': _sessionId,
+      'signal': {
+        'type': 'ice_restart',
+        'sdp': '$_controlOffer\r\na=ice-ufrag:newufrag',
+      },
+    });
+
+    expect(peer.renegotiatedOffers, hasLength(1));
+    expect(sent, hasLength(2));
+    expect(sent.last['type'], 'session_answer');
+    expect((sent.last['payload'] as Map)['sdp'], 'v=0 answer-renegotiated');
+    expect(session.isClosed, isFalse);
+  });
+
+  test('isValidControlInput validates all 6 operator toolbar commands', () {
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'text_input',
+        'text': 'Hello World',
+      }),
+      isTrue,
+    );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'video_quality',
+        'quality': 'best',
+      }),
+      isTrue,
+    );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'reboot',
+      }),
+      isTrue,
+    );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'file_start',
+        'transfer_id': 'tx-1',
+        'filename': 'report.pdf',
+        'size': 1024,
+        'total_chunks': 1,
+      }),
+      isTrue,
+    );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'file_chunk',
+        'transfer_id': 'tx-1',
+        'chunk_index': 0,
+        'data': 'YWJj',
+      }),
+      isTrue,
+    );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'file_end',
+        'transfer_id': 'tx-1',
+      }),
+      isTrue,
+    );
   });
 }

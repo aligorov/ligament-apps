@@ -79,6 +79,7 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 	config.DeleteIdentity = linkagent.DeleteAgentIdentity
 	defer cancel()
 	workerBroker := linkagent.NewSessionWorkerBroker(linkagent.NewNativeSessionWorkerLauncher())
+	config.OnConnected = workerBroker.RebindSender
 	workerResults := make(chan serviceWorkerResult, 2)
 	activeWorkers := 0
 	startRuntime := func() {

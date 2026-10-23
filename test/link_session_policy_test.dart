@@ -75,4 +75,34 @@ void main() {
         linkSignalType({'type': 'signal'}, {'candidate': 'invalid'}), 'signal');
     expect(linkSignalType({}, {'type': 1}), null);
   });
+
+  test('toolbar commands text_input, video_quality, reboot, file_* follow policy',
+      () {
+    final policyWithFiles = LinkSessionPolicy.fromWire({
+      'allow_file_transfer': true,
+    });
+    final policyWithoutFiles = LinkSessionPolicy.fromWire({
+      'allow_file_transfer': false,
+    });
+
+    expect(
+        policyWithFiles.allows({'type': 'video_quality', 'quality': 'best'},
+            allowControl: false),
+        isTrue);
+    expect(
+        policyWithFiles.allows({'type': 'text_input', 'text': 'hello'},
+            allowControl: true),
+        isTrue);
+    expect(
+        policyWithFiles.allows({'type': 'text_input', 'text': 'hello'},
+            allowControl: false),
+        isFalse);
+    expect(policyWithFiles.allows({'type': 'reboot'}, allowControl: true),
+        isTrue);
+    expect(policyWithFiles.allows({'type': 'file_start'}, allowControl: true),
+        isTrue);
+    expect(
+        policyWithoutFiles.allows({'type': 'file_start'}, allowControl: true),
+        isFalse);
+  });
 }

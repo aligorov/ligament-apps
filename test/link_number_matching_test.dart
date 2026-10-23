@@ -26,6 +26,8 @@ class _Peer implements LinkHostPeer {
   }
 
   @override
+  Future<String> renegotiateOffer(String offerSdp) async => 'v=0 answer';
+  @override
   Future<void> addRemoteCandidate(Map<String, dynamic> candidate) async {}
   @override
   Future<void> close() async {}

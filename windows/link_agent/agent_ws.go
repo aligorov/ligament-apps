@@ -22,12 +22,13 @@ import (
 )
 
 const (
-	agentReadLimit       = 512 * 1024
-	agentWriteTimeout    = 10 * time.Second
-	agentHeartbeatPeriod = 25 * time.Second
-	agentStablePeriod    = 60 * time.Second
-	agentReconnectMin    = time.Second
-	agentReconnectMax    = time.Minute
+	agentReadLimit         = 512 * 1024
+	agentWriteTimeout      = 10 * time.Second
+	agentHeartbeatPeriod   = 25 * time.Second
+	agentStablePeriod      = 60 * time.Second
+	agentReconnectMin      = time.Second
+	agentReconnectMax      = time.Minute
+	agentWorkerGracePeriod = 60 * time.Second
 )
 
 var ErrAgentUnbound = errors.New("link agent: server archived this identity")
@@ -44,6 +45,7 @@ type AgentWSConfig struct {
 	InteractiveUser func() string
 	LocalIPs        func() []string
 	DeleteIdentity  func() error
+	OnConnected     func(send func(any) error)
 }
 
 // AgentMessageHandler processes a server text frame. send is safe to call from
@@ -115,7 +117,31 @@ func RunAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.Diale
 	if handler == nil {
 		return errors.New("link agent: nil server-message handler")
 	}
-	var attempt int
+	var (
+		attempt       int
+		workerCtx     context.Context
+		cancelWorkers context.CancelFunc
+		graceTimer    *time.Timer
+	)
+	ensureWorkerScope := func() context.Context {
+		if graceTimer != nil {
+			graceTimer.Stop()
+			graceTimer = nil
+		}
+		if workerCtx == nil || workerCtx.Err() != nil {
+			workerCtx, cancelWorkers = context.WithCancel(ctx)
+		}
+		return workerCtx
+	}
+	defer func() {
+		if graceTimer != nil {
+			graceTimer.Stop()
+		}
+		if cancelWorkers != nil {
+			cancelWorkers()
+		}
+	}()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -123,7 +149,8 @@ func RunAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.Diale
 		started := time.Now()
 		conn, err := ConnectAgent(ctx, config, dialer)
 		if err == nil {
-			err = serveAgentConnection(ctx, conn, config, handler)
+			scopeCtx := ensureWorkerScope()
+			err = serveAgentConnectionWithWorkerScope(ctx, scopeCtx, conn, config, handler, reportError)
 			_ = conn.Close()
 		}
 		if ctx.Err() != nil {
@@ -131,6 +158,10 @@ func RunAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.Diale
 		}
 		if errors.Is(err, ErrAgentUnbound) {
 			return err
+		}
+		if cancelWorkers != nil && graceTimer == nil {
+			cancelFn := cancelWorkers
+			graceTimer = time.AfterFunc(agentWorkerGracePeriod, cancelFn)
 		}
 		if reportError != nil && err != nil {
 			reportError(err)
@@ -153,9 +184,16 @@ func RunAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.Diale
 }
 
 func serveAgentConnection(ctx context.Context, conn agentSocket, config AgentWSConfig, handler AgentMessageHandler) error {
+	return serveAgentConnectionWithWorkerScope(ctx, nil, conn, config, handler, nil)
+}
+
+func serveAgentConnectionWithWorkerScope(ctx context.Context, workerScopeCtx context.Context, conn agentSocket, config AgentWSConfig, handler AgentMessageHandler, reportError func(error)) error {
 	defer conn.Close()
 	connectionCtx, cancelConnection := context.WithCancel(ctx)
 	defer cancelConnection()
+	if workerScopeCtx == nil {
+		workerScopeCtx = connectionCtx
+	}
 	writeMu := &sync.Mutex{}
 	send := func(message any) error {
 		writeMu.Lock()
@@ -205,6 +243,9 @@ func serveAgentConnection(ctx context.Context, conn agentSocket, config AgentWSC
 	if err := sendHeartbeat(); err != nil {
 		return fmt.Errorf("link agent: initial heartbeat failed: %w", err)
 	}
+	if config.OnConnected != nil {
+		config.OnConnected(send)
+	}
 	heartbeat := time.NewTicker(agentHeartbeatPeriod)
 	defer heartbeat.Stop()
 	for {
@@ -239,8 +280,11 @@ func serveAgentConnection(ctx context.Context, conn agentSocket, config AgentWSC
 				collectInteractiveUser = envelope.CollectInteractiveUser
 				continue
 			}
-			if err := handler(connectionCtx, result.payload, send); err != nil {
-				return fmt.Errorf("link agent: server message handler failed: %w", err)
+			if err := handler(workerScopeCtx, result.payload, send); err != nil {
+				if reportError != nil {
+					reportError(fmt.Errorf("link agent: server message handler warning: %w", err))
+				}
+				continue
 			}
 		case <-heartbeat.C:
 			if time.Since(lastAck) > 2*agentHeartbeatPeriod {
