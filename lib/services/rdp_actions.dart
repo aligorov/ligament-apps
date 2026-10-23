@@ -174,6 +174,7 @@ class RdpActions {
               ...session!,
               'access_mode': 'full_control',
               'owner': true,
+              'session_kind': 'console',
             },
             ownerMode: true,
           ),

@@ -1138,6 +1138,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             'employee_name': host['hostname']?.toString() ?? agentId,
             'access_mode': mode,
             'is_link': true,
+            'session_kind': isOwner ? 'console' : 'link',
             ...host,
           },
         ),

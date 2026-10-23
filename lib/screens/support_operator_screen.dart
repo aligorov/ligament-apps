@@ -1249,11 +1249,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final targetAgentId = widget.linkAgentId ??
           widget.sessionData['agent_id']?.toString() ??
           widget.sessionId;
+      final effectiveKind = widget.ownerMode
+          ? 'console'
+          : (widget.sessionData['session_kind']?.toString() ??
+              (widget.isLink ? 'link' : 'sos'));
       final session = await api.requestLinkSession(
         agentId: targetAgentId,
         accessMode: accessMode == 'view_only' ? 'view' : accessMode,
         clientSdp: offer.sdp,
         stepUpToken: _stepUpToken,
+        sessionKind: effectiveKind,
       );
       final id = session['session_id']?.toString();
       if (id == null || id.isEmpty) {

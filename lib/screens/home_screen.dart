@@ -412,7 +412,10 @@ class _HomeScreenState extends State<HomeScreen> {
             builder: (_) => SupportOperatorScreen(
               sessionId: sessId,
               numberMatch: numberMatch,
-              sessionData: sess,
+              sessionData: {
+                ...sess,
+                'session_kind': 'sos',
+              },
             ),
           ),
         );
