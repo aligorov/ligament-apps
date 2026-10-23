@@ -1003,6 +1003,16 @@ class SupportService extends ChangeNotifier {
           'video': true,
         }).timeout(const Duration(seconds: 60));
       }
+      if (!kIsWeb && screenStream.getAudioTracks().isEmpty) {
+        try {
+          final micStream = await navigator.mediaDevices
+              .getUserMedia(<String, dynamic>{'audio': true, 'video': false})
+              .timeout(const Duration(seconds: 5));
+          for (final track in micStream.getAudioTracks()) {
+            await screenStream.addTrack(track);
+          }
+        } catch (_) {}
+      }
       _localStream = screenStream;
       _requireCaptureEpoch(epoch);
 

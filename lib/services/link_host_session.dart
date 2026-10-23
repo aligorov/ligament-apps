@@ -937,21 +937,42 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     };
     final wantLoopbackAudio =
         !kIsWeb && (Platform.isWindows || Platform.isLinux);
+    MediaStream? stream;
     if (wantLoopbackAudio) {
       try {
-        return await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+        stream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': true,
           'video': videoConstraints,
         }).timeout(const Duration(seconds: 15));
+        final audioCount = stream.getAudioTracks().length;
+        debugPrint(
+            'link_host_session: loopback getDisplayMedia returned audioTracks=$audioCount');
       } catch (e) {
         debugPrint(
             'link_host_session: loopback audio unavailable, falling back to video-only: $e');
       }
     }
-    return await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+    stream ??= await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
       'audio': false,
       'video': videoConstraints,
     }).timeout(const Duration(seconds: 20));
+    // If loopback didn't yield an audio track, try fallback to default audio input (mic/stereo mix)
+    if (stream.getAudioTracks().isEmpty && !kIsWeb) {
+      try {
+        final audioStream = await navigator.mediaDevices
+            .getUserMedia(<String, dynamic>{'audio': true, 'video': false})
+            .timeout(const Duration(seconds: 5));
+        for (final track in audioStream.getAudioTracks()) {
+          debugPrint(
+              'link_host_session: attached audio input fallback track: ${track.id}');
+          await stream.addTrack(track);
+        }
+      } catch (e) {
+        debugPrint(
+            'link_host_session: audio input fallback (mic/stereo mix) unavailable: $e');
+      }
+    }
+    return stream;
   }
 
   Future<void> switchScreen(String screenId) async {
@@ -1179,8 +1200,22 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     for (final track in capture.getAudioTracks()) {
       _audioSender = await peer.addTrack(track, capture);
     }
+    try {
+      final transceivers = await peer.getTransceivers();
+      for (final t in transceivers) {
+        if (t.receiver.track?.kind == 'audio' ||
+            t.sender.track?.kind == 'audio' ||
+            t.mid == '1') {
+          await t.setDirection(TransceiverDirection.SendOnly);
+        }
+      }
+    } catch (e) {
+      debugPrint('link_host_session: setDirection on audio transceiver: $e');
+    }
     final answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
+    debugPrint(
+        'link_host_session: answer created, videoSender=${_videoSender != null}, audioSender=${_audioSender != null}, audioTracks=${capture.getAudioTracks().length}');
     return answer.sdp ?? '';
   }
 

@@ -1148,25 +1148,52 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       peer.onTrack = (RTCTrackEvent event) async {
         debugPrint(
-            'support_operator (link): remote track: ${event.track.kind}');
+            'support_operator (link): remote track: ${event.track.kind}, id=${event.track.id}, streams=${event.streams.length}');
         if (!mounted || _isCleanedUp) return;
+        try {
+          await Helper.ensureAudioSession();
+        } catch (_) {}
+
         if (event.track.kind == 'audio') {
           _remoteAudioTrack = event.track;
           event.track.enabled = !_isAudioMuted;
           try {
             await Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, event.track);
-          } catch (_) {}
-          if (_remoteRenderer.srcObject != null && event.streams.isEmpty) {
+          } catch (e) {
+            debugPrint('support_operator (link): setVolume error: $e');
+          }
+          final currentStream = _remoteRenderer.srcObject;
+          if (currentStream != null &&
+              !currentStream
+                  .getAudioTracks()
+                  .any((t) => t.id == event.track.id)) {
             try {
-              await _remoteRenderer.srcObject!.addTrack(event.track);
+              await currentStream.addTrack(event.track);
             } catch (_) {}
           }
           if (mounted) setState(() {});
           return;
         }
+
         MediaStream? stream;
         if (event.streams.isNotEmpty) {
           stream = event.streams[0];
+        } else {
+          try {
+            stream = await createLocalMediaStream('remote_stream');
+            await stream.addTrack(event.track);
+          } catch (_) {}
+        }
+
+        if (stream != null) {
+          if (_remoteAudioTrack != null &&
+              !stream
+                  .getAudioTracks()
+                  .any((t) => t.id == _remoteAudioTrack!.id)) {
+            try {
+              await stream.addTrack(_remoteAudioTrack!);
+            } catch (_) {}
+          }
           for (final audio in stream.getAudioTracks()) {
             _remoteAudioTrack = audio;
             audio.enabled = !_isAudioMuted;
@@ -1174,15 +1201,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
             } catch (_) {}
           }
-        } else {
-          try {
-            stream = await createLocalMediaStream('remote_stream');
-            await stream.addTrack(event.track);
-            if (_remoteAudioTrack != null) {
-              await stream.addTrack(_remoteAudioTrack!);
-            }
-          } catch (_) {}
         }
+
         if (mounted && stream != null) {
           setState(() {
             _remoteRenderer.srcObject = stream;
@@ -1714,17 +1734,27 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     _peerConnection!.onTrack = (RTCTrackEvent event) async {
       debugPrint(
-          'support_operator: remote track received: ${event.track.kind}');
+          'support_operator: remote track received: ${event.track.kind}, id=${event.track.id}, streams=${event.streams.length}');
       if (mounted) {
+        try {
+          await Helper.ensureAudioSession();
+        } catch (_) {}
+
         if (event.track.kind == 'audio') {
           _remoteAudioTrack = event.track;
           event.track.enabled = !_isAudioMuted;
           try {
             await Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, event.track);
-          } catch (_) {}
-          if (_remoteRenderer.srcObject != null && event.streams.isEmpty) {
+          } catch (e) {
+            debugPrint('support_operator: setVolume error: $e');
+          }
+          final currentStream = _remoteRenderer.srcObject;
+          if (currentStream != null &&
+              !currentStream
+                  .getAudioTracks()
+                  .any((t) => t.id == event.track.id)) {
             try {
-              await _remoteRenderer.srcObject!.addTrack(event.track);
+              await currentStream.addTrack(event.track);
             } catch (_) {}
           }
           if (mounted) setState(() {});
@@ -1736,22 +1766,29 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         MediaStream? stream;
         if (event.streams.isNotEmpty) {
           stream = event.streams[0];
+        } else {
+          try {
+            stream = await createLocalMediaStream('remote_stream');
+            await stream.addTrack(event.track);
+          } catch (e) {
+            debugPrint('support_operator: fallback media stream error: $e');
+          }
+        }
+        if (stream != null) {
+          if (_remoteAudioTrack != null &&
+              !stream
+                  .getAudioTracks()
+                  .any((t) => t.id == _remoteAudioTrack!.id)) {
+            try {
+              await stream.addTrack(_remoteAudioTrack!);
+            } catch (_) {}
+          }
           for (final audio in stream.getAudioTracks()) {
             _remoteAudioTrack = audio;
             audio.enabled = !_isAudioMuted;
             try {
               unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
             } catch (_) {}
-          }
-        } else {
-          try {
-            stream = await createLocalMediaStream('remote_stream');
-            await stream.addTrack(event.track);
-            if (_remoteAudioTrack != null) {
-              await stream.addTrack(_remoteAudioTrack!);
-            }
-          } catch (e) {
-            debugPrint('support_operator: fallback media stream error: $e');
           }
         }
         if (mounted && stream != null) {
@@ -4245,9 +4282,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         ? (strings.isRu
                             ? 'Включить звук удалённого ПК'
                             : 'Unmute remote PC audio')
-                        : (strings.isRu
-                            ? 'Выключить звук удалённого ПК'
-                            : 'Mute remote PC audio'),
+                        : (_remoteAudioTrack != null
+                            ? (strings.isRu
+                                ? 'Выключить звук удалённого ПК'
+                                : 'Mute remote PC audio')
+                            : (strings.isRu
+                                ? 'Звук удалённого ПК не поступает'
+                                : 'Remote PC audio not receiving')),
                     onPressed: _isConnected ? _toggleRemoteAudio : null,
                   ),
 
