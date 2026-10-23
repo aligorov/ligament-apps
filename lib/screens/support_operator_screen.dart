@@ -4371,9 +4371,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             ? (strings.isRu
                                 ? 'Канал управления: DataChannel (прямой P2P)'
                                 : 'Control channel: DataChannel (direct P2P)')
-                            : (strings.isRu
-                                ? 'Канал управления: WebSocket (через сервер)'
-                                : 'Control channel: WebSocket (relayed)'),
+                            : (widget.isLink
+                                ? (strings.isRu
+                                    ? 'Канал управления: DataChannel недоступен'
+                                    : 'Control channel: DataChannel unavailable')
+                                : (strings.isRu
+                                    ? 'Канал управления: WebSocket (через сервер)'
+                                    : 'Control channel: WebSocket (relayed)')),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 3),
@@ -4389,7 +4393,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             ),
                           ),
                           child: Text(
-                            _isDataChannelActive ? 'P2P' : 'WS',
+                            _isDataChannelActive
+                                ? 'P2P'
+                                : (widget.isLink ? 'NO P2P' : 'WS'),
                             style: TextStyle(
                               color: _isDataChannelActive
                                   ? const Color(0xFF34D399)

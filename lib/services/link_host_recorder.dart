@@ -99,6 +99,7 @@ class LinkHostRecorder {
     this.onMandatoryViolation,
     DateTime Function()? clock,
   })  : _clock = clock ?? DateTime.now,
+        _startedAt = (clock ?? DateTime.now)().toUtc(),
         sendBatch = sendBatch ??
             ((batch) => _defaultHttpSendBatch(
                   config.ingestUrl,
@@ -159,6 +160,7 @@ class LinkHostRecorder {
   final LinkRecorderBatchSender sendBatch;
   final void Function(String reason)? onMandatoryViolation;
   final DateTime Function() _clock;
+  final DateTime _startedAt;
 
   final List<Map<String, dynamic>> _pendingFrames = [];
   final List<Map<String, dynamic>> _pendingEvents = [];
@@ -382,8 +384,11 @@ class LinkHostRecorder {
       _queuedBytes = 0;
 
       if (config.requireFirstFrame && !_firstFrameAcked) {
-        _triggerMandatoryStop('recorder_first_frame_unacked');
-        return false;
+        final elapsed = now.difference(_startedAt);
+        if (elapsed >= config.maxAckLag) {
+          _triggerMandatoryStop('recorder_first_frame_unacked');
+          return false;
+        }
       }
       return true;
     } catch (_) {
@@ -393,9 +398,13 @@ class LinkHostRecorder {
 
   bool _checkLeaseAndLag(DateTime now) {
     if (!config.mandatory) return true;
+    final elapsed = now.difference(_startedAt);
     if (config.requireFirstFrame && !_firstFrameAcked) {
-      _triggerMandatoryStop('recorder_first_frame_unavailable');
-      return false;
+      if (elapsed >= config.maxAckLag) {
+        _triggerMandatoryStop('recorder_first_frame_unavailable');
+        return false;
+      }
+      return true;
     }
     if (_leaseExpiresAt != null && !now.isBefore(_leaseExpiresAt!)) {
       _triggerMandatoryStop('recorder_lease_expired');

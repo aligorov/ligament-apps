@@ -99,4 +99,39 @@ void main() {
     expect(ok2, isFalse);
     expect(stopReason, 'recorder_ack_lag_exceeded');
   });
+
+  test('does not prematurely stop session during startup grace period when no frames yet', () async {
+    var currentNow = DateTime.utc(2026, 10, 23, 12, 0);
+    String? stopReason;
+
+    final recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(
+        enabled: true,
+        mandatory: true,
+        requireFirstFrame: true,
+        effectiveMode: 'record_only',
+        maxAckLag: Duration(seconds: 15),
+      ),
+      clock: () => currentNow,
+      onMandatoryViolation: (reason) => stopReason = reason,
+      sendBatch: (_) async => LinkRecorderBatchAck(
+        ackHighWatermarkSeq: 0,
+        firstFrameAcked: false,
+        leaseExpiresAt: currentNow.add(const Duration(seconds: 30)),
+      ),
+    );
+
+    // В первые 2 секунды (первый тик таймера) очередей нет, сессия не должна падать
+    currentNow = currentNow.add(const Duration(seconds: 2));
+    final ok1 = await recorder.flushAndVerifyHealth();
+    expect(ok1, isTrue);
+    expect(stopReason, isNull);
+
+    // Но по истечении maxAckLag (15s) отсутствие первого кадра останавливает обязательную сессию
+    currentNow = currentNow.add(const Duration(seconds: 15));
+    final ok2 = await recorder.flushAndVerifyHealth();
+    expect(ok2, isFalse);
+    expect(stopReason, 'recorder_first_frame_unavailable');
+  });
 }
