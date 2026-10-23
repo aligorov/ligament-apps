@@ -10,6 +10,7 @@ const (
 	maxSessionSDPBytes       = 256 * 1024
 	maxSessionICEServersSize = 64 * 1024
 	maxSessionDLPSize        = 16 * 1024
+	maxSessionRecordingSize  = 16 * 1024
 	maxRelayTokenBytes       = 4 * 1024
 )
 
@@ -34,6 +35,7 @@ type SessionOffer struct {
 	RelayURL     string          `json:"relay_url,omitempty"`
 	RelayToken   string          `json:"relay_token,omitempty"`
 	DLP          json.RawMessage `json:"dlp"`
+	Recording    json.RawMessage `json:"recording,omitempty"`
 }
 
 // DecodeOffer validates and decodes the server's session_offer envelope.
@@ -73,6 +75,10 @@ func DecodeOffer(data []byte) (SessionOffer, error) {
 	}
 	if len(offer.RelayToken) > maxRelayTokenBytes {
 		return SessionOffer{}, errors.New("link agent: relay token exceeds size limit")
+	}
+	if len(offer.Recording) > maxSessionRecordingSize ||
+		(len(offer.Recording) != 0 && !json.Valid(offer.Recording)) {
+		return SessionOffer{}, errors.New("link agent: invalid recording configuration")
 	}
 	return offer, nil
 }

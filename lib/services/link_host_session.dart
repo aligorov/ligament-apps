@@ -779,6 +779,7 @@ class _LinkActiveFileDownload {
 class FlutterLinkHostPeer implements LinkHostPeer {
   FlutterLinkHostPeer({
     this.onConnected,
+    this.onControlInputObserved,
     this.policy = const LinkSessionPolicy(),
   });
 
@@ -788,6 +789,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   static const Duration _downloadStallTimeout = Duration(seconds: 30);
 
   final VoidCallback? onConnected;
+  final void Function(Map<String, dynamic> input)? onControlInputObserved;
   final LinkSessionPolicy policy;
 
   RTCPeerConnection? _peer;
@@ -1078,6 +1080,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   void _executeInput(Map<String, dynamic> input) {
     if (_closed || !policy.allows(input, allowControl: _allowControl)) return;
+    onControlInputObserved?.call(input);
     final injector = InputInjector.instance;
     final type = input['type'];
     try {
