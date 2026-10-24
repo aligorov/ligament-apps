@@ -239,13 +239,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool get _isInputUnavailable =>
       !_isViewOnlySession && _isControlEnabled && !_isDataChannelActive;
 
-  /// Управление готово = управление включено И (DataChannel открыт ИЛИ готов WS signaling / P2P).
-  bool get _controlReady =>
-      _isControlEnabled &&
-      ((_dataChannel != null &&
-              _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) ||
-          _signalReady ||
-          _isConnected);
+  /// Управление готово = управление включено И DataChannel (DTLS) открыт для команд.
+  bool get _controlReady => _isControlEnabled && _isDataChannelActive;
 
   /// Ш3: активна ошибка стадии с кнопкой «Повторить».
   bool get _stageRetryActive =>
@@ -1485,7 +1480,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               _currentNumberMatch = null;
               _signalReady = true;
               if (isReconnecting) {
-                _isConnected = true;
                 _statusKey =
                     consoleConnectionStatusKey(_isConnected, _frameReady);
                 _statusArg = null;

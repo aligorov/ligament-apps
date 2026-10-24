@@ -14,6 +14,7 @@
 
 #include <windows.h>
 #include <wchar.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -67,29 +68,70 @@ std::wstring QueryDesktopName(HDESK desk) {
   return buf;
 }
 
-void AttachCurrentInputDesktop(HDESK* io_desk) {
-  HDESK current = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
-  if (!current) {
-    current = OpenDesktopW(L"Winlogon", 0, FALSE, MAXIMUM_ALLOWED);
+bool IsDesktopReceivingInput(HDESK desk) {
+  if (!desk) return false;
+  BOOL is_io = FALSE;
+  DWORD needed = 0;
+  if (GetUserObjectInformationW(desk, UOI_IO, &is_io, sizeof(is_io), &needed)) {
+    return is_io != FALSE;
   }
-  if (!current) {
-    current = OpenDesktopW(L"Default", 0, FALSE, MAXIMUM_ALLOWED);
-  }
-  if (!current) return;
+  return false;
+}
 
-  const std::wstring name = QueryDesktopName(current);
-  if (!name.empty() && name != g_last_desktop_name) {
-    if (!g_last_desktop_name.empty()) {
-      g_desktop_changed.store(true, std::memory_order_relaxed);
-    }
-    if (SetThreadDesktop(current)) {
-      if (*io_desk) CloseDesktop(*io_desk);
-      *io_desk = current;
-      g_last_desktop_name = name;
-      return;
+HDESK FindActiveInputDesktop() {
+  // 1. Попытка открыть текущий десктоп ввода через OpenInputDesktop
+  HDESK desk = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
+  if (desk) {
+    if (IsDesktopReceivingInput(desk)) {
+      return desk;
     }
   }
-  CloseDesktop(current);
+
+  // 2. Опрос кандидатов: СТРОГО сначала Default (основной рабочий стол), затем Winlogon
+  const wchar_t* candidates[] = { L"Default", L"Winlogon", L"Screen-saver" };
+  HDESK fallback = desk;
+  for (const wchar_t* cand_name : candidates) {
+    HDESK cand = OpenDesktopW(cand_name, 0, FALSE, MAXIMUM_ALLOWED);
+    if (!cand) continue;
+    if (IsDesktopReceivingInput(cand)) {
+      if (fallback && fallback != cand) CloseDesktop(fallback);
+      return cand;
+    }
+    if (!fallback && wcscmp(cand_name, L"Default") == 0) {
+      fallback = cand; // Default — приоритетный десктоп при смене экрана
+    } else {
+      CloseDesktop(cand);
+    }
+  }
+  return fallback;
+}
+
+void AttachCurrentInputDesktop(HDESK* io_desk) {
+  // Быстрая проверка: если текущий десктоп потока уже подтверждённо принимает ввод — возврат
+  if (*io_desk && IsDesktopReceivingInput(*io_desk)) {
+    return;
+  }
+
+  HDESK target = FindActiveInputDesktop();
+  if (!target) return;
+
+  const std::wstring name = QueryDesktopName(target);
+  const bool changed = (!name.empty() && name != g_last_desktop_name);
+
+  if (SetThreadDesktop(target)) {
+    if (*io_desk) {
+      CloseDesktop(*io_desk);
+    }
+    *io_desk = target;
+    if (changed) {
+      if (!g_last_desktop_name.empty()) {
+        g_desktop_changed.store(true, std::memory_order_relaxed);
+      }
+      g_last_desktop_name = name;
+    }
+    return;
+  }
+  CloseDesktop(target);
 }
 
 void ExecuteSendVk(WORD vk, bool is_down) {
@@ -409,6 +451,97 @@ __declspec(dllexport) int ligament_get_monitor_rect_by_device_index(int device_i
   *out_t = ctx.rect.top;
   *out_r = ctx.rect.right;
   *out_b = ctx.rect.bottom;
+  return 0;
+}
+
+// Прямой захват активного экрана через GDI BitBlt в BMP (резервный канал для Recorder).
+__declspec(dllexport) int ligament_capture_desktop_bmp(
+    int max_w, int max_h, uint8_t* out_buf, int buf_size, int* out_len, int* out_w, int* out_h) {
+  if (!out_buf || buf_size <= static_cast<int>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)) ||
+      !out_len || !out_w || !out_h) {
+    return -1;
+  }
+
+  HDC hScreenDC = GetDC(nullptr);
+  if (!hScreenDC) return -2;
+
+  int screen_w = GetSystemMetrics(SM_CXSCREEN);
+  int screen_h = GetSystemMetrics(SM_CYSCREEN);
+  if (screen_w <= 0 || screen_h <= 0) {
+    ReleaseDC(nullptr, hScreenDC);
+    return -3;
+  }
+
+  int target_w = screen_w;
+  int target_h = screen_h;
+  if (max_w > 0 && max_h > 0 && (target_w > max_w || target_h > max_h)) {
+    double scale = (std::min)(static_cast<double>(max_w) / target_w,
+                              static_cast<double>(max_h) / target_h);
+    target_w = static_cast<int>(target_w * scale);
+    target_h = static_cast<int>(target_h * scale);
+    if (target_w < 1) target_w = 1;
+    if (target_h < 1) target_h = 1;
+  }
+
+  int row_stride = ((target_w * 32 + 31) / 32) * 4;
+  int pixel_data_size = row_stride * target_h;
+  int total_bmp_size = static_cast<int>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)) + pixel_data_size;
+
+  if (total_bmp_size > buf_size) {
+    ReleaseDC(nullptr, hScreenDC);
+    return -4;
+  }
+
+  HDC hMemDC = CreateCompatibleDC(hScreenDC);
+  if (!hMemDC) {
+    ReleaseDC(nullptr, hScreenDC);
+    return -5;
+  }
+
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = target_w;
+  bi.bmiHeader.biHeight = -target_h; // top-down
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  void* pBits = nullptr;
+  HBITMAP hDIB = CreateDIBSection(hMemDC, &bi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+  if (!hDIB || !pBits) {
+    if (hDIB) DeleteObject(hDIB);
+    DeleteDC(hMemDC);
+    ReleaseDC(nullptr, hScreenDC);
+    return -6;
+  }
+
+  HGDIOBJ hOld = SelectObject(hMemDC, hDIB);
+  SetStretchBltMode(hMemDC, HALFTONE);
+  SetBrushOrgEx(hMemDC, 0, 0, nullptr);
+
+  StretchBlt(hMemDC, 0, 0, target_w, target_h,
+             hScreenDC, 0, 0, screen_w, screen_h,
+             SRCCOPY | CAPTUREBLT);
+
+  GdiFlush();
+
+  BITMAPFILEHEADER bmfHeader{};
+  bmfHeader.bfType = 0x4D42; // 'BM'
+  bmfHeader.bfSize = total_bmp_size;
+  bmfHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+
+  memcpy(out_buf, &bmfHeader, sizeof(BITMAPFILEHEADER));
+  memcpy(out_buf + sizeof(BITMAPFILEHEADER), &bi.bmiHeader, sizeof(BITMAPINFOHEADER));
+  memcpy(out_buf + bmfHeader.bfOffBits, pBits, pixel_data_size);
+
+  *out_len = total_bmp_size;
+  *out_w = target_w;
+  *out_h = target_h;
+
+  SelectObject(hMemDC, hOld);
+  DeleteObject(hDIB);
+  DeleteDC(hMemDC);
+  ReleaseDC(nullptr, hScreenDC);
   return 0;
 }
 

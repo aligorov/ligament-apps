@@ -705,15 +705,18 @@ Future<void> _runConnectedLinkHostWorker(
       onControlInputObserved: recorder?.observeControlInput,
       onFrameCaptured: recorder == null
           ? null
-          : (kind, bytes, monitorId) {
-              recorder.enqueueFrame(
-                frameKind: kind,
-                payload: bytes,
-                monitorId: monitorId,
-                width: 1280,
-                height: 720,
-                codec: 'jpeg',
-              );
+          : (kind, bytes, monitorId) async {
+              final frameInfo = await prepareRecordedFrame(bytes);
+              if (frameInfo != null) {
+                recorder.enqueueFrame(
+                  frameKind: kind,
+                  payload: frameInfo.payload,
+                  monitorId: monitorId,
+                  width: frameInfo.width,
+                  height: frameInfo.height,
+                  codec: frameInfo.codec,
+                );
+              }
             },
       policy: LinkSessionPolicy.fromWire(offer['dlp']),
     ),
@@ -871,13 +874,28 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (cb == null || _closed || _capturingFrame || _switchingScreen) return;
     _capturingFrame = true;
     try {
-      final srcId = _selectedScreenId ?? '0';
       Uint8List? bytes;
+      String currentMonitorId = _selectedScreenId ?? '0';
+
+      // 1. Если ID монитора неизвестен или '0', инициализируем sources в C++ плагине
+      if (_selectedScreenId == null || _selectedScreenId == '0') {
+        try {
+          final sources = await desktopCapturer
+              .getSources(types: [SourceType.Screen])
+              .timeout(const Duration(seconds: 3));
+          if (sources.isNotEmpty) {
+            _selectedScreenId = sources.first.id;
+            currentMonitorId = sources.first.id;
+          }
+        } catch (_) {}
+      }
+
+      // 2. Штатный запрос миниатюры через WebRTC
       try {
         final raw = await WebRTC.invokeMethod(
           'getDesktopSourceThumbnail',
           <String, dynamic>{
-            'sourceId': srcId,
+            'sourceId': currentMonitorId,
             'thumbnailSize': {'width': 1280, 'height': 720},
           },
         ).timeout(const Duration(seconds: 2));
@@ -885,13 +903,44 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           bytes = raw;
         }
       } catch (_) {}
+
+      // 3. Если sources_ в WebRTC оказались пустыми или устарели, обновляем и повторяем
+      if (bytes == null && !_closed) {
+        try {
+          final sources = await desktopCapturer
+              .getSources(types: [SourceType.Screen])
+              .timeout(const Duration(seconds: 3));
+          if (sources.isNotEmpty) {
+            currentMonitorId = sources.first.id;
+            _selectedScreenId = currentMonitorId;
+            final retryRaw = await WebRTC.invokeMethod(
+              'getDesktopSourceThumbnail',
+              <String, dynamic>{
+                'sourceId': currentMonitorId,
+                'thumbnailSize': {'width': 1280, 'height': 720},
+              },
+            ).timeout(const Duration(seconds: 2));
+            if (retryRaw is Uint8List && retryRaw.isNotEmpty) {
+              bytes = retryRaw;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 4. Резервный канал на Windows: прямой захват активного экрана через Win32 GDI
+      if (bytes == null && !_closed && !kIsWeb && Platform.isWindows) {
+        try {
+          bytes = InputInjector.instance.captureDesktopBmp(maxWidth: 1280, maxHeight: 720);
+        } catch (_) {}
+      }
+
       // NOTE: Never fall back to `tracks.first.captureFrame()` on desktop:
       // flutter_webrtc's C++ FlutterFrameCapturer::CaptureFrame executes a
       // synchronous `while(!catch_frame_){}` busy-wait on the Win32 UI thread,
       // which deadlocks at 100% CPU during Winlogon -> Default transitions.
       if (bytes != null && bytes.isNotEmpty && !_closed) {
         _lastFrameCaptureAt = DateTime.now();
-        cb(frameKind, bytes, srcId);
+        cb(frameKind, bytes, currentMonitorId);
       }
     } catch (_) {
     } finally {

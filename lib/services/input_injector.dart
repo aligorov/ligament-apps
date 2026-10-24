@@ -143,6 +143,8 @@ class InputInjector {
   // порядок EnumDisplayMonitors на 2+ мониторах иной.
   int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
       _nativeGetMonitorRectByDeviceIndex;
+  int Function(int, int, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
+      _nativeCaptureDesktopBmp;
 
   void _initMacCG() {
     if (kIsWeb || !Platform.isMacOS) return;
@@ -258,6 +260,12 @@ class InputInjector {
             ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
             int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
             'ligament_get_monitor_rect_by_device_index');
+        try {
+          _nativeCaptureDesktopBmp = exe.lookupFunction<
+              ffi.Int32 Function(ffi.Int32, ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
+              int Function(int, int, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
+              'ligament_capture_desktop_bmp');
+        } catch (_) {}
       } catch (e) {
         debugPrint('input_injector: нативные хелперы ввода/блокировки недоступны: $e');
       }
@@ -530,6 +538,32 @@ class InputInjector {
     }
 
     return null;
+  }
+
+  /// Прямой фоллбэк захвата экрана через Win32 GDI в формат BMP.
+  /// Используется Recorder'ом при недоступности WebRTC thumbnail источника.
+  Uint8List? captureDesktopBmp({int maxWidth = 1280, int maxHeight = 720}) {
+    if (kIsWeb || !Platform.isWindows || _nativeCaptureDesktopBmp == null) return null;
+    const maxBuf = 10 * 1024 * 1024;
+    final buf = calloc<ffi.Uint8>(maxBuf);
+    final outLen = calloc<ffi.Int32>();
+    final outW = calloc<ffi.Int32>();
+    final outH = calloc<ffi.Int32>();
+    try {
+      final rc = _nativeCaptureDesktopBmp!(maxWidth, maxHeight, buf, maxBuf, outLen, outW, outH);
+      if (rc == 0 && outLen.value > 54 && outLen.value <= maxBuf) {
+        return Uint8List.fromList(buf.asTypedList(outLen.value));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('input_injector: captureDesktopBmp failed: $e');
+      return null;
+    } finally {
+      calloc.free(buf);
+      calloc.free(outLen);
+      calloc.free(outW);
+      calloc.free(outH);
+    }
   }
 
   /// Абсолютные координаты в виртуальном рабочем столе из нормализованных 0..1

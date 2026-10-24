@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -183,5 +184,91 @@ void main() {
     expect(ok, isTrue);
     expect(sentBatches.length, 1);
     expect((sentBatches.first['frames'] as List).length, 2);
+  });
+
+  test('parseImageHeader correctly decodes PNG dimensions and codec', () {
+    final pngHeader = Uint8List.fromList([
+      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // magic
+      0x00, 0x00, 0x00, 0x0D, // IHDR chunk len 13
+      0x49, 0x48, 0x44, 0x52, // IHDR
+      0x00, 0x00, 0x05, 0x00, // width: 1280 (0x0500)
+      0x00, 0x00, 0x02, 0xD0, // height: 720 (0x02D0)
+      0x08, 0x06, 0x00, 0x00, 0x00,
+    ]);
+    final info = parseImageHeader(pngHeader);
+    expect(info, isNotNull);
+    expect(info!.codec, 'png');
+    expect(info.width, 1280);
+    expect(info.height, 720);
+  });
+
+  test('parseImageHeader correctly decodes JPEG dimensions and codec', () {
+    final jpegHeader = Uint8List.fromList([
+      0xFF, 0xD8, // SOI
+      0xFF, 0xE0, 0x00, 0x10, // APP0 len 16
+      0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+      0xFF, 0xC0, 0x00, 0x11, // SOF0 len 17
+      0x08, // precision 8
+      0x04, 0x38, // height: 1080 (0x0438)
+      0x07, 0x80, // width: 1920 (0x0780)
+      0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+      0xFF, 0xD9, // EOI
+    ]);
+    final info = parseImageHeader(jpegHeader);
+    expect(info, isNotNull);
+    expect(info!.codec, 'jpeg');
+    expect(info.width, 1920);
+    expect(info.height, 1080);
+  });
+
+  test('preserves events added during in-flight sendBatch and deletes only acked seq', () async {
+    final currentNow = DateTime.utc(2026, 10, 23, 12, 0);
+    final completer = Completer<LinkRecorderBatchAck>();
+    final batches = <Map<String, dynamic>>[];
+
+    final recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(enabled: true),
+      clock: () => currentNow,
+      sendBatch: (b) {
+        batches.add(b);
+        if (batches.length == 1) {
+          return completer.future;
+        }
+        return Future.value(LinkRecorderBatchAck(
+          ackHighWatermarkSeq: 3,
+          firstFrameAcked: true,
+          leaseExpiresAt: currentNow.add(const Duration(seconds: 45)),
+        ));
+      },
+    );
+
+    recorder.enqueueFrame(frameKind: 'keyframe', payload: Uint8List.fromList([1, 2, 3])); // seq 1
+    recorder.observeControlInput({'type': 'hotkey', 'action': 'test1'}); // seq 2
+
+    // Запускаем отправку первого батча (зависнет на completer)
+    final flush1 = recorder.flushAndVerifyHealth();
+
+    // Пока первый батч в полёте, поступает новое событие (seq 3)
+    recorder.observeControlInput({'type': 'hotkey', 'action': 'test2'}); // seq 3
+    expect(recorder.nextSeq, 3);
+
+    // Завершаем первый батч (сервер подтвердил только seq 2)
+    completer.complete(LinkRecorderBatchAck(
+      ackHighWatermarkSeq: 2,
+      firstFrameAcked: true,
+      leaseExpiresAt: currentNow.add(const Duration(seconds: 45)),
+    ));
+    final ok1 = await flush1;
+    expect(ok1, isTrue);
+    expect(recorder.ackedSeq, 2);
+
+    // Событие seq 3 НЕ должно быть стёрто: отправляем второй батч
+    final ok2 = await recorder.flushAndVerifyHealth();
+    expect(ok2, isTrue);
+    expect(batches.length, 2);
+    final secondEvents = batches[1]['events'] as List;
+    expect(secondEvents.length, 1);
+    expect(secondEvents.first['seq'], 3);
   });
 }

@@ -1728,14 +1728,17 @@ class SupportService extends ChangeNotifier {
         }
       } catch (_) {}
       if (bytes != null && bytes.isNotEmpty && _state == SupportSessionState.active) {
-        rec.enqueueFrame(
-          frameKind: frameKind,
-          payload: bytes,
-          monitorId: srcId,
-          width: 1280,
-          height: 720,
-          codec: 'jpeg',
-        );
+        final frameInfo = await prepareRecordedFrame(bytes);
+        if (frameInfo != null) {
+          rec.enqueueFrame(
+            frameKind: frameKind,
+            payload: frameInfo.payload,
+            monitorId: srcId,
+            width: frameInfo.width,
+            height: frameInfo.height,
+            codec: frameInfo.codec,
+          );
+        }
       }
     } catch (_) {
     } finally {

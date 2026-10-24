@@ -1,7 +1,171 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
+
+/// Метаданные и полезная нагрузка кадра записи с достоверными размерами и кодеком.
+class RecordedFrameInfo {
+  final Uint8List payload;
+  final int width;
+  final int height;
+  final String codec; // 'jpeg' | 'png' | 'webp'
+
+  const RecordedFrameInfo({
+    required this.payload,
+    required this.width,
+    required this.height,
+    required this.codec,
+  });
+}
+
+/// Парсер заголовка изображения без декодирования пикселей (PNG, JPEG, WebP).
+RecordedFrameInfo? parseImageHeader(Uint8List bytes) {
+  if (bytes.length < 8) return null;
+
+  // 1. PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (bytes[0] == 0x89 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x4E &&
+      bytes[3] == 0x47 &&
+      bytes[4] == 0x0D &&
+      bytes[5] == 0x0A &&
+      bytes[6] == 0x1A &&
+      bytes[7] == 0x0A &&
+      bytes.length >= 24) {
+    final width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    final height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+    return RecordedFrameInfo(
+      payload: bytes,
+      width: width,
+      height: height,
+      codec: 'png',
+    );
+  }
+
+  // 2. JPEG: FF D8 FF
+  if (bytes[0] == 0xFF && bytes[1] == 0xD8) {
+    int offset = 2;
+    while (offset < bytes.length - 8) {
+      if (bytes[offset] != 0xFF) {
+        offset++;
+        continue;
+      }
+      while (offset < bytes.length && bytes[offset] == 0xFF) {
+        offset++;
+      }
+      if (offset >= bytes.length) break;
+      final marker = bytes[offset];
+      offset++;
+
+      if (marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) {
+        continue;
+      }
+
+      if (offset + 2 > bytes.length) break;
+      final len = (bytes[offset] << 8) | bytes[offset + 1];
+
+      // SOF0 (0xC0), SOF1 (0xC1), SOF2 (0xC2)
+      if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2) {
+        if (offset + 7 <= bytes.length) {
+          final height = (bytes[offset + 3] << 8) | bytes[offset + 4];
+          final width = (bytes[offset + 5] << 8) | bytes[offset + 6];
+          return RecordedFrameInfo(
+            payload: bytes,
+            width: width,
+            height: height,
+            codec: 'jpeg',
+          );
+        }
+      }
+      offset += len;
+    }
+  }
+
+  // 3. WebP: RIFF .... WEBP
+  if (bytes.length >= 30 &&
+      bytes[0] == 0x52 &&
+      bytes[1] == 0x49 &&
+      bytes[2] == 0x46 &&
+      bytes[3] == 0x46 &&
+      bytes[8] == 0x57 &&
+      bytes[9] == 0x45 &&
+      bytes[10] == 0x42 &&
+      bytes[11] == 0x50) {
+    if (bytes[12] == 0x56 && bytes[13] == 0x50 && bytes[14] == 0x38 && bytes[15] == 0x20) {
+      if (bytes.length >= 30) {
+        final width = (bytes[26] | ((bytes[27] & 0x3F) << 8));
+        final height = (bytes[28] | ((bytes[29] & 0x3F) << 8));
+        return RecordedFrameInfo(
+          payload: bytes,
+          width: width,
+          height: height,
+          codec: 'webp',
+        );
+      }
+    }
+    if (bytes[12] == 0x56 && bytes[13] == 0x50 && bytes[14] == 0x38 && bytes[15] == 0x4C) {
+      if (bytes.length >= 25 && bytes[20] == 0x2F) {
+        final b1 = bytes[21];
+        final b2 = bytes[22];
+        final b3 = bytes[23];
+        final b4 = bytes[24];
+        final width = 1 + (((b2 & 0x3F) << 8) | b1);
+        final height = 1 + (((b4 & 0xF) << 10) | (b3 << 2) | ((b2 & 0xC0) >> 6));
+        return RecordedFrameInfo(
+          payload: bytes,
+          width: width,
+          height: height,
+          codec: 'webp',
+        );
+      }
+    }
+    if (bytes[12] == 0x56 && bytes[13] == 0x50 && bytes[14] == 0x38 && bytes[15] == 0x58) {
+      if (bytes.length >= 30) {
+        final width = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
+        final height = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
+        return RecordedFrameInfo(
+          payload: bytes,
+          width: width,
+          height: height,
+          codec: 'webp',
+        );
+      }
+    }
+  }
+
+  return null;
+}
+
+/// Подготавливает кадр для Recorder'а: проверяет формат и размеры,
+/// при необходимости (BMP/TIFF) перекодирует в валидный PNG через dart:ui.
+Future<RecordedFrameInfo?> prepareRecordedFrame(Uint8List rawBytes) async {
+  final direct = parseImageHeader(rawBytes);
+  if (direct != null && direct.width > 0 && direct.height > 0) {
+    return direct;
+  }
+  try {
+    final codec = await ui.instantiateImageCodec(rawBytes);
+    final frame = await codec.getNextFrame();
+    final img = frame.image;
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    final w = img.width;
+    final h = img.height;
+    img.dispose();
+    if (byteData != null) {
+      return RecordedFrameInfo(
+        payload: byteData.buffer.asUint8List(),
+        width: w,
+        height: h,
+        codec: 'png',
+      );
+    }
+  } catch (e) {
+    debugPrint('prepareRecordedFrame: decode/transcode error: $e');
+  }
+  return null;
+}
 
 /// Конфигурация записи сессии, получаемая хостом в `session_offer.recording` (Contract v1).
 class LinkRecordingConfig {
@@ -178,6 +342,7 @@ class LinkHostRecorder {
   DateTime? _leaseExpiresAt;
   Timer? _flushTimer;
   bool _stopped = false;
+  bool _isFlushing = false;
 
   int get nextSeq => _nextSeq;
   int get ackedSeq => _ackedSeq;
@@ -410,46 +575,61 @@ class LinkHostRecorder {
   /// Отправляет накопленный пакет в Recorder и проверяет долговечный ACK (Инвариант 1, 2, 5).
   Future<bool> flushAndVerifyHealth() async {
     if (!config.enabled || _stopped) return true;
-    final now = _clock().toUtc();
-
-    if (_pendingFrames.isEmpty && _pendingEvents.isEmpty) {
-      final needsLeaseKeepalive = _lastAckAt != null &&
-          now.difference(_lastAckAt!) >= const Duration(seconds: 10);
-      if (!needsLeaseKeepalive) {
-        return _checkLeaseAndLag(now);
-      }
-    }
-
-    final batch = {
-      'session_id': sessionId,
-      'epoch': config.epoch,
-      'lease_ttl_seconds': config.leaseTtl.inSeconds,
-      'frames': List<Map<String, dynamic>>.from(_pendingFrames),
-      'events': List<Map<String, dynamic>>.from(_pendingEvents),
-    };
-
+    if (_isFlushing) return true;
+    _isFlushing = true;
     try {
-      final ack = await sendBatch(batch);
-      _ackedSeq = ack.ackHighWatermarkSeq;
-      if (ack.firstFrameAcked) {
-        _firstFrameAcked = true;
-      }
-      _lastAckAt = _clock().toUtc();
-      _leaseExpiresAt = ack.leaseExpiresAt.toUtc();
-      _pendingFrames.clear();
-      _pendingEvents.clear();
-      _queuedBytes = 0;
+      final now = _clock().toUtc();
 
-      if (config.requireFirstFrame && !_firstFrameAcked) {
-        final elapsed = now.difference(_startedAt);
-        if (elapsed >= config.maxAckLag) {
-          _triggerMandatoryStop('recorder_first_frame_unacked');
-          return false;
+      if (_pendingFrames.isEmpty && _pendingEvents.isEmpty) {
+        final needsLeaseKeepalive = _lastAckAt != null
+            ? now.difference(_lastAckAt!) >= const Duration(seconds: 10)
+            : (!config.requireFirstFrame &&
+                now.difference(_startedAt) >= const Duration(seconds: 10));
+        if (!needsLeaseKeepalive) {
+          return _checkLeaseAndLag(now);
         }
       }
-      return true;
-    } catch (_) {
-      return _checkLeaseAndLag(now);
+
+      final batch = {
+        'session_id': sessionId,
+        'epoch': config.epoch,
+        'lease_ttl_seconds': config.leaseTtl.inSeconds,
+        'frames': List<Map<String, dynamic>>.from(_pendingFrames),
+        'events': List<Map<String, dynamic>>.from(_pendingEvents),
+      };
+
+      try {
+        final ack = await sendBatch(batch);
+        _ackedSeq = ack.ackHighWatermarkSeq;
+        if (ack.firstFrameAcked) {
+          _firstFrameAcked = true;
+        }
+        _lastAckAt = _clock().toUtc();
+        _leaseExpiresAt = ack.leaseExpiresAt.toUtc();
+
+        // Удаляем только подтверждённые сервером элементы (seq <= ackHighWatermarkSeq),
+        // чтобы не потерять события, упавшие в очередь во время HTTP-запроса (LR-03).
+        _pendingFrames.removeWhere((f) => (f['seq'] as int) <= _ackedSeq);
+        _pendingEvents.removeWhere((e) => (e['seq'] as int) <= _ackedSeq);
+
+        _queuedBytes = _pendingFrames.fold<int>(0, (acc, f) {
+          final b64 = f['payload_base64'] as String? ?? '';
+          return acc + (b64.length * 3 ~/ 4);
+        });
+
+        if (config.requireFirstFrame && !_firstFrameAcked) {
+          final elapsed = now.difference(_startedAt);
+          if (elapsed >= config.maxAckLag) {
+            _triggerMandatoryStop('recorder_first_frame_unacked');
+            return false;
+          }
+        }
+        return true;
+      } catch (_) {
+        return _checkLeaseAndLag(now);
+      }
+    } finally {
+      _isFlushing = false;
     }
   }
 
