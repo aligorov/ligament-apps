@@ -73,4 +73,28 @@ func TestResolveInteractiveSession(t *testing.T) {
 			t.Fatalf("unattended: got sess=%v, desktop=%q, err=%v, want SessionID=1, winsta0\\default", sess, desktop, err)
 		}
 	})
+
+	t.Run("unattended multiple users targets console session", func(t *testing.T) {
+		enumerateInteractiveSessions = func() ([]InteractiveSession, error) {
+			return []InteractiveSession{
+				{SessionID: 1, Username: "alice"},
+				{SessionID: 2, Username: "bob"},
+			}, nil
+		}
+		origConsole := getActiveConsoleSessionID
+		defer func() { getActiveConsoleSessionID = origConsole }()
+		getActiveConsoleSessionID = func() uint32 { return 2 }
+
+		// Attended should fail with ambiguous error
+		sess, _, err := ResolveTargetSession(false)
+		if sess != nil || !errors.Is(err, ErrAmbiguousInteractiveSession) {
+			t.Fatalf("attended: got sess=%v, err=%v, want ErrAmbiguousInteractiveSession", sess, err)
+		}
+
+		// Unattended should attach to console session (SessionID 2)
+		sess, desktop, err := ResolveTargetSession(true)
+		if err != nil || sess == nil || sess.SessionID != 2 || sess.Username != "bob" || desktop != `winsta0\default` {
+			t.Fatalf("unattended: got sess=%v, desktop=%q, err=%v, want SessionID=2 (bob), winsta0\\default", sess, desktop, err)
+		}
+	})
 }
