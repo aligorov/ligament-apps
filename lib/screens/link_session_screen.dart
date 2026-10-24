@@ -25,7 +25,7 @@ class LinkSessionScreen extends StatelessWidget {
       isLink: true,
       linkAgentId: agentId,
       linkAccessMode: accessMode,
-      ownerMode: true,
+      ownerMode: false,
       sessionData: {
         if (hostData != null) ...hostData!,
         'id': 'link_$agentId',

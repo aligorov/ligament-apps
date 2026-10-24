@@ -12,7 +12,6 @@ class RdpTargetTile extends StatelessWidget {
     required this.target,
     required this.isRu,
     this.onConnect,
-    this.onScreen,
     this.connecting = false,
     this.margin,
   });
@@ -20,7 +19,6 @@ class RdpTargetTile extends StatelessWidget {
   final Map<String, dynamic> target;
   final bool isRu;
   final VoidCallback? onConnect;
-  final VoidCallback? onScreen;
   final bool connecting;
   final EdgeInsetsGeometry? margin;
 
@@ -39,8 +37,6 @@ class RdpTargetTile extends StatelessWidget {
     final online = target['online'] == true;
     final endpoint = target['endpoint']?.toString() ?? '';
     final route = target['route']?.toString() ?? '';
-    final screenAvailable = target['screen_available'] == true;
-    final screenReason = target['screen_reason']?.toString() ?? '';
     final isSelf = target['is_self'] == true;
     final rdpAvailable = target['rdp_available'] != false;
     final rdpReason = target['rdp_reason']?.toString() ?? '';
@@ -226,110 +222,18 @@ class RdpTargetTile extends StatelessWidget {
 
           const SizedBox(height: 10),
 
-          // Нижняя часть: Кнопки действий
-          if (isTs) ...[
-            SizedBox(
-              width: double.infinity,
-              height: 38,
-              child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
-            ),
-          ] else ...[
-            SizedBox(
-              height: 38,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _screenControl(context, s, screenAvailable, screenReason),
-                  ),
-                ],
-              ),
-            ),
-          ],
+          // Нижняя часть: Кнопка действия (RDP)
+          SizedBox(
+            width: double.infinity,
+            height: 38,
+            child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
+          ),
         ],
       ),
     );
   }
 
-  Widget _screenControl(BuildContext context, AppStrings s, bool screenAvailable, String screenReason) {
-    String tooltipMessage = '';
-    if (!screenAvailable) {
-      if (screenReason == 'screen_device_unbound') {
-        tooltipMessage = isRu
-            ? 'Целевой ПК не привязан к устройству'
-            : 'Target PC is not bound to a device';
-      } else if (screenReason == 'self_connection_prohibited') {
-        tooltipMessage = isRu
-            ? 'Трансляция экрана на текущем ПК недоступна'
-            : 'Screen sharing on current PC is unavailable';
-      } else if (screenReason == 'sharer_not_running') {
-        tooltipMessage = isRu
-            ? 'Приложение Ligament не открыто на целевом ПК'
-            : 'Ligament app is not open on target PC';
-      } else {
-        tooltipMessage = isRu
-            ? 'Режим экрана недоступен'
-            : 'Screen mode is unavailable';
-      }
-    }
-
-    final btn = Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: screenAvailable ? onScreen : null,
-        borderRadius: BorderRadius.circular(10),
-        child: Ink(
-          decoration: BoxDecoration(
-            color: screenAvailable
-                ? const Color(0xFF0284C7).withValues(alpha: 0.12)
-                : const Color(0xFF0F172A).withValues(alpha: 0.4),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: screenAvailable
-                  ? const Color(0xFF0284C7).withValues(alpha: 0.5)
-                  : Colors.white.withValues(alpha: 0.06),
-              width: 1,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.monitor_rounded,
-                size: 15,
-                color: screenAvailable ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
-              ),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  s.rdpScreenBtn,
-                  maxLines: 1,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: screenAvailable ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    if (!screenAvailable) {
-      return Tooltip(message: tooltipMessage, child: btn);
-    }
-    return btn;
-  }
-
-  /// Кнопка подключения:
-  /// - Для Terminal Server (полная ширина): "Подключиться"
-  /// - Для ПК (делит строку с «Экран»): "Подключить" (никогда не обрезается в "Под...")
+  /// Кнопка подключения (RDP)
   Widget _connectControl(AppStrings s, bool online, bool isSelf, bool rdpAvailable, String rdpReason, String route, bool isTs) {
     if (!canLaunchRdp) {
       return Container(
@@ -450,9 +354,7 @@ class RdpTargetTile extends StatelessWidget {
       );
     }
 
-    final btnLabel = isTs
-        ? s.rdpConnectBtn
-        : (isRu ? 'Подключить' : 'Connect');
+    final btnLabel = s.rdpConnectBtn;
 
     return Material(
       color: Colors.transparent,

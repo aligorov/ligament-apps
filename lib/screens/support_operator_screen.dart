@@ -1058,8 +1058,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _currentNumberMatch = widget.numberMatch;
     _isControlEnabled = !_isViewOnlySession;
     if (widget.isLink) {
-      _linkSessionId = widget.sessionData['session_id']?.toString() ??
-          widget.sessionData['id']?.toString().replaceAll('link_', '');
+      final explicitSessionId = widget.sessionData['session_id']?.toString();
+      if (explicitSessionId != null && explicitSessionId.isNotEmpty) {
+        _linkSessionId = explicitSessionId;
+      }
     }
     _loadChatHistory();
     if (_isChatOnly && !widget.isLink) {

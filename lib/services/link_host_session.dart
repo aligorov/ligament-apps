@@ -44,7 +44,7 @@ class LinkHostSession {
     required this.accessMode,
     required this.peer,
     required this.send,
-    this.readyTimeout = const Duration(seconds: 20),
+    this.readyTimeout = const Duration(seconds: 45),
   }) {
     if (!_uuid.hasMatch(sessionId)) {
       throw const FormatException('Invalid Link session ID');

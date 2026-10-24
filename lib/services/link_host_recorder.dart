@@ -328,7 +328,7 @@ class LinkHostRecorder {
   final LinkRecorderBatchSender sendBatch;
   final void Function(String reason)? onMandatoryViolation;
   final DateTime Function() _clock;
-  final DateTime _startedAt;
+  DateTime _startedAt;
 
   final List<Map<String, dynamic>> _pendingFrames = [];
   final List<Map<String, dynamic>> _pendingEvents = [];
@@ -350,6 +350,7 @@ class LinkHostRecorder {
   int get queuedBytes => _queuedBytes;
 
   void start() {
+    _startedAt = _clock().toUtc();
     if (!config.enabled || _stopped || _flushTimer != null) return;
     if (_nextSeq == 0 && _pendingEvents.isEmpty) {
       _nextSeq++;

@@ -354,16 +354,6 @@ class _AppsScreenState extends State<AppsScreen> {
                                     connecting: auth.rdp.isBusy,
                                     onConnect: () =>
                                         RdpActions.connectRdp(context, auth, t),
-                                    onScreen: RdpActions.isOwnerScreenBusy
-                                        ? null
-                                        : () => RdpActions.openOwnerScreen(
-                                              context,
-                                              auth,
-                                              t,
-                                              onBusyChanged: (_) {
-                                                if (mounted) setState(() {});
-                                              },
-                                            ),
                                   );
                                 },
                                 childCount: targets.length,
