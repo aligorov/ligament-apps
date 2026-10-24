@@ -142,7 +142,7 @@ class LinkHostSession {
       }
       final mediaLines = offerSdp.split(RegExp(r'\r?\n'));
       if (!mediaLines.any((line) => line.startsWith('m=video ')) ||
-          (accessMode == 'control' &&
+          ((accessMode == 'control' || accessMode == 'full_control') &&
               !mediaLines.any((line) => line.startsWith('m=application ')))) {
         await _reject('invalid_offer_media');
         return;
@@ -150,7 +150,7 @@ class LinkHostSession {
       final answer = await peer.start(
         offerSdp: offerSdp,
         iceServers: iceServers,
-        allowControl: accessMode == 'control',
+        allowControl: accessMode == 'control' || accessMode == 'full_control',
         onCandidate: (candidate) => unawaited(_sendCandidate(candidate)),
         onFailure: () => unawaited(
           _ready ? close() : _reject('host_media_failed'),

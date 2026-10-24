@@ -851,6 +851,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   bool _sessionTerminatedHandled = false;
+  bool _hasTerminationError = false;
+  String? _terminationErrorReason;
+
+  void _retryAfterTermination() {
+    if (!mounted || _isCleanedUp) return;
+    setState(() {
+      _sessionTerminatedHandled = false;
+      _hasTerminationError = false;
+      _terminationErrorReason = null;
+    });
+    _retryConnectionStage();
+  }
 
   /// Ш4: единое завершение — полный teardown, корректный выход со страницы
   /// (закрывая открытые диалоги/чаты) и уведомление. Повторный вызов
@@ -889,15 +901,29 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (consoleRoute != null && !consoleRoute.isCurrent) {
       Navigator.of(context).popUntil((r) => r == consoleRoute);
     }
-    if (Navigator.of(context).canPop()) {
-      Navigator.of(context).pop();
+
+    final isVoluntaryEnd = reasonKey == 'session_ended' || reasonKey == 'user_closed';
+    if (isVoluntaryEnd) {
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+      messenger.showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFFEF4444),
+          content: Text(_terminationNotice(strings, reasonKey)),
+        ),
+      );
+      return;
     }
-    messenger.showSnackBar(
-      SnackBar(
-        backgroundColor: const Color(0xFFEF4444),
-        content: Text(_terminationNotice(strings, reasonKey)),
-      ),
-    );
+
+    // При ошибке подключения или отклонении хостом НЕ закрываем экран сразу,
+    // а оставляем окно открытым с понятным объяснением ошибки и кнопкой повтора.
+    if (mounted) {
+      setState(() {
+        _hasTerminationError = true;
+        _terminationErrorReason = reasonKey;
+      });
+    }
   }
 
   String _terminationNotice(AppStrings strings, String reasonKey) {
@@ -1300,9 +1326,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       // View sessions need monitor discovery/selection too. The host enforces
       // access mode and DLP for every input command, not channel presence.
-      final accessMode = widget.linkAccessMode ??
+      final rawMode = widget.linkAccessMode ??
           widget.sessionData['access_mode']?.toString() ??
           'control';
+      final accessMode = (rawMode == 'full_control' || rawMode == 'control')
+          ? 'control'
+          : 'view';
       final channel = await peer.createDataChannel(
         'link-control-v1',
         RTCDataChannelInit()..ordered = true,
@@ -1322,7 +1351,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               (widget.isLink ? 'link' : 'sos'));
       final session = await api.requestLinkSession(
         agentId: targetAgentId,
-        accessMode: accessMode == 'view_only' ? 'view' : accessMode,
+        accessMode: accessMode,
         clientSdp: offer.sdp,
         stepUpToken: _stepUpToken,
         sessionKind: effectiveKind,
@@ -5061,6 +5090,72 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             ),
                           ],
                         )
+                      : _hasTerminationError
+                          ? Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 24),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 56,
+                                    height: 56,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFEF4444).withValues(alpha: 0.15),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(Icons.error_outline_rounded,
+                                        size: 32, color: Color(0xFFEF4444)),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    strings.isRu ? 'Не удалось подключиться' : 'Connection failed',
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _terminationNotice(strings, _terminationErrorReason ?? _statusKey),
+                                    style: const TextStyle(
+                                        color: Color(0xFFCBD5E1), fontSize: 13),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 20),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      ElevatedButton.icon(
+                                        onPressed: _retryAfterTermination,
+                                        icon: const Icon(Icons.refresh_rounded, size: 16),
+                                        label: Text(strings.retry),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(0xFF0284C7),
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 18, vertical: 12),
+                                          shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      OutlinedButton(
+                                        onPressed: () => Navigator.of(context).pop(),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: const Color(0xFF94A3B8),
+                                          side: const BorderSide(color: Color(0xFF334155)),
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 18, vertical: 12),
+                                          shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                        child: Text(strings.close),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            )
                       : _remoteRenderer.srcObject == null
                           ? Column(
                               mainAxisSize: MainAxisSize.min,

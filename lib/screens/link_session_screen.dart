@@ -20,12 +20,16 @@ class LinkSessionScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isOwner = hostData?['is_owner'] == true ||
+        hostData?['owner_mode'] == true ||
+        (hostData?['owner_username'] != null &&
+            (hostData!['owner_username'] as String).isNotEmpty);
     return SupportOperatorScreen(
       sessionId: 'link_$agentId',
       isLink: true,
       linkAgentId: agentId,
       linkAccessMode: accessMode,
-      ownerMode: false,
+      ownerMode: isOwner,
       sessionData: {
         if (hostData != null) ...hostData!,
         'id': 'link_$agentId',
@@ -34,6 +38,7 @@ class LinkSessionScreen extends StatelessWidget {
         'employee_name': hostname,
         'access_mode': accessMode,
         'is_link': true,
+        if (isOwner) 'session_kind': 'console',
       },
     );
   }

@@ -1058,12 +1058,15 @@ class ApiClient {
     String? sessionKind,
     String? stepUpToken,
   }) async {
+    final mode = accessMode == 'full_control'
+        ? 'control'
+        : (accessMode == 'view_only' ? 'view' : accessMode);
     final res = await _post(
       _cleanUrl('/api/v1/app/link/sessions/request'),
       headers: _headers(),
       body: jsonEncode({
         'agent_id': agentId,
-        'access_mode': accessMode,
+        'access_mode': mode,
         if (actionId != null && actionId.isNotEmpty) 'action_id': actionId,
         if (clientSdp != null && clientSdp.isNotEmpty) 'client_sdp': clientSdp,
         if (resolution != null && resolution.isNotEmpty)

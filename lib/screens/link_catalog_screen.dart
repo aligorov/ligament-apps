@@ -618,6 +618,9 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final localIPs = host['local_ips'];
     final isUnattended = host['unattended_enabled'] == true;
     final canManage = host['can_manage_access'] == true || auth.isLinkAdmin;
+    final currentUserId = auth.currentUser?['id']?.toString() ?? '';
+    final isOwner = currentUserId.isNotEmpty &&
+        host['owner_user_id']?.toString() == currentUserId;
 
     final ownerDisplayName = (host['owner_display_name'] ?? '').toString().trim();
     final ownerUsername = (host['owner_username'] ?? '').toString().trim();
@@ -715,6 +718,25 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                             color: Color(0xFF94A3B8),
                             fontSize: 10,
                             fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
+                      if (isOwner) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0284C7).withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.4)),
+                          ),
+                          child: Text(
+                            isRu ? 'Мой ПК (Консоль)' : 'My PC (Console)',
+                            style: const TextStyle(
+                              color: Color(0xFF38BDF8),
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
                       ],
@@ -1087,29 +1109,39 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }
 
   Future<void> _startLinkSession(Map<String, dynamic> host, bool isRu) async {
-    final mode = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: const Color(0xFF131B2B),
-        title: Text(isRu ? 'Режим подключения' : 'Connection mode'),
-        content: Text(isRu
-            ? 'Управление включайте только при необходимости.'
-            : 'Enable control only when needed.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, 'view'),
-            child: Text(isRu ? 'Только просмотр' : 'View only'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, 'control'),
-            child: Text(isRu ? 'Управление' : 'Control'),
-          ),
-        ],
-      ),
-    );
-    if (mode == null || !mounted) return;
     final agentId = host['id']?.toString();
     if (agentId == null || agentId.isEmpty) return;
+
+    final auth = context.read<AuthState>();
+    final currentUserId = auth.currentUser?['id']?.toString() ?? '';
+    final isOwner = currentUserId.isNotEmpty &&
+        host['owner_user_id']?.toString() == currentUserId;
+
+    String? mode = 'control';
+    if (!isOwner) {
+      mode = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: const Color(0xFF131B2B),
+          title: Text(isRu ? 'Режим подключения' : 'Connection mode'),
+          content: Text(isRu
+              ? 'Управление включайте только при необходимости.'
+              : 'Enable control only when needed.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'view'),
+              child: Text(isRu ? 'Только просмотр' : 'View only'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, 'control'),
+              child: Text(isRu ? 'Управление' : 'Control'),
+            ),
+          ],
+        ),
+      );
+      if (mode == null || !mounted) return;
+    }
+
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => SupportOperatorScreen(
@@ -1117,7 +1149,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           isLink: true,
           linkAgentId: agentId,
           linkAccessMode: mode,
-          ownerMode: false,
+          ownerMode: isOwner,
           sessionData: {
             ...host,
             'id': 'link_$agentId',
@@ -1126,7 +1158,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             'employee_name': host['hostname']?.toString() ?? agentId,
             'access_mode': mode,
             'is_link': true,
-            'session_kind': 'link',
+            'session_kind': isOwner ? 'console' : 'link',
           },
         ),
       ),

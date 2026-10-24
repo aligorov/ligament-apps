@@ -80,12 +80,25 @@ func ResolveTargetSession(unattended bool) (*InteractiveSession, string, error) 
 	if len(active) == 1 {
 		return &active[0], `winsta0\default`, nil
 	}
+	consoleID := getActiveConsoleSessionID()
 	if len(active) > 1 {
+		if consoleID != 0xFFFFFFFF && consoleID != 0 {
+			for _, s := range active {
+				if s.SessionID == consoleID {
+					return &s, `winsta0\default`, nil
+				}
+			}
+			if unattended {
+				return &InteractiveSession{
+					SessionID: consoleID,
+					Username:  "",
+				}, `winsta0\default`, nil
+			}
+		}
 		return nil, "", ErrAmbiguousInteractiveSession
 	}
 	// len(active) == 0: no interactive user logged in
 	if unattended {
-		consoleID := getActiveConsoleSessionID()
 		if consoleID != 0xFFFFFFFF && consoleID != 0 {
 			return &InteractiveSession{
 				SessionID: consoleID,
