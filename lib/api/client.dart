@@ -939,6 +939,8 @@ class ApiClient {
     throw ApiException(
       res.statusCode,
       data['error']?.toString() ?? 'link_session_request_failed',
+      data['message']?.toString() ?? '',
+      data,
     );
   }
 

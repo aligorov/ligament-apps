@@ -1316,7 +1316,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (mounted) {
         if (e is ApiException &&
             e.statusCode == 403 &&
-            e.message.contains('external_perimeter_stepup_required')) {
+            (e.code == 'external_perimeter_stepup_required' ||
+             e.message.contains('external_perimeter_stepup_required'))) {
           final token = await _promptStepUpAuth();
           if (token != null && token.isNotEmpty) {
             _stepUpToken = token;
@@ -3998,31 +3999,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         tooltip: strings.backTooltip,
                         onPressed: () => Navigator.of(context).pop(),
                       ),
-                      if (isOwner)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF8B5CF6),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.computer,
-                                  size: 13, color: Colors.white),
-                              SizedBox(width: 4),
-                              Text(
-                                'CONSOLE',
-                                style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        )
-                      else if (isLink)
+                      if (isLink)
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 4),
@@ -4038,6 +4015,30 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                               SizedBox(width: 4),
                               Text(
                                 'LINK',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        )
+                      else if (isOwner)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF8B5CF6),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.computer,
+                                  size: 13, color: Colors.white),
+                              SizedBox(width: 4),
+                              Text(
+                                'CONSOLE',
                                 style: TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,
