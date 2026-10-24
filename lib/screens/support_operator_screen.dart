@@ -160,7 +160,7 @@ class SupportOperatorScreen extends StatefulWidget {
 }
 
 class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
-  static RTCVideoRenderer? _sharedMacOSRenderer;
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
 
   String? _linkSessionId;
   int _linkCursor = 0;
@@ -172,14 +172,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   final List<Map<String, dynamic>> _linkQueuedCandidates = [];
   final List<Map<String, dynamic>> _linkPendingRemoteCandidates = [];
 
-  RTCVideoRenderer get _remoteRenderer {
-    if (!kIsWeb && Platform.isMacOS) {
-      return _sharedMacOSRenderer ??= RTCVideoRenderer();
-    }
-    return _instanceRenderer;
-  }
-
-  late final RTCVideoRenderer _instanceRenderer = RTCVideoRenderer();
   RTCPeerConnection? _peerConnection;
   RTCDataChannel? _dataChannel;
   WebSocketChannel? _wsChannel;
@@ -1090,14 +1082,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } else {
       _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
     }
-    if (!kIsWeb && Platform.isMacOS) {
-      if (_sharedMacOSRenderer == null) {
-        _sharedMacOSRenderer = RTCVideoRenderer();
-        await _sharedMacOSRenderer!.initialize();
-      }
-    } else {
-      await _instanceRenderer.initialize();
-    }
+    await _remoteRenderer.initialize();
     // Ш3 (Д5): граница «изображение появилось» — нативный колбэк первого
     // кадра; трек ≠ кадр, чёрный экран больше не считается готовностью.
     _remoteRenderer.onFirstFrameRendered = () {
@@ -1115,14 +1100,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       return;
     }
     _setStatus('init');
-    if (!kIsWeb && Platform.isMacOS) {
-      if (_sharedMacOSRenderer == null) {
-        _sharedMacOSRenderer = RTCVideoRenderer();
-        await _sharedMacOSRenderer!.initialize();
-      }
-    } else {
-      await _instanceRenderer.initialize();
-    }
+    await _remoteRenderer.initialize();
     _remoteRenderer.onFirstFrameRendered = () {
       _markFrameReady();
     };
@@ -2585,9 +2563,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   bool _isOutsideVideo(Offset globalPos) {
-    if (!_frameReady ||
-        _remoteRenderer.videoWidth <= 0 ||
-        _remoteRenderer.videoHeight <= 0) {
+    if (!_frameReady) {
       return true;
     }
 
@@ -2599,8 +2575,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final size = renderBox.size;
     if (size.width <= 0 || size.height <= 0) return false;
 
-    final videoW = _remoteRenderer.videoWidth.toDouble();
-    final videoH = _remoteRenderer.videoHeight.toDouble();
+    final videoW = _remoteRenderer.videoWidth > 0
+        ? _remoteRenderer.videoWidth.toDouble()
+        : size.width;
+    final videoH = _remoteRenderer.videoHeight > 0
+        ? _remoteRenderer.videoHeight.toDouble()
+        : size.height;
 
     final containerW = size.width;
     final containerH = size.height;
@@ -2627,10 +2607,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
-    if (!_controlReady ||
-        !_frameReady ||
-        _remoteRenderer.videoWidth <= 0 ||
-        _remoteRenderer.videoHeight <= 0) {
+    if (!_controlReady || !_frameReady) {
       return;
     }
     final renderBox =
@@ -2641,8 +2618,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final size = renderBox.size;
     if (size.width <= 0 || size.height <= 0) return;
 
-    final videoW = _remoteRenderer.videoWidth.toDouble();
-    final videoH = _remoteRenderer.videoHeight.toDouble();
+    final videoW = _remoteRenderer.videoWidth > 0
+        ? _remoteRenderer.videoWidth.toDouble()
+        : size.width;
+    final videoH = _remoteRenderer.videoHeight > 0
+        ? _remoteRenderer.videoHeight.toDouble()
+        : size.height;
 
     final containerW = size.width;
     final containerH = size.height;
@@ -3037,7 +3018,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         _remoteRenderer.dispose();
       } catch (_) {}
-      _sharedMacOSRenderer = null;
       try {
         pc?.dispose();
       } catch (_) {}

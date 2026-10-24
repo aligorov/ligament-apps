@@ -27,13 +27,13 @@ class LinkSessionScreen extends StatelessWidget {
       linkAccessMode: accessMode,
       ownerMode: true,
       sessionData: {
+        if (hostData != null) ...hostData!,
         'id': 'link_$agentId',
         'agent_id': agentId,
         'hostname': hostname,
         'employee_name': hostname,
         'access_mode': accessMode,
         'is_link': true,
-        if (hostData != null) ...hostData!,
       },
     );
   }

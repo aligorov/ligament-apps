@@ -1119,6 +1119,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           linkAccessMode: mode,
           ownerMode: false,
           sessionData: {
+            ...host,
             'id': 'link_$agentId',
             'agent_id': agentId,
             'hostname': host['hostname']?.toString() ?? agentId,
@@ -1126,7 +1127,6 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             'access_mode': mode,
             'is_link': true,
             'session_kind': 'link',
-            ...host,
           },
         ),
       ),

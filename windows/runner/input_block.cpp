@@ -162,6 +162,7 @@ void ExecuteSendMouse(const NativeInputTask& t) {
   if (t.mouse_flags & MOUSEEVENTF_MOVE) {
     ClipCursor(nullptr);
     SetCursorPos(t.abs_x, t.abs_y);
+    ShowCursor(TRUE);
   }
   INPUT input = {};
   input.type = INPUT_MOUSE;
