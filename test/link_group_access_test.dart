@@ -32,6 +32,9 @@ class _FakeAuth extends ChangeNotifier implements AuthState {
   final fakeApi = _FakeApi();
 
   @override
+  Map<String, dynamic>? currentUser;
+
+  @override
   ApiClient? get api => fakeApi;
 
   @override

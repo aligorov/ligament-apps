@@ -13,6 +13,9 @@ class _CatalogAuthState extends ChangeNotifier implements AuthState {
   final List<Map<String, dynamic>> linkHosts;
 
   @override
+  Map<String, dynamic>? currentUser;
+
+  @override
   bool linkFeatureAvailable = true;
 
   @override

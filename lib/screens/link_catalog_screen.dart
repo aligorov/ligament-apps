@@ -618,7 +618,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final localIPs = host['local_ips'];
     final isUnattended = host['unattended_enabled'] == true;
     final canManage = host['can_manage_access'] == true || auth.isLinkAdmin;
-    final currentUserId = auth.currentUser?['id']?.toString() ?? '';
+    final currentUserId = _getCurrentUserId(auth);
     final isOwner = currentUserId.isNotEmpty &&
         host['owner_user_id']?.toString() == currentUserId;
 
@@ -1108,12 +1108,20 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     );
   }
 
+  String _getCurrentUserId(AuthState auth) {
+    try {
+      return auth.currentUser?['id']?.toString() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   Future<void> _startLinkSession(Map<String, dynamic> host, bool isRu) async {
     final agentId = host['id']?.toString();
     if (agentId == null || agentId.isEmpty) return;
 
     final auth = context.read<AuthState>();
-    final currentUserId = auth.currentUser?['id']?.toString() ?? '';
+    final currentUserId = _getCurrentUserId(auth);
     final isOwner = currentUserId.isNotEmpty &&
         host['owner_user_id']?.toString() == currentUserId;
 

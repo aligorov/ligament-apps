@@ -34,6 +34,8 @@ class _ArchiveAuth extends ChangeNotifier implements AuthState {
     ];
   }
   @override
+  Map<String, dynamic>? currentUser;
+  @override
   final _ArchiveApi api = _ArchiveApi();
   @override
   late List<Map<String, dynamic>> linkHosts;
