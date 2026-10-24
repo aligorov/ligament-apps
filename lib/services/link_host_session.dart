@@ -455,16 +455,23 @@ class LinkHostWorkerState extends ChangeNotifier {
   void receiveChatMessage(Map<String, dynamic> raw) {
     try {
       final msg = SupportChatMessage.fromJson(raw);
-      final isDup = _chatMessages.any((m) =>
-          m.id == msg.id ||
-          (msg.clientId.isNotEmpty && m.clientId == msg.clientId) ||
-          (m.sender == msg.sender &&
-              m.text == msg.text &&
-              m.timestamp.difference(msg.timestamp).abs().inSeconds < 5));
+      final isDup = _chatMessages.any((m) {
+        if (msg.clientId.isNotEmpty && m.clientId.isNotEmpty) {
+          return m.clientId == msg.clientId;
+        }
+        if (msg.id.isNotEmpty && m.id.isNotEmpty) {
+          return m.id == msg.id;
+        }
+        return m.sender == msg.sender &&
+            m.text == msg.text &&
+            m.timestamp.difference(msg.timestamp).abs().inSeconds < 5;
+      });
       if (!isDup) {
         _chatMessages.add(msg);
         _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-        _unreadChatCount++;
+        if (msg.sender != 'user') {
+          _unreadChatCount++;
+        }
         notifyListeners();
       }
     } catch (e) {
@@ -928,6 +935,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   bool _capturingFrame = false;
   bool _switchingScreen = false;
   final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
+  final List<Map<String, dynamic>> _pendingChatMessages = [];
   bool _allowControl = false;
   bool _closed = false;
 
@@ -1077,6 +1085,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     try {
       var targetScreenId = screenId;
       MediaStream? newStream;
+      final needAudio =
+          _audioStream == null || _audioStream!.getAudioTracks().isEmpty;
 
       for (var attempt = 0; attempt < 8; attempt++) {
         if (_closed || _peer == null) return;
@@ -1089,7 +1099,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
             targetScreenId = sources.first.id;
           }
           newStream =
-              await _openDisplayStream(targetScreenId, withAudio: false);
+              await _openDisplayStream(targetScreenId, withAudio: needAudio);
           if (newStream.getVideoTracks().isNotEmpty) {
             break;
           }
@@ -1135,6 +1145,27 @@ class FlutterLinkHostPeer implements LinkHostPeer {
               await sender.replaceTrack(newVideoTracks.first);
               break;
             }
+          }
+        }
+      }
+
+      final newAudioTracks = newStream.getAudioTracks();
+      if (newAudioTracks.isNotEmpty) {
+        _audioStream = newStream;
+        if (_audioSender != null) {
+          await _audioSender!.replaceTrack(newAudioTracks.first);
+        } else {
+          final senders = await _peer!.getSenders();
+          for (final sender in senders) {
+            if (sender.track?.kind == 'audio') {
+              _audioSender = sender;
+              await sender.replaceTrack(newAudioTracks.first);
+              break;
+            }
+          }
+          if (_audioSender == null && _peer != null) {
+            _audioSender =
+                await _peer!.addTrack(newAudioTracks.first, newStream);
           }
         }
       }
@@ -1205,6 +1236,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       channel.onDataChannelState = (state) {
         if (state == RTCDataChannelState.RTCDataChannelOpen) {
           _sendScreenList();
+          _flushPendingChatMessages();
         } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
           if (identical(_control, channel)) {
             _control = null;
@@ -1341,7 +1373,22 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   }
 
   void sendChatMessage(Map<String, dynamic> message) {
-    _sendControlJson(message);
+    final sent = _sendControlJson(message);
+    if (!sent && _pendingChatMessages.length < 256) {
+      _pendingChatMessages.add(Map<String, dynamic>.from(message));
+    }
+  }
+
+  void _flushPendingChatMessages() {
+    if (_pendingChatMessages.isEmpty) return;
+    final toSend = List<Map<String, dynamic>>.from(_pendingChatMessages);
+    _pendingChatMessages.clear();
+    for (final msg in toSend) {
+      final sent = _sendControlJson(msg);
+      if (!sent && _pendingChatMessages.length < 256) {
+        _pendingChatMessages.add(msg);
+      }
+    }
   }
 
   static bool isValidInput(Map<String, dynamic> input) => _isValidInput(input);
@@ -1354,6 +1401,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (type == 'chat_message') {
       final text = input['text'];
       return text is String && text.trim().isNotEmpty && text.length <= 4096;
+    }
+    if (type == 'chat_sync') {
+      return input['messages'] is List;
+    }
+    if (type == 'chat_ack') {
+      return true;
     }
     if (type == 'mouse_move' || type == 'mouse_down' || type == 'mouse_up') {
       final x = input['x'];
@@ -1453,7 +1506,26 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     onControlInputObserved?.call(input);
     final type = input['type'];
     if (type == 'chat_message') {
+      _sendControlJson({
+        'type': 'chat_ack',
+        'id': input['id'],
+        'client_id': input['client_id'],
+      });
       onChatMessageReceived?.call(input);
+      return;
+    }
+    if (type == 'chat_sync') {
+      final list = input['messages'];
+      if (list is List) {
+        for (final item in list) {
+          if (item is Map) {
+            onChatMessageReceived?.call(Map<String, dynamic>.from(item));
+          }
+        }
+      }
+      return;
+    }
+    if (type == 'chat_ack') {
       return;
     }
     if (onFrameCaptured != null &&
@@ -1553,16 +1625,19 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     }
   }
 
-  void _sendControlJson(Map<String, dynamic> payload) {
+  bool _sendControlJson(Map<String, dynamic> payload) {
     final control = _control;
     if (_closed ||
         control == null ||
         control.state != RTCDataChannelState.RTCDataChannelOpen) {
-      return;
+      return false;
     }
     try {
       control.send(RTCDataChannelMessage(jsonEncode(payload)));
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _handleTextInput(String text) async {
@@ -1859,6 +1934,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       dl.stallTimer?.cancel();
     }
     _activeDownloads.clear();
+    _pendingChatMessages.clear();
     final control = _control;
     _control = null;
     if (control != null) {

@@ -271,4 +271,88 @@ void main() {
     expect(secondEvents.length, 1);
     expect(secondEvents.first['seq'], 3);
   });
+
+  test('stop awaits in-flight flush and drains tail events enqueued during flight', () async {
+    final completer = Completer<LinkRecorderBatchAck>();
+    final batches = <Map<String, dynamic>>[];
+    var currentNow = DateTime.utc(2026, 10, 24, 12, 0, 0);
+
+    final recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(enabled: true),
+      clock: () => currentNow,
+      sendBatch: (b) {
+        batches.add(b);
+        if (batches.length == 1) {
+          return completer.future;
+        }
+        return Future.value(LinkRecorderBatchAck(
+          ackHighWatermarkSeq: 2,
+          firstFrameAcked: true,
+          leaseExpiresAt: currentNow.add(const Duration(seconds: 45)),
+        ));
+      },
+    );
+
+    recorder.observeControlInput({'type': 'hotkey', 'action': 'action1'}); // seq 1
+    final flushFuture = recorder.flushAndVerifyHealth();
+
+    // Enqueue event while batch 1 is in-flight
+    recorder.observeControlInput({'type': 'hotkey', 'action': 'action2'}); // seq 2
+    expect(recorder.nextSeq, 2);
+
+    // Call stop() while batch 1 is still in flight
+    final stopFuture = recorder.stop();
+
+    // Complete in-flight batch 1 (only acked seq 1)
+    completer.complete(LinkRecorderBatchAck(
+      ackHighWatermarkSeq: 1,
+      firstFrameAcked: true,
+      leaseExpiresAt: currentNow.add(const Duration(seconds: 45)),
+    ));
+
+    await flushFuture;
+    await stopFuture;
+
+    // Both batches must have been sent and seq 2 must be recorded
+    expect(batches.length, 2);
+    final secondBatchEvents = batches[1]['events'] as List;
+    expect(secondBatchEvents.length, 1);
+    expect(secondBatchEvents.first['seq'], 2);
+    expect(recorder.ackedSeq, 2);
+  });
+
+  test('mandatory recording halts session if no first frame acked within lag timeout', () async {
+    String? violation;
+    var currentNow = DateTime.utc(2026, 10, 24, 12, 0, 0);
+
+    final recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(
+        enabled: true,
+        mandatory: true,
+        maxAckLag: Duration(seconds: 30),
+      ),
+      clock: () => currentNow,
+      onMandatoryViolation: (r) => violation = r,
+      sendBatch: (b) async {
+        return LinkRecorderBatchAck(
+          ackHighWatermarkSeq: 1,
+          firstFrameAcked: false, // only events acked, no video frame!
+          leaseExpiresAt: currentNow.add(const Duration(seconds: 45)),
+        );
+      },
+    );
+
+    // Only events enqueued, no frames
+    recorder.observeControlInput({'type': 'hotkey', 'action': 'test'});
+    await recorder.flushAndVerifyHealth();
+    expect(violation, isNull);
+
+    // Advance clock past maxAckLag (35 seconds)
+    currentNow = currentNow.add(const Duration(seconds: 35));
+    await recorder.flushAndVerifyHealth();
+
+    expect(violation, anyOf('recorder_first_frame_unavailable', 'recorder_first_frame_unacked'));
+  });
 }

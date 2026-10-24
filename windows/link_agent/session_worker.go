@@ -247,7 +247,14 @@ func (b *SessionWorkerBroker) run(ctx context.Context, offer SessionOffer, frame
 			return
 		}
 
-		process, err := b.launcher.Launch(ctx, offer, initialOfferFrame)
+		currentOfferFrame := initialOfferFrame
+		if restarts > 0 {
+			currentOfferFrame = updateOfferEpoch(initialOfferFrame, 1+restarts)
+		}
+		process, err := b.launcher.Launch(ctx, offer, currentOfferFrame)
+		if currentOfferFrame != nil && &currentOfferFrame[0] != &initialOfferFrame[0] {
+			clear(currentOfferFrame)
+		}
 		if err != nil {
 			if restarts == 0 {
 				reason := classifyWorkerLaunchError(err)
@@ -499,4 +506,25 @@ func validWorkerResponse(frame []byte, sessionID string) bool {
 	default:
 		return false
 	}
+}
+
+func updateOfferEpoch(frame []byte, epoch int) []byte {
+	var env map[string]any
+	if err := json.Unmarshal(frame, &env); err != nil {
+		return frame
+	}
+	payload, ok := env["payload"].(map[string]any)
+	if !ok {
+		return frame
+	}
+	rec, ok := payload["recording"].(map[string]any)
+	if !ok {
+		return frame
+	}
+	rec["epoch"] = float64(epoch)
+	updated, err := json.Marshal(env)
+	if err != nil {
+		return frame
+	}
+	return updated
 }

@@ -478,3 +478,21 @@ func (l *dynamicFakeLauncher) Launch(ctx context.Context, offer SessionOffer, fr
 	}
 	return p, err
 }
+
+func TestUpdateOfferEpoch(t *testing.T) {
+	initial := []byte(`{"type":"session_offer","payload":{"session_id":"test","recording":{"epoch":1,"enabled":true}}}`)
+	updated := updateOfferEpoch(initial, 2)
+	var env struct {
+		Payload struct {
+			Recording struct {
+				Epoch int `json:"epoch"`
+			} `json:"recording"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(updated, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Payload.Recording.Epoch != 2 {
+		t.Fatalf("expected epoch 2, got %d", env.Payload.Recording.Epoch)
+	}
+}

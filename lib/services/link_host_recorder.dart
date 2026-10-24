@@ -219,7 +219,7 @@ class LinkRecordingConfig {
       contractVersion: raw['contract_version']?.toString() ?? 'v1',
       enabled: enabled && mode != 'exclude',
       mandatory: enabled && mandatory && mode != 'exclude',
-      requireFirstFrame: enabled && raw['require_first_frame'] == true,
+      requireFirstFrame: enabled && (raw['require_first_frame'] == true || mandatory),
       effectiveMode: mode,
       aiAllowed: raw['ai_allowed'] == true && mode == 'record+AI',
       policyReason: raw['policy_reason']?.toString() ?? '',
@@ -342,7 +342,7 @@ class LinkHostRecorder {
   DateTime? _leaseExpiresAt;
   Timer? _flushTimer;
   bool _stopped = false;
-  bool _isFlushing = false;
+  Future<bool>? _activeFlush;
 
   int get nextSeq => _nextSeq;
   int get ackedSeq => _ackedSeq;
@@ -369,8 +369,16 @@ class LinkHostRecorder {
   Future<void> stop({String reason = ''}) async {
     _flushTimer?.cancel();
     _flushTimer = null;
-    if (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
-      await flushAndVerifyHealth();
+    while (_activeFlush != null) {
+      try {
+        await _activeFlush;
+      } catch (_) {}
+    }
+    while (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
+      final prevCount = _pendingFrames.length + _pendingEvents.length;
+      final ok = await _flushInternal();
+      final newCount = _pendingFrames.length + _pendingEvents.length;
+      if (!ok || newCount >= prevCount) break;
     }
     _stopped = true;
   }
@@ -575,68 +583,75 @@ class LinkHostRecorder {
   /// Отправляет накопленный пакет в Recorder и проверяет долговечный ACK (Инвариант 1, 2, 5).
   Future<bool> flushAndVerifyHealth() async {
     if (!config.enabled || _stopped) return true;
-    if (_isFlushing) return true;
-    _isFlushing = true;
+    if (_activeFlush != null) {
+      return await _activeFlush!;
+    }
+    final f = _flushInternal();
+    _activeFlush = f;
     try {
-      final now = _clock().toUtc();
+      return await f;
+    } finally {
+      _activeFlush = null;
+    }
+  }
 
-      if (_pendingFrames.isEmpty && _pendingEvents.isEmpty) {
-        final needsLeaseKeepalive = _lastAckAt != null
-            ? now.difference(_lastAckAt!) >= const Duration(seconds: 10)
-            : (!config.requireFirstFrame &&
-                now.difference(_startedAt) >= const Duration(seconds: 10));
-        if (!needsLeaseKeepalive) {
-          return _checkLeaseAndLag(now);
-        }
-      }
+  Future<bool> _flushInternal() async {
+    final now = _clock().toUtc();
 
-      final batch = {
-        'session_id': sessionId,
-        'epoch': config.epoch,
-        'lease_ttl_seconds': config.leaseTtl.inSeconds,
-        'frames': List<Map<String, dynamic>>.from(_pendingFrames),
-        'events': List<Map<String, dynamic>>.from(_pendingEvents),
-      };
-
-      try {
-        final ack = await sendBatch(batch);
-        _ackedSeq = ack.ackHighWatermarkSeq;
-        if (ack.firstFrameAcked) {
-          _firstFrameAcked = true;
-        }
-        _lastAckAt = _clock().toUtc();
-        _leaseExpiresAt = ack.leaseExpiresAt.toUtc();
-
-        // Удаляем только подтверждённые сервером элементы (seq <= ackHighWatermarkSeq),
-        // чтобы не потерять события, упавшие в очередь во время HTTP-запроса (LR-03).
-        _pendingFrames.removeWhere((f) => (f['seq'] as int) <= _ackedSeq);
-        _pendingEvents.removeWhere((e) => (e['seq'] as int) <= _ackedSeq);
-
-        _queuedBytes = _pendingFrames.fold<int>(0, (acc, f) {
-          final b64 = f['payload_base64'] as String? ?? '';
-          return acc + (b64.length * 3 ~/ 4);
-        });
-
-        if (config.requireFirstFrame && !_firstFrameAcked) {
-          final elapsed = now.difference(_startedAt);
-          if (elapsed >= config.maxAckLag) {
-            _triggerMandatoryStop('recorder_first_frame_unacked');
-            return false;
-          }
-        }
-        return true;
-      } catch (_) {
+    if (_pendingFrames.isEmpty && _pendingEvents.isEmpty) {
+      final needsLeaseKeepalive = _lastAckAt != null
+          ? now.difference(_lastAckAt!) >= const Duration(seconds: 10)
+          : (!config.requireFirstFrame &&
+              now.difference(_startedAt) >= const Duration(seconds: 10));
+      if (!needsLeaseKeepalive) {
         return _checkLeaseAndLag(now);
       }
-    } finally {
-      _isFlushing = false;
+    }
+
+    final batch = {
+      'session_id': sessionId,
+      'epoch': config.epoch,
+      'lease_ttl_seconds': config.leaseTtl.inSeconds,
+      'frames': List<Map<String, dynamic>>.from(_pendingFrames),
+      'events': List<Map<String, dynamic>>.from(_pendingEvents),
+    };
+
+    try {
+      final ack = await sendBatch(batch);
+      _ackedSeq = ack.ackHighWatermarkSeq;
+      if (ack.firstFrameAcked) {
+        _firstFrameAcked = true;
+      }
+      _lastAckAt = _clock().toUtc();
+      _leaseExpiresAt = ack.leaseExpiresAt.toUtc();
+
+      // Удаляем только подтверждённые сервером элементы (seq <= ackHighWatermarkSeq),
+      // чтобы не потерять события, упавшие в очередь во время HTTP-запроса (LR-03).
+      _pendingFrames.removeWhere((f) => (f['seq'] as int) <= _ackedSeq);
+      _pendingEvents.removeWhere((e) => (e['seq'] as int) <= _ackedSeq);
+
+      _queuedBytes = _pendingFrames.fold<int>(0, (acc, f) {
+        final b64 = f['payload_base64'] as String? ?? '';
+        return acc + (b64.length * 3 ~/ 4);
+      });
+
+      if ((config.requireFirstFrame || config.mandatory) && !_firstFrameAcked) {
+        final elapsed = now.difference(_startedAt);
+        if (elapsed >= config.maxAckLag) {
+          _triggerMandatoryStop('recorder_first_frame_unacked');
+          return false;
+        }
+      }
+      return true;
+    } catch (_) {
+      return _checkLeaseAndLag(now);
     }
   }
 
   bool _checkLeaseAndLag(DateTime now) {
     if (!config.mandatory) return true;
     final elapsed = now.difference(_startedAt);
-    if (config.requireFirstFrame && !_firstFrameAcked) {
+    if ((config.requireFirstFrame || config.mandatory) && !_firstFrameAcked) {
       if (elapsed >= config.maxAckLag) {
         _triggerMandatoryStop('recorder_first_frame_unavailable');
         return false;

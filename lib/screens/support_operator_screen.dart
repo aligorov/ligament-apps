@@ -230,6 +230,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     'screen_list',
     'switch_screen',
     'chat_message',
+    'chat_sync',
+    'chat_ack',
     'session_ended',
   };
 
@@ -1014,12 +1016,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       bool changed = false;
       for (final item in list) {
         final chatMsg = SupportChatMessage.fromJson(item);
-        final idx = _chatMessages.indexWhere((m) =>
-            m.id == chatMsg.id ||
-            (chatMsg.clientId.isNotEmpty && m.clientId == chatMsg.clientId) ||
-            (m.sender == chatMsg.sender &&
-                m.text == chatMsg.text &&
-                m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5));
+        final idx = _chatMessages.indexWhere((m) {
+          if (chatMsg.clientId.isNotEmpty && m.clientId.isNotEmpty) {
+            return m.clientId == chatMsg.clientId;
+          }
+          if (chatMsg.id.isNotEmpty && m.id.isNotEmpty) {
+            return m.id == chatMsg.id;
+          }
+          return m.sender == chatMsg.sender &&
+              m.text == chatMsg.text &&
+              m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5;
+        });
         if (idx == -1) {
           _chatMessages.add(chatMsg);
           changed = true;
@@ -1921,6 +1928,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         }
         _sendDataMessage({'type': 'screen_list'});
+        if (widget.isLink && _chatMessages.isNotEmpty) {
+          _sendDataMessage({
+            'type': 'chat_sync',
+            'messages': _chatMessages.map((m) => m.toJson()).toList(),
+          });
+        }
         _dataChannelPingTimer?.cancel();
         _dataChannelPingTimer =
             Timer.periodic(const Duration(seconds: 5), (_) {
@@ -2022,12 +2035,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } else if (type == 'chat_message') {
       try {
         final msg = SupportChatMessage.fromJson(data);
-        final isDuplicate = _chatMessages.any((m) =>
-            m.id == msg.id ||
-            (msg.clientId.isNotEmpty && m.clientId == msg.clientId) ||
-            (m.sender == msg.sender &&
-                m.text == msg.text &&
-                m.timestamp.difference(msg.timestamp).abs().inSeconds < 5));
+        final isDuplicate = _chatMessages.any((m) {
+          if (msg.clientId.isNotEmpty && m.clientId.isNotEmpty) {
+            return m.clientId == msg.clientId;
+          }
+          if (msg.id.isNotEmpty && m.id.isNotEmpty) {
+            return m.id == msg.id;
+          }
+          return m.sender == msg.sender &&
+              m.text == msg.text &&
+              m.timestamp.difference(msg.timestamp).abs().inSeconds < 5;
+        });
         if (!isDuplicate) {
           _chatMessages.add(msg);
           _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
@@ -2045,8 +2063,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   );
             }
           }
+          _sendDataMessage({
+            'type': 'chat_ack',
+            'id': msg.id,
+            'client_id': msg.clientId,
+          });
         }
       } catch (_) {}
+    } else if (type == 'chat_ack') {
+      // Chat message ack received
     } else if (type == 'file_ack') {
       final transferId = data['transfer_id']?.toString() ?? '';
       final ok = data['ok'] == true;

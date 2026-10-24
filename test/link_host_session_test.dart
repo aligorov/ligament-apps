@@ -446,6 +446,27 @@ void main() {
     expect(state.chatMessages, hasLength(2));
     expect(state.unreadChatCount, 1);
 
+    // Intentional repeat messages with distinct client_ids are preserved (V-06)
+    state.receiveChatMessage({
+      'type': 'chat_message',
+      'id': 'op-2',
+      'sender': 'operator',
+      'sender_name': 'Инженер Поддержки',
+      'text': 'Да',
+      'timestamp': now.add(const Duration(seconds: 1)).millisecondsSinceEpoch,
+      'client_id': 'client-op-2',
+    });
+    state.receiveChatMessage({
+      'type': 'chat_message',
+      'id': 'op-3',
+      'sender': 'operator',
+      'sender_name': 'Инженер Поддержки',
+      'text': 'Да',
+      'timestamp': now.add(const Duration(seconds: 2)).millisecondsSinceEpoch,
+      'client_id': 'client-op-3',
+    });
+    expect(state.chatMessages, hasLength(4));
+
     // Clear unread
     state.clearUnreadChat();
     expect(state.unreadChatCount, 0);
