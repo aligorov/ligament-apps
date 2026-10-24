@@ -613,6 +613,11 @@ class _AppsScreenState extends State<AppsScreen> {
         lower.contains('inbox')) {
       return Icons.mail_outline_rounded;
     }
+    if (lower.contains('record') ||
+        lower.contains('video') ||
+        lower.contains('studio')) {
+      return Icons.videocam_rounded;
+    }
     if (lower.contains('git') ||
         lower.contains('repo') ||
         lower.contains('code')) {
@@ -623,6 +628,9 @@ class _AppsScreenState extends State<AppsScreen> {
 
   String _getAppSubtitle(String name, String url, bool isRu) {
     final lower = '$name $url'.toLowerCase();
+    if (lower.contains('record') || lower.contains('recorder')) {
+      return isRu ? 'Записи и аудит сессий' : 'Session Recording & Audit';
+    }
     if (lower.contains('pass') ||
         lower.contains('pwd') ||
         lower.contains('vault')) {
