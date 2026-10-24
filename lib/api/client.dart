@@ -501,7 +501,17 @@ class ApiClient {
     required String category,
     required String problemSummary,
     String accessMode = 'full_control',
+    String? targetAgentId,
   }) async {
+    try {
+      final sosRes = await createSOSRequest(
+        category: category,
+        problemSummary: problemSummary,
+        targetAgentId: targetAgentId,
+      );
+      return sosRes;
+    } catch (_) {}
+
     final payload = {
       'category': category,
       'problem_summary': problemSummary,
@@ -593,15 +603,22 @@ class ApiClient {
   /// Получение истории сообщений чата сессии поддержки
   Future<List<Map<String, dynamic>>> getSupportMessages(
       String sessionId) async {
+    final cleanId = sessionId.startsWith('link_') ? sessionId.substring(5) : sessionId;
     http.Response res;
     try {
       res = await _get(
-        _cleanUrl('/api/v1/app/support/$sessionId/messages'),
+        _cleanUrl('/api/v1/app/link/sessions/$cleanId/messages'),
         headers: _headers(),
       );
+      if (res.statusCode != 200) {
+        res = await _get(
+          _cleanUrl('/api/v1/app/support/$sessionId/messages'),
+          headers: _headers(),
+        );
+      }
     } catch (_) {
       res = await _get(
-        _cleanUrl('/api/v1/support/sessions/$sessionId/messages'),
+        _cleanUrl('/api/v1/app/support/$sessionId/messages'),
         headers: _headers(),
       );
     }
@@ -626,23 +643,34 @@ class ApiClient {
     return [];
   }
 
-  /// Отправка сообщения в чат поддержки
+  /// Отправка сообщения в чат поддержки или сеанса Link
   Future<void> sendSupportChatMessage({
     required String sessionId,
     required String text,
     String? senderName,
     String? clientId,
   }) async {
+    final cleanId = sessionId.startsWith('link_') ? sessionId.substring(5) : sessionId;
+    final linkBody = jsonEncode({
+      'body': text,
+      if (clientId != null && clientId.isNotEmpty) 'client_message_id': clientId,
+    });
     final body = jsonEncode({
       'text': text,
       if (senderName != null && senderName.isNotEmpty)
         'sender_name': senderName,
-      // Идемпотентный ключ (0074): повторная запись той же пары
-      // (session_id, client_id) на сервере — no-op, дублей в чате нет.
       if (clientId != null && clientId.isNotEmpty) 'client_id': clientId,
     });
     http.Response res;
     try {
+      res = await _post(
+        _cleanUrl('/api/v1/app/link/sessions/$cleanId/messages'),
+        headers: _headers(),
+        body: linkBody,
+      );
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        return;
+      }
       res = await _post(
         _cleanUrl('/api/v1/app/support/$sessionId/messages'),
         headers: _headers(),
@@ -662,7 +690,7 @@ class ApiClient {
         body: body,
       );
     }
-    if (res.statusCode != 200) {
+    if (res.statusCode != 200 && res.statusCode != 201) {
       // Fallback на /signal
       await sendSupportSignal(
         sessionId: sessionId,
@@ -674,6 +702,111 @@ class ApiClient {
         },
       );
     }
+  }
+
+  /// Создание обращения за помощью в очередь SOS
+  Future<Map<String, dynamic>> createSOSRequest({
+    required String category,
+    required String problemSummary,
+    String? targetAgentId,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sos/request'),
+      headers: _headers(),
+      body: jsonEncode({
+        'category': category,
+        'problem_summary': problemSummary,
+        if (targetAgentId != null && targetAgentId.isNotEmpty)
+          'target_agent_id': targetAgentId,
+      }),
+    );
+    if (res.statusCode != 200 && res.statusCode != 201) {
+      throw Exception('Failed to create SOS request: ${res.statusCode}');
+    }
+    return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+  }
+
+  /// Получение очереди необработанных заявок SOS для инженера
+  Future<List<Map<String, dynamic>>> getPendingSOSRequests({String? category}) async {
+    final uri = Uri.parse(_cleanUrl('/api/v1/app/link/sos/requests')).replace(
+      queryParameters: {
+        if (category != null && category.isNotEmpty) 'category': category,
+      },
+    );
+    final res = await _get(uri.toString(), headers: _headers());
+    if (res.statusCode != 200) {
+      return [];
+    }
+    final data = jsonDecode(utf8.decode(res.bodyBytes));
+    if (data is Map<String, dynamic> && data['requests'] is List) {
+      return (data['requests'] as List).whereType<Map<String, dynamic>>().toList();
+    }
+    return [];
+  }
+
+  /// Принятие заявки SOS инженером (атомарный claim с Number Match)
+  Future<Map<String, dynamic>> claimSOSRequest(String requestId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sos/requests/$requestId/claim'),
+      headers: _headers(),
+      body: jsonEncode({}),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Failed to claim SOS request: ${res.statusCode}');
+    }
+    return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+  }
+
+  /// Подтверждение кода Number Match пользователем
+  Future<void> confirmSOSRequest({
+    required String requestId,
+    required String sessionId,
+    required String code,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sos/requests/$requestId/confirm'),
+      headers: _headers(),
+      body: jsonEncode({
+        'session_id': sessionId,
+        'code': code,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Failed to confirm SOS code: ${res.statusCode}');
+    }
+  }
+
+  /// Отмена заявки SOS
+  Future<void> cancelSOSRequest({
+    required String requestId,
+    String? reason,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sos/requests/$requestId/cancel'),
+      headers: _headers(),
+      body: jsonEncode({
+        if (reason != null && reason.isNotEmpty) 'reason': reason,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Failed to cancel SOS request: ${res.statusCode}');
+    }
+  }
+
+  /// Получение списка участников сессии LINK (операторы, пользователи, наблюдатели)
+  Future<List<Map<String, dynamic>>> getLinkSessionParticipants(String sessionId) async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/link/sessions/$sessionId/participants'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      return [];
+    }
+    final data = jsonDecode(utf8.decode(res.bodyBytes));
+    if (data is Map<String, dynamic> && data['participants'] is List) {
+      return (data['participants'] as List).whereType<Map<String, dynamic>>().toList();
+    }
+    return [];
   }
 
   /// Завершение сеанса удаленного доступа со стороны пользователя
@@ -724,7 +857,14 @@ class ApiClient {
   }
 
   /// Получение очереди входящих SOS-обращений для инженера
-  Future<List<Map<String, dynamic>>> getSupportQueue() async {
+  Future<List<Map<String, dynamic>>> getSupportQueue({String? category}) async {
+    try {
+      final sosQueue = await getPendingSOSRequests(category: category);
+      if (sosQueue.isNotEmpty) {
+        return sosQueue;
+      }
+    } catch (_) {}
+
     final res = await _get(
       _cleanUrl('/api/v1/app/support/queue'),
       headers: _headers(),

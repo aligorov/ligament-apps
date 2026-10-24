@@ -62,12 +62,13 @@ class SupportChatMessage {
     return SupportChatMessage(
       id: json['id']?.toString() ??
           DateTime.now().millisecondsSinceEpoch.toString(),
-      sender: json['sender']?.toString() ?? 'operator',
+      sender: json['sender']?.toString() ??
+          (json['sender_role'] == 'operator' ? 'operator' : 'user'),
       senderName: json['sender_name']?.toString() ??
-          (json['sender'] == 'operator' ? 'Инженер' : 'Пользователь'),
-      text: json['text']?.toString() ?? '',
+          (json['sender'] == 'operator' || json['sender_role'] == 'operator' ? 'Инженер' : 'Пользователь'),
+      text: json['text']?.toString() ?? json['body']?.toString() ?? '',
       timestamp: ts,
-      clientId: json['client_id']?.toString() ?? '',
+      clientId: json['client_id']?.toString() ?? json['client_message_id']?.toString() ?? '',
     );
   }
 }

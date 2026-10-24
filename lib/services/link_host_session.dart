@@ -400,7 +400,7 @@ class LinkHostWorkerState extends ChangeNotifier {
         _consent?.isCompleted != false) {
       return;
     }
-    if (!RegExp(r'^(?:[0-9]{2}|[0-9]{3}|[0-9]{6})$').hasMatch(code) ||
+    if (!RegExp(r'^(?:[0-9]{2}|[0-9]{3}|[0-9]{4}|[0-9]{6})$').hasMatch(code) ||
         code.length != confirmationDigits) {
       return;
     }
@@ -721,7 +721,7 @@ Future<void> _runConnectedLinkHostWorker(
       confirmationRequired != (accessType == 'attended') ||
       (accessType == 'attended' &&
           (confirmationDigits is! int ||
-              !const [2, 3, 6].contains(confirmationDigits))) ||
+              !const [2, 3, 4, 6].contains(confirmationDigits))) ||
       sdp is! String ||
       (operatorName != null &&
           (operatorName is! String || operatorName.runes.length > 128)) ||

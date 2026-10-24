@@ -997,15 +997,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _loadChatHistory() async {
-    if (widget.isLink ||
-        widget.ownerMode ||
-        widget.sessionData['owner'] == true) {
+    if (!widget.isLink &&
+        (widget.ownerMode || widget.sessionData['owner'] == true)) {
       return;
     }
     final auth = context.read<AuthState>();
-    if (auth.api == null || widget.sessionId.isEmpty) return;
+    final effectiveSessionId = (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty)
+        ? _linkSessionId!
+        : (widget.isLink ? '' : widget.sessionId);
+    if (auth.api == null || effectiveSessionId.isEmpty) return;
     try {
-      final list = await auth.api!.getSupportMessages(widget.sessionId);
+      final list = await auth.api!.getSupportMessages(effectiveSessionId);
       bool changed = false;
       for (final item in list) {
         final chatMsg = SupportChatMessage.fromJson(item);
@@ -1055,6 +1057,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _isChatOnly = widget.isChatOnly;
     _currentNumberMatch = widget.numberMatch;
     _isControlEnabled = !_isViewOnlySession;
+    if (widget.isLink) {
+      _linkSessionId = widget.sessionData['session_id']?.toString() ??
+          widget.sessionData['id']?.toString().replaceAll('link_', '');
+    }
     _loadChatHistory();
     if (_isChatOnly && !widget.isLink) {
       _statusKey = 'chat';
@@ -1324,6 +1330,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         throw StateError('Server did not return session_id');
       }
       _linkSessionId = id;
+      _loadChatHistory();
 
       final confirmationRequired = session['confirmation_required'] == true;
       if (confirmationRequired) {
@@ -2206,18 +2213,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _sendDataMessage(msg.toJson());
     if (!widget.isLink) {
       _sendWsSignal(msg.toJson());
-
-      auth.api
-          ?.sendSupportChatMessage(
-        sessionId: widget.sessionId,
-        text: msg.text,
-        senderName: operatorName,
-        clientId: msg.clientId,
-      )
-          .catchError((e) {
-        debugPrint('support_operator: ошибка отправки сообщения через API: $e');
-      });
     }
+
+    final effectiveSessionId = (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty)
+        ? _linkSessionId!
+        : widget.sessionId;
+
+    auth.api
+        ?.sendSupportChatMessage(
+      sessionId: effectiveSessionId,
+      text: msg.text,
+      senderName: operatorName,
+      clientId: msg.clientId,
+    )
+        .catchError((e) {
+      debugPrint('support_operator: ошибка отправки сообщения через API: $e');
+    });
   }
 
   void _showOperatorChatModal() {
@@ -2230,7 +2241,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final scrollController = ScrollController();
 
     Timer? historyPoller;
-    if (!widget.isLink && !widget.ownerMode) {
+    if (!widget.ownerMode || widget.isLink) {
       historyPoller = Timer.periodic(const Duration(seconds: 2), (_) {
         _loadChatHistory();
       });
@@ -3132,7 +3143,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _restoreWindowSize();
     final auth = _auth;
     final sessId = widget.sessionId;
-    if (auth != null && auth.api != null && sessId.isNotEmpty) {
+    if (auth != null && auth.api != null) {
       final isOwner = widget.ownerMode ||
           widget.sessionData['owner'] == true ||
           widget.sessionData['session_kind'] == 'console' ||
@@ -3140,14 +3151,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         // dispose() у оператора — тоже корректный конец сессии (окно
         // закрыли = сеанс завершён), иначе она висит active в очереди.
-        if (isOwner) {
-          auth.api!
-              .endSupportSession(sessionId: sessId)
-              .catchError((_) => null);
-        } else {
-          auth.api!
-              .endSupportSessionAsOperator(sessionId: sessId)
-              .catchError((_) => null);
+        if (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty) {
+          auth.api!.closeLinkSession(_linkSessionId!).catchError((_) => null);
+        } else if (sessId.isNotEmpty) {
+          if (isOwner) {
+            auth.api!
+                .endSupportSession(sessionId: sessId)
+                .catchError((_) => null);
+          } else {
+            auth.api!
+                .endSupportSessionAsOperator(sessionId: sessId)
+                .catchError((_) => null);
+          }
         }
       } catch (_) {}
     }
@@ -4562,8 +4577,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     onPressed: _frameReady ? _takeScreenshot : null,
                   ),
 
-                  // Чат с пользователем (скрыт для владельца консоли ПК и сессий LINK)
-                  if (!isOwner && !widget.isLink)
+                  // Чат с пользователем (скрыт только для владельца консоли ПК без SOS)
+                  if (!isOwner || widget.sessionData['session_kind'] == 'sos')
                     IconButton(
                       icon: Badge(
                         isLabelVisible: _unreadChatCount > 0,

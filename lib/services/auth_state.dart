@@ -1616,6 +1616,16 @@ class AuthState extends ChangeNotifier {
   /// Подключение инженера к удаленной сессии пользователя
   Future<Map<String, dynamic>> connectToSupportSession(String sessionId) async {
     if (api == null) throw Exception('API не инициализирован');
+    try {
+      final res = await api!.claimSOSRequest(sessionId);
+      await loadSupportQueue();
+      return {
+        'session_id': res['session']?['id']?.toString() ?? sessionId,
+        'number_match': res['confirmation_code']?.toString(),
+        ...res,
+      };
+    } catch (_) {}
+
     final adminName = currentUser?['display_name'] ??
         currentUser?['username'] ??
         'Инженер поддержки';
@@ -2147,11 +2157,25 @@ class AuthState extends ChangeNotifier {
     }
 
     // 2. Отправка одобрения на сервер
-    await api!.supportDecision(
-      sessionId: sessionId,
-      decision: 'approve',
-      numberMatch: numberMatch,
-    );
+    bool confirmedViaSOS = false;
+    if (numberMatch != null && numberMatch.isNotEmpty) {
+      try {
+        final reqId = activeSupportPrompt?['request_id']?.toString() ?? sessionId;
+        await api!.confirmSOSRequest(
+          requestId: reqId,
+          sessionId: sessionId,
+          code: numberMatch,
+        );
+        confirmedViaSOS = true;
+      } catch (_) {}
+    }
+    if (!confirmedViaSOS) {
+      await api!.supportDecision(
+        sessionId: sessionId,
+        decision: 'approve',
+        numberMatch: numberMatch,
+      );
+    }
 
     // 3. Запуск трансляции экрана WebRTC
     await support.startScreenSharing(
@@ -2167,8 +2191,13 @@ class AuthState extends ChangeNotifier {
     required String sessionId,
   }) async {
     if (api == null) return;
+    final reqId = activeSupportPrompt?['request_id']?.toString() ?? sessionId;
     activeSupportPrompt = null;
     await alert.resetWindowPriority();
+
+    try {
+      await api!.cancelSOSRequest(requestId: reqId, reason: 'rejected_by_user');
+    } catch (_) {}
 
     try {
       await api!.supportDecision(
