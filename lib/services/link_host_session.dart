@@ -930,20 +930,21 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     }
   }
 
-  Future<MediaStream> _openDisplayStream(String sourceId) async {
+  Future<MediaStream> _openDisplayStream(String sourceId,
+      {bool withAudio = true}) async {
     final videoConstraints = <String, dynamic>{
       'deviceId': {'exact': sourceId},
       'cursor': 'always',
     };
     final wantLoopbackAudio =
-        !kIsWeb && (Platform.isWindows || Platform.isLinux);
+        withAudio && !kIsWeb && (Platform.isWindows || Platform.isLinux);
     MediaStream? stream;
     if (wantLoopbackAudio) {
       try {
         stream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': true,
           'video': videoConstraints,
-        }).timeout(const Duration(seconds: 15));
+        }).timeout(const Duration(seconds: 4));
         final audioCount = stream.getAudioTracks().length;
         debugPrint(
             'link_host_session: loopback getDisplayMedia returned audioTracks=$audioCount');
@@ -955,13 +956,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     stream ??= await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
       'audio': false,
       'video': videoConstraints,
-    }).timeout(const Duration(seconds: 20));
+    }).timeout(const Duration(seconds: 5));
     // If loopback didn't yield an audio track, try fallback to default audio input (mic/stereo mix)
-    if (stream.getAudioTracks().isEmpty && !kIsWeb) {
+    if (withAudio && stream.getAudioTracks().isEmpty && !kIsWeb) {
       try {
         final audioStream = await navigator.mediaDevices
             .getUserMedia(<String, dynamic>{'audio': true, 'video': false})
-            .timeout(const Duration(seconds: 5));
+            .timeout(const Duration(seconds: 2));
         for (final track in audioStream.getAudioTracks()) {
           debugPrint(
               'link_host_session: attached audio input fallback track: ${track.id}');
@@ -980,66 +981,45 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _switchingScreen = true;
     try {
       var targetScreenId = screenId;
-      try {
-        final sources = await desktopCapturer
-            .getSources(types: [SourceType.Screen])
-            .timeout(const Duration(seconds: 10));
-        if (sources.isNotEmpty &&
-            !sources.any((s) => s.id == targetScreenId)) {
-          targetScreenId = sources.first.id;
-        }
-      } catch (_) {}
-      if (_closed || _peer == null) return;
-
-      // Detach and dispose the previous stream before calling getDisplayMedia:
-      // in flutter_webrtc C++, FlutterScreenCapture::OnStop stops the shared
-      // loopback_capturer_ when the old desktop capturer is destroyed.
-      final oldStream = _stream;
-      _stream = null;
-      if (oldStream != null) {
-        try {
-          await _videoSender?.replaceTrack(null);
-        } catch (_) {}
-        try {
-          await _audioSender?.replaceTrack(null);
-        } catch (_) {}
-        for (final t in oldStream.getTracks()) {
-          try {
-            await t.stop();
-          } catch (_) {}
-        }
-        try {
-          await oldStream.dispose();
-        } catch (_) {}
-      }
-      if (_closed || _peer == null) return;
-
       MediaStream? newStream;
-      for (var attempt = 0; attempt < 6; attempt++) {
+
+      for (var attempt = 0; attempt < 8; attempt++) {
         if (_closed || _peer == null) return;
         try {
-          newStream = await _openDisplayStream(targetScreenId);
-          break;
+          final sources = await desktopCapturer
+              .getSources(types: [SourceType.Screen])
+              .timeout(const Duration(seconds: 3));
+          if (sources.isNotEmpty &&
+              !sources.any((s) => s.id == targetScreenId)) {
+            targetScreenId = sources.first.id;
+          }
+          newStream =
+              await _openDisplayStream(targetScreenId, withAudio: false);
+          if (newStream.getVideoTracks().isNotEmpty) {
+            break;
+          }
         } catch (e) {
           debugPrint(
               'link_host_session: _openDisplayStream attempt $attempt failed: $e');
-          if (attempt < 5) {
+          if (attempt < 7) {
             await Future<void>.delayed(
                 Duration(milliseconds: 250 * (attempt + 1)));
           }
         }
       }
+
       if (newStream == null) {
         debugPrint(
             'link_host_session: failed to acquire new stream during switch, scheduling recovery');
         _desktopRecoveryTimer?.cancel();
         _desktopRecoveryTimer = Timer(const Duration(milliseconds: 1500), () {
-          if (!_closed && _stream == null) {
+          if (!_closed) {
             unawaited(switchScreen(targetScreenId));
           }
         });
         return;
       }
+
       if (_closed || _peer == null) {
         for (final t in newStream.getTracks()) {
           t.stop();
@@ -1047,6 +1027,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         await newStream.dispose();
         return;
       }
+
       final newVideoTracks = newStream.getVideoTracks();
       if (newVideoTracks.isNotEmpty) {
         if (_videoSender != null) {
@@ -1062,19 +1043,22 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           }
         }
       }
-      final newAudioTracks = newStream.getAudioTracks();
-      if (newAudioTracks.isNotEmpty) {
-        if (_audioSender != null) {
-          await _audioSender!.replaceTrack(newAudioTracks.first);
-        } else {
-          try {
-            _audioSender =
-                await _peer!.addTrack(newAudioTracks.first, newStream);
-          } catch (_) {}
-        }
-      }
+
+      final oldStream = _stream;
       _stream = newStream;
       _selectedScreenId = targetScreenId;
+
+      if (oldStream != null) {
+        for (final t in oldStream.getTracks()) {
+          try {
+            await t.stop();
+          } catch (_) {}
+        }
+        try {
+          await oldStream.dispose();
+        } catch (_) {}
+      }
+
       _screenRect =
           InputInjector.instance.getMonitorRectForSource(targetScreenId);
       InputInjector.instance.setActiveMonitorRect(_screenRect);
@@ -1167,19 +1151,11 @@ class FlutterLinkHostPeer implements LinkHostPeer {
                 final screenId = _selectedScreenId ?? '0';
                 _desktopRecoveryTimer?.cancel();
                 _desktopRecoveryTimer = Timer(
-                  const Duration(milliseconds: 400),
+                  const Duration(milliseconds: 600),
                   () {
-                    if (_closed) return;
-                    unawaited(switchScreen(_selectedScreenId ?? screenId));
-                    _desktopRecoveryTimer = Timer(
-                      const Duration(milliseconds: 1600),
-                      () {
-                        if (!_closed) {
-                          unawaited(
-                              switchScreen(_selectedScreenId ?? screenId));
-                        }
-                      },
-                    );
+                    if (!_closed) {
+                      unawaited(switchScreen(_selectedScreenId ?? screenId));
+                    }
                   },
                 );
               }

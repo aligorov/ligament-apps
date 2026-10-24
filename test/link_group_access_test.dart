@@ -93,8 +93,9 @@ void main() {
     await tester.tap(find.text('Accounting'));
     await tester.pumpAndSettle();
 
+    // Rights delegation is only on OU level, not on inner sub-groups
     final groupAccessBtn = find.byKey(const ValueKey('folder-access-Бухгалтерия'));
-    expect(groupAccessBtn, findsOneWidget);
+    expect(groupAccessBtn, findsNothing);
   });
 
   testWidgets('LinkCatalogScreen hides operator access button for non-admin',
