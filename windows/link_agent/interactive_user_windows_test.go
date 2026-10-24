@@ -67,10 +67,10 @@ func TestResolveInteractiveSession(t *testing.T) {
 			t.Fatalf("attended: got sess=%v, err=%v, want ErrNoActiveInteractiveUser", sess, err)
 		}
 
-		// Unattended should resolve console session at winlogon desktop
+		// Unattended should resolve console session at default desktop (persistent across logon)
 		sess, desktop, err := ResolveTargetSession(true)
-		if err != nil || sess == nil || sess.SessionID != 1 || desktop != `winsta0\Winlogon` {
-			t.Fatalf("unattended: got sess=%v, desktop=%q, err=%v, want SessionID=1, winsta0\\Winlogon", sess, desktop, err)
+		if err != nil || sess == nil || sess.SessionID != 1 || desktop != `winsta0\default` {
+			t.Fatalf("unattended: got sess=%v, desktop=%q, err=%v, want SessionID=1, winsta0\\default", sess, desktop, err)
 		}
 	})
 }

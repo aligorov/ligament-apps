@@ -1014,7 +1014,20 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       }
       if (_closed || _peer == null) return;
 
-      final newStream = await _openDisplayStream(targetScreenId);
+      MediaStream? newStream;
+      for (var attempt = 0; attempt < 4; attempt++) {
+        if (_closed || _peer == null) return;
+        try {
+          newStream = await _openDisplayStream(targetScreenId);
+          break;
+        } catch (e) {
+          debugPrint('link_host_session: _openDisplayStream attempt $attempt failed: $e');
+          if (attempt < 3) {
+            await Future<void>.delayed(Duration(milliseconds: 200 * (attempt + 1)));
+          }
+        }
+      }
+      if (newStream == null) return;
       if (_closed || _peer == null) {
         for (final t in newStream.getTracks()) {
           t.stop();

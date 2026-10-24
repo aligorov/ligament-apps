@@ -65,7 +65,8 @@ func defaultEnumerateInteractiveSessions() ([]InteractiveSession, error) {
 
 // ResolveTargetSession determines the session and desktop to attach to.
 // If unattended is true and no user is logged in, it targets the active console session ID
-// (logon screen / lock screen) with desktop winsta0\Winlogon.
+// (logon screen / lock screen) with desktop winsta0\default. Launching on winsta0\default
+// ensures the worker process is not terminated by Windows when the user logs in / unlocks.
 func ResolveTargetSession(unattended bool) (*InteractiveSession, string, error) {
 	active, err := enumerateInteractiveSessions()
 	if err != nil {
@@ -84,7 +85,7 @@ func ResolveTargetSession(unattended bool) (*InteractiveSession, string, error) 
 			return &InteractiveSession{
 				SessionID: consoleID,
 				Username:  "",
-			}, `winsta0\Winlogon`, nil
+			}, `winsta0\default`, nil
 		}
 	}
 	return nil, "", ErrNoActiveInteractiveUser

@@ -218,10 +218,10 @@ class AuthState extends ChangeNotifier {
     }
   }
 
-  /// Проверка второго фактора (Step-Up 2FA) при подключении к ПК из внешнего периметра
-  Future<String> verifyStepUp({required String totpCode}) async {
+  /// Проверка второго фактора (Step-Up 2FA: Passkey / Biometrics или TOTP) при подключении к ПК из внешнего периметра
+  Future<String> verifyStepUp({String? totpCode, bool? passkey}) async {
     if (api == null) throw StateError('Not connected');
-    final resp = await api!.verifyLinkStepUp(totpCode: totpCode);
+    final resp = await api!.verifyLinkStepUp(totpCode: totpCode, passkey: passkey);
     if (resp['ok'] == true && resp['stepup_token'] != null) {
       return resp['stepup_token'].toString();
     }

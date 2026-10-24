@@ -1120,9 +1120,6 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     if (mode == null || !mounted) return;
     final agentId = host['id']?.toString();
     if (agentId == null || agentId.isEmpty) return;
-    final auth = context.read<AuthState>();
-    final isOwner = host['owner_username'] != null &&
-        host['owner_username'] == auth.username;
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => SupportOperatorScreen(

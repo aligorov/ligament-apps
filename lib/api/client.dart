@@ -945,19 +945,29 @@ class ApiClient {
   }
 
   /// Verifies operator Step-Up 2FA when connecting from external perimeter.
-  Future<Map<String, dynamic>> verifyLinkStepUp({required String totpCode}) async {
+  Future<Map<String, dynamic>> verifyLinkStepUp({
+    String? totpCode,
+    bool? passkey,
+  }) async {
+    final payload = <String, dynamic>{};
+    if (totpCode != null && totpCode.trim().isNotEmpty) {
+      payload['totp_code'] = totpCode.trim();
+    }
+    if (passkey == true) {
+      payload['passkey'] = true;
+    }
     final res = await _post(
       _cleanUrl('/api/v1/app/link/stepup/verify'),
       headers: _headers(),
-      body: jsonEncode({
-        'totp_code': totpCode.trim(),
-      }),
+      body: jsonEncode(payload),
     );
     final data = _decodeJsonMap(res.bodyBytes);
     if (res.statusCode == 200) return data;
     throw ApiException(
       res.statusCode,
       data['error']?.toString() ?? 'stepup_verify_failed',
+      data['message']?.toString() ?? '',
+      data,
     );
   }
 
