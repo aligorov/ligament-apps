@@ -241,8 +241,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool get _isInputUnavailable =>
       !_isViewOnlySession && _isControlEnabled && !_isDataChannelActive;
 
-  /// Управление готово = управление включено И DataChannel (DTLS) открыт для команд.
-  bool get _controlReady => _isControlEnabled && _isDataChannelActive;
+  /// Управление готово = управление включено И (DataChannel открыт ИЛИ готов WS signaling / P2P).
+  bool get _controlReady =>
+      _isControlEnabled && (_isDataChannelActive || _signalReady || _isConnected);
 
   /// Ш3: активна ошибка стадии с кнопкой «Повторить».
   bool get _stageRetryActive =>

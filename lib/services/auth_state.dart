@@ -515,13 +515,12 @@ class AuthState extends ChangeNotifier {
     return [];
   }
 
-  bool get isITEngineer => isAdmin || supportRoles.contains('it');
-  bool get is1CEngineer => isAdmin || supportRoles.contains('1c');
-  bool get isEngineer => isAdmin || supportRoles.isNotEmpty;
+  bool get isITEngineer => supportRoles.contains('it') || supportRoles.contains('all');
+  bool get is1CEngineer => supportRoles.contains('1c') || supportRoles.contains('all');
+  bool get isEngineer => supportRoles.isNotEmpty;
 
   String? get engineerBadge {
-    if (isAdmin) return isRu ? '👑 Администратор' : '👑 Administrator';
-    if (isITEngineer && is1CEngineer) {
+    if (supportRoles.contains('all') || (isITEngineer && is1CEngineer)) {
       return isRu ? '🛠 IT / 1С-инженер' : '🛠 IT / 1C Engineer';
     }
     if (is1CEngineer) return isRu ? '📊 1С-инженер' : '📊 1C Engineer';
@@ -531,6 +530,7 @@ class AuthState extends ChangeNotifier {
           ? '🛠 Инженер (${supportRoles.join(", ")})'
           : '🛠 Engineer (${supportRoles.join(", ")})';
     }
+    if (isAdmin) return isRu ? '👑 Администратор' : '👑 Administrator';
     return null;
   }
 
@@ -851,17 +851,22 @@ class AuthState extends ChangeNotifier {
 
     ws.onSupportIncoming = (msg) {
       if (isEngineer) {
-        loadSupportQueue();
         final session = (msg['session'] is Map)
             ? Map<String, dynamic>.from(msg['session'] as Map)
             : msg;
+        final category = (session['category'] ?? msg['category'])?.toString().toLowerCase().trim();
+        if (category != null && category.isNotEmpty &&
+            !supportRoles.contains('all') &&
+            !supportRoles.contains(category)) {
+          return;
+        }
+        loadSupportQueue();
         final clientName = session['display_name'] ??
             session['employee_name'] ??
             session['username'] ??
             msg['display_name'] ??
             (isRu ? 'Пользователь' : 'User');
-        final category = session['category'] ?? msg['category'];
-        final catTitle = category == '1c' ? '1C' : 'IT';
+        final catTitle = category == '1c' ? '1C' : (category?.toUpperCase() ?? 'IT');
         final problemSummary =
             session['problem_summary'] ?? msg['problem_summary'] ?? '';
         final sessionId =

@@ -58,25 +58,30 @@ void main(List<String> args) async {
           : linkHostUnixSocketFromArgs(args);
       if (endpoint == null) exit(2);
       final workerState = LinkHostWorkerState();
-      await windowManager.ensureInitialized();
-      runApp(LinkHostOverlay(state: workerState));
-      await windowManager.waitUntilReadyToShow(
-        const WindowOptions(
-          size: Size(560, 760),
-          minimumSize: Size(460, 120),
-          center: true,
-          backgroundColor: Color(0xFF10251D),
-          skipTaskbar: true,
-          title: 'Ligament Link — удалённая сессия',
-        ),
-        () async {
-          await windowManager.setAlwaysOnTop(true);
-          await windowManager.setPreventClose(true);
-          await windowManager.setClosable(false);
-          await windowManager.setMinimizable(true);
-          await windowManager.setMaximizable(false);
-        },
-      );
+      try {
+        await windowManager.ensureInitialized();
+        runApp(LinkHostOverlay(state: workerState));
+        await windowManager.waitUntilReadyToShow(
+          const WindowOptions(
+            size: Size(560, 760),
+            minimumSize: Size(460, 120),
+            center: true,
+            backgroundColor: Color(0xFF10251D),
+            skipTaskbar: true,
+            title: 'Ligament Link — удалённая сессия',
+          ),
+          () async {
+            await windowManager.setAlwaysOnTop(true);
+            await windowManager.setPreventClose(true);
+            await windowManager.setClosable(false);
+            await windowManager.setMinimizable(true);
+            await windowManager.setMaximizable(false);
+          },
+        );
+      } catch (e) {
+        debugPrint('link_host: window layout unavailable, running headless: $e');
+        runApp(const SizedBox.shrink());
+      }
       await runLinkHostWorker(
         Platform.isWindows ? endpoint : 'unix:$endpoint',
         state: workerState,
