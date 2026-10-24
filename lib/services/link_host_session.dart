@@ -1348,14 +1348,10 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     try {
       final transceivers = await peer.getTransceivers();
       for (final t in transceivers) {
-        if (t.receiver.track?.kind == 'audio' ||
-            t.sender.track?.kind == 'audio' ||
-            t.mid == '1') {
-          await t.setDirection(TransceiverDirection.SendOnly);
-        }
+        await t.setDirection(TransceiverDirection.SendOnly);
       }
     } catch (e) {
-      debugPrint('link_host_session: setDirection on audio transceiver: $e');
+      debugPrint('link_host_session: setDirection on transceivers: $e');
     }
     final answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
@@ -1373,6 +1369,14 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _connectionGraceTimer?.cancel();
     _connectionGraceTimer = null;
     await peer.setRemoteDescription(RTCSessionDescription(offerSdp, 'offer'));
+    try {
+      final transceivers = await peer.getTransceivers();
+      for (final t in transceivers) {
+        await t.setDirection(TransceiverDirection.SendOnly);
+      }
+    } catch (e) {
+      debugPrint('link_host_session: renegotiate setDirection on transceivers: $e');
+    }
     final answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
     return answer.sdp ?? '';

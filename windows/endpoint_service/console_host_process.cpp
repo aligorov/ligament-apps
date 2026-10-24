@@ -321,6 +321,7 @@ void ConsoleHostProcess::Run(const std::string& session_id,
       TerminateProcess(child.get(), ERROR_ACCESS_DENIED);
       fail("console_job_assign_failed"); break;
     }
+    const ULONGLONG child_started = GetTickCount64();
     if (ResumeThread(child_thread.get()) == static_cast<DWORD>(-1)) {
       fail("console_resume_failed"); break;
     }
@@ -355,11 +356,16 @@ void ConsoleHostProcess::Run(const std::string& session_id,
     WaitForSingleObject(child.get(), 5000);
     if (!session_changed && exit_code == 0) break;
     const ULONGLONG now = GetTickCount64();
+    if (now - child_started >= 5000) {
+      restarts = 0;
+    }
     if (now - restart_window >= 60000) {
       restart_window = now;
       restarts = 0;
     }
-    if (++restarts > 3) break;
+    if (!session_changed) {
+      if (++restarts > 10) break;
+    }
     if (WaitForSingleObject(stop_, 750) != WAIT_TIMEOUT) break;
   }
   SecureZeroMemory(bootstrap.data(), bootstrap.size());
