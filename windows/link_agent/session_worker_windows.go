@@ -109,12 +109,27 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, offer SessionOf
 		return nil, err
 	}
 	worker := &windowsSessionWorkerProcess{
-		pipe: pipe, process: process.Process, job: process.job,
+		pipe:        pipe,
+		process:     process.Process,
+		job:         process.job,
+		pid:         process.ProcessId,
+		sessionID:   sessionID,
+		desktopName: desktop,
+		startedAt:   time.Now(),
 	}
+	activeConsole := getActiveConsoleSessionID()
+	workerLog("interactive host started: pid=%d target_session=%d active_console=%d desktop=%s pipe=%s offer_session=%s",
+		process.ProcessId, sessionID, activeConsole, desktop, pipeName, offer.SessionID)
 	if err := worker.acceptChild(ctx, process.ProcessId); err != nil {
+		var exitCode uint32
+		_ = windows.GetExitCodeProcess(process.Process, &exitCode)
+		activeNow := getActiveConsoleSessionID()
+		workerLog("interactive host failed to connect pipe: pid=%d exit_code=%d target_session=%d active_console_now=%d err=%v",
+			process.ProcessId, exitCode, sessionID, activeNow, err)
 		_ = worker.Close()
 		return nil, &WorkerLaunchError{Reason: ReasonHostWorkerLaunchFailed, Err: err}
 	}
+	workerLog("interactive host pipe connected: pid=%d", process.ProcessId)
 	if err := worker.Send(ctx, offerFrame); err != nil {
 		_ = worker.Close()
 		return nil, &WorkerLaunchError{
@@ -300,9 +315,13 @@ func newLinkHostPipeName() (string, error) {
 }
 
 type windowsSessionWorkerProcess struct {
-	pipe    windows.Handle
-	process windows.Handle
-	job     windows.Handle
+	pipe        windows.Handle
+	process     windows.Handle
+	job         windows.Handle
+	pid         uint32
+	sessionID   uint32
+	desktopName string
+	startedAt   time.Time
 
 	mu     sync.RWMutex
 	sendMu sync.Mutex
@@ -378,8 +397,22 @@ func (p *windowsSessionWorkerProcess) Receive(ctx context.Context) ([]byte, erro
 		}
 		pipe, process := p.pipe, p.process
 		p.mu.RUnlock()
+
+		// Track active console session changes (e.g. Logon / Lock / Fast User Switch)
+		activeConsole := getActiveConsoleSessionID()
+		if activeConsole != 0 && activeConsole != 0xFFFFFFFF && activeConsole != p.sessionID {
+			workerLog("interactive host session change detected: worker_session=%d active_console_now=%d pid=%d",
+				p.sessionID, activeConsole, p.pid)
+			return nil, fmt.Errorf("link agent: active console session changed from %d to %d", p.sessionID, activeConsole)
+		}
+
 		available, err := peekPipeBytes(pipe)
 		if err != nil {
+			var exitCode uint32
+			_ = windows.GetExitCodeProcess(process, &exitCode)
+			activeNow := getActiveConsoleSessionID()
+			workerLog("interactive host pipe inspect failed: pid=%d exit_code=%d target_session=%d active_console_now=%d err=%v",
+				p.pid, exitCode, p.sessionID, activeNow, err)
 			return nil, fmt.Errorf("link agent: inspect worker pipe: %w", err)
 		}
 		if available > linkHostFrameLimit {
@@ -397,12 +430,22 @@ func (p *windowsSessionWorkerProcess) Receive(ctx context.Context) ([]byte, erro
 				if errors.Is(err, windows.ERROR_NO_DATA) {
 					continue
 				}
+				var exitCode uint32
+				_ = windows.GetExitCodeProcess(process, &exitCode)
+				activeNow := getActiveConsoleSessionID()
+				workerLog("interactive host pipe read failed: pid=%d exit_code=%d target_session=%d active_console_now=%d err=%v",
+					p.pid, exitCode, p.sessionID, activeNow, err)
 				return nil, fmt.Errorf("link agent: read worker IPC frame: %w", err)
 			}
 			return buffer[:read], nil
 		}
 		if state, waitErr := windows.WaitForSingleObject(process, 0); waitErr != nil || state == windows.WAIT_OBJECT_0 {
-			return nil, errors.New("link agent: Flutter worker exited")
+			var exitCode uint32
+			_ = windows.GetExitCodeProcess(process, &exitCode)
+			activeNow := getActiveConsoleSessionID()
+			workerLog("interactive host process exited: pid=%d exit_code=%d (0x%X) target_session=%d active_console_now=%d lifetime=%v",
+				p.pid, exitCode, exitCode, p.sessionID, activeNow, time.Since(p.startedAt))
+			return nil, fmt.Errorf("link agent: Flutter worker exited with code %d", exitCode)
 		}
 		time.Sleep(linkHostPollPeriod)
 	}

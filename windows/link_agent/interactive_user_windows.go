@@ -18,6 +18,11 @@ var procWTSGetActiveConsoleSessionId = kernel32.NewProc("WTSGetActiveConsoleSess
 
 var getActiveConsoleSessionID = defaultGetActiveConsoleSessionID
 
+// GetActiveConsoleSessionID returns the active console session ID from Windows WTS.
+func GetActiveConsoleSessionID() uint32 {
+	return getActiveConsoleSessionID()
+}
+
 func defaultGetActiveConsoleSessionID() uint32 {
 	if procWTSGetActiveConsoleSessionId.Find() != nil {
 		return 0xFFFFFFFF

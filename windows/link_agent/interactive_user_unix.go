@@ -12,3 +12,8 @@ func CurrentInteractiveUser() string {
 	}
 	return current.Username
 }
+
+// GetActiveConsoleSessionID is a stub on Unix platforms.
+func GetActiveConsoleSessionID() uint32 {
+	return 0
+}

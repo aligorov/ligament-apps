@@ -79,6 +79,9 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 	config.DeleteIdentity = linkagent.DeleteAgentIdentity
 	defer cancel()
 	workerBroker := linkagent.NewSessionWorkerBroker(linkagent.NewNativeSessionWorkerLauncher())
+	linkagent.SetWorkerLogger(func(format string, args ...any) {
+		serviceLog(logger, logErr, "[WORKER] "+format, args...)
+	})
 	config.OnConnected = workerBroker.RebindSender
 	workerResults := make(chan serviceWorkerResult, 2)
 	activeWorkers := 0
@@ -177,7 +180,9 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 					serviceLog(logger, logErr, "WTS event=%s session_id=unavailable (invalid event data size)", changeName)
 					continue
 				}
-				serviceLog(logger, logErr, "WTS event=%s session_id=%d", changeName, notification.SessionID)
+				activeConsole := linkagent.GetActiveConsoleSessionID()
+				serviceLog(logger, logErr, "WTS event=%s notification_session_id=%d active_console_session_id=%d",
+					changeName, notification.SessionID, activeConsole)
 			case svc.Stop, svc.Shutdown:
 				statuses <- svc.Status{State: svc.StopPending, WaitHint: uint32(stopWaitLimit / time.Millisecond)}
 				cancel()

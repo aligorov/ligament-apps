@@ -1442,7 +1442,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final message = Map<String, dynamic>.from(payload);
     final type = linkSignalType(event, message);
 
-    if (type == 'session_answer' && !_linkRemoteDescriptionSet) {
+    final isReconnecting =
+        _pcGraceTimer != null || !_isConnected || _statusKey == 'disconnected';
+    if (type == 'session_answer' &&
+        (!_linkRemoteDescriptionSet || isReconnecting)) {
       if (message['stage'] == 'consent') {
         debugPrint('support_operator (link): host waiting for consent');
         final code = message['confirmation_code']?.toString();
@@ -1466,21 +1469,38 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
       final sdp = message['sdp']?.toString();
       if (sdp != null && sdp.isNotEmpty) {
-        await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
-        _linkRemoteDescriptionSet = true;
-        _linkHostAnswerTimer?.cancel();
-        _linkHostAnswerTimer = null;
-        if (mounted) {
-          setState(() {
-            _currentNumberMatch = null;
-            _signalReady = true;
-          });
+        try {
+          await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
+          _linkRemoteDescriptionSet = true;
+          _linkHostAnswerTimer?.cancel();
+          _linkHostAnswerTimer = null;
+          if (_pcGraceTimer != null) {
+            _pcGraceTimer?.cancel();
+            _pcGraceTimer = null;
+            _graceCountdownTimer?.cancel();
+            _graceCountdownTimer = null;
+          }
+          if (mounted) {
+            setState(() {
+              _currentNumberMatch = null;
+              _signalReady = true;
+              if (isReconnecting) {
+                _isConnected = true;
+                _statusKey =
+                    consoleConnectionStatusKey(_isConnected, _frameReady);
+                _statusArg = null;
+              }
+            });
+          }
+          for (final cand
+              in List<Map<String, dynamic>>.from(_linkPendingRemoteCandidates)) {
+            await _addLinkRemoteCandidate(peer, cand);
+          }
+          _linkPendingRemoteCandidates.clear();
+        } catch (e) {
+          debugPrint(
+              'support_operator (link): setRemoteDescription answer error: $e');
         }
-        for (final cand
-            in List<Map<String, dynamic>>.from(_linkPendingRemoteCandidates)) {
-          await _addLinkRemoteCandidate(peer, cand);
-        }
-        _linkPendingRemoteCandidates.clear();
       }
       return;
     }

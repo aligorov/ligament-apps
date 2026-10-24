@@ -7,9 +7,33 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 const maxQueuedWorkerSignals = 256
+
+var (
+	workerLogMu sync.RWMutex
+	workerLogFn = func(format string, args ...any) {}
+)
+
+// SetWorkerLogger configures a thread-safe diagnostic logger for worker lifecycle events.
+func SetWorkerLogger(fn func(format string, args ...any)) {
+	workerLogMu.Lock()
+	defer workerLogMu.Unlock()
+	if fn != nil {
+		workerLogFn = fn
+	}
+}
+
+func workerLog(format string, args ...any) {
+	workerLogMu.RLock()
+	fn := workerLogFn
+	workerLogMu.RUnlock()
+	if fn != nil {
+		fn(format, args...)
+	}
+}
 
 // SessionWorkerProcess is the framed IPC endpoint for one interactive desktop
 // worker. Implementations must bound frame sizes and unblock Send/Receive on
@@ -74,11 +98,14 @@ type SessionWorkerLauncher interface {
 }
 
 type workerSession struct {
-	cancel   context.CancelFunc
-	process  SessionWorkerProcess
-	outbound chan []byte
-	sendMu   sync.RWMutex
-	send     func(any) error
+	cancel             context.CancelFunc
+	process            SessionWorkerProcess
+	outbound           chan []byte
+	sendMu             sync.RWMutex
+	send               func(any) error
+	mu                 sync.Mutex
+	terminateRequested bool
+	stopped            bool
 }
 
 func (s *workerSession) setSender(send func(any) error) {
@@ -88,6 +115,29 @@ func (s *workerSession) setSender(send func(any) error) {
 	s.sendMu.Lock()
 	s.send = send
 	s.sendMu.Unlock()
+}
+
+func (s *workerSession) markTerminated() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.terminateRequested = true
+}
+
+func (s *workerSession) isTerminated() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminateRequested || s.stopped
+}
+
+func (s *workerSession) drainOutbound() {
+	for {
+		select {
+		case sig := <-s.outbound:
+			clear(sig)
+		default:
+			return
+		}
+	}
 }
 
 func (s *workerSession) sendFrame(msg any) error {
@@ -184,81 +234,159 @@ func (b *SessionWorkerBroker) start(ctx context.Context, offer SessionOffer, fra
 }
 
 func (b *SessionWorkerBroker) run(ctx context.Context, offer SessionOffer, frame []byte, session *workerSession) {
+	initialOfferFrame := append([]byte(nil), frame...)
+	defer clear(initialOfferFrame)
 	defer clear(frame)
-	process, err := b.launcher.Launch(ctx, offer, frame)
-	if err != nil {
-		reason := classifyWorkerLaunchError(err)
-		_ = sendRejectedAnswer(session.sendFrame, offer.SessionID, reason)
-		b.remove(offer.SessionID, session)
-		return
-	}
-	b.mu.Lock()
-	if b.sessions[offer.SessionID] != session || ctx.Err() != nil {
-		b.mu.Unlock()
-		_ = process.Close()
-		return
-	}
-	session.process = process
-	b.mu.Unlock()
+	defer b.remove(offer.SessionID, session)
 
-	writerDone := make(chan error, 1)
-	go func() {
-		for {
+	var restarts int
+	restartWindow := time.Now()
+
+	for {
+		if ctx.Err() != nil || session.isTerminated() {
+			return
+		}
+
+		process, err := b.launcher.Launch(ctx, offer, initialOfferFrame)
+		if err != nil {
+			if restarts == 0 {
+				reason := classifyWorkerLaunchError(err)
+				_ = sendRejectedAnswer(session.sendFrame, offer.SessionID, reason)
+				return
+			}
+			workerLog("[LINK RECOVERY] Worker restart launch failed for session %s: %v", offer.SessionID, err)
 			select {
 			case <-ctx.Done():
-				writerDone <- ctx.Err()
 				return
-			case signal := <-session.outbound:
-				err := process.Send(ctx, signal)
-				clear(signal)
+			case <-time.After(1 * time.Second):
+			}
+			if time.Since(restartWindow) >= 60*time.Second {
+				restartWindow = time.Now()
+				restarts = 0
+			}
+			restarts++
+			if restarts > 3 {
+				workerLog("[LINK RECOVERY] Worker restart limit reached (3 in 60s) for session %s, terminating", offer.SessionID)
+				return
+			}
+			continue
+		}
+
+		b.mu.Lock()
+		if b.sessions[offer.SessionID] != session || ctx.Err() != nil {
+			b.mu.Unlock()
+			_ = process.Close()
+			return
+		}
+		session.process = process
+		b.mu.Unlock()
+
+		workerLog("[LINK HOST] Active worker attached to session %s (restart count: %d)", offer.SessionID, restarts)
+
+		// Drain stale signals from previous dead worker only on restart
+		if restarts > 0 {
+			session.drainOutbound()
+		}
+
+		procCtx, procCancel := context.WithCancel(ctx)
+		writerDone := make(chan error, 1)
+		go func() {
+			for {
+				select {
+				case <-procCtx.Done():
+					writerDone <- procCtx.Err()
+					return
+				case signal := <-session.outbound:
+					err := process.Send(procCtx, signal)
+					clear(signal)
+					if err != nil {
+						writerDone <- err
+						return
+					}
+				}
+			}
+		}()
+
+		type readResult struct {
+			frame []byte
+			err   error
+		}
+		readResults := make(chan readResult, 1)
+		go func() {
+			for {
+				frame, err := process.Receive(procCtx)
+				select {
+				case readResults <- readResult{frame: frame, err: err}:
+				case <-procCtx.Done():
+					clear(frame)
+					return
+				}
 				if err != nil {
-					writerDone <- err
 					return
 				}
 			}
-		}
-	}()
+		}()
 
-	defer b.remove(offer.SessionID, session)
-	type readResult struct {
-		frame []byte
-		err   error
-	}
-	readResults := make(chan readResult, 1)
-	go func() {
-		for {
-			frame, err := process.Receive(ctx)
+		procDone := false
+		for !procDone {
 			select {
-			case readResults <- readResult{frame: frame, err: err}:
 			case <-ctx.Done():
-				clear(frame)
+				procCancel()
+				_ = process.Close()
 				return
-			}
-			if err != nil {
-				return
+			case err := <-writerDone:
+				if err != nil {
+					workerLog("[LINK RECOVERY] Worker writer stopped for session %s: %v", offer.SessionID, err)
+					procCancel()
+					procDone = true
+				}
+			case result := <-readResults:
+				if result.err != nil {
+					workerLog("[LINK RECOVERY] Worker reader stopped for session %s: %v", offer.SessionID, result.err)
+					procCancel()
+					procDone = true
+					break
+				}
+				response := result.frame
+				if !validWorkerResponse(response, offer.SessionID) {
+					clear(response)
+					procCancel()
+					procDone = true
+					break
+				}
+				var envelope Envelope
+				_ = json.Unmarshal(response, &envelope)
+				if envelope.Type == "session_terminate" {
+					session.markTerminated()
+				}
+				_ = session.sendFrame(json.RawMessage(response))
+				clear(response)
 			}
 		}
-	}()
-	for {
+
+		procCancel()
+		_ = process.Close()
+
+		if session.isTerminated() || ctx.Err() != nil {
+			workerLog("[LINK HOST] Session %s terminated cleanly, not restarting", offer.SessionID)
+			return
+		}
+
+		if time.Since(restartWindow) >= 60*time.Second {
+			restartWindow = time.Now()
+			restarts = 0
+		}
+		restarts++
+		if restarts > 3 {
+			workerLog("[LINK RECOVERY] Worker restart limit reached (3 in 60s) for session %s, giving up", offer.SessionID)
+			return
+		}
+
+		workerLog("[LINK RECOVERY] Initiating recovery restart %d/3 for session %s in 500ms...", restarts, offer.SessionID)
 		select {
 		case <-ctx.Done():
 			return
-		case err := <-writerDone:
-			if err != nil {
-				return
-			}
-		case result := <-readResults:
-			if result.err != nil {
-				clear(result.frame)
-				return
-			}
-			response := result.frame
-			if !validWorkerResponse(response, offer.SessionID) {
-				clear(response)
-				return
-			}
-			_ = session.sendFrame(json.RawMessage(response))
-			clear(response)
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }
@@ -296,6 +424,7 @@ func (b *SessionWorkerBroker) stop(sessionID string) {
 	if session == nil {
 		return
 	}
+	session.markTerminated()
 	session.cancel()
 	if session.process != nil {
 		_ = session.process.Close()
@@ -318,6 +447,7 @@ func (b *SessionWorkerBroker) stopProcess(session *workerSession) {
 	if session == nil {
 		return
 	}
+	session.markTerminated()
 	session.cancel()
 	if session.process != nil {
 		_ = session.process.Close()

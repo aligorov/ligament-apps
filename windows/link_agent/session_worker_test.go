@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -345,4 +346,135 @@ func TestSessionWorkerBrokerRebindSenderAndRepeatedSessionAnswer(t *testing.T) {
 			t.Fatalf("did not receive answer #%d over rebound WSS sender", i+1)
 		}
 	}
+}
+
+func TestSessionWorkerBrokerRecoversFromWorkerCrash(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proc1 := newFakeSessionWorker()
+	proc2 := newFakeSessionWorker()
+
+	var launchMu sync.Mutex
+	launchCount := 0
+	launcher := &dynamicFakeLauncher{
+		launchFn: func(ctx context.Context, offer SessionOffer, frame []byte) (SessionWorkerProcess, error) {
+			launchMu.Lock()
+			defer launchMu.Unlock()
+			launchCount++
+			if launchCount == 1 {
+				return proc1, nil
+			}
+			return proc2, nil
+		},
+		started: make(chan int, 4),
+	}
+
+	broker := NewSessionWorkerBroker(launcher)
+	defer broker.stop(testSessionID)
+
+	offer := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","access_type":"unattended","access_mode":"control","sdp":"v=0 offer","ice_servers":[],"dlp":{}}}`)
+	sentFrames := make(chan string, 8)
+	sender := func(msg any) error {
+		if raw, ok := msg.(json.RawMessage); ok {
+			sentFrames <- string(raw)
+		}
+		return nil
+	}
+
+	if err := broker.Handler(ctx, offer, sender); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case count := <-launcher.started:
+		if count != 1 {
+			t.Fatalf("expected launch #1, got %d", count)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial launch not called")
+	}
+
+	// First worker answers
+	ans1, _ := MarshalSessionAnswer(testSessionID, true, "", "v=0 ans1")
+	proc1.responses <- ans1
+
+	select {
+	case msg := <-sentFrames:
+		if !strings.Contains(string(msg), "v=0 ans1") {
+			t.Fatalf("expected ans1, got %s", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive initial answer")
+	}
+
+	// Simulate unexpected worker crash / pipe broken
+	_ = proc1.Close()
+
+	// Broker should automatically recover and launch proc2 within ~500ms
+	select {
+	case count := <-launcher.started:
+		if count != 2 {
+			t.Fatalf("expected restart launch #2, got %d", count)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker recovery restart was not triggered after worker crash")
+	}
+
+	// proc2 answers after restart
+	ans2, _ := MarshalSessionAnswer(testSessionID, true, "", "v=0 ans2-recovered")
+	proc2.responses <- ans2
+
+	select {
+	case msg := <-sentFrames:
+		if !strings.Contains(string(msg), "v=0 ans2-recovered") {
+			t.Fatalf("expected ans2-recovered, got %s", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive answer from recovered worker")
+	}
+
+	// Explicit session termination cleanly stops recovery
+	term := []byte(`{"type":"session_terminate","session_id":"` + testSessionID + `","payload":{"session_id":"` + testSessionID + `","reason":"host_local_disconnect"}}`)
+	proc2.responses <- term
+
+	select {
+	case msg := <-sentFrames:
+		if !strings.Contains(string(msg), "host_local_disconnect") {
+			t.Fatalf("expected termination frame, got %s", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive termination frame")
+	}
+
+	// Close proc2: since it was terminated cleanly, launchCount should NOT increase
+	_ = proc2.Close()
+	select {
+	case extra := <-launcher.started:
+		t.Fatalf("unexpected recovery launch #%d after clean termination", extra)
+	case <-time.After(750 * time.Millisecond):
+		// Success: no restart occurred
+	}
+}
+
+type dynamicFakeLauncher struct {
+	launchFn func(context.Context, SessionOffer, []byte) (SessionWorkerProcess, error)
+	started  chan int
+	count    int
+	mu       sync.Mutex
+}
+
+func (l *dynamicFakeLauncher) Launch(ctx context.Context, offer SessionOffer, frame []byte) (SessionWorkerProcess, error) {
+	p, err := l.launchFn(ctx, offer, frame)
+	if err == nil {
+		l.mu.Lock()
+		l.count++
+		c := l.count
+		l.mu.Unlock()
+		select {
+		case l.started <- c:
+		default:
+		}
+	}
+	return p, err
 }
