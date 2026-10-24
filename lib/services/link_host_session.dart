@@ -11,7 +11,7 @@ import 'input_injector.dart';
 import 'link_host_readiness.dart';
 import 'link_host_recorder.dart';
 import 'support_service.dart'
-    show assembleFileChunks, resolveNonCollidingFilePath;
+    show SupportChatMessage, assembleFileChunks, resolveNonCollidingFilePath;
 import '../models/link_control_messages.dart';
 import '../models/link_session_policy.dart';
 
@@ -442,6 +442,62 @@ class LinkHostWorkerState extends ChangeNotifier {
     _disconnectHandler?.call();
   }
 
+  final List<SupportChatMessage> _chatMessages = [];
+  List<SupportChatMessage> get chatMessages => List.unmodifiable(_chatMessages);
+  int _unreadChatCount = 0;
+  int get unreadChatCount => _unreadChatCount;
+  void Function(Map<String, dynamic>)? _chatSender;
+
+  void bindChatSender(void Function(Map<String, dynamic>) sender) {
+    _chatSender = sender;
+  }
+
+  void receiveChatMessage(Map<String, dynamic> raw) {
+    try {
+      final msg = SupportChatMessage.fromJson(raw);
+      final isDup = _chatMessages.any((m) =>
+          m.id == msg.id ||
+          (msg.clientId.isNotEmpty && m.clientId == msg.clientId) ||
+          (m.sender == msg.sender &&
+              m.text == msg.text &&
+              m.timestamp.difference(msg.timestamp).abs().inSeconds < 5));
+      if (!isDup) {
+        _chatMessages.add(msg);
+        _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        _unreadChatCount++;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('link_host: receiveChatMessage error: $e');
+    }
+  }
+
+  void sendChatMessage(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    final now = DateTime.now();
+    final ms = now.millisecondsSinceEpoch;
+    final msg = SupportChatMessage(
+      id: 'host_msg_$ms',
+      sender: 'user',
+      senderName: 'Пользователь',
+      text: trimmed,
+      timestamp: now,
+      clientId: 'host-msg_$ms',
+    );
+    _chatMessages.add(msg);
+    _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    notifyListeners();
+    _chatSender?.call(msg.toJson());
+  }
+
+  void clearUnreadChat() {
+    if (_unreadChatCount > 0) {
+      _unreadChatCount = 0;
+      notifyListeners();
+    }
+  }
+
   void markClosed() {
     confirmationCode = '';
     if (_consent?.isCompleted == false) _consent!.complete(false);
@@ -694,32 +750,35 @@ Future<void> _runConnectedLinkHostWorker(
           onMandatoryViolation: (reason) => unawaited(session.reject(reason)),
         )
       : null;
+  final peer = FlutterLinkHostPeer(
+    onConnected: () {
+      state.markActive();
+      recorder?.start();
+    },
+    onControlInputObserved: recorder?.observeControlInput,
+    onChatMessageReceived: state.receiveChatMessage,
+    onFrameCaptured: recorder == null
+        ? null
+        : (kind, bytes, monitorId) async {
+            final frameInfo = await prepareRecordedFrame(bytes);
+            if (frameInfo != null) {
+              recorder.enqueueFrame(
+                frameKind: kind,
+                payload: frameInfo.payload,
+                monitorId: monitorId,
+                width: frameInfo.width,
+                height: frameInfo.height,
+                codec: frameInfo.codec,
+              );
+            }
+          },
+    policy: LinkSessionPolicy.fromWire(offer['dlp']),
+  );
+  state.bindChatSender(peer.sendChatMessage);
   session = LinkHostSession(
     sessionId: sessionId,
     accessMode: accessMode,
-    peer: FlutterLinkHostPeer(
-      onConnected: () {
-        state.markActive();
-        recorder?.start();
-      },
-      onControlInputObserved: recorder?.observeControlInput,
-      onFrameCaptured: recorder == null
-          ? null
-          : (kind, bytes, monitorId) async {
-              final frameInfo = await prepareRecordedFrame(bytes);
-              if (frameInfo != null) {
-                recorder.enqueueFrame(
-                  frameKind: kind,
-                  payload: frameInfo.payload,
-                  monitorId: monitorId,
-                  width: frameInfo.width,
-                  height: frameInfo.height,
-                  codec: frameInfo.codec,
-                );
-              }
-            },
-      policy: LinkSessionPolicy.fromWire(offer['dlp']),
-    ),
+    peer: peer,
     send: (frame) {
       final next = outgoing.then((_) async {
         if (unixTransport != null) {
@@ -835,6 +894,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   FlutterLinkHostPeer({
     this.onConnected,
     this.onControlInputObserved,
+    this.onChatMessageReceived,
     this.onFrameCaptured,
     this.policy = const LinkSessionPolicy(),
   });
@@ -846,12 +906,14 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   final VoidCallback? onConnected;
   final void Function(Map<String, dynamic> input)? onControlInputObserved;
+  final void Function(Map<String, dynamic> message)? onChatMessageReceived;
   final void Function(String frameKind, Uint8List bytes, String monitorId)?
       onFrameCaptured;
   final LinkSessionPolicy policy;
 
   RTCPeerConnection? _peer;
   MediaStream? _stream;
+  MediaStream? _audioStream;
   RTCRtpSender? _videoSender;
   RTCRtpSender? _audioSender;
   RTCDataChannel? _control;
@@ -1006,22 +1068,6 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       'audio': false,
       'video': videoConstraints,
     }).timeout(const Duration(seconds: 5));
-    // If loopback didn't yield an audio track, try fallback to default audio input (mic/stereo mix)
-    if (withAudio && stream.getAudioTracks().isEmpty && !kIsWeb) {
-      try {
-        final audioStream = await navigator.mediaDevices
-            .getUserMedia(<String, dynamic>{'audio': true, 'video': false})
-            .timeout(const Duration(seconds: 2));
-        for (final track in audioStream.getAudioTracks()) {
-          debugPrint(
-              'link_host_session: attached audio input fallback track: ${track.id}');
-          await stream.addTrack(track);
-        }
-      } catch (e) {
-        debugPrint(
-            'link_host_session: audio input fallback (mic/stereo mix) unavailable: $e');
-      }
-    }
     return stream;
   }
 
@@ -1098,14 +1144,17 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       _selectedScreenId = targetScreenId;
 
       if (oldStream != null) {
-        for (final t in oldStream.getTracks()) {
+        // Останавливаем только видеотреки старого потока, сохраняя системное аудио ПК
+        for (final t in oldStream.getVideoTracks()) {
           try {
             await t.stop();
           } catch (_) {}
         }
-        try {
-          await oldStream.dispose();
-        } catch (_) {}
+        if (oldStream != _audioStream) {
+          try {
+            await oldStream.dispose();
+          } catch (_) {}
+        }
       }
 
       _screenRect =
@@ -1249,6 +1298,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       throw StateError('Link host peer closed during capture');
     }
     _stream = capture;
+    if (capture.getAudioTracks().isNotEmpty) {
+      _audioStream = capture;
+    }
     for (final track in capture.getVideoTracks()) {
       _videoSender = await peer.addTrack(track, capture);
     }
@@ -1288,12 +1340,20 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     return answer.sdp ?? '';
   }
 
+  void sendChatMessage(Map<String, dynamic> message) {
+    _sendControlJson(message);
+  }
+
   static bool isValidInput(Map<String, dynamic> input) => _isValidInput(input);
 
   static bool _isValidInput(Map<String, dynamic> input) {
     final type = input['type'];
     if (type == 'ping' || type == 'pong') {
       return true;
+    }
+    if (type == 'chat_message') {
+      final text = input['text'];
+      return text is String && text.trim().isNotEmpty && text.length <= 4096;
     }
     if (type == 'mouse_move' || type == 'mouse_down' || type == 'mouse_up') {
       final x = input['x'];
@@ -1392,6 +1452,10 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (_closed || !policy.allows(input, allowControl: _allowControl)) return;
     onControlInputObserved?.call(input);
     final type = input['type'];
+    if (type == 'chat_message') {
+      onChatMessageReceived?.call(input);
+      return;
+    }
     if (onFrameCaptured != null &&
         (type == 'mouse_down' || type == 'key_down' || type == 'hotkey')) {
       final now = DateTime.now();
@@ -1811,6 +1875,14 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         track.stop();
       }
       await stream.dispose();
+    }
+    final audioStream = _audioStream;
+    _audioStream = null;
+    if (audioStream != null && audioStream != stream) {
+      for (final track in audioStream.getTracks()) {
+        track.stop();
+      }
+      await audioStream.dispose();
     }
     final peer = _peer;
     _peer = null;

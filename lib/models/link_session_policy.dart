@@ -23,8 +23,9 @@ class LinkSessionPolicy {
   bool allows(Map<String, dynamic> input, {required bool allowControl}) {
     if (input['type'] == 'screen_list' ||
         input['type'] == 'switch_screen' ||
-        input['type'] == 'video_quality') {
-      return true; // Screen/quality selection is not keyboard/mouse/clipboard control.
+        input['type'] == 'video_quality' ||
+        input['type'] == 'chat_message') {
+      return true; // Screen/quality/chat is not keyboard/mouse/clipboard control.
     }
     if (!allowControl) return false;
     switch (input['type']) {

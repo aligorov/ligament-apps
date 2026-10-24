@@ -2194,18 +2194,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
 
     _sendDataMessage(msg.toJson());
-    _sendWsSignal(msg.toJson());
+    if (!widget.isLink) {
+      _sendWsSignal(msg.toJson());
 
-    auth.api
-        ?.sendSupportChatMessage(
-      sessionId: widget.sessionId,
-      text: msg.text,
-      senderName: operatorName,
-      clientId: msg.clientId,
-    )
-        .catchError((e) {
-      debugPrint('support_operator: ошибка отправки сообщения через API: $e');
-    });
+      auth.api
+          ?.sendSupportChatMessage(
+        sessionId: widget.sessionId,
+        text: msg.text,
+        senderName: operatorName,
+        clientId: msg.clientId,
+      )
+          .catchError((e) {
+        debugPrint('support_operator: ошибка отправки сообщения через API: $e');
+      });
+    }
   }
 
   void _showOperatorChatModal() {
@@ -2218,9 +2220,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final scrollController = ScrollController();
 
     Timer? historyPoller;
-    historyPoller = Timer.periodic(const Duration(seconds: 2), (_) {
-      _loadChatHistory();
-    });
+    if (!widget.isLink && !widget.ownerMode) {
+      historyPoller = Timer.periodic(const Duration(seconds: 2), (_) {
+        _loadChatHistory();
+      });
+    }
 
     showModalBottomSheet(
       context: context,

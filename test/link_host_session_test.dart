@@ -1,7 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/screens/link_host_overlay.dart';
 import 'package:ligament_authenticator/services/link_host_session.dart';
@@ -377,5 +377,126 @@ void main() {
       }),
       isTrue,
     );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'chat_message',
+        'text': 'Здравствуйте, чем могу помочь?',
+      }),
+      isTrue,
+    );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'chat_message',
+        'text': '   ',
+      }),
+      isFalse,
+    );
+    expect(
+      LinkHostSession.isValidControlInput({
+        'type': 'chat_message',
+        'text': 'a' * 4097,
+      }),
+      isFalse,
+    );
+  });
+
+  test('LinkHostWorkerState handles bidirectional chat and unread counters', () {
+    final state = LinkHostWorkerState();
+    final sentMessages = <Map<String, dynamic>>[];
+    state.bindChatSender((msg) => sentMessages.add(msg));
+
+    expect(state.chatMessages, isEmpty);
+    expect(state.unreadChatCount, 0);
+
+    // Host sends message to operator
+    state.sendChatMessage('Привет оператор!');
+    expect(state.chatMessages, hasLength(1));
+    expect(state.chatMessages.first.text, 'Привет оператор!');
+    expect(state.chatMessages.first.sender, 'user');
+    expect(sentMessages, hasLength(1));
+    expect(sentMessages.first['type'], 'chat_message');
+    expect(sentMessages.first['text'], 'Привет оператор!');
+    expect(sentMessages.first['client_id'], isNotEmpty);
+    expect(state.unreadChatCount, 0); // Outgoing does not increment unread
+
+    // Incoming message from operator
+    final now = DateTime.now();
+    state.receiveChatMessage({
+      'type': 'chat_message',
+      'id': 'op-1',
+      'sender': 'operator',
+      'sender_name': 'Инженер Поддержки',
+      'text': 'Здравствуйте!',
+      'timestamp': now.millisecondsSinceEpoch,
+      'client_id': 'client-op-1',
+    });
+    expect(state.chatMessages, hasLength(2));
+    expect(state.unreadChatCount, 1);
+
+    // Duplicate message is ignored
+    state.receiveChatMessage({
+      'type': 'chat_message',
+      'id': 'op-1',
+      'sender': 'operator',
+      'sender_name': 'Инженер Поддержки',
+      'text': 'Здравствуйте!',
+      'timestamp': now.millisecondsSinceEpoch,
+      'client_id': 'client-op-1',
+    });
+    expect(state.chatMessages, hasLength(2));
+    expect(state.unreadChatCount, 1);
+
+    // Clear unread
+    state.clearUnreadChat();
+    expect(state.unreadChatCount, 0);
+  });
+
+  testWidgets('LinkHostOverlay toggles chat panel and sends messages',
+      (tester) async {
+    const windowChannel = MethodChannel('window_manager');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      windowChannel,
+      (call) async => null,
+    );
+    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+
+    final state = LinkHostWorkerState()
+      ..showSession(_sessionId, 'control', 'Оператор')
+      ..markActive();
+    final sent = <Map<String, dynamic>>[];
+    state.bindChatSender((m) => sent.add(m));
+
+    await tester.pumpWidget(LinkHostOverlay(state: state));
+    await tester.pump();
+
+    // Chat button is visible
+    expect(find.text('Чат'), findsOneWidget);
+    expect(find.text('Введите сообщение…'), findsNothing);
+
+    // Open chat
+    await tester.tap(find.text('Чат'));
+    await tester.pump();
+
+    expect(find.text('Закрыть чат'), findsOneWidget);
+    expect(find.text('Введите сообщение…'), findsOneWidget);
+    expect(find.text('Нет сообщений. Напишите оператору.'), findsOneWidget);
+
+    // Type and send message
+    await tester.enterText(find.byType(TextField), 'Проверка связи');
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+
+    expect(sent, hasLength(1));
+    expect(sent.first['text'], 'Проверка связи');
+    expect(find.text('Проверка связи'), findsOneWidget);
+
+    // Close chat
+    await tester.tap(find.text('Закрыть чат'));
+    await tester.pump();
+
+    expect(find.text('Чат'), findsOneWidget);
+    expect(find.text('Введите сообщение…'), findsNothing);
   });
 }
