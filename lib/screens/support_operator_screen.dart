@@ -2962,7 +2962,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
       final auth = context.read<AuthState>();
       final sessId = widget.sessionId;
-      final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
+      final isOwner = widget.ownerMode ||
+          widget.sessionData['owner'] == true ||
+          widget.sessionData['session_kind'] == 'console' ||
+          widget.sessionData['mode'] == 'screen';
       _releaseAllPressedInputs();
       try {
         if (_dataChannel != null &&
@@ -3021,7 +3024,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final auth = _auth;
     final sessId = widget.sessionId;
     if (auth != null && auth.api != null && sessId.isNotEmpty) {
-      final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
+      final isOwner = widget.ownerMode ||
+          widget.sessionData['owner'] == true ||
+          widget.sessionData['session_kind'] == 'console' ||
+          widget.sessionData['mode'] == 'screen';
       try {
         // dispose() у оператора — тоже корректный конец сессии (окно
         // закрыли = сеанс завершён), иначе она висит active в очереди.
@@ -3924,7 +3930,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Widget build(BuildContext context) {
     final strings = context.strings;
     final isLink = widget.isLink;
-    final isOwner = widget.ownerMode || widget.sessionData['owner'] == true;
+    final isOwner = widget.ownerMode ||
+        widget.sessionData['owner'] == true ||
+        widget.sessionData['session_kind'] == 'console' ||
+        widget.sessionData['mode'] == 'screen';
     final String clientName;
     final String pcName;
     final bool is1C;
@@ -3989,21 +3998,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         tooltip: strings.backTooltip,
                         onPressed: () => Navigator.of(context).pop(),
                       ),
-                      if (isLink)
+                      if (isOwner)
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF6366F1),
+                            color: const Color(0xFF8B5CF6),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: const Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.link, size: 12, color: Colors.white),
+                              Icon(Icons.computer,
+                                  size: 13, color: Colors.white),
                               SizedBox(width: 4),
                               Text(
-                                'LINK',
+                                'CONSOLE',
                                 style: TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,
@@ -4012,23 +4022,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             ],
                           ),
                         )
-                      else if (isOwner)
+                      else if (isLink)
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF10B981),
+                            color: const Color(0xFF0284C7),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: Row(
+                          child: const Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.home_work_outlined,
-                                  size: 12, color: Colors.white),
-                              const SizedBox(width: 4),
+                              Icon(Icons.language,
+                                  size: 13, color: Colors.white),
+                              SizedBox(width: 4),
                               Text(
-                                strings.ownerScreenBadge,
-                                style: const TextStyle(
+                                'LINK',
+                                style: TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 11),
@@ -4041,17 +4051,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
-                            color: is1C
-                                ? const Color(0xFFF59E0B)
-                                : const Color(0xFF0284C7),
+                            color: const Color(0xFFF43F5E),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: Text(
-                            is1C ? (strings.isRu ? '1С' : '1C') : 'IT',
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 11),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.help_outline,
+                                  size: 13, color: Colors.white),
+                              const SizedBox(width: 4),
+                              Text(
+                                is1C ? 'SOS · 1С' : 'SOS',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11),
+                              ),
+                            ],
                           ),
                         ),
                       const SizedBox(width: 8),

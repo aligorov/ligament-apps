@@ -12,6 +12,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../api/client.dart';
 import 'input_injector.dart';
 import 'telemetry_service.dart';
+import 'link_host_recorder.dart';
 
 class SupportChatMessage {
   final String id;
@@ -342,6 +343,10 @@ class SupportService extends ChangeNotifier {
   Timer? _telemetryTimer;
   Timer? _leaseWatchdogTimer;
   final TelemetryService _telemetry = TelemetryService();
+
+  LinkHostRecorder? _recorder;
+  Timer? _recorderSnapshotTimer;
+  bool _capturingRecorderFrame = false;
 
   final List<SupportChatMessage> _chatMessages = [];
   int _unreadChatCount = 0;
@@ -1205,6 +1210,7 @@ class SupportService extends ChangeNotifier {
       _state = SupportSessionState.active;
       _startPeriodicTelemetry();
       _startLeaseWatchdog();
+      _startRecorder();
       _setWakelock(true);
       notifyListeners();
     }
@@ -1658,6 +1664,85 @@ class SupportService extends ChangeNotifier {
     } catch (_) {}
   }
 
+  void _startRecorder() {
+    final sid = _activeSessionId;
+    final api = _api;
+    if (sid == null || sid.isEmpty || api == null) return;
+    try {
+      final base = api.baseUrl;
+      final ingestUrl = '$base/api/v1/link/sessions/$sid/recorder/batch';
+      _recorder?.stop(reason: 'restarted');
+      _recorder = LinkHostRecorder(
+        sessionId: sid,
+        config: LinkRecordingConfig(
+          enabled: true,
+          effectiveMode: 'record+AI',
+          ingestUrl: ingestUrl,
+          ingestToken: api.token ?? '',
+          leaseTtl: const Duration(seconds: 45),
+          maxAckLag: const Duration(seconds: 30),
+        ),
+      );
+      _recorder?.start();
+
+      unawaited(_captureRecorderSnapshot('keyframe'));
+      _recorderSnapshotTimer?.cancel();
+      _recorderSnapshotTimer = Timer.periodic(
+        const Duration(seconds: 4),
+        (_) => unawaited(_captureRecorderSnapshot('periodic')),
+      );
+    } catch (e) {
+      debugPrint('support_service: recorder start failed: $e');
+    }
+  }
+
+  void _stopRecorder() {
+    _recorderSnapshotTimer?.cancel();
+    _recorderSnapshotTimer = null;
+    final rec = _recorder;
+    _recorder = null;
+    if (rec != null) {
+      unawaited(rec.stop(reason: 'session_ended'));
+    }
+  }
+
+  Future<void> _captureRecorderSnapshot(String frameKind) async {
+    final rec = _recorder;
+    if (rec == null || _capturingRecorderFrame || _state != SupportSessionState.active) {
+      return;
+    }
+    _capturingRecorderFrame = true;
+    try {
+      final srcId = _currentScreenId ?? '0';
+      Uint8List? bytes;
+      try {
+        final raw = await WebRTC.invokeMethod(
+          'getDesktopSourceThumbnail',
+          <String, dynamic>{
+            'sourceId': srcId,
+            'thumbnailSize': {'width': 1280, 'height': 720},
+          },
+        ).timeout(const Duration(seconds: 2));
+        if (raw is Uint8List && raw.isNotEmpty) {
+          bytes = raw;
+        }
+      } catch (_) {}
+      if (bytes != null && bytes.isNotEmpty && _state == SupportSessionState.active) {
+        rec.enqueueFrame(
+          frameKind: frameKind,
+          payload: bytes,
+          monitorId: srcId,
+          width: 1280,
+          height: 720,
+          codec: 'jpeg',
+        );
+      }
+    } catch (_) {
+    } finally {
+      _capturingRecorderFrame = false;
+    }
+  }
+
   /// Начало входящей файловой передачи: проверка лимитов размера и числа
   /// одновременных закачек, запуск таймаута ожидания первого чанка.
   void _handleFileStart(Map<String, dynamic> input) {
@@ -1838,6 +1923,11 @@ class SupportService extends ChangeNotifier {
         type != 'switch_screen') {
       debugPrint('support_service: команда "$type" отклонена (view_only)');
       return;
+    }
+
+    _recorder?.observeControlInput(input);
+    if (type == 'mouse_down' || type == 'key_down' || type == 'text_input') {
+      unawaited(_captureRecorderSnapshot('activity'));
     }
 
     if (serviceHost && (type == 'clipboard_set' || type == 'clipboard_get')) {
@@ -2142,6 +2232,8 @@ class SupportService extends ChangeNotifier {
       _p2pConnected = false;
       _iceRestartAttempts = 0;
       _lastIceRestartAt = null;
+
+      _stopRecorder();
 
       _pendingCandidates.clear();
 
