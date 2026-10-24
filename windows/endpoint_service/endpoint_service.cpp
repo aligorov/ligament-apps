@@ -1484,6 +1484,14 @@ void WINAPI SvcMain(DWORD argc, wchar_t** argv) {
     SetServiceStatus(g_hStatus, &g_status);
     Log(L"endpoint-служба запущена (pid=%lu, version=%S)", GetCurrentProcessId(), kAgentVersion);
 
+    HKEY hKeySas = nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                        0, nullptr, 0, KEY_SET_VALUE, nullptr, &hKeySas, nullptr) == ERROR_SUCCESS) {
+        DWORD val = 3;
+        RegSetValueExW(hKeySas, L"SoftwareSASGeneration", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&val), sizeof(val));
+        RegCloseKey(hKeySas);
+    }
+
     WorkerLoop();
 
     g_status.dwCurrentState = SERVICE_STOPPED;

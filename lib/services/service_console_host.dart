@@ -393,6 +393,7 @@ Future<void> runServiceConsoleHost(String pipe) async {
   ).timeout(const Duration(seconds: 10));
   socket.pingInterval = const Duration(seconds: 10);
   final done = Completer<void>();
+  String stopReason = '';
   final host = ServiceConsoleController(
     sessionId: bootstrap.sessionId,
     capture: _WebRtcServiceCapture(),
@@ -401,6 +402,7 @@ Future<void> runServiceConsoleHost(String pipe) async {
     serverUrl: bootstrap.serverUrl,
     hostToken: bootstrap.hostToken,
     onStopped: (reason) async {
+      stopReason = reason;
       debugPrint('service_console: stopped ($reason)');
       unawaited(socket.close());
       if (!done.isCompleted) done.complete();
@@ -417,5 +419,7 @@ Future<void> runServiceConsoleHost(String pipe) async {
     cancelOnError: true,
   );
   await done.future;
-  exit(0);
+  // If stopped cleanly by server command, exit 0 so service breaks from loop.
+  // If stopped abnormally (desktop switch, error, crash), exit 1 so service restarts worker.
+  exit(stopReason == 'server_ended' ? 0 : 1);
 }

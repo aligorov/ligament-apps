@@ -2043,6 +2043,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           if (msg.id.isNotEmpty && m.id.isNotEmpty) {
             return m.id == msg.id;
           }
+          if (msg.clientId.isNotEmpty ||
+              m.clientId.isNotEmpty ||
+              msg.id.isNotEmpty ||
+              m.id.isNotEmpty) {
+            return false;
+          }
           return m.sender == msg.sender &&
               m.text == msg.text &&
               m.timestamp.difference(msg.timestamp).abs().inSeconds < 5;

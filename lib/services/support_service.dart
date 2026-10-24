@@ -334,6 +334,10 @@ class SupportService extends ChangeNotifier {
 
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
+  MediaStream? _audioStream;
+  Timer? _desktopSwitchTimer;
+  Timer? _desktopRecoveryTimer;
+  bool _switchingScreen = false;
   RTCDataChannel? _dataChannel;
   ApiClient? _api;
 
@@ -1152,6 +1156,10 @@ class SupportService extends ChangeNotifier {
     _leaseWatchdogTimer?.cancel();
     _leaseWatchdogTimer = null;
     _localLeaseDeadline = null;
+    _desktopSwitchTimer?.cancel();
+    _desktopSwitchTimer = null;
+    _desktopRecoveryTimer?.cancel();
+    _desktopRecoveryTimer = null;
   }
 
   void _startLeaseWatchdog() {
@@ -1212,8 +1220,31 @@ class SupportService extends ChangeNotifier {
       _startLeaseWatchdog();
       _startRecorder();
       _setWakelock(true);
+      if (!kIsWeb && Platform.isWindows) {
+        _startDesktopSwitchWatchdog();
+      }
       notifyListeners();
     }
+  }
+
+  void _startDesktopSwitchWatchdog() {
+    _desktopSwitchTimer?.cancel();
+    _desktopSwitchTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_p2pConnected &&
+          _peerConnection != null &&
+          !_isStopping &&
+          !_switchingScreen) {
+        if (InputInjector.instance.consumeDesktopChanged()) {
+          final screenId = _currentScreenId ?? '0';
+          _desktopRecoveryTimer?.cancel();
+          _desktopRecoveryTimer = Timer(const Duration(milliseconds: 600), () {
+            if (_p2pConnected && _peerConnection != null && !_isStopping) {
+              unawaited(switchScreen(_currentScreenId ?? screenId));
+            }
+          });
+        }
+      }
+    });
   }
 
   /// M-8: держим экран включенным, пока активна SOS-сессия (мобильные).
@@ -1585,29 +1616,56 @@ class SupportService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// Переключение транслируемого монитора на лету
+  /// Переключение транслируемого монитора на лету с сохранением аудио и защитой от падений
   Future<void> switchScreen(String screenId) async {
-    if (kIsWeb || _peerConnection == null) return;
+    if (kIsWeb || _peerConnection == null || _switchingScreen) return;
+    _switchingScreen = true;
     try {
-      MediaStream newStream;
-      try {
-        newStream =
-            await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-          'audio': false,
-          'video': {
-            'deviceId': {'exact': screenId},
-            'cursor': 'always',
-          },
+      MediaStream? newStream;
+      for (var attempt = 0; attempt < 6; attempt++) {
+        if (_peerConnection == null || _isStopping) return;
+        try {
+          try {
+            newStream =
+                await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+              'audio': false,
+              'video': {
+                'deviceId': {'exact': screenId},
+                'cursor': 'always',
+              },
+            }).timeout(const Duration(seconds: 4));
+          } catch (_) {
+            newStream =
+                await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+              'audio': false,
+              'video': {
+                'deviceId': screenId,
+                'cursor': 'always',
+              },
+            }).timeout(const Duration(seconds: 4));
+          }
+          if (newStream.getVideoTracks().isNotEmpty) {
+            break;
+          }
+        } catch (e) {
+          debugPrint('support_service: _openDisplayStream attempt $attempt failed: $e');
+          if (attempt < 5) {
+            await Future<void>.delayed(
+                Duration(milliseconds: 200 * (attempt + 1)));
+          }
+        }
+      }
+
+      if (newStream == null) {
+        debugPrint(
+            'support_service: failed to acquire stream during switch, scheduling recovery');
+        _desktopRecoveryTimer?.cancel();
+        _desktopRecoveryTimer = Timer(const Duration(milliseconds: 1500), () {
+          if (_p2pConnected && _peerConnection != null && !_isStopping) {
+            unawaited(switchScreen(screenId));
+          }
         });
-      } catch (_) {
-        newStream =
-            await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-          'audio': false,
-          'video': {
-            'deviceId': screenId,
-            'cursor': 'always',
-          },
-        });
+        return;
       }
 
       final newVideoTracks = newStream.getVideoTracks();
@@ -1622,20 +1680,65 @@ class SupportService extends ChangeNotifier {
         }
       }
 
-      _localStream?.getVideoTracks().forEach((t) {
+      final oldStream = _localStream;
+      final existingAudioTracks = oldStream?.getAudioTracks() ?? [];
+
+      oldStream?.getVideoTracks().forEach((t) {
         try {
           t.stop();
         } catch (_) {}
       });
-      _localStream?.dispose();
+
+      // Сохраняем аудиотрек системы, не вызывая dispose() у потока с аудио
+      if (existingAudioTracks.isNotEmpty) {
+        _audioStream ??= oldStream;
+      } else {
+        try {
+          oldStream?.dispose();
+        } catch (_) {}
+      }
+
       _localStream = newStream;
       _currentScreenId = screenId;
       _applyActiveScreenRect(screenId);
+
+      // Если аудио изначально не было получено (на экране блокировки/Winlogon),
+      // пытаемся захватить loopback после входа в сессию пользователя
+      final hasAudio = existingAudioTracks.isNotEmpty ||
+          (_audioStream != null && _audioStream!.getAudioTracks().isNotEmpty);
+      if (!hasAudio && !kIsWeb && (Platform.isWindows || Platform.isLinux)) {
+        try {
+          final loopback = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+            'audio': true,
+            'video': false,
+          }).timeout(const Duration(seconds: 3));
+          final newAudios = loopback.getAudioTracks();
+          if (newAudios.isNotEmpty && _peerConnection != null) {
+            final curSenders = await _peerConnection!.getSenders();
+            RTCRtpSender? audioSender;
+            for (final s in curSenders) {
+              if (s.track?.kind == 'audio') {
+                audioSender = s;
+                await s.replaceTrack(newAudios.first);
+                break;
+              }
+            }
+            if (audioSender == null) {
+              await _peerConnection!.addTrack(newAudios.first, loopback);
+            }
+            _audioStream = loopback;
+          }
+        } catch (e) {
+          debugPrint('support_service: loopback audio re-acquisition skipped: $e');
+        }
+      }
 
       await _sendScreenList();
       notifyListeners();
     } catch (e) {
       debugPrint('support_service: ошибка переключения экрана: $e');
+    } finally {
+      _switchingScreen = false;
     }
   }
 
@@ -2291,7 +2394,12 @@ class SupportService extends ChangeNotifier {
         } catch (_) {}
       }
 
-      // 4. Останавливаем все медиатреки захвата экрана
+      // 4. Останавливаем все медиатреки захвата экрана и аудио
+      _desktopSwitchTimer?.cancel();
+      _desktopSwitchTimer = null;
+      _desktopRecoveryTimer?.cancel();
+      _desktopRecoveryTimer = null;
+
       final stream = _localStream;
       _localStream = null;
       if (stream != null) {
@@ -2302,6 +2410,21 @@ class SupportService extends ChangeNotifier {
                   onTimeout: () => null);
             } catch (_) {}
           }
+        } catch (_) {}
+      }
+
+      final audioStr = _audioStream;
+      _audioStream = null;
+      if (audioStr != null) {
+        try {
+          for (final track in audioStr.getTracks()) {
+            try {
+              await track.stop().timeout(const Duration(milliseconds: 300),
+                  onTimeout: () => null);
+            } catch (_) {}
+          }
+          await audioStr.dispose().timeout(const Duration(milliseconds: 300),
+              onTimeout: () => null);
         } catch (_) {}
       }
 

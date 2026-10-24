@@ -175,6 +175,12 @@ void ExecuteSendMouse(const NativeInputTask& t) {
 }
 
 void ExecuteSendSas() {
+  HKEY hKey = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+    DWORD val = 3;
+    RegSetValueExW(hKey, L"SoftwareSASGeneration", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&val), sizeof(val));
+    RegCloseKey(hKey);
+  }
   HMODULE sas = LoadLibraryExW(L"sas.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (sas) {
     auto send_sas = reinterpret_cast<void(WINAPI*)(BOOL)>(GetProcAddress(sas, "SendSAS"));
