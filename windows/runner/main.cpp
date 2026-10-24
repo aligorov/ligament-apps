@@ -40,18 +40,51 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   bool service_console = false;
   bool link_host_worker = false;
+  bool start_minimized = false;
+  bool autoshare = false;
   for (const auto& argument : command_line_arguments) {
     if (argument.rfind("--service-console=", 0) == 0) service_console = true;
     if (argument.rfind("--link-host=", 0) == 0) link_host_worker = true;
+    if (argument == "--minimized") start_minimized = true;
+    if (argument.rfind("--autoshare=", 0) == 0) {
+      start_minimized = true;
+      autoshare = true;
+    }
   }
   if (service_console && link_host_worker) return EXIT_FAILURE;
 
+  // Single-instance protection for the main GUI application.
+  // Dedicated headless workers (--service-console, --link-host) and
+  // autoshare forwarders have their own IPC lifecycle.
+  HANDLE single_instance_mutex = nullptr;
+  if (!service_console && !link_host_worker && !autoshare) {
+    single_instance_mutex = ::CreateMutexW(nullptr, TRUE, L"Local\\Ligament2FA_App_SingleInstance");
+    if (single_instance_mutex != nullptr && ::GetLastError() == ERROR_ALREADY_EXISTS) {
+      ::CloseHandle(single_instance_mutex);
+      if (!start_minimized) {
+        // Bring existing window to foreground if user explicitly launched the app
+        HWND existing_wnd = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Ligament 2FA Authenticator");
+        if (existing_wnd != nullptr) {
+          if (::IsIconic(existing_wnd)) {
+            ::ShowWindow(existing_wnd, SW_RESTORE);
+          } else {
+            ::ShowWindow(existing_wnd, SW_SHOW);
+          }
+          ::SetForegroundWindow(existing_wnd);
+        }
+      }
+      ::CoUninitialize();
+      return EXIT_SUCCESS;
+    }
+  }
+
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
-  FlutterWindow window(project, service_console, link_host_worker);
+  FlutterWindow window(project, service_console, link_host_worker, start_minimized);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(440, 720);
   if (!window.Create(L"Ligament 2FA Authenticator", origin, size)) {
+    if (single_instance_mutex != nullptr) ::CloseHandle(single_instance_mutex);
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(false); // Поддержка сворачивания в трей
@@ -60,6 +93,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   while (::GetMessage(&msg, nullptr, 0, 0)) {
     ::TranslateMessage(&msg);
     ::DispatchMessage(&msg);
+  }
+
+  if (single_instance_mutex != nullptr) {
+    ::CloseHandle(single_instance_mutex);
   }
 
   ::CoUninitialize();

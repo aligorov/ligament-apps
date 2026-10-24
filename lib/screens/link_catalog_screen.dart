@@ -481,17 +481,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     onTap: () => _toggleExpansion(row.key),
                     isOU: false,
                     isRu: isRu,
-                    onManageAccess: auth.isLinkAdmin &&
-                            row.label !=
-                                (isRu ? 'Без группы' : 'Unassigned group')
-                        ? () => _showGroupAccessDialog(
-                              type: 'group',
-                              target: row.target,
-                              label: row.label,
-                              isRu: isRu,
-                              auth: auth,
-                            )
-                        : null,
+                    onManageAccess: null,
                   ),
                 _CatalogRowType.host => Padding(
                     padding: const EdgeInsets.only(left: 28),

@@ -140,6 +140,8 @@ class ServiceConsoleController {
     required this.send,
     required this.onStopped,
     this.onLease,
+    this.serverUrl,
+    this.hostToken,
     ServiceConsoleLease? lease,
     Duration readyTimeout = const Duration(seconds: 15),
   }) : lease = lease ?? ServiceConsoleLease() {
@@ -161,6 +163,8 @@ class ServiceConsoleController {
   final void Function(Map<String, dynamic>) send;
   final Future<void> Function(String reason) onStopped;
   final Future<void> Function(int remainingMilliseconds)? onLease;
+  final Uri? serverUrl;
+  final String? hostToken;
   final ServiceConsoleLease lease;
   Timer? _readyTimer;
   Timer? _leaseTimer;
@@ -200,7 +204,11 @@ class ServiceConsoleController {
         final ice = parseIceServersConfig(decoded);
         _ready = true;
         _readyTimer?.cancel();
-        final api = _ServiceConsoleApi(this, ice);
+        final base = serverUrl != null
+            ? serverUrl.toString().replaceAll(RegExp(r'/+$'), '')
+            : '';
+        final api =
+            _ServiceConsoleApi(this, ice, baseUrl: base, token: hostToken);
         _enqueue(() async {
           if (_stopped) return;
           await capture.start(
@@ -284,7 +292,12 @@ class ServiceConsoleController {
 }
 
 class _ServiceConsoleApi extends ApiClient {
-  _ServiceConsoleApi(this.controller, this.iceServers) : super(baseUrl: '');
+  _ServiceConsoleApi(
+    this.controller,
+    this.iceServers, {
+    super.baseUrl = '',
+    super.token,
+  });
 
   final ServiceConsoleController controller;
   final List<Map<String, dynamic>> iceServers;
@@ -385,6 +398,8 @@ Future<void> runServiceConsoleHost(String pipe) async {
     capture: _WebRtcServiceCapture(),
     send: (frame) => socket.add(jsonEncode(frame)),
     onLease: updateServiceConsoleInputLease,
+    serverUrl: bootstrap.serverUrl,
+    hostToken: bootstrap.hostToken,
     onStopped: (reason) async {
       debugPrint('service_console: stopped ($reason)');
       unawaited(socket.close());

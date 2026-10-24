@@ -1015,19 +1015,31 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       if (_closed || _peer == null) return;
 
       MediaStream? newStream;
-      for (var attempt = 0; attempt < 4; attempt++) {
+      for (var attempt = 0; attempt < 6; attempt++) {
         if (_closed || _peer == null) return;
         try {
           newStream = await _openDisplayStream(targetScreenId);
           break;
         } catch (e) {
-          debugPrint('link_host_session: _openDisplayStream attempt $attempt failed: $e');
-          if (attempt < 3) {
-            await Future<void>.delayed(Duration(milliseconds: 200 * (attempt + 1)));
+          debugPrint(
+              'link_host_session: _openDisplayStream attempt $attempt failed: $e');
+          if (attempt < 5) {
+            await Future<void>.delayed(
+                Duration(milliseconds: 250 * (attempt + 1)));
           }
         }
       }
-      if (newStream == null) return;
+      if (newStream == null) {
+        debugPrint(
+            'link_host_session: failed to acquire new stream during switch, scheduling recovery');
+        _desktopRecoveryTimer?.cancel();
+        _desktopRecoveryTimer = Timer(const Duration(milliseconds: 1500), () {
+          if (!_closed && _stream == null) {
+            unawaited(switchScreen(targetScreenId));
+          }
+        });
+        return;
+      }
       if (_closed || _peer == null) {
         for (final t in newStream.getTracks()) {
           t.stop();
@@ -1180,7 +1192,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           _recorderFrameTimer?.cancel();
           _recorderFrameTimer = Timer.periodic(
             const Duration(seconds: 4),
-            (_) => unawaited(_captureRecorderSnapshot('periodic')),
+            (_) {
+              if (!_closed && _stream == null && !_switchingScreen) {
+                unawaited(switchScreen(_selectedScreenId ?? '0'));
+              }
+              unawaited(_captureRecorderSnapshot('periodic'));
+            },
           );
         }
       } else if (state ==

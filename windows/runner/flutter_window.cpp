@@ -6,10 +6,12 @@
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project,
                              bool service_console,
-                             bool link_host_worker)
+                             bool link_host_worker,
+                             bool start_minimized)
     : project_(project),
       service_console_(service_console),
-      link_host_worker_(link_host_worker) {}
+      link_host_worker_(link_host_worker),
+      start_minimized_(start_minimized) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -42,7 +44,7 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    if (!service_console_ && !link_host_worker_) this->Show();
+    if (!service_console_ && !link_host_worker_ && !start_minimized_) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is

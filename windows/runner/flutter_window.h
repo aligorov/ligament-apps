@@ -17,7 +17,8 @@ class FlutterWindow : public Win32Window {
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
   explicit FlutterWindow(const flutter::DartProject& project,
                          bool service_console = false,
-                         bool link_host_worker = false);
+                         bool link_host_worker = false,
+                         bool start_minimized = false);
   virtual ~FlutterWindow();
 
  protected:
@@ -35,6 +36,7 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   bool service_console_ = false;
   bool link_host_worker_ = false;
+  bool start_minimized_ = false;
   std::unique_ptr<ServiceConsoleBridge> service_console_bridge_;
   std::unique_ptr<LinkAgentBindingBridge> link_agent_binding_bridge_;
   std::unique_ptr<LinkHostBridge> link_host_bridge_;
