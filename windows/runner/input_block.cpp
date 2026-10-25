@@ -172,11 +172,6 @@ void ExecuteSendUnicode(wchar_t ch, bool is_down) {
 }
 
 void ExecuteSendMouse(const NativeInputTask& t) {
-  if (t.mouse_flags & MOUSEEVENTF_MOVE) {
-    ClipCursor(nullptr);
-    SetCursorPos(t.abs_x, t.abs_y);
-    ShowCursor(TRUE);
-  }
   INPUT input = {};
   input.type = INPUT_MOUSE;
   input.mi.dx = t.norm_vx;
@@ -201,34 +196,161 @@ void ExecuteSendSas() {
     if (send_sas) send_sas(FALSE);
     FreeLibrary(sas);
   }
-  ExecuteSendVk(VK_SPACE, true);
-  ExecuteSendVk(VK_SPACE, false);
+}
+
+struct CaptureRequest {
+  int max_w = 0;
+  int max_h = 0;
+  uint8_t* out_buf = nullptr;
+  int buf_size = 0;
+  int* out_len = nullptr;
+  int* out_w = nullptr;
+  int* out_h = nullptr;
+  int result = -1;
+  bool done = false;
+};
+
+std::mutex g_capture_mutex;
+std::condition_variable g_capture_cv;
+CaptureRequest* g_active_capture_request = nullptr;
+
+void DesktopInputWorkerLoop();
+
+void EnsureInputWorkerStarted() {
+  std::lock_guard<std::mutex> lock(g_input_mutex);
+  if (!g_input_worker_started) {
+    g_input_worker_started = true;
+    std::thread(DesktopInputWorkerLoop).detach();
+  }
+}
+
+int DoWorkerCaptureDesktopBmp(CaptureRequest* req) {
+  HDC hScreenDC = GetDC(nullptr);
+  if (!hScreenDC) return -2;
+
+  int screen_w = GetSystemMetrics(SM_CXSCREEN);
+  int screen_h = GetSystemMetrics(SM_CYSCREEN);
+  if (screen_w <= 0 || screen_h <= 0) {
+    ReleaseDC(nullptr, hScreenDC);
+    return -3;
+  }
+
+  int target_w = screen_w;
+  int target_h = screen_h;
+  if (req->max_w > 0 && req->max_h > 0 && (target_w > req->max_w || target_h > req->max_h)) {
+    double scale = (std::min)(static_cast<double>(req->max_w) / target_w,
+                              static_cast<double>(req->max_h) / target_h);
+    target_w = static_cast<int>(target_w * scale);
+    target_h = static_cast<int>(target_h * scale);
+    if (target_w < 1) target_w = 1;
+    if (target_h < 1) target_h = 1;
+  }
+
+  int row_stride = ((target_w * 32 + 31) / 32) * 4;
+  int pixel_data_size = row_stride * target_h;
+  int total_bmp_size = static_cast<int>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)) + pixel_data_size;
+
+  if (total_bmp_size > req->buf_size) {
+    ReleaseDC(nullptr, hScreenDC);
+    return -4;
+  }
+
+  HDC hMemDC = CreateCompatibleDC(hScreenDC);
+  if (!hMemDC) {
+    ReleaseDC(nullptr, hScreenDC);
+    return -5;
+  }
+
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = target_w;
+  bi.bmiHeader.biHeight = -target_h; // top-down
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  void* pBits = nullptr;
+  HBITMAP hDIB = CreateDIBSection(hMemDC, &bi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+  if (!hDIB || !pBits) {
+    if (hDIB) DeleteObject(hDIB);
+    DeleteDC(hMemDC);
+    ReleaseDC(nullptr, hScreenDC);
+    return -6;
+  }
+
+  HGDIOBJ hOld = SelectObject(hMemDC, hDIB);
+  SetStretchBltMode(hMemDC, HALFTONE);
+  SetBrushOrgEx(hMemDC, 0, 0, nullptr);
+
+  BOOL bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
+                          hScreenDC, 0, 0, screen_w, screen_h,
+                          SRCCOPY | CAPTUREBLT);
+
+  if (!bltOk) {
+    SelectObject(hMemDC, hOld);
+    DeleteObject(hDIB);
+    DeleteDC(hMemDC);
+    ReleaseDC(nullptr, hScreenDC);
+    return -7;
+  }
+
+  GdiFlush();
+
+  BITMAPFILEHEADER bmfHeader{};
+  bmfHeader.bfType = 0x4D42; // 'BM'
+  bmfHeader.bfSize = total_bmp_size;
+  bmfHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+
+  memcpy(req->out_buf, &bmfHeader, sizeof(BITMAPFILEHEADER));
+  memcpy(req->out_buf + sizeof(BITMAPFILEHEADER), &bi.bmiHeader, sizeof(BITMAPINFOHEADER));
+  memcpy(req->out_buf + bmfHeader.bfOffBits, pBits, pixel_data_size);
+
+  *req->out_len = total_bmp_size;
+  *req->out_w = target_w;
+  *req->out_h = target_h;
+
+  SelectObject(hMemDC, hOld);
+  DeleteObject(hDIB);
+  DeleteDC(hMemDC);
+  ReleaseDC(nullptr, hScreenDC);
+  return 0;
 }
 
 void DesktopInputWorkerLoop() {
-  HWINSTA winsta = OpenWindowStationW(L"winsta0", FALSE, MAXIMUM_ALLOWED);
-  if (winsta) {
-    SetProcessWindowStation(winsta);
-  }
+  EnsureProcessWindowStation();
   HDESK active_desk = nullptr;
   auto last_awake_tick = std::chrono::steady_clock::now() - std::chrono::seconds(30);
 
   for (;;) {
     NativeInputTask task{};
     bool has_task = false;
+    CaptureRequest* cap_req = nullptr;
     {
       std::unique_lock<std::mutex> lock(g_input_mutex);
-      g_input_cv.wait_for(lock, std::chrono::milliseconds(1000), [] {
-        return !g_input_queue.empty();
+      g_input_cv.wait_for(lock, std::chrono::milliseconds(100), [] {
+        return !g_input_queue.empty() || g_active_capture_request != nullptr;
       });
       if (!g_input_queue.empty()) {
         task = g_input_queue.front();
         g_input_queue.pop_front();
         has_task = true;
       }
+      if (g_active_capture_request != nullptr) {
+        cap_req = g_active_capture_request;
+        g_active_capture_request = nullptr;
+      }
     }
 
     AttachCurrentInputDesktop(&active_desk);
+
+    if (cap_req != nullptr) {
+      cap_req->result = DoWorkerCaptureDesktopBmp(cap_req);
+      {
+        std::lock_guard<std::mutex> cap_lock(g_capture_mutex);
+        cap_req->done = true;
+      }
+      g_capture_cv.notify_one();
+    }
 
     if (g_keep_awake.load(std::memory_order_relaxed)) {
       const auto now = std::chrono::steady_clock::now();
@@ -261,11 +383,8 @@ void DesktopInputWorkerLoop() {
 }
 
 void EnqueueNativeInput(const NativeInputTask& task) {
+  EnsureInputWorkerStarted();
   std::lock_guard<std::mutex> lock(g_input_mutex);
-  if (!g_input_worker_started) {
-    g_input_worker_started = true;
-    std::thread(DesktopInputWorkerLoop).detach();
-  }
   if (task.kind == NativeInputTask::kMouse &&
       (task.mouse_flags == (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK)) &&
       !g_input_queue.empty() &&
@@ -274,7 +393,18 @@ void EnqueueNativeInput(const NativeInputTask& task) {
     g_input_queue.back() = task;
   } else {
     if (g_input_queue.size() >= 512) {
-      g_input_queue.pop_front();
+      // Удаляем только старые перемещения мыши, сохраняя нажатия/отпускания клавиш и кнопок
+      auto it = g_input_queue.begin();
+      while (it != g_input_queue.end() && g_input_queue.size() >= 512) {
+        if (it->kind == NativeInputTask::kMouse && (it->mouse_flags == (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK))) {
+          it = g_input_queue.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      if (g_input_queue.size() >= 512) {
+        g_input_queue.pop_front();
+      }
     }
     g_input_queue.push_back(task);
   }
@@ -475,6 +605,8 @@ __declspec(dllexport) int ligament_get_monitor_rect_by_device_index(int device_i
 }
 
 // Прямой захват активного экрана через GDI BitBlt в BMP (резервный канал для Recorder).
+// Выполняется строго в рабочем потоке ввода DesktopInputWorkerLoop, у которого нет окон
+// и который гарантированно привязан к активному десктопу (Winlogon, Default, UAC) через SetThreadDesktop.
 __declspec(dllexport) int ligament_capture_desktop_bmp(
     int max_w, int max_h, uint8_t* out_buf, int buf_size, int* out_len, int* out_w, int* out_h) {
   if (!out_buf || buf_size <= static_cast<int>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)) ||
@@ -482,134 +614,26 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
     return -1;
   }
 
-  HDESK activeDesk = FindActiveInputDesktop();
-  HDESK prevDesk = GetThreadDesktop(GetCurrentThreadId());
-  bool deskSwitched = false;
-  if (activeDesk && activeDesk != prevDesk) {
-    if (SetThreadDesktop(activeDesk)) {
-      deskSwitched = true;
-    }
+  EnsureInputWorkerStarted();
+
+  CaptureRequest req{max_w, max_h, out_buf, buf_size, out_len, out_w, out_h, -1, false};
+  {
+    std::unique_lock<std::mutex> lock(g_input_mutex);
+    g_active_capture_request = &req;
+    g_input_cv.notify_one();
   }
 
-  HDC hScreenDC = GetDC(nullptr);
-  if (!hScreenDC) {
-    if (deskSwitched && prevDesk) {
-      SetThreadDesktop(prevDesk);
+  std::unique_lock<std::mutex> cap_lock(g_capture_mutex);
+  if (!g_capture_cv.wait_for(cap_lock, std::chrono::milliseconds(1200), [&req] { return req.done; })) {
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    if (g_active_capture_request == &req) {
+      g_active_capture_request = nullptr;
     }
-    if (activeDesk) {
-      CloseDesktop(activeDesk);
-    }
-    return -2;
+    return -99;
   }
 
-  int screen_w = GetSystemMetrics(SM_CXSCREEN);
-  int screen_h = GetSystemMetrics(SM_CYSCREEN);
-  if (screen_w <= 0 || screen_h <= 0) {
-    ReleaseDC(nullptr, hScreenDC);
-    if (deskSwitched && prevDesk) {
-      SetThreadDesktop(prevDesk);
-    }
-    if (activeDesk) {
-      CloseDesktop(activeDesk);
-    }
-    return -3;
-  }
-
-  int target_w = screen_w;
-  int target_h = screen_h;
-  if (max_w > 0 && max_h > 0 && (target_w > max_w || target_h > max_h)) {
-    double scale = (std::min)(static_cast<double>(max_w) / target_w,
-                              static_cast<double>(max_h) / target_h);
-    target_w = static_cast<int>(target_w * scale);
-    target_h = static_cast<int>(target_h * scale);
-    if (target_w < 1) target_w = 1;
-    if (target_h < 1) target_h = 1;
-  }
-
-  int row_stride = ((target_w * 32 + 31) / 32) * 4;
-  int pixel_data_size = row_stride * target_h;
-  int total_bmp_size = static_cast<int>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)) + pixel_data_size;
-
-  if (total_bmp_size > buf_size) {
-    ReleaseDC(nullptr, hScreenDC);
-    if (deskSwitched && prevDesk) {
-      SetThreadDesktop(prevDesk);
-    }
-    if (activeDesk) {
-      CloseDesktop(activeDesk);
-    }
-    return -4;
-  }
-
-  HDC hMemDC = CreateCompatibleDC(hScreenDC);
-  if (!hMemDC) {
-    ReleaseDC(nullptr, hScreenDC);
-    if (deskSwitched && prevDesk) {
-      SetThreadDesktop(prevDesk);
-    }
-    if (activeDesk) {
-      CloseDesktop(activeDesk);
-    }
-    return -5;
-  }
-
-  BITMAPINFO bi{};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = target_w;
-  bi.bmiHeader.biHeight = -target_h; // top-down
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-
-  void* pBits = nullptr;
-  HBITMAP hDIB = CreateDIBSection(hMemDC, &bi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-  if (!hDIB || !pBits) {
-    if (hDIB) DeleteObject(hDIB);
-    DeleteDC(hMemDC);
-    ReleaseDC(nullptr, hScreenDC);
-    if (deskSwitched && prevDesk) {
-      SetThreadDesktop(prevDesk);
-    }
-    if (activeDesk) {
-      CloseDesktop(activeDesk);
-    }
-    return -6;
-  }
-
-  HGDIOBJ hOld = SelectObject(hMemDC, hDIB);
-  SetStretchBltMode(hMemDC, HALFTONE);
-  SetBrushOrgEx(hMemDC, 0, 0, nullptr);
-
-  StretchBlt(hMemDC, 0, 0, target_w, target_h,
-             hScreenDC, 0, 0, screen_w, screen_h,
-             SRCCOPY | CAPTUREBLT);
-
-  GdiFlush();
-
-  BITMAPFILEHEADER bmfHeader{};
-  bmfHeader.bfType = 0x4D42; // 'BM'
-  bmfHeader.bfSize = total_bmp_size;
-  bmfHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
-
-  memcpy(out_buf, &bmfHeader, sizeof(BITMAPFILEHEADER));
-  memcpy(out_buf + sizeof(BITMAPFILEHEADER), &bi.bmiHeader, sizeof(BITMAPINFOHEADER));
-  memcpy(out_buf + bmfHeader.bfOffBits, pBits, pixel_data_size);
-
-  *out_len = total_bmp_size;
-  *out_w = target_w;
-  *out_h = target_h;
-
-  SelectObject(hMemDC, hOld);
-  DeleteObject(hDIB);
-  DeleteDC(hMemDC);
-  ReleaseDC(nullptr, hScreenDC);
-  if (deskSwitched && prevDesk) {
-    SetThreadDesktop(prevDesk);
-  }
-  if (activeDesk) {
-    CloseDesktop(activeDesk);
-  }
-  return 0;
+  return req.result;
+}
 }
 
 } // extern "C"

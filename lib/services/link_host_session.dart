@@ -942,10 +942,14 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   Timer? _recorderFrameTimer;
   Timer? _activitySnapshotTimer;
   Timer? _desktopSwitchTimer;
+  Timer? _desktopSwitchDebounceTimer;
   Timer? _desktopRecoveryTimer;
   DateTime? _lastFrameCaptureAt;
   bool _capturingFrame = false;
   bool _switchingScreen = false;
+  bool _pendingScreenSwitch = false;
+  String? _pendingScreenId;
+  int _recoveryAttempts = 0;
   final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
   final List<Map<String, dynamic>> _pendingChatMessages = [];
   bool _allowControl = false;
@@ -1092,7 +1096,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   }
 
   Future<void> switchScreen(String screenId) async {
-    if (kIsWeb || _peer == null || _closed || _switchingScreen) return;
+    if (kIsWeb || _peer == null || _closed) return;
+    if (_switchingScreen) {
+      _pendingScreenSwitch = true;
+      _pendingScreenId = screenId;
+      return;
+    }
     _switchingScreen = true;
     try {
       var targetScreenId = screenId;
@@ -1128,14 +1137,18 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       if (newStream == null) {
         debugPrint(
             'link_host_session: failed to acquire new stream during switch, scheduling recovery');
-        _desktopRecoveryTimer?.cancel();
-        _desktopRecoveryTimer = Timer(const Duration(milliseconds: 1500), () {
-          if (!_closed) {
-            unawaited(switchScreen(targetScreenId));
-          }
-        });
+        if (_recoveryAttempts < 5) {
+          _recoveryAttempts++;
+          _desktopRecoveryTimer?.cancel();
+          _desktopRecoveryTimer = Timer(const Duration(milliseconds: 1500), () {
+            if (!_closed) {
+              unawaited(switchScreen(targetScreenId));
+            }
+          });
+        }
         return;
       }
+      _recoveryAttempts = 0;
 
       if (_closed || _peer == null) {
         for (final t in newStream.getTracks()) {
@@ -1208,6 +1221,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       debugPrint('link_host_session: switchScreen failed: $e');
     } finally {
       _switchingScreen = false;
+      if (_pendingScreenSwitch && !_closed) {
+        _pendingScreenSwitch = false;
+        final nextId = _pendingScreenId ?? _selectedScreenId ?? '0';
+        _pendingScreenId = null;
+        unawaited(switchScreen(nextId));
+      }
     }
   }
 
@@ -1287,27 +1306,17 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         if (!kIsWeb && Platform.isWindows) {
           _desktopSwitchTimer?.cancel();
           _desktopSwitchTimer = Timer.periodic(
-            const Duration(milliseconds: 500),
+            const Duration(milliseconds: 200),
             (_) {
               if (!_closed && InputInjector.instance.consumeDesktopChanged()) {
                 final screenId = _selectedScreenId ?? '0';
-                _desktopRecoveryTimer?.cancel();
-                // Дебаунс 400мс даёт Windows завершить смену десктопа (Default <-> Winlogon) перед запросом DXGI
-                _desktopRecoveryTimer = Timer(
-                  const Duration(milliseconds: 400),
+                _desktopSwitchDebounceTimer?.cancel();
+                // Дебаунс 300мс даёт Windows завершить смену десктопа (Default <-> Winlogon) перед запросом DXGI
+                _desktopSwitchDebounceTimer = Timer(
+                  const Duration(milliseconds: 300),
                   () {
                     if (_closed) return;
-                    if (!_switchingScreen) {
-                      unawaited(switchScreen(_selectedScreenId ?? screenId));
-                    }
-                    _desktopRecoveryTimer = Timer(
-                      const Duration(milliseconds: 1600),
-                      () {
-                        if (!_closed && !_switchingScreen) {
-                          unawaited(switchScreen(_selectedScreenId ?? screenId));
-                        }
-                      },
-                    );
+                    unawaited(switchScreen(_selectedScreenId ?? screenId));
                   },
                 );
               }
@@ -1956,6 +1965,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _activitySnapshotTimer = null;
     _desktopSwitchTimer?.cancel();
     _desktopSwitchTimer = null;
+    _desktopSwitchDebounceTimer?.cancel();
+    _desktopSwitchDebounceTimer = null;
     _desktopRecoveryTimer?.cancel();
     _desktopRecoveryTimer = null;
     _videoSender = null;
