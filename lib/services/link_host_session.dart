@@ -768,6 +768,10 @@ Future<void> _runConnectedLinkHostWorker(
       state.markActive();
       recorder?.start();
     },
+    isRecorderReady: () =>
+        recorder == null ||
+        (!recorder.config.mandatory && !recorder.config.requireFirstFrame) ||
+        recorder.firstFrameAcked,
     onControlInputObserved: recorder?.observeControlInput,
     onChatMessageReceived: state.receiveChatMessage,
     onFrameCaptured: recorder == null
@@ -909,6 +913,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     this.onControlInputObserved,
     this.onChatMessageReceived,
     this.onFrameCaptured,
+    this.isRecorderReady,
     this.policy = const LinkSessionPolicy(),
   });
 
@@ -922,6 +927,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   final void Function(Map<String, dynamic> message)? onChatMessageReceived;
   final void Function(String frameKind, Uint8List bytes, String monitorId)?
       onFrameCaptured;
+  final bool Function()? isRecorderReady;
   final LinkSessionPolicy policy;
 
   RTCPeerConnection? _peer;
@@ -1515,6 +1521,11 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (_closed || !policy.allows(input, allowControl: _allowControl)) return;
     onControlInputObserved?.call(input);
     final type = input['type'];
+    if (type != 'chat_message' && type != 'chat_sync' && type != 'chat_ack') {
+      if (isRecorderReady != null && !isRecorderReady!()) {
+        return; // Gated until durable first frame is acked (ULR-03)
+      }
+    }
     if (type == 'chat_message') {
       _sendControlJson({
         'type': 'chat_ack',

@@ -2109,9 +2109,14 @@ class AuthState extends ChangeNotifier {
   /// Подтверждение удаленного доступа инженеру (approve) с проверкой контрольного числа
   Future<void> confirmSupport({
     required String sessionId,
+    String? requestId,
     String? numberMatch,
   }) async {
     if (api == null) throw Exception('API не инициализирован');
+    final prompt = activeSupportPrompt;
+    final pId = prompt?['id']?.toString();
+    final pReqId = prompt?['request_id']?.toString();
+    final resolvedRequestId = requestId ?? pReqId ?? (pId != null && pId != sessionId ? pId : null) ?? sessionId;
     activeSupportPrompt = null;
     await alert.resetWindowPriority();
 
@@ -2160,9 +2165,8 @@ class AuthState extends ChangeNotifier {
     bool confirmedViaSOS = false;
     if (numberMatch != null && numberMatch.isNotEmpty) {
       try {
-        final reqId = activeSupportPrompt?['request_id']?.toString() ?? sessionId;
         await api!.confirmSOSRequest(
-          requestId: reqId,
+          requestId: resolvedRequestId,
           sessionId: sessionId,
           code: numberMatch,
         );
@@ -2189,14 +2193,18 @@ class AuthState extends ChangeNotifier {
   /// Отклонение входящего запроса на подключение (deny)
   Future<void> rejectSupport({
     required String sessionId,
+    String? requestId,
   }) async {
     if (api == null) return;
-    final reqId = activeSupportPrompt?['request_id']?.toString() ?? sessionId;
+    final prompt = activeSupportPrompt;
+    final pId = prompt?['id']?.toString();
+    final pReqId = prompt?['request_id']?.toString();
+    final resolvedRequestId = requestId ?? pReqId ?? (pId != null && pId != sessionId ? pId : null) ?? sessionId;
     activeSupportPrompt = null;
     await alert.resetWindowPriority();
 
     try {
-      await api!.cancelSOSRequest(requestId: reqId, reason: 'rejected_by_user');
+      await api!.cancelSOSRequest(requestId: resolvedRequestId, reason: 'rejected_by_user');
     } catch (_) {}
 
     try {

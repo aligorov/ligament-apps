@@ -621,6 +621,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final currentUserId = _getCurrentUserId(auth);
     final isOwner = currentUserId.isNotEmpty &&
         host['owner_user_id']?.toString() == currentUserId;
+    final isConsoleAllowed = host['console_allowed'] == true;
 
     final ownerDisplayName = (host['owner_display_name'] ?? '').toString().trim();
     final ownerUsername = (host['owner_username'] ?? '').toString().trim();
@@ -726,14 +727,40 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF0284C7).withValues(alpha: 0.2),
+                            color: isConsoleAllowed
+                                ? const Color(0xFF0284C7).withValues(alpha: 0.2)
+                                : const Color(0xFF475569).withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.4)),
+                            border: Border.all(
+                              color: isConsoleAllowed
+                                  ? const Color(0xFF38BDF8).withValues(alpha: 0.4)
+                                  : const Color(0xFF94A3B8).withValues(alpha: 0.4),
+                            ),
                           ),
                           child: Text(
-                            isRu ? 'Мой ПК (Консоль)' : 'My PC (Console)',
+                            isRu
+                                ? (isConsoleAllowed ? 'Мой ПК (CONSOLE разрешена)' : 'Мой ПК (CONSOLE не разрешена)')
+                                : (isConsoleAllowed ? 'My PC (CONSOLE allowed)' : 'My PC (CONSOLE not allowed)'),
+                            style: TextStyle(
+                              color: isConsoleAllowed ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ] else if (isConsoleAllowed) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF059669).withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: const Color(0xFF34D399).withValues(alpha: 0.4)),
+                          ),
+                          child: Text(
+                            isRu ? 'CONSOLE разрешена' : 'CONSOLE allowed',
                             style: const TextStyle(
-                              color: Color(0xFF38BDF8),
+                              color: Color(0xFF34D399),
                               fontSize: 9,
                               fontWeight: FontWeight.bold,
                             ),
@@ -1120,13 +1147,18 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final agentId = host['id']?.toString();
     if (agentId == null || agentId.isEmpty) return;
 
-    final auth = context.read<AuthState>();
-    final currentUserId = _getCurrentUserId(auth);
-    final isOwner = currentUserId.isNotEmpty &&
-        host['owner_user_id']?.toString() == currentUserId;
+    final isConsoleAllowed = host['console_allowed'] == true;
+    final consoleProfile = host['console_profile']?.toString() ?? 'work';
 
     String? mode = 'control';
-    if (!isOwner) {
+    String sessionKind = 'link';
+
+    if (isConsoleAllowed) {
+      sessionKind = 'console';
+      if (consoleProfile == 'view') {
+        mode = 'view';
+      }
+    } else {
       mode = await showDialog<String>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -1157,7 +1189,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           isLink: true,
           linkAgentId: agentId,
           linkAccessMode: mode,
-          ownerMode: isOwner,
+          ownerMode: false,
           sessionData: {
             ...host,
             'id': 'link_$agentId',
@@ -1166,7 +1198,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             'employee_name': host['hostname']?.toString() ?? agentId,
             'access_mode': mode,
             'is_link': true,
-            'session_kind': isOwner ? 'console' : 'link',
+            'session_kind': sessionKind,
           },
         ),
       ),

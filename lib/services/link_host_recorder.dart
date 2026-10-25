@@ -347,6 +347,7 @@ class LinkHostRecorder {
   int get nextSeq => _nextSeq;
   int get ackedSeq => _ackedSeq;
   bool get isFirstFrameAcked => !config.enabled || _firstFrameAcked;
+  bool get firstFrameAcked => _firstFrameAcked;
   int get queuedBytes => _queuedBytes;
 
   void start() {
@@ -617,6 +618,9 @@ class LinkHostRecorder {
       'events': List<Map<String, dynamic>>.from(_pendingEvents),
     };
 
+    final inFlightFrameSeqs = _pendingFrames.map((f) => f['seq'] as int).toSet();
+    final inFlightEventSeqs = _pendingEvents.map((e) => e['seq'] as int).toSet();
+
     try {
       final ack = await sendBatch(batch);
       _ackedSeq = ack.ackHighWatermarkSeq;
@@ -626,10 +630,11 @@ class LinkHostRecorder {
       _lastAckAt = _clock().toUtc();
       _leaseExpiresAt = ack.leaseExpiresAt.toUtc();
 
-      // Удаляем только подтверждённые сервером элементы (seq <= ackHighWatermarkSeq),
-      // чтобы не потерять события, упавшие в очередь во время HTTP-запроса (LR-03).
-      _pendingFrames.removeWhere((f) => (f['seq'] as int) <= _ackedSeq);
-      _pendingEvents.removeWhere((e) => (e['seq'] as int) <= _ackedSeq);
+      // Удаляем только подтверждённые сервером элементы, которые реально отправлялись
+      // в текущем пакете (seq <= ackHighWatermarkSeq && in inFlightFrameSeqs),
+      // чтобы не потерять кадры и события, упавшие в очередь во время HTTP-запроса (LR-03, ULR-02).
+      _pendingFrames.removeWhere((f) => inFlightFrameSeqs.contains(f['seq'] as int) && (f['seq'] as int) <= _ackedSeq);
+      _pendingEvents.removeWhere((e) => inFlightEventSeqs.contains(e['seq'] as int) && (e['seq'] as int) <= _ackedSeq);
 
       _queuedBytes = _pendingFrames.fold<int>(0, (acc, f) {
         final b64 = f['payload_base64'] as String? ?? '';
