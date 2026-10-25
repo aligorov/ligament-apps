@@ -161,7 +161,8 @@ jobs:
           flutter pub get
           flutter test test/link_host_session_test.dart test/link_number_matching_test.dart test/link_key_messages_test.dart test/link_host_readiness_test.dart test/link_ice_configuration_test.dart test/link_session_control_test.dart test/link_archive_test.dart
           mkdir -p build
-          (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags='-s -w' -o ../../build/macos-link-agent ./cmd/link-agent)
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags="-s -w -X main.unixAgentVersion=${TAG_VER}" -o ../../build/macos-link-agent ./cmd/link-agent)
           flutter build macos --release --no-tree-shake-icons
           install -m 755 build/macos-link-agent 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-agent'
           install -m 755 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/Ligament 2FA' 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/ligament_authenticator'
@@ -248,7 +249,8 @@ jobs:
         run: |
           flutter pub get
           mkdir -p build
-          (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags='-s -w' -o ../../build/linux-link-agent ./cmd/link-agent)
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags="-s -w -X main.unixAgentVersion=${TAG_VER}" -o ../../build/linux-link-agent ./cmd/link-agent)
           chmod +x scripts/build_linux.sh linux/packaging/install.sh
           ./scripts/build_linux.sh
 

@@ -92,7 +92,7 @@ if (Test-Path "$LinkAgentDir\go.mod") {
         if ($LASTEXITCODE -ne 0) { throw 'Link agent Go tests failed' }
         go vet ./...
         if ($LASTEXITCODE -ne 0) { throw 'Link agent go vet failed' }
-        go build -trimpath -ldflags "-s -w" -o "$LinkAgentBuildDir\ligament_link_agent.exe" .\cmd\link-agent
+        go build -trimpath -ldflags "-s -w -X main.agentVersion=$epVersion" -o "$LinkAgentBuildDir\ligament_link_agent.exe" .\cmd\link-agent
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$LinkAgentBuildDir\ligament_link_agent.exe")) {
             throw 'Link agent Windows service build failed'
         }

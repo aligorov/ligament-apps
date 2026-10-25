@@ -26,7 +26,7 @@ const (
 	stopWaitLimit     = 15 * time.Second
 )
 
-var agentVersion = "1.1.83"
+var agentVersion = "1.1.119"
 
 func main() {
 	isService, err := svc.IsWindowsService()
