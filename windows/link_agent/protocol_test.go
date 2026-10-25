@@ -151,3 +151,37 @@ func TestRejectUnavailableSessionWorkerIgnoresNonOffer(t *testing.T) {
 		t.Fatalf("non-offer: sent=%v err=%v, want no-op", sent, err)
 	}
 }
+
+func TestDecodeOfferDesktopScopeValidation(t *testing.T) {
+	// 1. Valid interactive scope with attended
+	dataInteractive := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","access_type":"attended","desktop_scope":"interactive","access_mode":"view","sdp":"v=0","ice_servers":[],"dlp":{"allow_clipboard_in":false}}}`)
+	offer, err := DecodeOffer(dataInteractive)
+	if err != nil {
+		t.Fatalf("unexpected error for interactive scope: %v", err)
+	}
+	if offer.DesktopScope != "interactive" {
+		t.Fatalf("expected interactive desktop scope, got: %s", offer.DesktopScope)
+	}
+
+	// 2. Valid system_console scope with unattended
+	dataConsole := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","session_kind":"console","access_type":"unattended","desktop_scope":"system_console","access_mode":"control","sdp":"v=0","ice_servers":[],"dlp":{"allow_clipboard_in":false}}}`)
+	offerConsole, err := DecodeOffer(dataConsole)
+	if err != nil {
+		t.Fatalf("unexpected error for system_console scope: %v", err)
+	}
+	if offerConsole.DesktopScope != "system_console" || offerConsole.SessionKind != "console" {
+		t.Fatalf("expected system_console and console, got: %+v", offerConsole)
+	}
+
+	// 3. Invalid: system_console with attended (must be rejected)
+	dataConsoleAttended := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","session_kind":"console","access_type":"attended","desktop_scope":"system_console","access_mode":"control","sdp":"v=0","ice_servers":[],"dlp":{"allow_clipboard_in":false}}}`)
+	if _, err := DecodeOffer(dataConsoleAttended); err == nil {
+		t.Fatal("expected system_console with attended access to be rejected")
+	}
+
+	// 4. Invalid: arbitrary scope name (must be rejected)
+	dataUnknownScope := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","access_type":"unattended","desktop_scope":"admin_all_root","access_mode":"control","sdp":"v=0","ice_servers":[],"dlp":{"allow_clipboard_in":false}}}`)
+	if _, err := DecodeOffer(dataUnknownScope); err == nil {
+		t.Fatal("expected unknown desktop_scope to be rejected")
+	}
+}

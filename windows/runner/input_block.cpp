@@ -185,16 +185,31 @@ void ExecuteSendMouse(const NativeInputTask& t) {
 
 void ExecuteSendSas() {
   HKEY hKey = nullptr;
-  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+  DWORD originalVal = 0;
+  DWORD originalType = 0;
+  bool hadValue = false;
+
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+    DWORD dataSize = sizeof(originalVal);
+    if (RegQueryValueExW(hKey, L"SoftwareSASGeneration", nullptr, &originalType, reinterpret_cast<BYTE*>(&originalVal), &dataSize) == ERROR_SUCCESS) {
+      hadValue = true;
+    }
     DWORD val = 3;
     RegSetValueExW(hKey, L"SoftwareSASGeneration", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&val), sizeof(val));
-    RegCloseKey(hKey);
   }
   HMODULE sas = LoadLibraryExW(L"sas.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (sas) {
     auto send_sas = reinterpret_cast<void(WINAPI*)(BOOL)>(GetProcAddress(sas, "SendSAS"));
     if (send_sas) send_sas(FALSE);
     FreeLibrary(sas);
+  }
+  if (hKey) {
+    if (hadValue) {
+      RegSetValueExW(hKey, L"SoftwareSASGeneration", 0, originalType, reinterpret_cast<const BYTE*>(&originalVal), sizeof(originalVal));
+    } else {
+      RegDeleteValueW(hKey, L"SoftwareSASGeneration");
+    }
+    RegCloseKey(hKey);
   }
 }
 
@@ -320,6 +335,7 @@ void DesktopInputWorkerLoop() {
   EnsureProcessWindowStation();
   HDESK active_desk = nullptr;
   auto last_awake_tick = std::chrono::steady_clock::now() - std::chrono::seconds(30);
+  auto last_desktop_check = std::chrono::steady_clock::now() - std::chrono::milliseconds(250);
 
   for (;;) {
     NativeInputTask task{};
@@ -327,7 +343,7 @@ void DesktopInputWorkerLoop() {
     CaptureRequest* cap_req = nullptr;
     {
       std::unique_lock<std::mutex> lock(g_input_mutex);
-      g_input_cv.wait_for(lock, std::chrono::milliseconds(100), [] {
+      g_input_cv.wait_for(lock, std::chrono::milliseconds(250), [] {
         return !g_input_queue.empty() || g_active_capture_request != nullptr;
       });
       if (!g_input_queue.empty()) {
@@ -341,7 +357,11 @@ void DesktopInputWorkerLoop() {
       }
     }
 
-    AttachCurrentInputDesktop(&active_desk);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_desktop_check >= std::chrono::milliseconds(250)) {
+      last_desktop_check = now;
+      AttachCurrentInputDesktop(&active_desk);
+    }
 
     if (cap_req != nullptr) {
       cap_req->result = DoWorkerCaptureDesktopBmp(cap_req);
@@ -353,7 +373,6 @@ void DesktopInputWorkerLoop() {
     }
 
     if (g_keep_awake.load(std::memory_order_relaxed)) {
-      const auto now = std::chrono::steady_clock::now();
       if (now - last_awake_tick >= std::chrono::seconds(15)) {
         last_awake_tick = now;
         SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
@@ -393,7 +412,7 @@ void EnqueueNativeInput(const NativeInputTask& task) {
     g_input_queue.back() = task;
   } else {
     if (g_input_queue.size() >= 512) {
-      // Удаляем только старые перемещения мыши, сохраняя нажатия/отпускания клавиш и кнопок
+      // 1. Удаляем только старые перемещения мыши
       auto it = g_input_queue.begin();
       while (it != g_input_queue.end() && g_input_queue.size() >= 512) {
         if (it->kind == NativeInputTask::kMouse && (it->mouse_flags == (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK))) {
@@ -402,8 +421,19 @@ void EnqueueNativeInput(const NativeInputTask& task) {
           ++it;
         }
       }
+      // 2. Если всё ещё переполнено — удаляем только события, НЕ являющиеся key-up и mouse-up
       if (g_input_queue.size() >= 512) {
-        g_input_queue.pop_front();
+        auto it2 = g_input_queue.begin();
+        while (it2 != g_input_queue.end() && g_input_queue.size() >= 512) {
+          const bool is_key_up = (it2->kind == NativeInputTask::kVk || it2->kind == NativeInputTask::kUnicode) && !it2->is_down;
+          const bool is_mouse_up = (it2->kind == NativeInputTask::kMouse) &&
+              ((it2->mouse_flags & (MOUSEEVENTF_LEFTUP | MOUSEEVENTF_RIGHTUP | MOUSEEVENTF_MIDDLEUP | MOUSEEVENTF_XUP)) != 0);
+          if (!is_key_up && !is_mouse_up) {
+            it2 = g_input_queue.erase(it2);
+          } else {
+            ++it2;
+          }
+        }
       }
     }
     g_input_queue.push_back(task);

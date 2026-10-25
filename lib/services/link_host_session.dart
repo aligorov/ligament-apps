@@ -773,6 +773,7 @@ Future<void> _runConnectedLinkHostWorker(
         (!recorder.config.mandatory && !recorder.config.requireFirstFrame) ||
         recorder.firstFrameAcked,
     onControlInputObserved: recorder?.observeControlInput,
+    onDesktopChanged: recorder?.notifyDesktopChanged,
     onChatMessageReceived: state.receiveChatMessage,
     onFrameCaptured: recorder == null
         ? null
@@ -826,12 +827,19 @@ Future<void> _runConnectedLinkHostWorker(
                   .invokeMethod<String?>('receive') ??
               '';
       if (frame.isNotEmpty) {
-        final message = jsonDecode(frame);
-        if (message is Map) {
-          await session.receive(Map<String, dynamic>.from(message));
+        try {
+          final message = jsonDecode(frame);
+          if (message is Map) {
+            await session.receive(Map<String, dynamic>.from(message));
+          }
+        } on FormatException catch (e) {
+          debugPrint('link host IPC frame format error: $e');
+        } catch (e) {
+          debugPrint('link host IPC message decode error: $e');
         }
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('link host IPC transport error: $e');
       await session.close();
     } finally {
       polling = false;
@@ -911,6 +919,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   FlutterLinkHostPeer({
     this.onConnected,
     this.onControlInputObserved,
+    this.onDesktopChanged,
     this.onChatMessageReceived,
     this.onFrameCaptured,
     this.isRecorderReady,
@@ -924,6 +933,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   final VoidCallback? onConnected;
   final void Function(Map<String, dynamic> input)? onControlInputObserved;
+  final void Function()? onDesktopChanged;
   final void Function(Map<String, dynamic> message)? onChatMessageReceived;
   final void Function(String frameKind, Uint8List bytes, String monitorId)?
       onFrameCaptured;
@@ -943,13 +953,11 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   Timer? _activitySnapshotTimer;
   Timer? _desktopSwitchTimer;
   Timer? _desktopSwitchDebounceTimer;
-  Timer? _desktopRecoveryTimer;
   DateTime? _lastFrameCaptureAt;
   bool _capturingFrame = false;
   bool _switchingScreen = false;
   bool _pendingScreenSwitch = false;
   String? _pendingScreenId;
-  int _recoveryAttempts = 0;
   final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
   final List<Map<String, dynamic>> _pendingChatMessages = [];
   bool _allowControl = false;
@@ -1109,7 +1117,11 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       final needAudio =
           _audioStream == null || _audioStream!.getAudioTracks().isEmpty;
 
-      for (var attempt = 0; attempt < 8; attempt++) {
+      const backoffs = [100, 250, 500, 1000];
+      final startTime = DateTime.now();
+      var attempt = 0;
+
+      while (DateTime.now().difference(startTime) < const Duration(seconds: 10)) {
         if (_closed || _peer == null) return;
         try {
           final sources = await desktopCapturer
@@ -1127,28 +1139,21 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         } catch (e) {
           debugPrint(
               'link_host_session: _openDisplayStream attempt $attempt failed: $e');
-          if (attempt < 7) {
-            await Future<void>.delayed(
-                Duration(milliseconds: 250 * (attempt + 1)));
-          }
         }
+        final delayMs = attempt < backoffs.length ? backoffs[attempt] : 1000;
+        attempt++;
+        if (DateTime.now().difference(startTime) + Duration(milliseconds: delayMs) >=
+            const Duration(seconds: 10)) {
+          break;
+        }
+        await Future<void>.delayed(Duration(milliseconds: delayMs));
       }
 
       if (newStream == null) {
         debugPrint(
-            'link_host_session: failed to acquire new stream during switch, scheduling recovery');
-        if (_recoveryAttempts < 5) {
-          _recoveryAttempts++;
-          _desktopRecoveryTimer?.cancel();
-          _desktopRecoveryTimer = Timer(const Duration(milliseconds: 1500), () {
-            if (!_closed) {
-              unawaited(switchScreen(targetScreenId));
-            }
-          });
-        }
+            'link_host_session: failed to acquire new stream during switch within 10s backoff limit');
         return;
       }
-      _recoveryAttempts = 0;
 
       if (_closed || _peer == null) {
         for (final t in newStream.getTracks()) {
@@ -1309,6 +1314,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
             const Duration(milliseconds: 200),
             (_) {
               if (!_closed && InputInjector.instance.consumeDesktopChanged()) {
+                onDesktopChanged?.call();
                 final screenId = _selectedScreenId ?? '0';
                 _desktopSwitchDebounceTimer?.cancel();
                 // Дебаунс 300мс даёт Windows завершить смену десктопа (Default <-> Winlogon) перед запросом DXGI
@@ -1330,9 +1336,6 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           _recorderFrameTimer = Timer.periodic(
             const Duration(seconds: 4),
             (_) {
-              if (!_closed && _stream == null && !_switchingScreen) {
-                unawaited(switchScreen(_selectedScreenId ?? '0'));
-              }
               unawaited(_captureRecorderSnapshot('periodic'));
             },
           );
@@ -1538,13 +1541,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   void _executeInput(Map<String, dynamic> input) {
     if (_closed || !policy.allows(input, allowControl: _allowControl)) return;
-    onControlInputObserved?.call(input);
     final type = input['type'];
     if (type != 'chat_message' && type != 'chat_sync' && type != 'chat_ack') {
       if (isRecorderReady != null && !isRecorderReady!()) {
         return; // Gated until durable first frame is acked (ULR-03)
       }
     }
+    onControlInputObserved?.call(input);
     if (type == 'chat_message') {
       _sendControlJson({
         'type': 'chat_ack',
@@ -1967,8 +1970,6 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _desktopSwitchTimer = null;
     _desktopSwitchDebounceTimer?.cancel();
     _desktopSwitchDebounceTimer = null;
-    _desktopRecoveryTimer?.cancel();
-    _desktopRecoveryTimer = null;
     _videoSender = null;
     _audioSender = null;
     InputInjector.instance.setKeepSessionAwake(false);

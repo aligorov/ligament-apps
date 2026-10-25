@@ -82,7 +82,9 @@ void main() {
     final auth = _ArchiveAuth();
     await showHost(tester, auth);
     expect(find.text('TEST-PC'), findsOneWidget);
-    expect(find.byIcon(Icons.delete_outline), findsNothing);
+    await tester.tap(find.byTooltip('Опции'));
+    await tester.pumpAndSettle();
+    expect(find.text('Удалить из LINK'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     auth.dispose();
   });
@@ -91,7 +93,9 @@ void main() {
       (tester) async {
     final auth = _ArchiveAuth(admin: true);
     await showHost(tester, auth);
-    await tester.tap(find.byTooltip('Удалить из LINK'));
+    await tester.tap(find.byTooltip('Опции'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Удалить из LINK'));
     await tester.pumpAndSettle();
     expect(find.textContaining('будет удалён из каталога LINK'), findsOneWidget);
     await tester.enterText(
@@ -109,7 +113,9 @@ void main() {
       (tester) async {
     final auth = _ArchiveAuth(owner: true);
     await showHost(tester, auth);
-    await tester.tap(find.byTooltip('Удалить из LINK'));
+    await tester.tap(find.byTooltip('Опции'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Удалить из LINK'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Отмена'));
     await tester.pumpAndSettle();
@@ -123,7 +129,9 @@ void main() {
     final auth = _ArchiveAuth(owner: true);
     auth.api.denied = true;
     await showHost(tester, auth);
-    await tester.tap(find.byTooltip('Удалить из LINK'));
+    await tester.tap(find.byTooltip('Опции'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Удалить из LINK'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Подтвердить'));
     await tester.pumpAndSettle();

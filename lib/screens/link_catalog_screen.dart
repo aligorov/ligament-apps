@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'support_operator_screen.dart';
@@ -477,6 +478,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   ),
                 _CatalogRowType.group => _folderRow(
                     label: row.label,
+                    subtitle: isRu ? '${row.memberCount} ПК' : '${row.memberCount} PCs',
                     expanded: row.expanded,
                     onTap: () => _toggleExpansion(row.key),
                     isOU: false,
@@ -484,7 +486,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     onManageAccess: null,
                   ),
                 _CatalogRowType.host => Padding(
-                    padding: const EdgeInsets.only(left: 28),
+                    padding: const EdgeInsets.only(left: 32),
                     child: _hostRow(row.host!, isRu, auth),
                   ),
               };
@@ -559,7 +561,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }) {
     return Card(
       color: isOU ? const Color(0xFF131B2B) : const Color(0xFF0F1725),
-      margin: EdgeInsets.only(left: isOU ? 0 : 14, top: 2, bottom: 2),
+      margin: EdgeInsets.only(left: isOU ? 0 : 16, top: 2, bottom: 2),
       child: ListTile(
         dense: !isOU,
         minTileHeight: isOU ? 64 : 46,
@@ -607,15 +609,32 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     );
   }
 
+  static String formatOS(dynamic osFamily, dynamic osVersion) {
+    final family = (osFamily?.toString() ?? '').trim();
+    final version = (osVersion?.toString() ?? '').trim();
+    if (version.isEmpty) return family;
+    if (family.isEmpty) return version;
+    if (version.toLowerCase().startsWith(family.toLowerCase())) return version;
+    return '$family $version';
+  }
+
   Widget _hostRow(Map<String, dynamic> host, bool isRu, AuthState auth) {
     final online = host['is_online'] == true;
     final unknown = host['is_online'] == null;
     final hostname = host['hostname']?.toString().trim();
-    final os = [host['os_family'], host['os_version']]
-        .where((part) => part != null && part.toString().isNotEmpty)
-        .join(' ');
+    final os = formatOS(host['os_family'], host['os_version']);
     final status = host['status']?.toString() ?? 'enrolled';
     final localIPs = host['local_ips'];
+    String? firstIpv4;
+    if (localIPs is List) {
+      for (final item in localIPs) {
+        final s = item.toString().trim();
+        if (s.contains('.') && !s.contains(':')) {
+          firstIpv4 = s;
+          break;
+        }
+      }
+    }
     final isUnattended = host['unattended_enabled'] == true;
     final canManage = host['can_manage_access'] == true || auth.isLinkAdmin;
     final currentUserId = _getCurrentUserId(auth);
@@ -656,9 +675,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         color: const Color(0xFF0F172A).withValues(alpha: 0.6),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: isOwner
-              ? const Color(0xFF38BDF8).withValues(alpha: 0.35)
-              : const Color(0xFF334155).withValues(alpha: 0.4),
+          color: const Color(0xFF334155).withValues(alpha: 0.4),
         ),
       ),
       child: Row(
@@ -668,25 +685,39 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             Stack(
               alignment: Alignment.bottomRight,
               children: [
-                Container(
-                  padding: const EdgeInsets.all(7),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E293B),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    deviceIcon,
-                    size: 20,
-                    color: online ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
+                Tooltip(
+                  message: isMac ? 'macOS' : (isLinux ? 'Linux' : 'Windows'),
+                  child: Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E293B),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      deviceIcon,
+                      size: 20,
+                      color: online ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
+                    ),
                   ),
                 ),
-                Container(
-                  width: 9,
-                  height: 9,
-                  decoration: BoxDecoration(
-                    color: online ? const Color(0xFF22C55E) : const Color(0xFF64748B),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: const Color(0xFF0F172A), width: 1.5),
+                Tooltip(
+                  message: unknown
+                      ? (isRu ? 'Неизвестно' : 'Unknown')
+                      : status == 'revoked'
+                          ? (isRu ? 'Отозван' : 'Revoked')
+                          : status == 'suspended'
+                              ? (isRu ? 'Приостановлен' : 'Suspended')
+                              : online
+                                  ? (isRu ? 'В сети' : 'Online')
+                                  : (isRu ? 'Не в сети' : 'Offline'),
+                  child: Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: online ? const Color(0xFF22C55E) : const Color(0xFF64748B),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFF0F172A), width: 1.5),
+                    ),
                   ),
                 ),
               ],
@@ -784,8 +815,8 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   // 3-я строка: IP • Должность / OU
                   Text(
                     [
-                      if (localIPs is List && localIPs.isNotEmpty)
-                        localIPs.first.toString()
+                      if (firstIpv4 != null && firstIpv4.isNotEmpty)
+                        firstIpv4
                       else if (host['public_ip'] != null && host['public_ip'].toString().isNotEmpty)
                         host['public_ip'].toString(),
                       if (effectivePosition.isNotEmpty) effectivePosition,
@@ -793,7 +824,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: Color(0xFF64748B),
+                      color: Color(0xFF94A3B8),
                       fontSize: 10,
                     ),
                   ),
@@ -818,42 +849,33 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                                   ? (isRu ? 'В сети' : 'Online')
                                   : (isRu ? 'Не в сети' : 'Offline'),
                   style: TextStyle(
-                    color: online ? const Color(0xFF4ADE80) : const Color(0xFF64748B),
+                    color: online ? const Color(0xFF4ADE80) : const Color(0xFF94A3B8),
                     fontSize: 11,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
-                const SizedBox(width: 10),
 
-                // Основная заметная кнопка подключения
-                FilledButton.icon(
-                  onPressed: online ? () => _startLinkSession(host, isRu) : null,
-                  icon: const Icon(Icons.play_arrow_rounded, size: 16),
-                  label: Text(
-                    isRu ? 'Подключить' : 'Connect',
-                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                  ),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: online ? const Color(0xFF0284C7) : const Color(0xFF1E293B),
-                    foregroundColor: online ? Colors.white : const Color(0xFF64748B),
-                    disabledBackgroundColor: const Color(0xFF1E293B),
-                    disabledForegroundColor: const Color(0xFF64748B),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-                    minimumSize: const Size(0, 32),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                  ),
-                ),
-
-                // Кнопка удаления из LINK (если разрешено владельцу/админу)
-                if (host['can_archive'] == true || host['can_unlink'] == true) ...[
-                  const SizedBox(width: 4),
-                  IconButton(
-                    tooltip: isRu ? 'Удалить из LINK' : 'Remove from LINK',
-                    onPressed: () => _archiveHost(host, isRu),
-                    visualDensity: VisualDensity.compact,
-                    constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-                    padding: EdgeInsets.zero,
-                    icon: const Icon(Icons.delete_outline, size: 16, color: Color(0xFF64748B)),
+                // Кнопка подключения (скрыта для собственного ПК)
+                if (!isOwner) ...[
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    onPressed: online ? () => _startLinkSession(host, isRu) : null,
+                    icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                    label: Text(
+                      isRu ? 'Подключить' : 'Connect',
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: online ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
+                      side: BorderSide(
+                        color: online
+                            ? const Color(0xFF0284C7).withValues(alpha: 0.6)
+                            : const Color(0xFF334155),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                      minimumSize: const Size(0, 32),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
                   ),
                 ],
 
@@ -1024,6 +1046,20 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }
 
   Future<void> _showHostDetails(Map<String, dynamic> host, bool isRu) async {
+    final auth = context.read<AuthState>();
+    final currentUserId = _getCurrentUserId(auth);
+    final isOwner = currentUserId.isNotEmpty &&
+        host['owner_user_id']?.toString() == currentUserId;
+    final online = host['is_online'] == true;
+    final unknown = host['is_online'] == null;
+    final status = host['status']?.toString() ?? 'enrolled';
+    final os = formatOS(host['os_family'], host['os_version']);
+    final isMac = os.toLowerCase().contains('mac') || os.toLowerCase().contains('darwin');
+    final isLinux = os.toLowerCase().contains('linux');
+    final deviceIcon = isMac
+        ? Icons.laptop_mac
+        : (isLinux ? Icons.terminal : Icons.desktop_windows);
+
     final localIPs = host['local_ips'];
     final notDetected = isRu ? 'Не определено' : 'Not detected';
     final hwModel = host['capabilities'] is Map
@@ -1050,151 +1086,267 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       return isRu ? '$m мин' : '${m}m';
     }
 
-    final values = <(String, String)>[
-      (
-        isRu ? 'Имя компьютера' : 'Hostname',
-        host['hostname']?.toString() ?? notDetected,
-      ),
-      (
-        isRu ? 'Владелец' : 'Owner',
-        [
-          if (host['owner_display_name'] != null &&
-              host['owner_display_name'].toString().trim().isNotEmpty)
-            host['owner_display_name'].toString().trim(),
-          if (host['owner_username'] != null &&
-              host['owner_username'].toString().trim().isNotEmpty)
-            '(${host['owner_username'].toString().trim()})',
-          if (host['owner_position'] != null &&
-              host['owner_position'].toString().trim().isNotEmpty)
-            '— ${host['owner_position'].toString().trim()}',
-        ].where((s) => s.isNotEmpty).join(' ').isNotEmpty
-            ? [
-                if (host['owner_display_name'] != null &&
-                    host['owner_display_name'].toString().trim().isNotEmpty)
-                  host['owner_display_name'].toString().trim(),
-                if (host['owner_username'] != null &&
-                    host['owner_username'].toString().trim().isNotEmpty)
-                  '(${host['owner_username'].toString().trim()})',
-                if (host['owner_position'] != null &&
-                    host['owner_position'].toString().trim().isNotEmpty)
-                  '— ${host['owner_position'].toString().trim()}',
-              ].where((s) => s.isNotEmpty).join(' ')
-            : notDetected,
-      ),
-      (
-        isRu ? 'Пользователь за ПК' : 'Signed-in user',
-        (host['interactive_username'] != null &&
-                host['interactive_username'].toString().isNotEmpty)
-            ? host['interactive_username'].toString()
-            : notDetected,
-      ),
-      (
-        isRu ? 'Локальный IP (LAN)' : 'Local IP (LAN)',
-        (localIPs is List && localIPs.isNotEmpty)
-            ? localIPs.join(', ')
-            : notDetected,
-      ),
-      (
-        isRu ? 'Внешний IP сервера' : 'Server-observed IP',
-        (host['public_ip'] != null && host['public_ip'].toString().isNotEmpty)
-            ? host['public_ip'].toString()
-            : notDetected,
-      ),
-      (
-        isRu ? 'Модель ПК / Оборудование' : 'Hardware model',
-        (hwModel != null && hwModel.isNotEmpty) ? hwModel : notDetected,
-      ),
-      (
-        isRu ? 'ОС и версия' : 'OS and version',
-        [host['os_family'], host['os_version']]
-            .where((value) => value != null && value.toString().isNotEmpty)
-            .join(' ')
-            .trim(),
-      ),
-      if (uptimeSec > 0 || cpuPercent > 0 || ramTotal > 0) ...[
-        if (uptimeSec > 0)
-          (
-            isRu ? 'Время работы' : 'Uptime',
-            formatUptime(uptimeSec),
-          ),
-        if (cpuPercent > 0)
-          (
-            isRu ? 'Загрузка ЦП' : 'CPU load',
-            '$cpuPercent%',
-          ),
-        if (ramTotal > 0)
-          (
-            isRu ? 'Оперативная память' : 'RAM usage',
-            '$ramUsed МБ / $ramTotal МБ',
-          ),
-      ],
-      (
-        isRu ? 'Группа' : 'Group',
-        (host['group_name'] != null && host['group_name'].toString().isNotEmpty)
-            ? host['group_name'].toString()
-            : notDetected,
-      ),
-      (
-        isRu ? 'Источник группы' : 'Group source',
-        switch (host['group_source']) {
-          'explicit' => isRu ? 'Назначена явно' : 'Explicit assignment',
-          'owner_group' => isRu ? 'Группа владельца' : 'Owner group',
-          'owner_ldap_group' =>
-            isRu ? 'LDAP-группа владельца' : 'Owner LDAP group',
-          _ => notDetected,
-        },
-      ),
-      (
-        isRu ? 'Версия агента' : 'Agent version',
-        (host['agent_version'] != null &&
-                host['agent_version'].toString().isNotEmpty)
-            ? host['agent_version'].toString()
-            : notDetected,
-      ),
-      (
-        isRu ? 'Отпечаток ключа' : 'Fingerprint',
-        host['fingerprint']?.toString() ?? notDetected,
-      ),
-      (
-        isRu ? 'Неконтролируемый доступ' : 'Unattended access',
-        host['unattended_enabled'] == true
-            ? (isRu ? '🛡 Разрешён администратором (вход без кода)' : '🛡 Enabled (direct connect without code)')
-            : (isRu ? '🔒 Выключен (требуется согласие на хосте)' : '🔒 Disabled (requires consent on host)'),
-      ),
-    ];
+    final ipv4List = <String>[];
+    final ipv6List = <String>[];
+    if (localIPs is List) {
+      for (final item in localIPs) {
+        final s = item.toString().trim();
+        if (s.contains('.') && !s.contains(':')) {
+          ipv4List.add(s);
+        } else if (s.contains(':')) {
+          ipv6List.add(s);
+        }
+      }
+    }
+
+    final ownerText = [
+      if (host['owner_display_name'] != null &&
+          host['owner_display_name'].toString().trim().isNotEmpty)
+        host['owner_display_name'].toString().trim(),
+      if (host['owner_username'] != null &&
+          host['owner_username'].toString().trim().isNotEmpty)
+        '(${host['owner_username'].toString().trim()})',
+      if (host['owner_position'] != null &&
+          host['owner_position'].toString().trim().isNotEmpty)
+        '— ${host['owner_position'].toString().trim()}',
+    ].where((s) => s.isNotEmpty).join(' ').trim();
+
+    final groupSourceText = switch (host['group_source']) {
+      'explicit' => isRu ? 'Назначена явно' : 'Explicit assignment',
+      'owner_group' => isRu ? 'Группа владельца' : 'Owner group',
+      'owner_ldap_group' => isRu ? 'LDAP-группа владельца' : 'Owner LDAP group',
+      _ => notDetected,
+    };
+
+    final unattendedText = host['unattended_enabled'] == true
+        ? (isRu ? '🛡 Разрешён администратором (вход без кода)' : '🛡 Enabled (direct connect without code)')
+        : (isRu ? '🔒 Выключен (требуется согласие на хосте)' : '🔒 Disabled (requires consent on host)');
+
+    Widget detailItem(
+      String label,
+      String value, {
+      bool copiable = false,
+    }) {
+      final isDetected = value.isNotEmpty && value != notDetected;
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 150,
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color: Color(0xFF94A3B8),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            Expanded(
+              child: SelectableText(
+                value.isNotEmpty ? value : notDetected,
+                style: TextStyle(
+                  color: isDetected ? Colors.white : const Color(0xFF64748B),
+                  fontSize: 12,
+                  fontWeight: isDetected ? FontWeight.w500 : FontWeight.normal,
+                ),
+              ),
+            ),
+            if (copiable && isDetected) ...[
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: isRu ? 'Копировать' : 'Copy',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(width: 24, height: 24),
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.copy_rounded, size: 14, color: Color(0xFF94A3B8)),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: value));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    duration: const Duration(seconds: 1),
+                    content: Text(isRu ? 'Скопировано в буфер: $value' : 'Copied: $value'),
+                  ));
+                },
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    Widget detailSection(String title, List<Widget> items) {
+      if (items.isEmpty) return const SizedBox.shrink();
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F172A).withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFF334155).withValues(alpha: 0.35)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                color: Color(0xFF38BDF8),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.2,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...items,
+          ],
+        ),
+      );
+    }
+
+    final scrollController = ScrollController();
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         backgroundColor: const Color(0xFF131B2B),
-        title: Text(
-            host['hostname']?.toString() ?? (isRu ? 'Компьютер' : 'Computer')),
-        content: SizedBox(
-          width: 460,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final (label, value) in values) ...[
-                  Text(label,
-                      style: const TextStyle(
-                          color: Color(0xFF94A3B8), fontSize: 12)),
-                  SelectableText(value.isNotEmpty ? value : notDetected,
-                      style: TextStyle(
-                          color: value.isNotEmpty && value != notDetected
-                              ? Colors.white
-                              : const Color(0xFF64748B),
-                          fontSize: 13)),
-                  const SizedBox(height: 10),
+        titlePadding: const EdgeInsets.fromLTRB(20, 16, 12, 8),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        title: Row(
+          children: [
+            Icon(deviceIcon, size: 20, color: online ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      host['hostname']?.toString() ?? (isRu ? 'Компьютер' : 'Computer'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: online ? const Color(0xFF22C55E) : const Color(0xFF64748B),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    unknown
+                        ? (isRu ? 'Неизвестно' : 'Unknown')
+                        : status == 'revoked'
+                            ? (isRu ? 'Отозван' : 'Revoked')
+                            : status == 'suspended'
+                                ? (isRu ? 'Приостановлен' : 'Suspended')
+                                : online
+                                    ? (isRu ? 'В сети' : 'Online')
+                                    : (isRu ? 'Не в сети' : 'Offline'),
+                    style: TextStyle(
+                      color: online ? const Color(0xFF4ADE80) : const Color(0xFF94A3B8),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                 ],
-              ],
+              ),
+            ),
+            if (!isOwner && online) ...[
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(dialogCtx);
+                  _startLinkSession(host, isRu);
+                },
+                icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                label: Text(isRu ? 'Подключить' : 'Connect'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF38BDF8),
+                  side: const BorderSide(color: Color(0xFF0284C7)),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                  minimumSize: const Size(0, 30),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+              ),
+            ],
+            const SizedBox(width: 4),
+            IconButton(
+              tooltip: isRu ? 'Закрыть' : 'Close',
+              icon: const Icon(Icons.close, size: 18, color: Color(0xFF94A3B8)),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+              onPressed: () => Navigator.pop(dialogCtx),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 520,
+          height: 480,
+          child: Scrollbar(
+            thumbVisibility: true,
+            controller: scrollController,
+            child: SingleChildScrollView(
+              controller: scrollController,
+              padding: const EdgeInsets.only(right: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  detailSection(
+                    isRu ? 'Система и оборудование' : 'System & Hardware',
+                    [
+                      detailItem(isRu ? 'Имя компьютера' : 'Hostname', host['hostname']?.toString() ?? notDetected, copiable: true),
+                      detailItem(isRu ? 'ОС и версия' : 'OS and version', formatOS(host['os_family'], host['os_version'])),
+                      detailItem(isRu ? 'Модель ПК' : 'Hardware model', (hwModel != null && hwModel.isNotEmpty) ? hwModel : notDetected),
+                      if (uptimeSec > 0)
+                        detailItem(isRu ? 'Время работы' : 'Uptime', formatUptime(uptimeSec)),
+                      if (cpuPercent > 0)
+                        detailItem(isRu ? 'Загрузка ЦП' : 'CPU load', '$cpuPercent%'),
+                      if (ramTotal > 0)
+                        detailItem(isRu ? 'Оперативная память' : 'RAM usage', '$ramUsed МБ / $ramTotal МБ'),
+                    ],
+                  ),
+                  detailSection(
+                    isRu ? 'Сеть и адреса' : 'Network & Addresses',
+                    [
+                      detailItem(isRu ? 'Локальный IP (IPv4)' : 'Local IP (IPv4)', ipv4List.isNotEmpty ? ipv4List.join(', ') : notDetected, copiable: ipv4List.isNotEmpty),
+                      if (ipv6List.isNotEmpty)
+                        detailItem(isRu ? 'IPv6 адреса' : 'IPv6 addresses', ipv6List.join(', '), copiable: true),
+                      detailItem(isRu ? 'Внешний IP' : 'External IP', (host['public_ip'] != null && host['public_ip'].toString().isNotEmpty) ? host['public_ip'].toString() : notDetected, copiable: host['public_ip'] != null),
+                    ],
+                  ),
+                  detailSection(
+                    isRu ? 'Пользователь и доступ' : 'User & Access',
+                    [
+                      detailItem(isRu ? 'Владелец' : 'Owner', ownerText.isNotEmpty ? ownerText : notDetected),
+                      detailItem(isRu ? 'Пользователь за ПК' : 'Signed-in user', (host['interactive_username'] != null && host['interactive_username'].toString().isNotEmpty) ? host['interactive_username'].toString() : notDetected),
+                      detailItem(isRu ? 'Группа' : 'Group', (host['group_name'] != null && host['group_name'].toString().isNotEmpty) ? host['group_name'].toString() : notDetected),
+                      detailItem(isRu ? 'Источник группы' : 'Group source', groupSourceText),
+                      detailItem(isRu ? 'Неконтролируемый доступ' : 'Unattended access', unattendedText),
+                    ],
+                  ),
+                  detailSection(
+                    isRu ? 'Параметры агента' : 'Agent Parameters',
+                    [
+                      detailItem(isRu ? 'Версия агента' : 'Agent version', (host['agent_version'] != null && host['agent_version'].toString().isNotEmpty) ? host['agent_version'].toString() : notDetected),
+                      detailItem(isRu ? 'Отпечаток ключа' : 'Fingerprint', host['fingerprint']?.toString() ?? notDetected, copiable: host['fingerprint'] != null),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(isRu ? 'Закрыть' : 'Close')),
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: Text(isRu ? 'Закрыть' : 'Close'),
+          ),
         ],
       ),
     );

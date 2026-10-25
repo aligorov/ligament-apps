@@ -238,11 +238,13 @@ class LinkRecorderBatchAck {
     required this.ackHighWatermarkSeq,
     required this.firstFrameAcked,
     required this.leaseExpiresAt,
+    this.leaseTtlMs,
   });
 
   final int ackHighWatermarkSeq;
   final bool firstFrameAcked;
   final DateTime leaseExpiresAt;
+  final int? leaseTtlMs;
 }
 
 typedef LinkRecorderBatchSender = Future<LinkRecorderBatchAck> Function(
@@ -261,10 +263,12 @@ class LinkHostRecorder {
     LinkRecorderBatchSender? sendBatch,
     this.onMandatoryViolation,
     DateTime Function()? clock,
+    Stopwatch? leaseStopwatch,
   })  : _clock = clock ?? DateTime.now,
         _startedAt = (clock ?? DateTime.now)().toUtc(),
+        _leaseStopwatch = leaseStopwatch ?? Stopwatch(),
         sendBatch = sendBatch ??
-            ((batch) => _defaultHttpSendBatch(
+            ((batch) => defaultHttpSendBatch(
                   config.ingestUrl,
                   config.ingestToken,
                   batch,
@@ -276,37 +280,63 @@ class LinkHostRecorder {
     }
   }
 
-  static Future<LinkRecorderBatchAck> _defaultHttpSendBatch(
+  static HttpClient? _sharedHttpClient;
+
+  static HttpClient _getSharedClient() {
+    return _sharedHttpClient ??= (HttpClient()..connectionTimeout = const Duration(seconds: 8));
+  }
+
+  static void closeSharedClient() {
+    _sharedHttpClient?.close(force: true);
+    _sharedHttpClient = null;
+  }
+
+  @visibleForTesting
+  static Future<LinkRecorderBatchAck> defaultHttpSendBatch(
     String ingestUrl,
     String ingestToken,
-    Map<String, dynamic> batch,
-  ) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
-    try {
-      final request = await client.postUrl(Uri.parse(ingestUrl));
-      request.headers.contentType = ContentType.json;
-      if (ingestToken.isNotEmpty) {
-        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $ingestToken');
-      }
-      request.add(utf8.encode(jsonEncode(batch)));
-      final response = await request.close().timeout(const Duration(seconds: 10));
-      final body = await response.transform(utf8.decoder).join();
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HttpException('Recorder ingest status ${response.statusCode}');
-      }
-      final decoded = jsonDecode(body);
-      if (decoded is! Map) {
-        throw const FormatException('Invalid Recorder ACK JSON');
-      }
-      return LinkRecorderBatchAck(
-        ackHighWatermarkSeq: (decoded['ack_high_watermark_seq'] as num?)?.toInt() ?? 0,
-        firstFrameAcked: decoded['first_frame_acked'] == true,
-        leaseExpiresAt: DateTime.tryParse(decoded['lease_expires_at']?.toString() ?? '') ??
-            DateTime.now().toUtc().add(const Duration(seconds: 45)),
-      );
-    } finally {
-      client.close(force: false);
+    Map<String, dynamic> batch, {
+    HttpClient? client,
+  }) async {
+    final uri = Uri.tryParse(ingestUrl);
+    if (uri == null || uri.scheme.toLowerCase() != 'https') {
+      throw const FormatException('recorder_insecure_ingest');
     }
+    final httpClient = client ?? _getSharedClient();
+    final request = await httpClient.postUrl(uri);
+    request.headers.contentType = ContentType.json;
+    if (ingestToken.isNotEmpty) {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $ingestToken');
+    }
+    request.add(utf8.encode(jsonEncode(batch)));
+    final response = await request.close().timeout(const Duration(seconds: 10));
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException('Recorder ingest status ${response.statusCode}');
+    }
+    final decoded = jsonDecode(body);
+    if (decoded is! Map) {
+      throw const FormatException('Invalid Recorder ACK JSON');
+    }
+    if (decoded['ack_high_watermark_seq'] == null || decoded['ack_high_watermark_seq'] is! num) {
+      throw const FormatException('Recorder ACK missing required ack_high_watermark_seq');
+    }
+    if (decoded['lease_expires_at'] == null) {
+      throw const FormatException('Recorder ACK missing required lease_expires_at');
+    }
+    final leaseExpiresAt = DateTime.tryParse(decoded['lease_expires_at']?.toString() ?? '');
+    if (leaseExpiresAt == null) {
+      throw const FormatException('Recorder ACK invalid lease_expires_at');
+    }
+    final leaseTtlMs = decoded['lease_ttl_ms'] is num
+        ? (decoded['lease_ttl_ms'] as num).toInt()
+        : null;
+    return LinkRecorderBatchAck(
+      ackHighWatermarkSeq: (decoded['ack_high_watermark_seq'] as num).toInt(),
+      firstFrameAcked: decoded['first_frame_acked'] == true,
+      leaseExpiresAt: leaseExpiresAt,
+      leaseTtlMs: leaseTtlMs,
+    );
   }
 
   static const Set<String> _allowedNonPrintableKeys = {
@@ -330,6 +360,10 @@ class LinkHostRecorder {
   final DateTime Function() _clock;
   DateTime _startedAt;
 
+  static const int maxBatchBytes = 2 * 1024 * 1024;
+  static const int maxBatchFrames = 20;
+  static const int maxBatchEvents = 200;
+
   final List<Map<String, dynamic>> _pendingFrames = [];
   final List<Map<String, dynamic>> _pendingEvents = [];
   Uint8List? _lastFramePayload;
@@ -339,36 +373,60 @@ class LinkHostRecorder {
   int _ackedSeq = 0;
   bool _firstFrameAcked = false;
   DateTime? _lastAckAt;
-  DateTime? _leaseExpiresAt;
+  final Stopwatch _leaseStopwatch;
+  Duration? _leaseTtl;
+  DateTime? _desktopGraceUntil;
   Timer? _flushTimer;
   bool _stopped = false;
+  bool _sessionEndedRecorded = false;
+  bool _tailFlushed = true;
   Future<bool>? _activeFlush;
 
   int get nextSeq => _nextSeq;
   int get ackedSeq => _ackedSeq;
   bool get isFirstFrameAcked => !config.enabled || _firstFrameAcked;
   bool get firstFrameAcked => _firstFrameAcked;
+  bool get isTailFlushed => _tailFlushed && _pendingFrames.isEmpty && _pendingEvents.isEmpty;
   int get queuedBytes => _queuedBytes;
+
+  void notifyDesktopChanged() {
+    final now = _clock().toUtc();
+    // Льготный период при смене рабочего стола (≤ 10 с, без продления, пока он активен)
+    if (_desktopGraceUntil == null || now.isAfter(_desktopGraceUntil!)) {
+      _desktopGraceUntil = now.add(const Duration(seconds: 10));
+    }
+  }
 
   void start() {
     _startedAt = _clock().toUtc();
     if (!config.enabled || _stopped || _flushTimer != null) return;
+
+    if (config.ingestUrl.isNotEmpty && (config.mandatory || config.requireFirstFrame)) {
+      final uri = Uri.tryParse(config.ingestUrl);
+      if (uri == null || uri.scheme.toLowerCase() != 'https') {
+        _triggerMandatoryStop('recorder_insecure_ingest');
+        return;
+      }
+    }
+
     if (_nextSeq == 0 && _pendingEvents.isEmpty) {
       _nextSeq++;
-      _pendingEvents.add({
+      final startEvent = {
         'seq': _nextSeq,
         'event_type': 'session_started',
         'source': 'session_lifecycle',
         'occurred_at': _clock().toUtc().toIso8601String(),
         'metadata': {'mode': config.effectiveMode},
-      });
+      };
+      _pendingEvents.add(startEvent);
+      _queuedBytes += utf8.encode(jsonEncode(startEvent)).length;
     }
     _flushTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       unawaited(flushAndVerifyHealth());
     });
   }
 
-  Future<void> stop({String reason = ''}) async {
+  Future<bool> stop({String reason = ''}) async {
     _flushTimer?.cancel();
     _flushTimer = null;
     while (_activeFlush != null) {
@@ -376,13 +434,46 @@ class LinkHostRecorder {
         await _activeFlush;
       } catch (_) {}
     }
+    if (!config.enabled) {
+      _stopped = true;
+      return true;
+    }
+    if (!_sessionEndedRecorded) {
+      _sessionEndedRecorded = true;
+      _nextSeq++;
+      final isViolation = reason.isNotEmpty &&
+          reason != 'normal' &&
+          reason != 'user_disconnected' &&
+          reason != 'session_ended';
+      final endEvent = {
+        'seq': _nextSeq,
+        'event_type': isViolation ? 'mandatory_violation' : 'session_ended',
+        'source': 'session_lifecycle',
+        'occurred_at': _clock().toUtc().toIso8601String(),
+        'metadata': {
+          'reason': reason.isNotEmpty ? reason : 'normal',
+          if (isViolation) 'violation': reason,
+        },
+      };
+      _pendingEvents.add(endEvent);
+      _queuedBytes += utf8.encode(jsonEncode(endEvent)).length;
+    }
     while (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
       final prevCount = _pendingFrames.length + _pendingEvents.length;
       final ok = await _flushInternal();
       final newCount = _pendingFrames.length + _pendingEvents.length;
       if (!ok || newCount >= prevCount) break;
     }
+    if (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
+      // Потеря хвоста — фиксируем gap_marker
+      _tailFlushed = false;
+      _nextSeq++;
+      _pendingFrames.clear();
+      _pendingEvents.clear();
+      _queuedBytes = 0;
+    }
     _stopped = true;
+    return isTailFlushed;
   }
 
   /// Очищает команду управления от печатных символов, паролей и текста буфера обмена (Раздел 4.2).
@@ -444,8 +535,6 @@ class LinkHostRecorder {
           'occurred_at': occurredAt.toUtc().toIso8601String(),
           'metadata': {
             'action': 'key_down',
-            'key': rawKeyStr.trim(),
-            if (rawCharStr.isNotEmpty) 'char': rawCharStr,
           },
         };
       case 'text_input':
@@ -455,7 +544,6 @@ class LinkHostRecorder {
           'source': 'remote_operator',
           'occurred_at': occurredAt.toUtc().toIso8601String(),
           'metadata': {
-            'text': text,
             'length': text.length,
           },
         };
@@ -519,6 +607,18 @@ class LinkHostRecorder {
     return true;
   }
 
+  void _recalculateQueuedBytes() {
+    var total = 0;
+    for (final f in _pendingFrames) {
+      final b64 = f['payload_base64'] as String? ?? '';
+      total += b64.length * 3 ~/ 4;
+    }
+    for (final e in _pendingEvents) {
+      total += utf8.encode(jsonEncode(e)).length;
+    }
+    _queuedBytes = total;
+  }
+
   /// Добавляет кадр в ограниченную очередь (Инвариант 7, 8, 9).
   /// Для периодических снимков (`periodic`) пропускает дубликаты, если экран не изменился.
   bool enqueueFrame({
@@ -579,7 +679,9 @@ class LinkHostRecorder {
     if (sanitized == null) return;
     _nextSeq++;
     sanitized['seq'] = _nextSeq;
+    final eventBytes = utf8.encode(jsonEncode(sanitized)).length;
     _pendingEvents.add(sanitized);
+    _queuedBytes += eventBytes;
   }
 
   /// Отправляет накопленный пакет в Recorder и проверяет долговечный ACK (Инвариант 1, 2, 5).
@@ -600,7 +702,39 @@ class LinkHostRecorder {
   Future<bool> _flushInternal() async {
     final now = _clock().toUtc();
 
-    if (_pendingFrames.isEmpty && _pendingEvents.isEmpty) {
+    if (config.ingestUrl.isNotEmpty && (config.mandatory || config.requireFirstFrame)) {
+      final uri = Uri.tryParse(config.ingestUrl);
+      if (uri == null || uri.scheme.toLowerCase() != 'https') {
+        _triggerMandatoryStop('recorder_insecure_ingest');
+        return false;
+      }
+    }
+
+    final batchFrames = <Map<String, dynamic>>[];
+    var currentBatchBytes = 0;
+    for (final frame in _pendingFrames) {
+      if (batchFrames.length >= maxBatchFrames) break;
+      final b64 = frame['payload_base64'] as String? ?? '';
+      final frameBytes = b64.length * 3 ~/ 4;
+      if (batchFrames.isNotEmpty && currentBatchBytes + frameBytes > maxBatchBytes) {
+        break;
+      }
+      batchFrames.add(frame);
+      currentBatchBytes += frameBytes;
+    }
+
+    final batchEvents = <Map<String, dynamic>>[];
+    for (final event in _pendingEvents) {
+      if (batchEvents.length >= maxBatchEvents) break;
+      final eventBytes = utf8.encode(jsonEncode(event)).length;
+      if (batchEvents.isNotEmpty && currentBatchBytes + eventBytes > maxBatchBytes) {
+        break;
+      }
+      batchEvents.add(event);
+      currentBatchBytes += eventBytes;
+    }
+
+    if (batchFrames.isEmpty && batchEvents.isEmpty) {
       final needsLeaseKeepalive = _lastAckAt != null
           ? now.difference(_lastAckAt!) >= const Duration(seconds: 10)
           : (!config.requireFirstFrame &&
@@ -614,21 +748,57 @@ class LinkHostRecorder {
       'session_id': sessionId,
       'epoch': config.epoch,
       'lease_ttl_seconds': config.leaseTtl.inSeconds,
-      'frames': List<Map<String, dynamic>>.from(_pendingFrames),
-      'events': List<Map<String, dynamic>>.from(_pendingEvents),
+      'frames': batchFrames,
+      'events': batchEvents,
     };
 
-    final inFlightFrameSeqs = _pendingFrames.map((f) => f['seq'] as int).toSet();
-    final inFlightEventSeqs = _pendingEvents.map((e) => e['seq'] as int).toSet();
+    final inFlightFrameSeqs = batchFrames.map((f) => f['seq'] as int).toSet();
+    final inFlightEventSeqs = batchEvents.map((e) => e['seq'] as int).toSet();
 
+    final sendStopwatch = Stopwatch()..start();
     try {
       final ack = await sendBatch(batch);
+      sendStopwatch.stop();
+      final rtt = sendStopwatch.elapsed;
+
+      if (ack.ackHighWatermarkSeq < _ackedSeq) {
+        throw FormatException(
+          'Recorder ACK high watermark sequence cannot decrease (was $_ackedSeq, got ${ack.ackHighWatermarkSeq})',
+        );
+      }
       _ackedSeq = ack.ackHighWatermarkSeq;
       if (ack.firstFrameAcked) {
         _firstFrameAcked = true;
       }
       _lastAckAt = _clock().toUtc();
-      _leaseExpiresAt = ack.leaseExpiresAt.toUtc();
+      final ackNow = _lastAckAt!;
+
+      if (ack.leaseTtlMs != null) {
+        final serverTtlMs = ack.leaseTtlMs!;
+        if (serverTtlMs <= 0) {
+          _leaseTtl = Duration.zero;
+          _triggerMandatoryStop('recorder_lease_expired');
+          return false;
+        } else {
+          // Безопасный консервативный deadline с вычетом полного RTT
+          final remainingMs = serverTtlMs - rtt.inMilliseconds;
+          if (remainingMs <= 0) {
+            _leaseTtl = Duration.zero;
+            _triggerMandatoryStop('recorder_lease_expired');
+            return false;
+          }
+          _leaseTtl = Duration(milliseconds: remainingMs);
+        }
+      } else if (config.mandatory && config.contractVersion != 'v1') {
+        throw const FormatException('Recorder ACK missing required lease_ttl_ms in mandatory mode');
+      } else {
+        final expiresAt = ack.leaseExpiresAt.toUtc();
+        _leaseTtl = expiresAt.isAfter(ackNow)
+            ? expiresAt.difference(ackNow)
+            : Duration.zero;
+      }
+      _leaseStopwatch.reset();
+      _leaseStopwatch.start();
 
       // Удаляем только подтверждённые сервером элементы, которые реально отправлялись
       // в текущем пакете (seq <= ackHighWatermarkSeq && in inFlightFrameSeqs),
@@ -636,20 +806,27 @@ class LinkHostRecorder {
       _pendingFrames.removeWhere((f) => inFlightFrameSeqs.contains(f['seq'] as int) && (f['seq'] as int) <= _ackedSeq);
       _pendingEvents.removeWhere((e) => inFlightEventSeqs.contains(e['seq'] as int) && (e['seq'] as int) <= _ackedSeq);
 
-      _queuedBytes = _pendingFrames.fold<int>(0, (acc, f) {
-        final b64 = f['payload_base64'] as String? ?? '';
-        return acc + (b64.length * 3 ~/ 4);
-      });
+      _recalculateQueuedBytes();
 
       if ((config.requireFirstFrame || config.mandatory) && !_firstFrameAcked) {
+        if (_desktopGraceUntil != null && now.isBefore(_desktopGraceUntil!)) {
+          return true;
+        }
         final elapsed = now.difference(_startedAt);
         if (elapsed >= config.maxAckLag) {
-          _triggerMandatoryStop('recorder_first_frame_unacked');
+          _triggerMandatoryStop('recorder_first_frame_unavailable');
           return false;
         }
       }
       return true;
-    } catch (_) {
+    } catch (e) {
+      if (e is FormatException) {
+        if (e.message.contains('recorder_insecure_ingest')) {
+          _triggerMandatoryStop('recorder_insecure_ingest');
+          return false;
+        }
+        rethrow;
+      }
       return _checkLeaseAndLag(now);
     }
   }
@@ -658,13 +835,16 @@ class LinkHostRecorder {
     if (!config.mandatory) return true;
     final elapsed = now.difference(_startedAt);
     if ((config.requireFirstFrame || config.mandatory) && !_firstFrameAcked) {
+      if (_desktopGraceUntil != null && now.isBefore(_desktopGraceUntil!)) {
+        return true;
+      }
       if (elapsed >= config.maxAckLag) {
         _triggerMandatoryStop('recorder_first_frame_unavailable');
         return false;
       }
       return true;
     }
-    if (_leaseExpiresAt != null && !now.isBefore(_leaseExpiresAt!)) {
+    if (_leaseTtl != null && _leaseStopwatch.elapsed >= _leaseTtl!) {
       _triggerMandatoryStop('recorder_lease_expired');
       return false;
     }

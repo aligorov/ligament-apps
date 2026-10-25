@@ -308,16 +308,35 @@ func agentHeartbeatMessage(config AgentWSConfig, collectInteractiveUser bool) ma
 	return message
 }
 
+func isVirtualAdapter(name string) bool {
+	lower := strings.ToLower(name)
+	for _, sub := range []string{
+		"vethernet", "hyper-v", "wsl", "docker", "tailscale",
+		"wireguard", "wg", "tun", "tap", "openvpn", "zerotier",
+		"vmnet", "virtual", "vmware", "vbox", "hamachi",
+	} {
+		if strings.Contains(lower, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // CurrentLocalIPs returns bounded, non-loopback interface addresses for host
-// inventory. The server performs independent validation before persistence.
+// inventory, filtering out virtual adapters (Hyper-V, WSL, VPNs).
+// The server performs independent validation before persistence.
 func CurrentLocalIPs() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
 	addresses := make([]string, 0, 8)
+	var ipv4s, ipv6s []string
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if isVirtualAdapter(iface.Name) {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -335,11 +354,17 @@ func CurrentLocalIPs() []string {
 			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
 				continue
 			}
-			addresses = append(addresses, ip.String())
-			if len(addresses) >= 20 {
-				return addresses
+			if ip.To4() != nil {
+				ipv4s = append(ipv4s, ip.String())
+			} else {
+				ipv6s = append(ipv6s, ip.String())
 			}
 		}
+	}
+	addresses = append(addresses, ipv4s...)
+	addresses = append(addresses, ipv6s...)
+	if len(addresses) > 20 {
+		return addresses[:20]
 	}
 	return addresses
 }

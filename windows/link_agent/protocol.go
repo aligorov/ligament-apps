@@ -28,7 +28,9 @@ type SessionOffer struct {
 	SessionID    string          `json:"session_id"`
 	OperatorID   string          `json:"operator_id"`
 	OperatorName string          `json:"operator_name,omitempty"`
+	SessionKind  string          `json:"session_kind,omitempty"`
 	AccessType   string          `json:"access_type"`
+	DesktopScope string          `json:"desktop_scope,omitempty"`
 	AccessMode   string          `json:"access_mode"`
 	SDP          string          `json:"sdp,omitempty"`
 	ICEServers   json.RawMessage `json:"ice_servers,omitempty"`
@@ -62,6 +64,12 @@ func DecodeOffer(data []byte) (SessionOffer, error) {
 	}
 	if offer.AccessType != "attended" && offer.AccessType != "unattended" {
 		return SessionOffer{}, errors.New("link agent: invalid access type")
+	}
+	if offer.DesktopScope != "" && offer.DesktopScope != "interactive" && offer.DesktopScope != "system_console" {
+		return SessionOffer{}, errors.New("link agent: invalid desktop scope")
+	}
+	if offer.DesktopScope == "system_console" && offer.AccessType != "unattended" {
+		return SessionOffer{}, errors.New("link agent: system_console scope requires unattended access")
 	}
 	if offer.SDP == "" || len(offer.SDP) > maxSessionSDPBytes {
 		return SessionOffer{}, errors.New("link agent: incomplete or oversized session SDP")

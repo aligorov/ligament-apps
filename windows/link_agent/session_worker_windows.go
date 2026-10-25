@@ -44,7 +44,9 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, offer SessionOf
 			Err:    errors.New("link agent: invalid initial worker frame size"),
 		}
 	}
-	sess, desktop, err := ResolveTargetSession(offer.AccessType == "unattended")
+	allowLogon := (offer.AccessType == "unattended" && offer.DesktopScope == "system_console") ||
+		(offer.AccessType == "unattended" && offer.SessionKind == "console")
+	sess, desktop, err := ResolveTargetSession(allowLogon)
 	if err != nil {
 		if errors.Is(err, ErrNoActiveInteractiveUser) {
 			return nil, &WorkerLaunchError{Reason: ReasonHostNoActiveUser, Err: err}
@@ -321,7 +323,8 @@ type windowsSessionWorkerProcess struct {
 	pid         uint32
 	sessionID   uint32
 	desktopName string
-	startedAt   time.Time
+	startedAt            time.Time
+	consoleMismatchSince time.Time
 
 	mu     sync.RWMutex
 	sendMu sync.Mutex
@@ -398,12 +401,11 @@ func (p *windowsSessionWorkerProcess) Receive(ctx context.Context) ([]byte, erro
 		pipe, process := p.pipe, p.process
 		p.mu.RUnlock()
 
-		// Track active console session changes (e.g. Logon / Lock / Fast User Switch)
+		// Track active console session changes (e.g. Logon / Lock / Fast User Switch).
+		// Close session only if the mismatch persists longer than 15s (task 3.5).
 		activeConsole := getActiveConsoleSessionID()
-		if activeConsole != 0 && activeConsole != 0xFFFFFFFF && activeConsole != p.sessionID {
-			workerLog("interactive host session change detected: worker_session=%d active_console_now=%d pid=%d",
-				p.sessionID, activeConsole, p.pid)
-			return nil, fmt.Errorf("link agent: active console session changed from %d to %d", p.sessionID, activeConsole)
+		if err := p.checkConsoleSessionMismatch(activeConsole, time.Now()); err != nil {
+			return nil, err
 		}
 
 		available, err := peekPipeBytes(pipe)
@@ -462,6 +464,23 @@ func peekPipeBytes(pipe windows.Handle) (uint32, error) {
 		return 0, windows.GetLastError()
 	}
 	return messageBytes, nil
+}
+
+func (p *windowsSessionWorkerProcess) checkConsoleSessionMismatch(activeConsole uint32, now time.Time) error {
+	if activeConsole != 0 && activeConsole != 0xFFFFFFFF && activeConsole != p.sessionID {
+		if p.consoleMismatchSince.IsZero() {
+			p.consoleMismatchSince = now
+			workerLog("interactive host session mismatch detected: worker_session=%d active_console_now=%d pid=%d",
+				p.sessionID, activeConsole, p.pid)
+		} else if now.Sub(p.consoleMismatchSince) > 15*time.Second {
+			workerLog("interactive host session mismatch exceeded 15s limit: worker_session=%d active_console_now=%d pid=%d",
+				p.sessionID, activeConsole, p.pid)
+			return fmt.Errorf("link agent: active console session changed from %d to %d (persisted > 15s)", p.sessionID, activeConsole)
+		}
+	} else {
+		p.consoleMismatchSince = time.Time{}
+	}
+	return nil
 }
 
 func (p *windowsSessionWorkerProcess) Close() error {

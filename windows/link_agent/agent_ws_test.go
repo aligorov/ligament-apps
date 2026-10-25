@@ -200,6 +200,45 @@ func TestValidateAgentWSConfigRejectsMismatchedIdentity(t *testing.T) {
 	}
 }
 
+func TestIsVirtualAdapter(t *testing.T) {
+	virtualNames := []string{
+		"vEthernet (Default Switch)",
+		"vEthernet (WSL)",
+		"Hyper-V Virtual Ethernet Adapter",
+		"docker0",
+		"tailscale0",
+		"wg0",
+		"WireGuard Tunnel",
+		"tun0",
+		"tap0",
+		"OpenVPN TAP-Windows Adapter V9",
+		"ZeroTier One",
+		"VMware Network Adapter VMnet1",
+		"VirtualBox Host-Only Ethernet Adapter",
+		"Hamachi",
+	}
+	for _, name := range virtualNames {
+		if !isVirtualAdapter(name) {
+			t.Errorf("expected isVirtualAdapter(%q) = true, got false", name)
+		}
+	}
+
+	physicalNames := []string{
+		"Ethernet",
+		"Wi-Fi",
+		"Беспроводная сеть",
+		"Подключение по локальной сети",
+		"en0",
+		"eth0",
+		"wlan0",
+	}
+	for _, name := range physicalNames {
+		if isVirtualAdapter(name) {
+			t.Errorf("expected isVirtualAdapter(%q) = false, got true", name)
+		}
+	}
+}
+
 func testAgentIdentity(t *testing.T) *Identity {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

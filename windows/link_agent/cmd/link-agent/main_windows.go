@@ -269,6 +269,13 @@ func readWindowsVersion() string {
 	defer key.Close()
 	product, _, _ := key.GetStringValue("ProductName")
 	build, _, _ := key.GetStringValue("CurrentBuildNumber")
+	var buildNum int
+	if build != "" {
+		_, _ = fmt.Sscanf(build, "%d", &buildNum)
+	}
+	if buildNum >= 22000 && strings.Contains(product, "Windows 10") {
+		product = strings.Replace(product, "Windows 10", "Windows 11", 1)
+	}
 	if product == "" {
 		return build
 	}

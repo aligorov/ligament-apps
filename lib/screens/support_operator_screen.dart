@@ -12,7 +12,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:intl/intl.dart';
-import 'package:local_auth/local_auth.dart';
 import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
@@ -634,11 +633,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Future<String?> _promptStepUpAuth() async {
     final auth = context.read<AuthState>();
     final controller = TextEditingController();
-    final localAuth = LocalAuthentication();
-    bool supportsPasskey = false;
-    try {
-      supportsPasskey = await localAuth.isDeviceSupported();
-    } catch (_) {}
     String? error;
     bool isSubmitting = false;
 
@@ -675,83 +669,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   children: [
                     Text(
                       isRu
-                          ? 'Вы подключаетесь к ПК из внешней сети (${auth.clientIp ?? "внешний IP"}).\nПодтвердите вход через Passkey (Touch ID / Windows Hello) или введите 6-значный код TOTP:'
-                          : 'You are connecting from an external network (${auth.clientIp ?? "public IP"}).\nConfirm with Passkey (Touch ID / Windows Hello) or enter your 6-digit TOTP code:',
+                          ? 'Вы подключаетесь к ПК из внешней сети (${auth.clientIp ?? "внешний IP"}).\nВведите 6-значный код подтверждения TOTP из приложения-аутентификатора:'
+                          : 'You are connecting from an external network (${auth.clientIp ?? "public IP"}).\nEnter your 6-digit TOTP verification code from your authenticator app:',
                       style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
                     ),
                     const SizedBox(height: 16),
-                    if (supportsPasskey) ...[
-                      OutlinedButton.icon(
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                setDialogState(() {
-                                  isSubmitting = true;
-                                  error = null;
-                                });
-                                try {
-                                  final didAuth = await localAuth.authenticate(
-                                    localizedReason: isRu
-                                        ? 'Подтвердите подключение к рабочему месту (Touch ID / Windows Hello / Passkey)'
-                                        : 'Confirm workstation connection (Touch ID / Windows Hello / Passkey)',
-                                    options: const AuthenticationOptions(
-                                      biometricOnly: false,
-                                      stickyAuth: true,
-                                    ),
-                                  );
-                                  if (didAuth) {
-                                    final token = await auth.verifyStepUp(passkey: true);
-                                    if (ctx.mounted) Navigator.of(ctx).pop(token);
-                                    return;
-                                  }
-                                } catch (err) {
-                                  setDialogState(() {
-                                    error = isRu
-                                        ? 'Ошибка Passkey: $err'
-                                        : 'Passkey error: $err';
-                                  });
-                                } finally {
-                                  if (ctx.mounted) {
-                                    setDialogState(() {
-                                      isSubmitting = false;
-                                    });
-                                  }
-                                }
-                              },
-                        icon: const Icon(Icons.fingerprint, color: Color(0xFFF59E0B), size: 22),
-                        label: Text(
-                          isRu ? '🔑 Подтвердить через Passkey' : '🔑 Confirm with Passkey',
-                          style: const TextStyle(
-                            color: Color(0xFFF59E0B),
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(0xFFD97706), width: 1.5),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          const Expanded(child: Divider(color: Color(0xFF334155))),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
-                            child: Text(
-                              isRu ? 'или введите TOTP код' : 'or enter TOTP code',
-                              style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
-                            ),
-                          ),
-                          const Expanded(child: Divider(color: Color(0xFF334155))),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                    ],
                     TextField(
                       controller: controller,
-                      autofocus: !supportsPasskey,
+                      autofocus: true,
                       keyboardType: TextInputType.number,
                       maxLength: 6,
                       style: const TextStyle(
