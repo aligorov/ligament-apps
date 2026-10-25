@@ -642,224 +642,273 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             ? host['ad_ou'].toString().trim()
             : '');
 
-    return Container(
-      constraints: const BoxConstraints(minHeight: 46),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+    // Определяем иконку ОС
+    final isMac = os.toLowerCase().contains('mac') || os.toLowerCase().contains('darwin');
+    final isLinux = os.toLowerCase().contains('linux');
+    final deviceIcon = isMac
+        ? Icons.laptop_mac
+        : (isLinux ? Icons.terminal : Icons.desktop_windows);
+
+    return InkWell(
+      onTap: online ? () => _startLinkSession(host, isRu) : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F172A).withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isOwner
+                ? const Color(0xFF38BDF8).withValues(alpha: 0.35)
+                : const Color(0xFF334155).withValues(alpha: 0.4),
+          ),
+        ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Icon(Icons.circle,
-                size: 8,
-                color:
-                    online ? const Color(0xFF22C55E) : const Color(0xFF64748B)),
-            const SizedBox(width: 10),
+            // Иконка устройства со статусом
+            Stack(
+              alignment: Alignment.bottomRight,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    deviceIcon,
+                    size: 20,
+                    color: online ? const Color(0xFF38BDF8) : const Color(0xFF64748B),
+                  ),
+                ),
+                Container(
+                  width: 9,
+                  height: 9,
+                  decoration: BoxDecoration(
+                    color: online ? const Color(0xFF22C55E) : const Color(0xFF64748B),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0xFF0F172A), width: 1.5),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 12),
+
+            // Основная информация о хосте
             Expanded(
-                flex: 3,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      hostname == null || hostname.isEmpty ? '—' : hostname,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      [
-                        if (localIPs is List && localIPs.isNotEmpty)
-                          localIPs.first.toString()
-                        else if (host['public_ip'] != null &&
-                            host['public_ip'].toString().isNotEmpty)
-                          host['public_ip'].toString(),
-                        if (os.isNotEmpty) os,
-                      ].where((s) => s.isNotEmpty).join(' • '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Color(0xFF64748B), fontSize: 10),
-                    ),
-                  ],
-                )),
-            Expanded(
-              flex: 4,
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
+                  // 1-я строка: Имя ПК + значок «Мой ПК»
                   Row(
-                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Flexible(
                         child: Text(
-                          effectiveName.isNotEmpty
-                              ? effectiveName
-                              : (isRu ? 'Владелец не назначен' : 'No owner assigned'),
+                          hostname == null || hostname.isEmpty ? '—' : hostname,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: effectiveName.isNotEmpty
-                                ? const Color(0xFFE2E8F0)
-                                : const Color(0xFF64748B),
-                            fontSize: 11,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
-                      if (effectiveLogin.isNotEmpty && effectiveLogin != effectiveName) ...[
-                        const SizedBox(width: 4),
-                        Text(
-                          '($effectiveLogin)',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Color(0xFF94A3B8),
-                            fontSize: 10,
-                            fontWeight: FontWeight.w400,
-                          ),
-                        ),
-                      ],
                       if (isOwner) ...[
                         const SizedBox(width: 6),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                           decoration: BoxDecoration(
-                            color: isConsoleAllowed
-                                ? const Color(0xFF0284C7).withValues(alpha: 0.2)
-                                : const Color(0xFF475569).withValues(alpha: 0.2),
+                            color: const Color(0xFF0284C7).withValues(alpha: 0.25),
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(
-                              color: isConsoleAllowed
-                                  ? const Color(0xFF38BDF8).withValues(alpha: 0.4)
-                                  : const Color(0xFF94A3B8).withValues(alpha: 0.4),
+                              color: const Color(0xFF38BDF8).withValues(alpha: 0.5),
                             ),
                           ),
                           child: Text(
-                            isRu
-                                ? (isConsoleAllowed ? 'Мой ПК (CONSOLE разрешена)' : 'Мой ПК (CONSOLE не разрешена)')
-                                : (isConsoleAllowed ? 'My PC (CONSOLE allowed)' : 'My PC (CONSOLE not allowed)'),
-                            style: TextStyle(
-                              color: isConsoleAllowed ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
-                              fontSize: 9,
+                            isRu ? 'Мой ПК' : 'My PC',
+                            style: const TextStyle(
+                              color: Color(0xFF38BDF8),
+                              fontSize: 9.5,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
-                      ] else if (isConsoleAllowed) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF059669).withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: const Color(0xFF34D399).withValues(alpha: 0.4)),
-                          ),
-                          child: Text(
-                            isRu ? 'CONSOLE разрешена' : 'CONSOLE allowed',
-                            style: const TextStyle(
-                              color: Color(0xFF34D399),
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                      ],
+                      if (isConsoleAllowed) ...[
+                        const SizedBox(width: 5),
+                        Tooltip(
+                          message: isRu ? 'Доступна консоль Winlogon' : 'Winlogon Console available',
+                          child: const Icon(Icons.terminal, size: 13, color: Color(0xFF38BDF8)),
                         ),
                       ],
                     ],
                   ),
-                  if (effectivePosition.isNotEmpty) ...[
-                    const SizedBox(height: 1),
-                    Text(
-                      effectivePosition,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF64748B),
-                        fontSize: 10,
-                      ),
+                  const SizedBox(height: 2),
+
+                  // 2-я строка: Сотрудник / пользователь + логин
+                  if (effectiveName.isNotEmpty || effectiveLogin.isNotEmpty) ...[
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            effectiveName.isNotEmpty ? effectiveName : effectiveLogin,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: effectiveName.isNotEmpty
+                                  ? const Color(0xFFE2E8F0)
+                                  : const Color(0xFF94A3B8),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        if (effectiveLogin.isNotEmpty && effectiveLogin != effectiveName) ...[
+                          const SizedBox(width: 4),
+                          Text(
+                            '($effectiveLogin)',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFF94A3B8),
+                              fontSize: 10,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
+                    const SizedBox(height: 1),
                   ],
+
+                  // 3-я строка: IP • Должность / OU
+                  Text(
+                    [
+                      if (localIPs is List && localIPs.isNotEmpty)
+                        localIPs.first.toString()
+                      else if (host['public_ip'] != null && host['public_ip'].toString().isNotEmpty)
+                        host['public_ip'].toString(),
+                      if (effectivePosition.isNotEmpty) effectivePosition,
+                    ].where((s) => s.isNotEmpty).join(' • '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF64748B),
+                      fontSize: 10,
+                    ),
+                  ),
                 ],
               ),
             ),
-            Tooltip(
-              message: isRu
-                  ? 'Доступность агента. Экран и управление проверяются при подключении.'
-                  : 'Agent availability. Screen and control are checked when connecting.',
-              child: Text(
-                unknown
-                    ? (isRu ? 'Неизвестно' : 'Unknown')
-                    : online
-                        ? (isRu ? 'Онлайн' : 'Online')
-                        : status == 'revoked'
-                            ? (isRu ? 'Отозван' : 'Revoked')
-                            : status == 'suspended'
-                                ? (isRu ? 'Приостановлен' : 'Suspended')
-                                : (isRu ? 'Офлайн' : 'Offline'),
-                style: TextStyle(
-                    color: online
-                        ? const Color(0xFF4ADE80)
-                        : const Color(0xFF94A3B8),
-                    fontSize: 10),
-              ),
-            ),
-            IconButton(
-              tooltip: canManage
-                  ? (isUnattended
-                      ? (isRu
-                          ? 'Неконтролируемый доступ (включён). Нажмите для выключения'
-                          : 'Unattended access (ON). Click to disable')
-                      : (isRu
-                          ? 'Обычный доступ (требует подтверждения). Нажмите для включения неконтролируемого доступа'
-                          : 'Attended access (requires code). Click to enable unattended'))
-                  : (isUnattended
-                      ? (isRu
-                          ? 'Неконтролируемый доступ разрешён администратором'
-                          : 'Unattended access enabled by administrator')
-                      : (isRu
-                          ? 'Требуется подтверждение кодом'
-                          : 'Confirmation code required')),
-              onPressed: canManage
-                  ? () => _toggleUnattended(host, !isUnattended, isRu)
-                  : null,
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints.tightFor(width: 32, height: 34),
-              padding: EdgeInsets.zero,
-              icon: Icon(
-                isUnattended ? Icons.shield : Icons.shield_outlined,
-                color: isUnattended
-                    ? const Color(0xFF22C55E)
-                    : const Color(0xFF64748B),
-                size: 16,
-              ),
-            ),
-            IconButton(
-              tooltip: isRu ? 'Сведения о компьютере' : 'Computer details',
-              onPressed: () => _showHostDetails(host, isRu),
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints.tightFor(width: 32, height: 34),
-              padding: EdgeInsets.zero,
-              icon: const Icon(Icons.info_outline, size: 16),
-            ),
-            if (host['can_archive'] == true || host['can_unlink'] == true)
-              IconButton(
-                tooltip: isRu ? 'Удалить из LINK' : 'Remove from LINK',
-                onPressed: () => _archiveHost(host, isRu),
-                visualDensity: VisualDensity.compact,
-                constraints:
-                    const BoxConstraints.tightFor(width: 32, height: 34),
-                padding: EdgeInsets.zero,
-                icon: const Icon(Icons.delete_outline, size: 16),
-              ),
-            IconButton(
-              tooltip: isRu ? 'Подключиться' : 'Connect',
-              onPressed: online ? () => _startLinkSession(host, isRu) : null,
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints.tightFor(width: 34, height: 34),
-              padding: EdgeInsets.zero,
-              icon: const Icon(Icons.desktop_windows_outlined, size: 16),
+            const SizedBox(width: 8),
+
+            // Действия: статус + кнопка подключения + меню опций
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Статус В сети / Не в сети
+                Text(
+                  unknown
+                      ? (isRu ? 'Неизвестно' : 'Unknown')
+                      : status == 'revoked'
+                          ? (isRu ? 'Отозван' : 'Revoked')
+                          : status == 'suspended'
+                              ? (isRu ? 'Приостановлен' : 'Suspended')
+                              : online
+                                  ? (isRu ? 'В сети' : 'Online')
+                                  : (isRu ? 'Не в сети' : 'Offline'),
+                  style: TextStyle(
+                    color: online ? const Color(0xFF4ADE80) : const Color(0xFF64748B),
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(width: 6),
+
+                // Основная кнопка подключения
+                IconButton(
+                  tooltip: isRu ? 'Подключиться' : 'Connect',
+                  onPressed: online ? () => _startLinkSession(host, isRu) : null,
+                  visualDensity: VisualDensity.compact,
+                  style: IconButton.styleFrom(
+                    backgroundColor: online
+                        ? const Color(0xFF0284C7).withValues(alpha: 0.25)
+                        : Colors.transparent,
+                    foregroundColor: online ? const Color(0xFF38BDF8) : const Color(0xFF475569),
+                  ),
+                  constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.desktop_windows_outlined, size: 16),
+                ),
+
+                // Меню дополнительных действий (Сведения, Режим доступа, Удалить)
+                PopupMenuButton<String>(
+                  tooltip: isRu ? 'Опции' : 'Options',
+                  icon: const Icon(Icons.more_vert, size: 16, color: Color(0xFF94A3B8)),
+                  color: const Color(0xFF1E293B),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(width: 28, height: 32),
+                  onSelected: (action) {
+                    if (action == 'details') {
+                      _showHostDetails(host, isRu);
+                    } else if (action == 'toggle_unattended') {
+                      _toggleUnattended(host, !isUnattended, isRu);
+                    } else if (action == 'archive') {
+                      _archiveHost(host, isRu);
+                    }
+                  },
+                  itemBuilder: (ctx) => [
+                    PopupMenuItem(
+                      value: 'details',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.info_outline, size: 16, color: Color(0xFF94A3B8)),
+                          const SizedBox(width: 8),
+                          Text(isRu ? 'Сведения о ПК' : 'Computer details',
+                              style: const TextStyle(fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                    if (canManage)
+                      PopupMenuItem(
+                        value: 'toggle_unattended',
+                        child: Row(
+                          children: [
+                            Icon(
+                              isUnattended ? Icons.shield : Icons.shield_outlined,
+                              size: 16,
+                              color: isUnattended ? const Color(0xFF22C55E) : const Color(0xFF94A3B8),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              isUnattended
+                                  ? (isRu ? 'Выключить Unattended' : 'Disable Unattended')
+                                  : (isRu ? 'Включить Unattended' : 'Enable Unattended'),
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (host['can_archive'] == true || host['can_unlink'] == true)
+                      PopupMenuItem(
+                        value: 'archive',
+                        child: Row(
+                          children: [
+                            const Icon(Icons.delete_outline, size: 16, color: Color(0xFFEF4444)),
+                            const SizedBox(width: 8),
+                            Text(
+                              isRu ? 'Удалить из LINK' : 'Remove from LINK',
+                              style: const TextStyle(fontSize: 12, color: Color(0xFFEF4444)),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ],
             ),
           ],
         ),
@@ -1149,37 +1198,46 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
 
     final isConsoleAllowed = host['console_allowed'] == true;
     final consoleProfile = host['console_profile']?.toString() ?? 'work';
+    final interactiveUser = (host['interactive_username'] ?? '').toString().trim();
 
     String? mode = 'control';
     String sessionKind = 'link';
 
     if (isConsoleAllowed) {
-      sessionKind = 'console';
-      if (consoleProfile == 'view') {
-        mode = 'view';
+      if (interactiveUser.isEmpty) {
+        // ПК заблокирован или на экране входа — подключаемся к системной консоли Winlogon
+        sessionKind = 'console';
+        if (consoleProfile == 'view') mode = 'view';
+      } else {
+        // На ПК есть активный сеанс пользователя — предлагаем выбор
+        final chosen = await showDialog<String>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            backgroundColor: const Color(0xFF131B2B),
+            title: Text(isRu ? 'Режим подключения к ПК' : 'Connection mode'),
+            content: Text(isRu
+                ? 'На компьютере работает $interactiveUser.\nКуда вы хотите подключиться?'
+                : 'User $interactiveUser is active.\nWhere would you like to connect?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, 'link'),
+                child: Text(isRu ? '💻 К рабочему столу' : '💻 User desktop'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, 'console'),
+                child: Text(isRu ? '🖥️ В консоль Winlogon' : '🖥️ Winlogon Console'),
+              ),
+            ],
+          ),
+        );
+        if (chosen == null || !mounted) return;
+        sessionKind = chosen;
+        if (sessionKind == 'console' && consoleProfile == 'view') {
+          mode = 'view';
+        }
       }
     } else {
-      mode = await showDialog<String>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          backgroundColor: const Color(0xFF131B2B),
-          title: Text(isRu ? 'Режим подключения' : 'Connection mode'),
-          content: Text(isRu
-              ? 'Управление включайте только при необходимости.'
-              : 'Enable control only when needed.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, 'view'),
-              child: Text(isRu ? 'Только просмотр' : 'View only'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, 'control'),
-              child: Text(isRu ? 'Управление' : 'Control'),
-            ),
-          ],
-        ),
-      );
-      if (mode == null || !mounted) return;
+      sessionKind = 'link';
     }
 
     await Navigator.of(context).push<void>(

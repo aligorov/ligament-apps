@@ -1287,19 +1287,15 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         if (!kIsWeb && Platform.isWindows) {
           _desktopSwitchTimer?.cancel();
           _desktopSwitchTimer = Timer.periodic(
-            const Duration(seconds: 1),
+            const Duration(milliseconds: 250),
             (_) {
               if (!_closed && InputInjector.instance.consumeDesktopChanged()) {
                 final screenId = _selectedScreenId ?? '0';
                 _desktopRecoveryTimer?.cancel();
-                _desktopRecoveryTimer = Timer(
-                  const Duration(milliseconds: 600),
-                  () {
-                    if (!_closed) {
-                      unawaited(switchScreen(_selectedScreenId ?? screenId));
-                    }
-                  },
-                );
+                // Автоматический перехват DXGI при смене десктопов (Default <-> Winlogon) без задержек
+                if (!_closed && !_switchingScreen) {
+                  unawaited(switchScreen(_selectedScreenId ?? screenId));
+                }
               }
             },
           );
