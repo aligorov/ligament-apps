@@ -4,20 +4,27 @@ class LinkSessionPolicy {
     this.allowClipboardIn = false,
     this.allowClipboardOut = false,
     this.allowFileTransfer = false,
+    this.desktopScope = 'interactive',
   });
 
-  factory LinkSessionPolicy.fromWire(Object? value) {
-    if (value is! Map) return const LinkSessionPolicy();
+  factory LinkSessionPolicy.fromWire(Object? value, {String? desktopScope}) {
+    if (value is! Map) {
+      return LinkSessionPolicy(
+        desktopScope: desktopScope ?? 'interactive',
+      );
+    }
     return LinkSessionPolicy(
       allowClipboardIn: value['allow_clipboard_in'] == true,
       allowClipboardOut: value['allow_clipboard_out'] == true,
       allowFileTransfer: value['allow_file_transfer'] == true,
+      desktopScope: (value['desktop_scope'] as String?) ?? desktopScope ?? 'interactive',
     );
   }
 
   final bool allowClipboardIn;
   final bool allowClipboardOut;
   final bool allowFileTransfer;
+  final String desktopScope;
   static const maxClipboardLength = 65536;
 
   bool allows(Map<String, dynamic> input, {required bool allowControl}) {

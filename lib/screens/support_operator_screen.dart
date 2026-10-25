@@ -482,9 +482,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
+  String? _effectiveAccessMode;
+
   bool get _isViewOnlySession {
-    final mode =
-        widget.linkAccessMode ?? widget.sessionData['access_mode']?.toString();
+    final mode = _effectiveAccessMode ??
+        widget.linkAccessMode ??
+        widget.sessionData['access_mode']?.toString();
     return mode == 'view_only' || mode == 'view';
   }
 
@@ -1286,6 +1289,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         throw StateError('Server did not return session_id');
       }
       _linkSessionId = id;
+      if (session['access_mode'] != null) {
+        _effectiveAccessMode = session['access_mode']?.toString();
+      }
       _loadChatHistory();
 
       final confirmationRequired = session['confirmation_required'] == true;

@@ -44,8 +44,7 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, offer SessionOf
 			Err:    errors.New("link agent: invalid initial worker frame size"),
 		}
 	}
-	allowLogon := (offer.AccessType == "unattended" && offer.DesktopScope == "system_console") ||
-		(offer.AccessType == "unattended" && offer.SessionKind == "console")
+	allowLogon := offer.AccessType == "unattended" && offer.DesktopScope == "system_console"
 	sess, desktop, err := ResolveTargetSession(allowLogon)
 	if err != nil {
 		if errors.Is(err, ErrNoActiveInteractiveUser) {

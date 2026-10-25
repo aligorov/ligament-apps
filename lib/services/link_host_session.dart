@@ -790,7 +790,10 @@ Future<void> _runConnectedLinkHostWorker(
               );
             }
           },
-    policy: LinkSessionPolicy.fromWire(offer['dlp']),
+    policy: LinkSessionPolicy.fromWire(
+      offer['dlp'],
+      desktopScope: offer['desktop_scope']?.toString(),
+    ),
   );
   state.bindChatSender(peer.sendChatMessage);
   session = LinkHostSession(
@@ -882,7 +885,10 @@ Future<void> _runConnectedLinkHostWorker(
     }
   } finally {
     timer.cancel();
-    await recorder?.stop(reason: 'session_ended');
+    final isTailFlushed = await recorder?.stop(reason: 'session_ended') ?? true;
+    if (!isTailFlushed) {
+      await session.reject('tail_lost');
+    }
     await session.close();
     if (unixTransport != null) {
       await unixTransport.close();
@@ -1308,6 +1314,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         _connectionGraceTimer?.cancel();
         _connectionGraceTimer = null;
         InputInjector.instance.setKeepSessionAwake(true);
+        InputInjector.instance.setDesktopScope(policy.desktopScope);
         if (!kIsWeb && Platform.isWindows) {
           _desktopSwitchTimer?.cancel();
           _desktopSwitchTimer = Timer.periodic(
@@ -1973,6 +1980,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _videoSender = null;
     _audioSender = null;
     InputInjector.instance.setKeepSessionAwake(false);
+    InputInjector.instance.setDesktopScope('interactive');
     for (final dl in _activeDownloads.values) {
       dl.stallTimer?.cancel();
     }

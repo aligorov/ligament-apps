@@ -56,7 +56,33 @@ std::deque<NativeInputTask> g_input_queue;
 bool g_input_worker_started = false;
 std::atomic<bool> g_keep_awake{false};
 std::atomic<bool> g_desktop_changed{false};
+std::atomic<bool> g_system_console_allowed{false};
 std::wstring g_last_desktop_name;
+
+bool IsSecureDesktop(const std::wstring& name) {
+  if (name.empty()) return false;
+  return (_wcsicmp(name.c_str(), L"Winlogon") == 0 ||
+          _wcsicmp(name.c_str(), L"Screen-saver") == 0);
+}
+
+void ReleaseModifierKeys() {
+  const WORD mod_vks[] = {
+    VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
+    VK_LMENU, VK_RMENU, VK_MENU,
+    VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
+    VK_LWIN, VK_RWIN
+  };
+  for (WORD vk : mod_vks) {
+    if ((GetAsyncKeyState(vk) & 0x8000) != 0) {
+      INPUT input = {};
+      input.type = INPUT_KEYBOARD;
+      input.ki.wVk = vk;
+      input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+      input.ki.dwFlags = KEYEVENTF_KEYUP;
+      SendInput(1, &input, sizeof(INPUT));
+    }
+  }
+}
 
 std::wstring QueryDesktopName(HDESK desk) {
   if (!desk) return {};
@@ -384,6 +410,14 @@ void DesktopInputWorkerLoop() {
     }
 
     if (!has_task) continue;
+
+    const bool secure_desktop = IsSecureDesktop(g_last_desktop_name);
+    if (secure_desktop && !g_system_console_allowed.load(std::memory_order_relaxed)) {
+      // Interactive session is forbidden from injecting input into Winlogon/secure desktop.
+      ReleaseModifierKeys();
+      continue;
+    }
+
     switch (task.kind) {
       case NativeInputTask::kUnicode:
         ExecuteSendUnicode(task.ch, task.is_down);
@@ -395,7 +429,9 @@ void DesktopInputWorkerLoop() {
         ExecuteSendMouse(task);
         break;
       case NativeInputTask::kSas:
-        ExecuteSendSas();
+        if (g_system_console_allowed.load(std::memory_order_relaxed)) {
+          ExecuteSendSas();
+        }
         break;
     }
   }
@@ -554,6 +590,11 @@ __declspec(dllexport) void ligament_set_keep_awake(bool active) {
     std::thread(DesktopInputWorkerLoop).detach();
   }
   g_input_cv.notify_one();
+}
+
+__declspec(dllexport) void ligament_set_desktop_scope(const char* scope) {
+  bool is_sys = (scope != nullptr && strcmp(scope, "system_console") == 0);
+  g_system_console_allowed.store(is_sys, std::memory_order_relaxed);
 }
 
 __declspec(dllexport) int ligament_consume_desktop_changed(void) {

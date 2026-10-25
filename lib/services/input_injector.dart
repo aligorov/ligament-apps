@@ -135,6 +135,7 @@ class InputInjector {
   void Function(int, int, int, int, int, int)? _nativeSendMouse;
   void Function()? _nativeSendSas;
   void Function(bool)? _nativeSetKeepAwake;
+  void Function(ffi.Pointer<Utf8>)? _nativeSetDesktopScope;
   int Function()? _nativeConsumeDesktopChanged;
   int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
       _nativeGetMonitorRectByIndex;
@@ -250,6 +251,8 @@ class InputInjector {
             'ligament_send_sas');
         _nativeSetKeepAwake = exe.lookupFunction<ffi.Void Function(ffi.Bool), void Function(bool)>(
             'ligament_set_keep_awake');
+        _nativeSetDesktopScope = exe.lookupFunction<ffi.Void Function(ffi.Pointer<Utf8>), void Function(ffi.Pointer<Utf8>)>(
+            'ligament_set_desktop_scope');
         _nativeConsumeDesktopChanged = exe.lookupFunction<ffi.Int32 Function(), int Function()>(
             'ligament_consume_desktop_changed');
         _nativeGetMonitorRectByIndex = exe.lookupFunction<
@@ -985,6 +988,19 @@ class InputInjector {
     if (kIsWeb || !Platform.isWindows) return;
     try {
       _nativeSetKeepAwake?.call(active);
+    } catch (_) {}
+  }
+
+  /// Ограничивает инъекцию ввода десктопом Winlogon при interactive scope.
+  void setDesktopScope(String scope) {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      final ptr = scope.toNativeUtf8();
+      try {
+        _nativeSetDesktopScope?.call(ptr);
+      } finally {
+        calloc.free(ptr);
+      }
     } catch (_) {}
   }
 

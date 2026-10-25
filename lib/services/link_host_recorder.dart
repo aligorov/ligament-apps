@@ -468,7 +468,23 @@ class LinkHostRecorder {
       // Потеря хвоста — фиксируем gap_marker
       _tailFlushed = false;
       _nextSeq++;
+      final gapEvent = {
+        'seq': _nextSeq,
+        'event_type': 'gap_marker',
+        'source': 'session_lifecycle',
+        'occurred_at': _clock().toUtc().toIso8601String(),
+        'metadata': {
+          'reason': 'tail_lost',
+          'dropped_frames': _pendingFrames.length,
+          'dropped_events': _pendingEvents.length,
+        },
+      };
       _pendingFrames.clear();
+      _pendingEvents.clear();
+      _pendingEvents.add(gapEvent);
+      try {
+        await _flushInternal();
+      } catch (_) {}
       _pendingEvents.clear();
       _queuedBytes = 0;
     }
