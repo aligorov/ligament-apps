@@ -333,6 +333,9 @@ class SupportService extends ChangeNotifier {
   /// для баннера на цели «Ваш экран открыт вам с устройства X».
   String? _ownerInitiatorDevice;
 
+  /// SOS через Link-агент ПК: экран и ввод ведёт агент, а не это приложение.
+  bool _linkHosted = false;
+
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   MediaStream? _audioStream;
@@ -382,6 +385,7 @@ class SupportService extends ChangeNotifier {
   String get accessMode => _accessMode;
   bool get isSharing => _state == SupportSessionState.active;
   bool get ownerSession => _ownerSession;
+  bool get linkHosted => _linkHosted;
   String? get ownerInitiatorDevice => _ownerInitiatorDevice;
   String? get lastError => _lastError;
 
@@ -788,6 +792,7 @@ class SupportService extends ChangeNotifier {
     _accessMode = accessMode;
     _ownerSession = false;
     _ownerInitiatorDevice = null;
+    _linkHosted = false;
     _state = SupportSessionState.requested;
     _lastError = null;
     _unreadChatCount = 0;
@@ -814,7 +819,21 @@ class SupportService extends ChangeNotifier {
     if (accessMode != null && accessMode.isNotEmpty) _accessMode = accessMode;
     _ownerSession = owner;
     _ownerInitiatorDevice = owner ? initiatorDevice : null;
+    _linkHosted = false;
     _state = SupportSessionState.authorizing;
+    notifyListeners();
+  }
+
+  /// SOS через Link-агент ПК: этапы заявки без захвата экрана приложением.
+  void setLinkHostedSession({required String sessionId, required bool active}) {
+    final next =
+        active ? SupportSessionState.active : SupportSessionState.authorizing;
+    if (_linkHosted && _activeSessionId == sessionId && _state == next) return;
+    _activeSessionId = sessionId;
+    _ownerSession = false;
+    _ownerInitiatorDevice = null;
+    _linkHosted = true;
+    _state = next;
     notifyListeners();
   }
 
@@ -2351,6 +2370,7 @@ class SupportService extends ChangeNotifier {
       _problemSummary = null;
       _ownerSession = false;
       _ownerInitiatorDevice = null;
+      _linkHosted = false;
       _screens.clear();
       _currentScreenId = null;
       _currentScreenRect = null;

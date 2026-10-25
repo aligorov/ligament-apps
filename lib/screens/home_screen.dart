@@ -398,26 +398,53 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _connectAsOperator(AuthState auth, Map<String, dynamic> sess) async {    final sessId = sess['id']?.toString();
+  Future<void> _connectAsOperator(AuthState auth, Map<String, dynamic> sess) async {
+    final sessId = sess['id']?.toString();
     if (sessId == null || _connectingToSession) return;
 
     setState(() => _connectingToSession = true);
     try {
-      final res = await auth.connectToSupportSession(sessId);
-      final numberMatch = res['number_match']?.toString();
+      final Widget screen;
+      if (sess['sos_v2'] == true) {
+        // SOS через Link-агент: claim даёт сессию и цифры, экран стартует её через /start.
+        final claim = await auth.claimSOSRequest(sessId);
+        final sessionId = claim['session_id']?.toString() ?? '';
+        final agentId = claim['agent_id']?.toString() ?? '';
+        if (sessionId.isEmpty || agentId.isEmpty) {
+          throw StateError('SOS claim returned no session');
+        }
+        screen = SupportOperatorScreen(
+          sessionId: 'link_$agentId',
+          numberMatch: claim['confirmation_code']?.toString(),
+          isLink: true,
+          linkAgentId: agentId,
+          linkAccessMode: 'control',
+          sessionData: {
+            ...sess,
+            'agent_id': agentId,
+            'hostname': sess['pc_name'] ?? agentId,
+            'employee_name': sess['display_name'] ?? sess['username'] ?? '',
+            'access_mode': 'control',
+            'session_kind': 'sos',
+            'sos_request_id': sessId,
+            'sos_session_id': sessionId,
+          },
+        );
+      } else {
+        final res = await auth.connectToSupportSession(sessId);
+        screen = SupportOperatorScreen(
+          sessionId: sessId,
+          numberMatch: res['number_match']?.toString(),
+          sessionData: {
+            ...sess,
+            'session_kind': 'sos',
+          },
+        );
+      }
 
       if (mounted) {
         await Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => SupportOperatorScreen(
-              sessionId: sessId,
-              numberMatch: numberMatch,
-              sessionData: {
-                ...sess,
-                'session_kind': 'sos',
-              },
-            ),
-          ),
+          MaterialPageRoute(builder: (_) => screen),
         );
         if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
           try {
@@ -974,20 +1001,23 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _showQueueChatModal(context, auth, sess),
-                    icon: const Icon(Icons.chat_bubble_outline, size: 16),
-                    label: Text(isRu ? '💬 Чат' : '💬 Chat', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF38BDF8),
-                      side: const BorderSide(color: Color(0xFF0284C7)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                // Заявки SOS через Link-агент получают чат вместе с сессией после claim.
+                if (sess['sos_v2'] != true) ...[
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showQueueChatModal(context, auth, sess),
+                      icon: const Icon(Icons.chat_bubble_outline, size: 16),
+                      label: Text(isRu ? '💬 Чат' : '💬 Chat', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF38BDF8),
+                        side: const BorderSide(color: Color(0xFF0284C7)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
+                  const SizedBox(width: 8),
+                ],
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: _connectingToSession ? null : () => _connectAsOperator(auth, sess),
@@ -1291,7 +1321,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       : (isConnecting
                           ? (isRu ? 'Ожидание установления P2P-соединения...' : 'Waiting for P2P connection...')
                           : (isAuthorizing
-                              ? (isRu ? 'Инженер ожидает ввода контрольного числа' : 'Engineer is waiting for verification code')
+                              ? (support.linkHosted
+                                  ? (isRu ? 'Введите цифры инженера в окне Ligament на экране' : "Enter the engineer's digits in the Ligament window")
+                                  : (isRu ? 'Инженер ожидает ввода контрольного числа' : 'Engineer is waiting for verification code'))
                               : (support.problemSummary?.isNotEmpty == true
                                   ? '"${support.problemSummary}"'
                                   : (isRu ? 'Ожидание подключения инженера...' : 'Waiting for engineer connection...')))),
@@ -1352,7 +1384,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
             ),
-            if (isActive) ...[
+            if (isActive && !support.linkHosted) ...[
               const SizedBox(width: 4),
               IconButton(
                 onPressed: () => _showReceivedFilesModal(context, auth),

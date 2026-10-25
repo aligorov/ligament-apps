@@ -98,6 +98,25 @@ bool ownerScreenPromptTargetsThisDevice(
   return false;
 }
 
+/// SOS адресуется агенту ПК, за которым сидит заявитель: свой enrolled-хост с
+/// тем же именем компьютера (без домена, без учёта регистра). Неоднозначность
+/// или отсутствие совпадения — null, заявка идёт прежним путём.
+String? sosLocalAgentId(List<Map<String, dynamic>> hosts,
+    {required String userId, required String hostname}) {
+  String label(String name) => name.trim().toLowerCase().split('.').first;
+  final local = label(hostname);
+  if (local.isEmpty || userId.isEmpty) return null;
+  final matches = hosts
+      .where((h) =>
+          h['owner_user_id']?.toString() == userId &&
+          h['status']?.toString() == 'enrolled' &&
+          label(h['hostname']?.toString() ?? '') == local)
+      .toList();
+  if (matches.length != 1) return null;
+  final id = matches.first['id']?.toString() ?? '';
+  return id.isEmpty ? null : id;
+}
+
 /// Генерация RFC 4122 v4 UUID с использованием криптостойкого ГСЧ
 String generateUuidV4() {
   final rnd = math.Random.secure();
@@ -184,6 +203,12 @@ class AuthState extends ChangeNotifier {
   List<Map<String, dynamic>> notifications = [];
   int unreadNotificationsCount = 0;
   List<Map<String, dynamic>> supportQueue = [];
+
+  /// Заявка SOS через Link-агент этого ПК: экран ведёт агент, приложение
+  /// отражает статус заявки.
+  String? _sosRequestId;
+  @visibleForTesting
+  String? get sosRequestId => _sosRequestId;
   Map<String, dynamic>? currentPosture;
   bool isCompliant = true;
   bool isOnline = false;
@@ -1268,6 +1293,7 @@ class AuthState extends ChangeNotifier {
     notifications.clear();
     unreadNotificationsCount = 0;
     supportQueue.clear();
+    _sosRequestId = null;
     _resolvedChallengeIds.clear();
     _alertedChallengeIds.clear();
 
@@ -1613,19 +1639,10 @@ class AuthState extends ChangeNotifier {
     }
   }
 
-  /// Подключение инженера к удаленной сессии пользователя
+  /// Подключение инженера к удаленной сессии пользователя (трансляция экрана
+  /// приложением). Заявки SOS через Link-агент принимает [claimSOSRequest].
   Future<Map<String, dynamic>> connectToSupportSession(String sessionId) async {
     if (api == null) throw Exception('API не инициализирован');
-    try {
-      final res = await api!.claimSOSRequest(sessionId);
-      await loadSupportQueue();
-      return {
-        'session_id': res['session']?['id']?.toString() ?? sessionId,
-        'number_match': res['confirmation_code']?.toString(),
-        ...res,
-      };
-    } catch (_) {}
-
     final adminName = currentUser?['display_name'] ??
         currentUser?['username'] ??
         'Инженер поддержки';
@@ -1633,6 +1650,17 @@ class AuthState extends ChangeNotifier {
         await api!.connectToSupport(sessionId: sessionId, adminName: adminName);
     await loadSupportQueue();
     return res;
+  }
+
+  /// Claim заявки SOS: сервер создаёт сессию к агенту ПК заявителя и выдаёт
+  /// цифры, которые инженер диктует сотруднику.
+  Future<Map<String, dynamic>> claimSOSRequest(String requestId) async {
+    if (api == null) throw Exception('API не инициализирован');
+    try {
+      return await api!.claimSOSRequest(requestId);
+    } finally {
+      await loadSupportQueue();
+    }
   }
 
   Future<void> loadPendingChallenges() async {
@@ -1948,8 +1976,10 @@ class AuthState extends ChangeNotifier {
       category: category,
       problemSummary: problemSummary,
       accessMode: accessMode,
+      targetAgentId: await _localLinkAgentId(),
     );
     final sessId = resp['id']?.toString() ?? '';
+    _sosRequestId = resp['sos_v2'] == true && sessId.isNotEmpty ? sessId : null;
     support.setRequested(
       sessionId: sessId,
       category: category,
@@ -1958,6 +1988,24 @@ class AuthState extends ChangeNotifier {
       api: api,
     );
     notifyListeners();
+  }
+
+  /// Link-агент этого ПК: свой enrolled-хост с тем же именем компьютера.
+  Future<String?> _localLinkAgentId() async {
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return null;
+    }
+    final userId = currentUser?['id']?.toString() ?? '';
+    if (userId.isEmpty) return null;
+    try {
+      final hosts = await api!.getLinkHosts();
+      return sosLocalAgentId(hosts,
+          userId: userId, hostname: Platform.localHostname);
+    } catch (e) {
+      debugPrint('auth_state: Link-агент этого ПК не определён: $e');
+      return null;
+    }
   }
 
   /// Owner-режим «Экрана» (этап 2.4, план §5.2): это устройство — ЦЕЛЬ,
@@ -2109,14 +2157,9 @@ class AuthState extends ChangeNotifier {
   /// Подтверждение удаленного доступа инженеру (approve) с проверкой контрольного числа
   Future<void> confirmSupport({
     required String sessionId,
-    String? requestId,
     String? numberMatch,
   }) async {
     if (api == null) throw Exception('API не инициализирован');
-    final prompt = activeSupportPrompt;
-    final pId = prompt?['id']?.toString();
-    final pReqId = prompt?['request_id']?.toString();
-    final resolvedRequestId = requestId ?? pReqId ?? (pId != null && pId != sessionId ? pId : null) ?? sessionId;
     activeSupportPrompt = null;
     await alert.resetWindowPriority();
 
@@ -2161,25 +2204,12 @@ class AuthState extends ChangeNotifier {
       }
     }
 
-    // 2. Отправка одобрения на сервер
-    bool confirmedViaSOS = false;
-    if (numberMatch != null && numberMatch.isNotEmpty) {
-      try {
-        await api!.confirmSOSRequest(
-          requestId: resolvedRequestId,
-          sessionId: sessionId,
-          code: numberMatch,
-        );
-        confirmedViaSOS = true;
-      } catch (_) {}
-    }
-    if (!confirmedViaSOS) {
-      await api!.supportDecision(
-        sessionId: sessionId,
-        decision: 'approve',
-        numberMatch: numberMatch,
-      );
-    }
+    // 2. Одобрение на сервере (SOS через Link-агент сюда не попадает: цифры вводят в окне агента)
+    await api!.supportDecision(
+      sessionId: sessionId,
+      decision: 'approve',
+      numberMatch: numberMatch,
+    );
 
     // 3. Запуск трансляции экрана WebRTC
     await support.startScreenSharing(
@@ -2193,19 +2223,10 @@ class AuthState extends ChangeNotifier {
   /// Отклонение входящего запроса на подключение (deny)
   Future<void> rejectSupport({
     required String sessionId,
-    String? requestId,
   }) async {
     if (api == null) return;
-    final prompt = activeSupportPrompt;
-    final pId = prompt?['id']?.toString();
-    final pReqId = prompt?['request_id']?.toString();
-    final resolvedRequestId = requestId ?? pReqId ?? (pId != null && pId != sessionId ? pId : null) ?? sessionId;
     activeSupportPrompt = null;
     await alert.resetWindowPriority();
-
-    try {
-      await api!.cancelSOSRequest(requestId: resolvedRequestId, reason: 'rejected_by_user');
-    } catch (_) {}
 
     try {
       await api!.supportDecision(
@@ -2224,8 +2245,23 @@ class AuthState extends ChangeNotifier {
     if (_isEndingSupport) return;
     _isEndingSupport = true;
     try {
+      final sosRequestId = _sosRequestId;
       final sessId = support.activeSessionId;
-      if (sessId != null && api != null) {
+      if (sosRequestId != null && api != null) {
+        // Отмена заявки завершает её сессию и закрывает окно агента на ПК.
+        _sosRequestId = null;
+        try {
+          await api!
+              .cancelSOSRequest(
+                  requestId: sosRequestId, reason: 'cancelled_by_requester')
+              .timeout(
+                const Duration(milliseconds: 1500),
+                onTimeout: () => null,
+              );
+        } catch (e) {
+          debugPrint('auth_state: ошибка отмены заявки SOS: $e');
+        }
+      } else if (sessId != null && api != null) {
         try {
           await api!.endSupportSession(sessionId: sessId).timeout(
                 const Duration(milliseconds: 1500),
@@ -2246,6 +2282,11 @@ class AuthState extends ChangeNotifier {
   /// Проверка наличия активной сессии поддержки на сервере (периодический поллинг)
   Future<void> checkSupportSession() async {
     if (api == null) return;
+    final sosRequestId = _sosRequestId;
+    if (sosRequestId != null) {
+      await _checkSOSRequest(sosRequestId);
+      return;
+    }
     try {
       final sess = await api!.getCurrentSupportSession();
       if (sess != null) {
@@ -2342,6 +2383,47 @@ class AuthState extends ChangeNotifier {
         }
       }
     } catch (_) {}
+  }
+
+  /// Статус заявки SOS через Link-агент: цифры и экран живут в окне агента,
+  /// приложение только отражает этапы заявки (UI обновляет слушатель support).
+  Future<void> _checkSOSRequest(String requestId) async {
+    final Map<String, dynamic> request;
+    try {
+      request = await api!.getSOSRequest(requestId);
+    } on ApiException catch (e) {
+      if ((e.statusCode == 404 || e.statusCode == 403) &&
+          _sosRequestId == requestId) {
+        _sosRequestId = null;
+        await support.stopScreenSharing();
+      }
+      return;
+    } catch (_) {
+      return;
+    }
+    if (_sosRequestId != requestId) return;
+    final sessionId = request['active_session_id']?.toString() ?? '';
+    switch (request['status']?.toString()) {
+      case 'requested':
+        if (support.state != SupportSessionState.requested) {
+          support.setRequested(
+            sessionId: requestId,
+            category: request['category']?.toString() ?? 'it',
+            problemSummary: request['problem_summary']?.toString() ?? '',
+            api: api,
+          );
+        }
+      case 'connecting' || 'active':
+        if (sessionId.isNotEmpty) {
+          support.setLinkHostedSession(
+            sessionId: sessionId,
+            active: request['status'] == 'active',
+          );
+        }
+      default:
+        _sosRequestId = null;
+        await support.stopScreenSharing();
+    }
   }
 
   Map<String, dynamic> get notificationSettings {

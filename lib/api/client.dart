@@ -16,6 +16,20 @@ class ApiException implements Exception {
   String toString() => 'ApiException($statusCode, $code, $message)';
 }
 
+/// Заявка SOS в полях карточки очереди инженера.
+Map<String, dynamic> sosQueueItem(Map<String, dynamic> request) {
+  final displayName = request['requester_display_name']?.toString() ?? '';
+  final hostname = request['target_hostname']?.toString() ?? '';
+  return {
+    ...request,
+    'sos_v2': true,
+    if (displayName.isNotEmpty) 'display_name': displayName,
+    'username': request['requester_username'],
+    if (hostname.isNotEmpty) 'pc_name': hostname,
+    'access_mode': 'full_control',
+  };
+}
+
 class ApiClient {
   /// Максимальное время выполнения любого HTTP-запроса.
   /// Защищает UI от вечного спиннера при сетевых проблемах.
@@ -496,21 +510,23 @@ class ApiClient {
     throw ApiException(res.statusCode, 'history_fetch_failed');
   }
 
-  /// Запрос экстренной удаленной помощи (SOS)
+  /// SOS: с Link-агентом этого ПК — очередь SOS (`sos_v2`), иначе трансляция экрана приложением.
   Future<Map<String, dynamic>> requestSupport({
     required String category,
     required String problemSummary,
     String accessMode = 'full_control',
     String? targetAgentId,
   }) async {
-    try {
-      final sosRes = await createSOSRequest(
-        category: category,
-        problemSummary: problemSummary,
-        targetAgentId: targetAgentId,
-      );
-      return sosRes;
-    } catch (_) {}
+    if (targetAgentId != null && targetAgentId.isNotEmpty) {
+      try {
+        final sosRes = await createSOSRequest(
+          category: category,
+          problemSummary: problemSummary,
+          targetAgentId: targetAgentId,
+        );
+        return {...sosRes, 'sos_v2': true};
+      } catch (_) {}
+    }
 
     final payload = {
       'category': category,
@@ -751,29 +767,53 @@ class ApiClient {
       headers: _headers(),
       body: jsonEncode({}),
     );
-    if (res.statusCode != 200) {
-      throw Exception('Failed to claim SOS request: ${res.statusCode}');
-    }
-    return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'sos_claim_failed',
+    );
   }
 
-  /// Подтверждение кода Number Match пользователем
-  Future<void> confirmSOSRequest({
+  /// Старт принятой SOS-сессии: offer уходит агенту ПК заявителя, сотрудник
+  /// вводит цифры в окне агента. Ответ совпадает с [requestLinkSession].
+  Future<Map<String, dynamic>> startSOSSession({
     required String requestId,
     required String sessionId,
-    required String code,
+    required String clientSdp,
+    String accessMode = 'control',
   }) async {
     final res = await _post(
-      _cleanUrl('/api/v1/app/link/sos/requests/$requestId/confirm'),
+      _cleanUrl('/api/v1/app/link/sos/requests/$requestId/start'),
       headers: _headers(),
       body: jsonEncode({
         'session_id': sessionId,
-        'code': code,
+        'client_sdp': clientSdp,
+        'access_mode': accessMode,
       }),
     );
-    if (res.statusCode != 200) {
-      throw Exception('Failed to confirm SOS code: ${res.statusCode}');
-    }
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'sos_start_failed',
+      data['message']?.toString() ?? '',
+      data,
+    );
+  }
+
+  /// Статус заявки SOS (для заявителя — без кода подтверждения).
+  Future<Map<String, dynamic>> getSOSRequest(String requestId) async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/link/sos/requests/$requestId'),
+      headers: _headers(),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'sos_request_fetch_failed',
+    );
   }
 
   /// Отмена заявки SOS
@@ -856,13 +896,13 @@ class ApiClient {
     return [];
   }
 
-  /// Получение очереди входящих SOS-обращений для инженера
+  /// Очередь входящих SOS-обращений для инженера: заявки SOS через Link-агент
+  /// (`sos_v2`) и прежние сессии трансляции экрана приложением.
   Future<List<Map<String, dynamic>>> getSupportQueue({String? category}) async {
+    final queue = <Map<String, dynamic>>[];
     try {
       final sosQueue = await getPendingSOSRequests(category: category);
-      if (sosQueue.isNotEmpty) {
-        return sosQueue;
-      }
+      queue.addAll(sosQueue.map(sosQueueItem));
     } catch (_) {}
 
     final res = await _get(
@@ -872,14 +912,14 @@ class ApiClient {
     if (res.statusCode == 200) {
       final decoded = jsonDecode(utf8.decode(res.bodyBytes));
       if (decoded is List) {
-        return decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        queue.addAll(decoded.map((e) => Map<String, dynamic>.from(e as Map)));
       } else if (decoded is Map) {
         final list =
             (decoded['queue'] ?? decoded['sessions']) as List<dynamic>? ?? [];
-        return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        queue.addAll(list.map((e) => Map<String, dynamic>.from(e as Map)));
       }
     }
-    return [];
+    return queue;
   }
 
   // ---- RDP Access Gateway (этап 2: /api/v1/app/rdp/*) ----

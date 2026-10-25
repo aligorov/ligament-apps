@@ -1277,13 +1277,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final effectiveKind = (passedKind != null && passedKind.isNotEmpty)
           ? passedKind
           : (widget.ownerMode ? 'console' : (widget.isLink ? 'link' : 'sos'));
-      final session = await api.requestLinkSession(
-        agentId: targetAgentId,
-        accessMode: accessMode,
-        clientSdp: offer.sdp,
-        stepUpToken: _stepUpToken,
-        sessionKind: effectiveKind,
-      );
+      final sosRequestId = widget.sessionData['sos_request_id']?.toString() ?? '';
+      final session = sosRequestId.isNotEmpty
+          ? await api.startSOSSession(
+              requestId: sosRequestId,
+              sessionId: widget.sessionData['sos_session_id']?.toString() ?? '',
+              clientSdp: offer.sdp ?? '',
+              accessMode: accessMode,
+            )
+          : await api.requestLinkSession(
+              agentId: targetAgentId,
+              accessMode: accessMode,
+              clientSdp: offer.sdp,
+              stepUpToken: _stepUpToken,
+              sessionKind: effectiveKind,
+            );
       final id = session['session_id']?.toString();
       if (id == null || id.isEmpty) {
         throw StateError('Server did not return session_id');
@@ -3105,6 +3113,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _restoreWindowSize();
     final auth = _auth;
     final sessId = widget.sessionId;
+    // Принятая заявка SOS держит сессию с момента claim, даже если start не дошёл.
+    final linkCloseId = _linkSessionId ?? widget.sessionData['sos_session_id']?.toString();
     if (auth != null && auth.api != null) {
       final isOwner = widget.ownerMode ||
           widget.sessionData['owner'] == true ||
@@ -3113,8 +3123,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         // dispose() у оператора — тоже корректный конец сессии (окно
         // закрыли = сеанс завершён), иначе она висит active в очереди.
-        if (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty) {
-          auth.api!.closeLinkSession(_linkSessionId!).catchError((_) => null);
+        if (widget.isLink && linkCloseId != null && linkCloseId.isNotEmpty) {
+          auth.api!.closeLinkSession(linkCloseId).catchError((_) => null);
         } else if (sessId.isNotEmpty) {
           if (isOwner) {
             auth.api!
