@@ -844,6 +844,17 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   icon: const Icon(Icons.desktop_windows_outlined, size: 16),
                 ),
 
+                // Кнопка удаления из LINK (если разрешено владельцу/админу)
+                if (host['can_archive'] == true || host['can_unlink'] == true)
+                  IconButton(
+                    tooltip: isRu ? 'Удалить из LINK' : 'Remove from LINK',
+                    onPressed: () => _archiveHost(host, isRu),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                    padding: EdgeInsets.zero,
+                    icon: const Icon(Icons.delete_outline, size: 16, color: Color(0xFFEF4444)),
+                  ),
+
                 // Меню дополнительных действий (Сведения, Режим доступа, Удалить)
                 PopupMenuButton<String>(
                   tooltip: isRu ? 'Опции' : 'Options',
