@@ -855,29 +855,27 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   ),
                 ),
 
-                // Кнопка подключения (скрыта для собственного ПК)
-                if (!isOwner) ...[
-                  const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    onPressed: online ? () => _startLinkSession(host, isRu) : null,
-                    icon: const Icon(Icons.play_arrow_rounded, size: 16),
-                    label: Text(
-                      isRu ? 'Подключить' : 'Connect',
-                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: online ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
-                      side: BorderSide(
-                        color: online
-                            ? const Color(0xFF0284C7).withValues(alpha: 0.6)
-                            : const Color(0xFF334155),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-                      minimumSize: const Size(0, 32),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                    ),
+                // Кнопка подключения
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed: online ? () => _startLinkSession(host, isRu) : null,
+                  icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                  label: Text(
+                    isRu ? 'Подключить' : 'Connect',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
                   ),
-                ],
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: online ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
+                    side: BorderSide(
+                      color: online
+                          ? const Color(0xFF0284C7).withValues(alpha: 0.6)
+                          : const Color(0xFF334155),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                    minimumSize: const Size(0, 32),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  ),
+                ),
 
                 const SizedBox(width: 4),
 
@@ -911,6 +909,16 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (host['is_online'] == true)
+                ListTile(
+                  leading: const Icon(Icons.play_arrow_rounded, color: Color(0xFF38BDF8)),
+                  title: Text(isRu ? 'Подключиться к ПК' : 'Connect to computer',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _startLinkSession(host, isRu);
+                  },
+                ),
               ListTile(
                 leading: const Icon(Icons.info_outline, color: Color(0xFF38BDF8)),
                 title: Text(isRu ? 'Сведения о ПК' : 'Computer details',
@@ -1046,10 +1054,6 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }
 
   Future<void> _showHostDetails(Map<String, dynamic> host, bool isRu) async {
-    final auth = context.read<AuthState>();
-    final currentUserId = _getCurrentUserId(auth);
-    final isOwner = currentUserId.isNotEmpty &&
-        host['owner_user_id']?.toString() == currentUserId;
     final online = host['is_online'] == true;
     final unknown = host['is_online'] == null;
     final status = host['status']?.toString() ?? 'enrolled';
@@ -1256,7 +1260,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                 ],
               ),
             ),
-            if (!isOwner && online) ...[
+            if (online) ...[
               const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: () {
@@ -1408,6 +1412,10 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       sessionKind = 'link';
     }
 
+    final currentUserId = _getCurrentUserId(context.read<AuthState>());
+    final isOwner = currentUserId.isNotEmpty &&
+        host['owner_user_id']?.toString() == currentUserId;
+
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => SupportOperatorScreen(
@@ -1415,7 +1423,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           isLink: true,
           linkAgentId: agentId,
           linkAccessMode: mode,
-          ownerMode: false,
+          ownerMode: isOwner,
           sessionData: {
             ...host,
             'id': 'link_$agentId',
