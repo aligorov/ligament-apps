@@ -22,7 +22,7 @@ class _ApprovalAuth extends ChangeNotifier implements AuthState {
   String? approvedCode;
   @override
   Future<void> confirmSupport(
-      {required String sessionId, String? numberMatch}) async {
+      {required String sessionId, String? requestId, String? numberMatch}) async {
     expect(sessionId, 'sos-test');
     approvals++;
     approvedCode = numberMatch;
