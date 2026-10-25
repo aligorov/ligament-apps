@@ -705,6 +705,5 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
 
   return req.result;
 }
-}
 
 } // extern "C"
