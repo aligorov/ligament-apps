@@ -822,46 +822,52 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                                   : (isRu ? 'Не в сети' : 'Offline'),
                   style: TextStyle(
                     color: online ? const Color(0xFF4ADE80) : const Color(0xFF64748B),
-                    fontSize: 10.5,
+                    fontSize: 11,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 10),
 
-                // Основная кнопка подключения
-                IconButton(
-                  tooltip: isRu ? 'Подключиться' : 'Connect',
+                // Основная заметная кнопка подключения
+                FilledButton.icon(
                   onPressed: online ? () => _startLinkSession(host, isRu) : null,
-                  visualDensity: VisualDensity.compact,
-                  style: IconButton.styleFrom(
-                    backgroundColor: online
-                        ? const Color(0xFF0284C7).withValues(alpha: 0.25)
-                        : Colors.transparent,
-                    foregroundColor: online ? const Color(0xFF38BDF8) : const Color(0xFF475569),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                  label: Text(
+                    isRu ? 'Подключить' : 'Connect',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
                   ),
-                  constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-                  padding: EdgeInsets.zero,
-                  icon: const Icon(Icons.desktop_windows_outlined, size: 16),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: online ? const Color(0xFF0284C7) : const Color(0xFF1E293B),
+                    foregroundColor: online ? Colors.white : const Color(0xFF64748B),
+                    disabledBackgroundColor: const Color(0xFF1E293B),
+                    disabledForegroundColor: const Color(0xFF64748B),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                    minimumSize: const Size(0, 32),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  ),
                 ),
 
                 // Кнопка удаления из LINK (если разрешено владельцу/админу)
-                if (host['can_archive'] == true || host['can_unlink'] == true)
+                if (host['can_archive'] == true || host['can_unlink'] == true) ...[
+                  const SizedBox(width: 4),
                   IconButton(
                     tooltip: isRu ? 'Удалить из LINK' : 'Remove from LINK',
                     onPressed: () => _archiveHost(host, isRu),
                     visualDensity: VisualDensity.compact,
                     constraints: const BoxConstraints.tightFor(width: 32, height: 32),
                     padding: EdgeInsets.zero,
-                    icon: const Icon(Icons.delete_outline, size: 16, color: Color(0xFFEF4444)),
+                    icon: const Icon(Icons.delete_outline, size: 16, color: Color(0xFF64748B)),
                   ),
+                ],
+
+                const SizedBox(width: 4),
 
                 // Меню дополнительных действий (Сведения, Режим доступа, Удалить)
                 PopupMenuButton<String>(
                   tooltip: isRu ? 'Опции' : 'Options',
-                  icon: const Icon(Icons.more_vert, size: 16, color: Color(0xFF94A3B8)),
+                  icon: const Icon(Icons.more_vert, size: 18, color: Color(0xFF94A3B8)),
                   color: const Color(0xFF1E293B),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints.tightFor(width: 28, height: 32),
+                  constraints: const BoxConstraints(minWidth: 200, maxWidth: 280),
                   onSelected: (action) {
                     if (action == 'details') {
                       _showHostDetails(host, isRu);
@@ -879,7 +885,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                           const Icon(Icons.info_outline, size: 16, color: Color(0xFF94A3B8)),
                           const SizedBox(width: 8),
                           Text(isRu ? 'Сведения о ПК' : 'Computer details',
-                              style: const TextStyle(fontSize: 12)),
+                              style: const TextStyle(fontSize: 12, color: Colors.white)),
                         ],
                       ),
                     ),
@@ -898,7 +904,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                               isUnattended
                                   ? (isRu ? 'Выключить Unattended' : 'Disable Unattended')
                                   : (isRu ? 'Включить Unattended' : 'Enable Unattended'),
-                              style: const TextStyle(fontSize: 12),
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
                             ),
                           ],
                         ),
@@ -910,10 +916,8 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                           children: [
                             const Icon(Icons.delete_outline, size: 16, color: Color(0xFFEF4444)),
                             const SizedBox(width: 8),
-                            Text(
-                              isRu ? 'Удалить из LINK' : 'Remove from LINK',
-                              style: const TextStyle(fontSize: 12, color: Color(0xFFEF4444)),
-                            ),
+                            Text(isRu ? 'Удалить из LINK' : 'Remove from LINK',
+                                style: const TextStyle(fontSize: 12, color: Color(0xFFEF4444))),
                           ],
                         ),
                       ),
