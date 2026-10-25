@@ -1273,10 +1273,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final targetAgentId = widget.linkAgentId ??
           widget.sessionData['agent_id']?.toString() ??
           widget.sessionId;
-      final effectiveKind = widget.ownerMode
-          ? 'console'
-          : (widget.sessionData['session_kind']?.toString() ??
-              (widget.isLink ? 'link' : 'sos'));
+      final passedKind = widget.sessionData['session_kind']?.toString();
+      final effectiveKind = (passedKind != null && passedKind.isNotEmpty)
+          ? passedKind
+          : (widget.ownerMode ? 'console' : (widget.isLink ? 'link' : 'sos'));
       final session = await api.requestLinkSession(
         agentId: targetAgentId,
         accessMode: accessMode,
