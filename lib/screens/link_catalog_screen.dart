@@ -649,24 +649,21 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         ? Icons.laptop_mac
         : (isLinux ? Icons.terminal : Icons.desktop_windows);
 
-    return InkWell(
-      onTap: online ? () => _startLinkSession(host, isRu) : null,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0F172A).withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isOwner
-                ? const Color(0xFF38BDF8).withValues(alpha: 0.35)
-                : const Color(0xFF334155).withValues(alpha: 0.4),
-          ),
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isOwner
+              ? const Color(0xFF38BDF8).withValues(alpha: 0.35)
+              : const Color(0xFF334155).withValues(alpha: 0.4),
         ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
             // Иконка устройства со статусом
             Stack(
               alignment: Alignment.bottomRight,
@@ -862,70 +859,74 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
 
                 const SizedBox(width: 4),
 
-                // Меню дополнительных действий (Сведения, Режим доступа, Удалить)
-                PopupMenuButton<String>(
+                // Кнопка вызова дополнительных опций (Сведения, Режим доступа, Удалить)
+                IconButton(
                   tooltip: isRu ? 'Опции' : 'Options',
                   icon: const Icon(Icons.more_vert, size: 18, color: Color(0xFF94A3B8)),
-                  color: const Color(0xFF1E293B),
-                  constraints: const BoxConstraints(minWidth: 200, maxWidth: 280),
-                  onSelected: (action) {
-                    if (action == 'details') {
-                      _showHostDetails(host, isRu);
-                    } else if (action == 'toggle_unattended') {
-                      _toggleUnattended(host, !isUnattended, isRu);
-                    } else if (action == 'archive') {
-                      _archiveHost(host, isRu);
-                    }
-                  },
-                  itemBuilder: (ctx) => [
-                    PopupMenuItem(
-                      value: 'details',
-                      child: Row(
-                        children: [
-                          const Icon(Icons.info_outline, size: 16, color: Color(0xFF94A3B8)),
-                          const SizedBox(width: 8),
-                          Text(isRu ? 'Сведения о ПК' : 'Computer details',
-                              style: const TextStyle(fontSize: 12, color: Colors.white)),
-                        ],
-                      ),
-                    ),
-                    if (canManage)
-                      PopupMenuItem(
-                        value: 'toggle_unattended',
-                        child: Row(
-                          children: [
-                            Icon(
-                              isUnattended ? Icons.shield : Icons.shield_outlined,
-                              size: 16,
-                              color: isUnattended ? const Color(0xFF22C55E) : const Color(0xFF94A3B8),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              isUnattended
-                                  ? (isRu ? 'Выключить Unattended' : 'Disable Unattended')
-                                  : (isRu ? 'Включить Unattended' : 'Enable Unattended'),
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                            ),
-                          ],
-                        ),
-                      ),
-                    if (host['can_archive'] == true || host['can_unlink'] == true)
-                      PopupMenuItem(
-                        value: 'archive',
-                        child: Row(
-                          children: [
-                            const Icon(Icons.delete_outline, size: 16, color: Color(0xFFEF4444)),
-                            const SizedBox(width: 8),
-                            Text(isRu ? 'Удалить из LINK' : 'Remove from LINK',
-                                style: const TextStyle(fontSize: 12, color: Color(0xFFEF4444))),
-                          ],
-                        ),
-                      ),
-                  ],
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                  padding: EdgeInsets.zero,
+                  onPressed: () => _showHostOptions(host, isRu, isUnattended, canManage),
                 ),
               ],
             ),
           ],
+        ),
+      );
+  }
+
+  void _showHostOptions(
+      Map<String, dynamic> host, bool isRu, bool isUnattended, bool canManage) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.info_outline, color: Color(0xFF38BDF8)),
+                title: Text(isRu ? 'Сведения о ПК' : 'Computer details',
+                    style: const TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showHostDetails(host, isRu);
+                },
+              ),
+              if (canManage)
+                ListTile(
+                  leading: Icon(
+                    isUnattended ? Icons.shield : Icons.shield_outlined,
+                    color: isUnattended ? const Color(0xFF22C55E) : const Color(0xFF94A3B8),
+                  ),
+                  title: Text(
+                    isUnattended
+                        ? (isRu ? 'Выключить Unattended доступ' : 'Disable Unattended access')
+                        : (isRu ? 'Включить Unattended доступ' : 'Enable Unattended access'),
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _toggleUnattended(host, !isUnattended, isRu);
+                  },
+                ),
+              if (host['can_archive'] == true || host['can_unlink'] == true)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline, color: Color(0xFFEF4444)),
+                  title: Text(isRu ? 'Удалить из LINK' : 'Remove from LINK',
+                      style: const TextStyle(color: Color(0xFFEF4444))),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _archiveHost(host, isRu);
+                  },
+                ),
+            ],
+          ),
         ),
       ),
     );

@@ -78,13 +78,19 @@ bool IsDesktopReceivingInput(HDESK desk) {
   return false;
 }
 
-HDESK FindActiveInputDesktop() {
-  // Гарантируем актуальную привязку к оконной станции winsta0
-  HWINSTA winsta = OpenWindowStationW(L"winsta0", FALSE, MAXIMUM_ALLOWED);
-  if (winsta) {
-    SetProcessWindowStation(winsta);
-    CloseWindowStation(winsta);
+HWINSTA g_winsta0 = nullptr;
+
+void EnsureProcessWindowStation() {
+  if (!g_winsta0) {
+    g_winsta0 = OpenWindowStationW(L"winsta0", FALSE, MAXIMUM_ALLOWED);
+    if (g_winsta0) {
+      SetProcessWindowStation(g_winsta0);
+    }
   }
+}
+
+HDESK FindActiveInputDesktop() {
+  EnsureProcessWindowStation();
 
   // 1. Попытка открыть текущий десктоп ввода через OpenInputDesktop
   HDESK desk = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
@@ -476,17 +482,21 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
     return -1;
   }
 
-  // Гарантированно привязываем текущий поток к активному десктопу перед получением DC
   HDESK activeDesk = FindActiveInputDesktop();
   HDESK prevDesk = GetThreadDesktop(GetCurrentThreadId());
+  bool deskSwitched = false;
   if (activeDesk && activeDesk != prevDesk) {
-    SetThreadDesktop(activeDesk);
+    if (SetThreadDesktop(activeDesk)) {
+      deskSwitched = true;
+    }
   }
 
   HDC hScreenDC = GetDC(nullptr);
   if (!hScreenDC) {
-    if (activeDesk && activeDesk != prevDesk) {
+    if (deskSwitched && prevDesk) {
       SetThreadDesktop(prevDesk);
+    }
+    if (activeDesk) {
       CloseDesktop(activeDesk);
     }
     return -2;
@@ -496,8 +506,10 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
   int screen_h = GetSystemMetrics(SM_CYSCREEN);
   if (screen_w <= 0 || screen_h <= 0) {
     ReleaseDC(nullptr, hScreenDC);
-    if (activeDesk && activeDesk != prevDesk) {
+    if (deskSwitched && prevDesk) {
       SetThreadDesktop(prevDesk);
+    }
+    if (activeDesk) {
       CloseDesktop(activeDesk);
     }
     return -3;
@@ -520,8 +532,10 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
 
   if (total_bmp_size > buf_size) {
     ReleaseDC(nullptr, hScreenDC);
-    if (activeDesk && activeDesk != prevDesk) {
+    if (deskSwitched && prevDesk) {
       SetThreadDesktop(prevDesk);
+    }
+    if (activeDesk) {
       CloseDesktop(activeDesk);
     }
     return -4;
@@ -530,8 +544,10 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
   HDC hMemDC = CreateCompatibleDC(hScreenDC);
   if (!hMemDC) {
     ReleaseDC(nullptr, hScreenDC);
-    if (activeDesk && activeDesk != prevDesk) {
+    if (deskSwitched && prevDesk) {
       SetThreadDesktop(prevDesk);
+    }
+    if (activeDesk) {
       CloseDesktop(activeDesk);
     }
     return -5;
@@ -551,8 +567,10 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
     if (hDIB) DeleteObject(hDIB);
     DeleteDC(hMemDC);
     ReleaseDC(nullptr, hScreenDC);
-    if (activeDesk && activeDesk != prevDesk) {
+    if (deskSwitched && prevDesk) {
       SetThreadDesktop(prevDesk);
+    }
+    if (activeDesk) {
       CloseDesktop(activeDesk);
     }
     return -6;
@@ -585,14 +603,12 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
   DeleteObject(hDIB);
   DeleteDC(hMemDC);
   ReleaseDC(nullptr, hScreenDC);
-  if (activeDesk && activeDesk != prevDesk) {
+  if (deskSwitched && prevDesk) {
     SetThreadDesktop(prevDesk);
+  }
+  if (activeDesk) {
     CloseDesktop(activeDesk);
   }
-  return 0;
-  DeleteObject(hDIB);
-  DeleteDC(hMemDC);
-  ReleaseDC(nullptr, hScreenDC);
   return 0;
 }
 
