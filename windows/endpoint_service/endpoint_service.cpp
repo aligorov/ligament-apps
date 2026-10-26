@@ -75,6 +75,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "../service/log_utils.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -128,13 +129,7 @@ void LogLine(const wchar_t* line) {
         wcscat_s(progData, L"\\endpoint.log");
         wcscpy_s(s_path, progData);
     }
-    HANDLE h = CreateFileW(s_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    SetFilePointer(h, 0, nullptr, FILE_END);
-    DWORD written = 0;
-    WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &written, nullptr);
-    CloseHandle(h);
+    AppendUtf8LogLine(s_path, line);
 }
 
 void Log(const wchar_t* fmt, ...) {
@@ -144,11 +139,10 @@ void Log(const wchar_t* fmt, ...) {
     _vsnwprintf_s(body, _countof(body), _TRUNCATE, fmt, args);
     va_end(args);
 
-    SYSTEMTIME st;
-    GetLocalTime(&st);
+    wchar_t timestamp[32];
+    FormatLogTimestamp(timestamp, _countof(timestamp));
     wchar_t line[600];
-    swprintf_s(line, L"[%02u.%02u %02u:%02u:%02u] %s\r\n",
-        st.wDay, st.wMonth, st.wHour, st.wMinute, st.wSecond, body);
+    swprintf_s(line, L"[%s] %s\r\n", timestamp, body);
     LogLine(line);
 }
 

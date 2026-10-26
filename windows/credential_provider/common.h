@@ -31,6 +31,7 @@
 #include <sstream>
 
 #include "guid.h"
+#include "../service/log_utils.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "secur32.lib")
@@ -349,10 +350,8 @@ inline void LogCPFileLine(const wchar_t* line) {
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     enforceSystemAcl(s_path); // существующий файл мог остаться со старым ACL
-    SetFilePointer(h, 0, nullptr, FILE_END);
-    DWORD written = 0;
-    WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &written, nullptr);
     CloseHandle(h);
+    AppendUtf8LogLine(s_path, line);
 }
 
 // Запись sso-билета (фаза 2 Windows-identity) в
@@ -440,12 +439,11 @@ inline void LogDebug(const wchar_t* fmt, ...) {
     OutputDebugStringW(L"[Ligament2FA] ");
     OutputDebugStringW(buf);
     OutputDebugStringW(L"\n");
-    SYSTEMTIME st;
-    GetLocalTime(&st);
+    wchar_t timestamp[32];
+    FormatLogTimestamp(timestamp, _countof(timestamp));
     wchar_t line[1200];
-    swprintf_s(line, L"[%02d.%02d %02d:%02d:%02d.%03d tid=%lu] %s\r\n",
-        st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-        (unsigned long)GetCurrentThreadId(), buf);
+    swprintf_s(line, L"[%s tid=%lu] %s\r\n",
+        timestamp, (unsigned long)GetCurrentThreadId(), buf);
     LogCPFileLine(line);
 }
 

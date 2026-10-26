@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,27 @@ func TestConnectAgentSendsSignedHelloFirst(t *testing.T) {
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("server did not receive AgentHello")
+	}
+}
+
+func TestConnectAgentReportsHandshakeHTTPStatus(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	httpTransport := server.Client().Transport.(*http.Transport)
+	dialer := &websocket.Dialer{
+		TLSClientConfig:  httpTransport.TLSClientConfig,
+		HandshakeTimeout: 3 * time.Second,
+	}
+	config := AgentWSConfig{
+		ServerURL: server.URL, Identity: testAgentIdentity(t), Hostname: "WS-01",
+		OSFamily: "windows", OSVersion: "11", AgentVersion: "0.1.0",
+	}
+
+	_, err := ConnectAgent(context.Background(), config, dialer)
+	if err == nil || !strings.Contains(err.Error(), "401 Unauthorized") {
+		t.Fatalf("expected HTTP status in handshake error, got %v", err)
 	}
 }
 

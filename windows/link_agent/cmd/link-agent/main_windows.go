@@ -294,12 +294,12 @@ func openServiceLog() (*log.Logger, func(), error) {
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return log.New(file, "link-agent ", log.LstdFlags|log.LUTC), func() { _ = file.Close() }, nil
+	return log.New(file, "link-agent ", 0), func() { _ = file.Close() }, nil
 }
 
 func serviceLog(logger *log.Logger, logErr error, format string, args ...any) {
 	if logger != nil {
-		logger.Printf(format, args...)
+		logger.Printf("%s %s", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
 		return
 	}
 	log.Printf("link agent (file log unavailable: %v): "+format, append([]any{logErr}, args...)...)

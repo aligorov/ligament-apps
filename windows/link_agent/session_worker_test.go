@@ -292,6 +292,61 @@ func TestSessionWorkerBrokerPropagatesSafeRejectionReasons(t *testing.T) {
 	}
 }
 
+func TestSessionWorkerBrokerLogsRejectionReason(t *testing.T) {
+	logs := make(chan string, 1)
+	SetWorkerLogger(func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) })
+	defer SetWorkerLogger(func(string, ...any) {})
+	broker := NewSessionWorkerBroker(&errorLauncher{err: &WorkerLaunchError{
+		Reason: ReasonHostSessionAmbiguous, Err: errors.New("multiple users"),
+	}})
+	offer := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","access_type":"attended","access_mode":"view","sdp":"v=0","ice_servers":[],"dlp":{}}}`)
+	if err := broker.Handler(context.Background(), offer, func(any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	timeout := time.After(time.Second)
+	for {
+		select {
+		case line := <-logs:
+			if strings.Contains(line, ReasonHostSessionAmbiguous) {
+				return
+			}
+		case <-timeout:
+			t.Fatal("rejection reason was not logged")
+		}
+	}
+}
+
+func TestSessionWorkerBrokerLogsTerminationReason(t *testing.T) {
+	logs := make(chan string, 1)
+	SetWorkerLogger(func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) })
+	defer SetWorkerLogger(func(string, ...any) {})
+	process := newFakeSessionWorker()
+	launcher := &fakeSessionWorkerLauncher{process: process, started: make(chan SessionOffer, 1)}
+	broker := NewSessionWorkerBroker(launcher)
+	defer broker.stop(testSessionID)
+	offer := []byte(`{"type":"session_offer","payload":{"session_id":"` + testSessionID + `","operator_id":"` + testOperatorID + `","access_type":"unattended","access_mode":"control","sdp":"v=0","ice_servers":[],"dlp":{}}}`)
+	if err := broker.Handler(context.Background(), offer, func(any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-launcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	process.responses <- []byte(`{"type":"session_terminate","session_id":"` + testSessionID + `","payload":{"session_id":"` + testSessionID + `","reason":"host_media_failed"}}`)
+	timeout := time.After(time.Second)
+	for {
+		select {
+		case line := <-logs:
+			if strings.Contains(line, "host_media_failed") {
+				return
+			}
+		case <-timeout:
+			t.Fatal("termination reason was not logged")
+		}
+	}
+}
+
 func TestClassifyWorkerLaunchError(t *testing.T) {
 	if classifyWorkerLaunchError(nil) != "" {
 		t.Fatal("expected empty string for nil error")

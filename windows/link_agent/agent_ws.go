@@ -83,8 +83,12 @@ func ConnectAgent(ctx context.Context, config AgentWSConfig, dialer *websocket.D
 	dialerCopy.Proxy = nil
 	conn, response, err := dialerCopy.DialContext(ctx, endpoint, http.Header{})
 	if err != nil {
-		if response != nil && response.Body != nil {
-			response.Body.Close()
+		if response != nil {
+			status := response.Status
+			if response.Body != nil {
+				response.Body.Close()
+			}
+			return nil, fmt.Errorf("link agent: WSS connection failed: %w (HTTP %s)", err, status)
 		}
 		return nil, fmt.Errorf("link agent: WSS connection failed: %w", err)
 	}

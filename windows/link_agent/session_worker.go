@@ -191,6 +191,7 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 		if err != nil {
 			return err
 		}
+		workerLog("[LINK HOST] Offer received: session=%s access_type=%s access_mode=%s", offer.SessionID, offer.AccessType, offer.AccessMode)
 		return b.start(ctx, offer, message, send)
 	case "signal":
 		if !validUUID(envelope.SessionID) || len(envelope.Signal) == 0 || !json.Valid(envelope.Signal) {
@@ -364,6 +365,11 @@ func (b *SessionWorkerBroker) run(ctx context.Context, offer SessionOffer, frame
 				var envelope Envelope
 				_ = json.Unmarshal(response, &envelope)
 				if envelope.Type == "session_terminate" {
+					var termination struct {
+						Reason string `json:"reason"`
+					}
+					_ = json.Unmarshal(envelope.Payload, &termination)
+					workerLog("[LINK HOST] Session terminated by worker: session=%s reason=%s", offer.SessionID, termination.Reason)
 					session.markTerminated()
 				}
 				_ = session.sendFrame(json.RawMessage(response))
@@ -462,6 +468,7 @@ func (b *SessionWorkerBroker) stopProcess(session *workerSession) {
 }
 
 func sendRejectedAnswer(send func(any) error, sessionID, reason string) error {
+	workerLog("[LINK HOST] Session answer rejected: session=%s reason=%s", sessionID, reason)
 	answer, err := MarshalSessionAnswer(sessionID, false, reason, "")
 	if err != nil {
 		return err
