@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
+import '../widgets/app_update_banner.dart';
 import '../widgets/rdp_service_settings_card.dart';
 import '../app_version.dart';
 import 'connect_screen.dart';
@@ -39,7 +40,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (client == null) return;
     final v = await client.getAppVersion();
     if (!mounted || v == null) return;
-    if (v['update_available'] == true) {
+    final latest = v['latest']?.toString() ?? '';
+    if (isAppUpdateAvailable(appVersion, latest)) {
       setState(() => _appUpdate = v);
     }
   }
@@ -62,6 +64,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         title: Text(s.settingsTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
+        bottom: _appUpdate == null
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(36),
+                child: AppUpdateBanner(
+                  latestVersion: _appUpdate!['latest']?.toString() ?? '',
+                  releaseUrl: _appUpdate!['release_url']?.toString() ?? '',
+                ),
+              ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -791,32 +802,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               children: [
                 Text(
-                  'Ligament 2FA v$appVersion',
+                  'Ligament 2FA ${formatAppVersion(appVersion)}',
                   style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.bold),
                 ),
-                if (_appUpdate != null) ...[
-                  const SizedBox(height: 6),
-                  TextButton.icon(
-                    onPressed: () async {
-                      final url = Uri.tryParse('${_appUpdate!['release_url'] ?? ''}');
-                      if (url != null && url.isScheme('https')) {
-                        try {
-                          await launchUrl(url, mode: LaunchMode.externalApplication);
-                        } catch (_) {}
-                      }
-                    },
-                    icon: const Icon(Icons.system_update_alt, size: 14, color: Color(0xFF38BDF8)),
-                    label: Text(
-                      '${s.updateAvailablePrefix} ${_appUpdate!['latest'] ?? ''} — ${s.updateOpen}',
-                      style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12),
-                    ),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-                ],
                 const SizedBox(height: 4),
                 Text(
                   s.platformCorporate(isMac ? "macOS" : (isWin ? "Windows" : (isLin ? "Linux" : "Mobile"))),

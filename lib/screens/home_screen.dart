@@ -7,12 +7,14 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
+import '../app_version.dart';
 import '../services/auth_state.dart';
 import '../services/deep_link_service.dart';
 import '../services/input_injector.dart';
 import '../services/rdp_actions.dart';
 import '../services/support_service.dart';
 import '../i18n/app_strings.dart';
+import '../widgets/app_update_banner.dart';
 import 'approval_modal.dart';
 import 'browser_sso_dialog.dart';
 import 'identity_mismatch_banner.dart';
@@ -42,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _browserSsoModalShown = false;
   bool _connectingToSession = false;
   Timer? _rdpTargetsTimer;
+  Map<String, dynamic>? _appUpdate;
 
   /// Сворачивание в трей имеет смысл только на десктопе (Windows/macOS/Linux):
   /// на мобильных платформах и в вебе системного трея нет.
@@ -51,6 +54,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_checkAppUpdate());
+    });
     // План §2.2: online-статус RDP-целей тухнет без обновления (сервер
     // переводит endpoint в offline только по факту disconnect/timeout) —
     // дергаем список раз в 30 с, пока видимы главная вкладка (0) или вкладка сервисов (2).
@@ -67,6 +73,16 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _rdpTargetsTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _checkAppUpdate() async {
+    final client = context.read<AuthState>().api;
+    if (client == null) return;
+    final update = await client.getAppVersion();
+    if (!mounted || update == null) return;
+    final latest = update['latest']?.toString() ?? '';
+    if (!isAppUpdateAvailable(appVersion, latest)) return;
+    setState(() => _appUpdate = update);
   }
 
   @override
@@ -723,6 +739,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ],
         ),
+        bottom: _appUpdate == null
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(36),
+                child: AppUpdateBanner(
+                  latestVersion: _appUpdate!['latest']?.toString() ?? '',
+                  releaseUrl: _appUpdate!['release_url']?.toString() ?? '',
+                ),
+              ),
       ),
       body: RefreshIndicator(
         onRefresh: () => auth.refreshAll(),
