@@ -209,6 +209,7 @@ class ApiClient {
     String pushToken = '',
     Map<String, dynamic>? securityPosture,
     Map<String, dynamic>? windowsIdentity,
+    bool updateToken = true,
   }) async {
     final payload = {
       'challenge_id': challengeId,
@@ -230,7 +231,7 @@ class ApiClient {
 
     final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     if (res.statusCode == 200) {
-      if (data['token'] != null) {
+      if (updateToken && data['token'] != null) {
         token = data['token'] as String?;
       }
       return data;
@@ -525,7 +526,16 @@ class ApiClient {
           targetAgentId: targetAgentId,
         );
         return {...sosRes, 'sos_v2': true};
-      } catch (_) {}
+      } on ApiException catch (e) {
+        // Legacy fallback нужен только если v2 endpoint действительно
+        // отсутствует. Ошибки auth/таймауты/5xx нельзя маскировать вторым
+        // запросом, который может создать другой тип обращения.
+        if (e.statusCode != 404 &&
+            e.statusCode != 405 &&
+            e.statusCode != 501) {
+          rethrow;
+        }
+      }
     }
 
     final payload = {
@@ -737,7 +747,13 @@ class ApiClient {
       }),
     );
     if (res.statusCode != 200 && res.statusCode != 201) {
-      throw Exception('Failed to create SOS request: ${res.statusCode}');
+      final data = _decodeJsonMap(res.bodyBytes);
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'sos_request_create_failed',
+        data['message']?.toString() ?? '',
+        data,
+      );
     }
     return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
   }
@@ -750,8 +766,12 @@ class ApiClient {
       },
     );
     final res = await _get(uri.toString(), headers: _headers());
+    final decoded = _decodeJsonMap(res.bodyBytes);
     if (res.statusCode != 200) {
-      return [];
+      throw ApiException(
+        res.statusCode,
+        decoded['error']?.toString() ?? 'sos_queue_fetch_failed',
+      );
     }
     final data = jsonDecode(utf8.decode(res.bodyBytes));
     if (data is Map<String, dynamic> && data['requests'] is List) {
@@ -903,21 +923,29 @@ class ApiClient {
     try {
       final sosQueue = await getPendingSOSRequests(category: category);
       queue.addAll(sosQueue.map(sosQueueItem));
-    } catch (_) {}
+    } on ApiException catch (e) {
+      // Старые серверы без SOS v2 обслуживаются legacy-очередью ниже.
+      if (e.statusCode != 404) rethrow;
+    }
 
     final res = await _get(
       _cleanUrl('/api/v1/app/support/queue'),
       headers: _headers(),
     );
-    if (res.statusCode == 200) {
-      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
-      if (decoded is List) {
-        queue.addAll(decoded.map((e) => Map<String, dynamic>.from(e as Map)));
-      } else if (decoded is Map) {
-        final list =
-            (decoded['queue'] ?? decoded['sessions']) as List<dynamic>? ?? [];
-        queue.addAll(list.map((e) => Map<String, dynamic>.from(e as Map)));
-      }
+    if (res.statusCode != 200) {
+      final data = _decodeJsonMap(res.bodyBytes);
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'support_queue_fetch_failed',
+      );
+    }
+    final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+    if (decoded is List) {
+      queue.addAll(decoded.map((e) => Map<String, dynamic>.from(e as Map)));
+    } else if (decoded is Map) {
+      final list =
+          (decoded['queue'] ?? decoded['sessions']) as List<dynamic>? ?? [];
+      queue.addAll(list.map((e) => Map<String, dynamic>.from(e as Map)));
     }
     return queue;
   }

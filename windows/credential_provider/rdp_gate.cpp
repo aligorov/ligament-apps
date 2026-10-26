@@ -95,8 +95,10 @@ static std::string QueryAssertionNonce(const std::string& logonId,
                                        const std::string& userSid) {
     const wchar_t* kPipe = L"\\\\.\\pipe\\LigamentRdpGate";
     if (!WaitNamedPipeW(kPipe, 2000)) return ""; // служба не подняла pipe
+    // Allow the server to identify this client, but never to impersonate the
+    // SYSTEM LogonUI/winlogon token if a fake server wins the pipe name.
     HANDLE h = CreateFileW(kPipe, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-        OPEN_EXISTING, 0, nullptr);
+        OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
     if (h == INVALID_HANDLE_VALUE) return "";
     std::string out;
     do {

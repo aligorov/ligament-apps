@@ -383,11 +383,21 @@ void main() {
     recorder.start();
     expect(violation, 'recorder_insecure_ingest');
 
-    // Also verify static sender rejects http://
+    // Also verify static sender rejects http:// for remote hosts
     expect(
       () => LinkHostRecorder.defaultHttpSendBatch('http://insecure.local/api', '', {}),
       throwsFormatException,
     );
+
+    // Loopback HTTP and remote HTTPS are allowed
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('http://127.0.0.1:8095/ingest')), isTrue);
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('http://127.8.9.10:8095/ingest')), isTrue);
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('http://[::1]:8095/ingest')), isTrue);
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('http://localhost:8095/ingest')), isTrue);
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('https://recorder.corp.internal/ingest')), isTrue);
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('http://remote.host:8095/ingest')), isFalse);
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('http://127.evil.example:8095/ingest')), isFalse);
+    expect(LinkHostRecorder.isSecureIngestUri(Uri.parse('http://127.0.0.1.evil.example:8095/ingest')), isFalse);
   });
 
   test('1.3: clock shift +-2 min does not prematurely expire lease (Stopwatch based)', () async {
@@ -654,5 +664,50 @@ void main() {
     final flushed = await recorder.stop(reason: 'session_ended');
     expect(flushed, isFalse);
     expect(recorder.isTailFlushed, isFalse);
+  });
+
+  test('stop times out a stalled in-flight flush and reports tail loss', () async {
+    final stalled = Completer<LinkRecorderBatchAck>();
+    final recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(enabled: true),
+      stopFlushTimeout: const Duration(milliseconds: 20),
+      sendBatch: (_) => stalled.future,
+    );
+    recorder.start();
+    final flushing = recorder.flushAndVerifyHealth();
+
+    final flushed = await recorder.stop(reason: 'session_ended');
+    expect(flushed, isFalse);
+    expect(recorder.isTailFlushed, isFalse);
+
+    stalled.complete(LinkRecorderBatchAck(
+      ackHighWatermarkSeq: 1,
+      firstFrameAcked: true,
+      leaseExpiresAt: DateTime.now().add(const Duration(seconds: 45)),
+    ));
+    await flushing;
+  });
+
+  test('default HTTP sender times out an unfinished ACK body', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      await request.drain();
+      request.response.statusCode = HttpStatus.ok;
+      await request.response.flush();
+    });
+    try {
+      await expectLater(
+        LinkHostRecorder.defaultHttpSendBatch(
+          'http://127.0.0.1:${server.port}/ingest',
+          '',
+          const {},
+          timeout: const Duration(milliseconds: 30),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+    } finally {
+      await server.close(force: true);
+    }
   });
 }

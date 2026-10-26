@@ -230,6 +230,62 @@ void main() {
       await svc.close();
       expect(svc.phase, RdpTunnelPhase.idle);
     });
+
+    test('отмена во время direct claim не запускает клиента и закрывает поздний grant', () async {
+      final target = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final targetSockets = <Socket>[];
+      final targetSub = target.listen((socket) {
+        targetSockets.add(socket);
+      });
+      addTearDown(() async {
+        await targetSub.cancel();
+        for (final socket in targetSockets) {
+          socket.destroy();
+        }
+        await target.close();
+      });
+
+      final claimStarted = Completer<void>();
+      final claimGate = Completer<Map<String, dynamic>>();
+      final closedGrants = <String>[];
+      var clientLaunches = 0;
+      RdpConnectorService.startClientOverride =
+          ({required host, required port, tempRdpFile}) async {
+        clientLaunches++;
+        return null;
+      };
+      addTearDown(() => RdpConnectorService.startClientOverride = null);
+
+      final api = _FakeApi(
+        (_) async => {
+          'grant_id': 'grant-direct-cancel',
+          'token': 'token-direct-cancel',
+          'expires_in': '60',
+          'route': 'direct',
+          'target_host': '127.0.0.1:${target.port}',
+        },
+        directClaim: (grantId, token) {
+          claimStarted.complete();
+          return claimGate.future;
+        },
+        close: (grantId) async => closedGrants.add(grantId),
+      );
+      final svc = RdpConnectorService();
+      final connecting = svc.connect(
+        api: api,
+        baseUrl: 'https://core.corp.local',
+        targetId: 'target',
+        name: 'target',
+      );
+      await claimStarted.future.timeout(const Duration(seconds: 5));
+      await svc.close();
+      claimGate.complete(const {});
+      await connecting;
+
+      expect(clientLaunches, 0);
+      expect(closedGrants, ['grant-direct-cancel']);
+      expect(svc.phase, RdpTunnelPhase.closed);
+    }, timeout: const Timeout(Duration(seconds: 15)));
   });
 
   group('RdpConnectorService.connectBridge — Connector-helper (P1 #3)', () {
@@ -365,13 +421,21 @@ class _FakeApi extends ApiClient {
     Future<Map<String, dynamic>> Function(String targetId) behavior, {
     Future<Map<String, dynamic>> Function(String grantId, String token)?
         bridgeInfo,
+    Future<Map<String, dynamic>> Function(String grantId, String token)?
+        directClaim,
+    Future<void> Function(String grantId)? close,
   })  : _behavior = behavior,
         _bridgeInfo = bridgeInfo,
+        _directClaim = directClaim,
+        _close = close,
         super(baseUrl: 'https://core.corp.local');
 
   final Future<Map<String, dynamic>> Function(String targetId) _behavior;
   final Future<Map<String, dynamic>> Function(String grantId, String token)?
       _bridgeInfo;
+  final Future<Map<String, dynamic>> Function(String grantId, String token)?
+      _directClaim;
+  final Future<void> Function(String grantId)? _close;
 
   @override
   Future<Map<String, dynamic>> rdpGrant({
@@ -393,4 +457,16 @@ class _FakeApi extends ApiClient {
   }) =>
       _bridgeInfo?.call(grantId, token) ??
       super.rdpBridgeInfo(grantId: grantId, token: token);
+
+  @override
+  Future<Map<String, dynamic>> rdpDirectClaim({
+    required String grantId,
+    required String token,
+  }) =>
+      _directClaim?.call(grantId, token) ??
+      super.rdpDirectClaim(grantId: grantId, token: token);
+
+  @override
+  Future<void> rdpClose(String grantId) =>
+      _close?.call(grantId) ?? super.rdpClose(grantId);
 }

@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	linkHostPipePrefix = `\\.\pipe\LigamentLinkHost-`
-	linkHostPipeSDDL   = "D:P(A;;GA;;;SY)"
-	linkHostFrameLimit = 512 * 1024
-	linkHostPollPeriod = 10 * time.Millisecond
-	linkHostStartLimit = 20 * time.Second
+	linkHostPipePrefix        = `\\.\pipe\LigamentLinkHost-`
+	linkHostPipeSDDL          = "D:P(A;;GA;;;SY)"
+	linkHostFrameLimit        = 512 * 1024
+	linkHostPollPeriod        = 10 * time.Millisecond
+	linkHostStartLimit        = 20 * time.Second
+	linkHostRemoteProbePeriod = time.Second
 )
 
 var peekNamedPipeProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("PeekNamedPipe")
@@ -109,15 +110,18 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, offer SessionOf
 		_ = windows.CloseHandle(pipe)
 		return nil, err
 	}
+	startedAt := time.Now()
 	worker := &windowsSessionWorkerProcess{
-		pipe:          pipe,
-		process:       process.Process,
-		job:           process.job,
-		pid:           process.ProcessId,
-		sessionID:     sessionID,
-		desktopName:   desktop,
-		startedAt:     time.Now(),
-		remoteSession: isRemoteDesktopSession(sessionID),
+		pipe:              pipe,
+		process:           process.Process,
+		job:               process.job,
+		pid:               process.ProcessId,
+		sessionID:         sessionID,
+		desktopName:       desktop,
+		startedAt:         startedAt,
+		remoteSession:     isRemoteDesktopSession(sessionID),
+		remoteProbe:       isRemoteDesktopSession,
+		lastRemoteProbeAt: startedAt,
 	}
 	activeConsole := getActiveConsoleSessionID()
 	workerLog("interactive host started: pid=%d target_session=%d active_console=%d remote_rdp=%t desktop=%s pipe=%s offer_session=%s",
@@ -326,6 +330,8 @@ type windowsSessionWorkerProcess struct {
 	startedAt            time.Time
 	consoleMismatchSince time.Time
 	remoteSession        bool
+	remoteProbe          func(sessionID uint32) bool
+	lastRemoteProbeAt    time.Time
 
 	mu     sync.RWMutex
 	sendMu sync.Mutex
@@ -372,10 +378,11 @@ func (p *windowsSessionWorkerProcess) Send(ctx context.Context, frame []byte) er
 			p.mu.RUnlock()
 			return errors.New("link agent: worker pipe closed")
 		}
-		pipe := p.pipe
-		p.mu.RUnlock()
 		var written uint32
-		err := windows.WriteFile(pipe, frame, &written, nil)
+		// The pipe is nonblocking. Keep the read lock only for this short I/O so
+		// Close cannot recycle the handle between a snapshot and WriteFile.
+		err := windows.WriteFile(p.pipe, frame, &written, nil)
+		p.mu.RUnlock()
 		if err == nil {
 			if written != uint32(len(frame)) {
 				return errors.New("link agent: incomplete worker IPC write")
@@ -394,31 +401,34 @@ func (p *windowsSessionWorkerProcess) Receive(ctx context.Context) ([]byte, erro
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+
+		now := time.Now()
+		p.refreshRemoteSession(now)
+		// Track active console session changes (e.g. Logon / Lock / Fast User Switch).
+		// Close session only if the mismatch persists longer than 15s (task 3.5).
+		activeConsole := getActiveConsoleSessionID()
+		if err := p.checkConsoleSessionMismatch(activeConsole, now); err != nil {
+			return nil, err
+		}
+
 		p.mu.RLock()
 		if p.closed {
 			p.mu.RUnlock()
 			return nil, errors.New("link agent: worker pipe closed")
 		}
 		pipe, process := p.pipe, p.process
-		p.mu.RUnlock()
-
-		// Track active console session changes (e.g. Logon / Lock / Fast User Switch).
-		// Close session only if the mismatch persists longer than 15s (task 3.5).
-		activeConsole := getActiveConsoleSessionID()
-		if err := p.checkConsoleSessionMismatch(activeConsole, time.Now()); err != nil {
-			return nil, err
-		}
-
 		available, err := peekPipeBytes(pipe)
 		if err != nil {
 			var exitCode uint32
 			_ = windows.GetExitCodeProcess(process, &exitCode)
+			p.mu.RUnlock()
 			activeNow := getActiveConsoleSessionID()
 			workerLog("interactive host pipe inspect failed: pid=%d exit_code=%d target_session=%d active_console_now=%d err=%v",
 				p.pid, exitCode, p.sessionID, activeNow, err)
 			return nil, fmt.Errorf("link agent: inspect worker pipe: %w", err)
 		}
 		if available > linkHostFrameLimit {
+			p.mu.RUnlock()
 			return nil, errors.New("link agent: worker IPC frame exceeds size limit")
 		}
 		if available > 0 {
@@ -427,24 +437,31 @@ func (p *windowsSessionWorkerProcess) Receive(ctx context.Context) ([]byte, erro
 			err := windows.ReadFile(pipe, buffer, &read, nil)
 			if err != nil {
 				clear(buffer)
-				if errors.Is(err, windows.ERROR_MORE_DATA) {
-					return nil, errors.New("link agent: worker IPC message exceeds size limit")
-				}
 				if errors.Is(err, windows.ERROR_NO_DATA) {
+					p.mu.RUnlock()
 					continue
 				}
 				var exitCode uint32
 				_ = windows.GetExitCodeProcess(process, &exitCode)
+				p.mu.RUnlock()
+				if errors.Is(err, windows.ERROR_MORE_DATA) {
+					return nil, errors.New("link agent: worker IPC message exceeds size limit")
+				}
 				activeNow := getActiveConsoleSessionID()
 				workerLog("interactive host pipe read failed: pid=%d exit_code=%d target_session=%d active_console_now=%d err=%v",
 					p.pid, exitCode, p.sessionID, activeNow, err)
 				return nil, fmt.Errorf("link agent: read worker IPC frame: %w", err)
 			}
+			p.mu.RUnlock()
 			return buffer[:read], nil
 		}
-		if state, waitErr := windows.WaitForSingleObject(process, 0); waitErr != nil || state == windows.WAIT_OBJECT_0 {
-			var exitCode uint32
+		state, waitErr := windows.WaitForSingleObject(process, 0)
+		var exitCode uint32
+		if waitErr != nil || state == windows.WAIT_OBJECT_0 {
 			_ = windows.GetExitCodeProcess(process, &exitCode)
+		}
+		p.mu.RUnlock()
+		if waitErr != nil || state == windows.WAIT_OBJECT_0 {
 			activeNow := getActiveConsoleSessionID()
 			workerLog("interactive host process exited: pid=%d exit_code=%d (0x%X) target_session=%d active_console_now=%d lifetime=%v",
 				p.pid, exitCode, exitCode, p.sessionID, activeNow, time.Since(p.startedAt))
@@ -465,6 +482,21 @@ func peekPipeBytes(pipe windows.Handle) (uint32, error) {
 		return 0, windows.GetLastError()
 	}
 	return messageBytes, nil
+}
+
+func (p *windowsSessionWorkerProcess) refreshRemoteSession(now time.Time) {
+	if p.remoteProbe == nil || (!p.lastRemoteProbeAt.IsZero() && now.Sub(p.lastRemoteProbeAt) < linkHostRemoteProbePeriod) {
+		return
+	}
+	p.lastRemoteProbeAt = now
+	remote := p.remoteProbe(p.sessionID)
+	if remote == p.remoteSession {
+		return
+	}
+	p.remoteSession = remote
+	p.consoleMismatchSince = time.Time{}
+	workerLog("interactive host protocol changed: pid=%d target_session=%d remote_rdp=%t",
+		p.pid, p.sessionID, remote)
 }
 
 func (p *windowsSessionWorkerProcess) checkConsoleSessionMismatch(activeConsole uint32, now time.Time) error {
@@ -497,14 +529,17 @@ func (p *windowsSessionWorkerProcess) Close() error {
 	p.closed = true
 	pipe, process, job := p.pipe, p.process, p.job
 	p.pipe, p.process, p.job = 0, 0, 0
-	p.mu.Unlock()
-
 	if job != 0 {
 		_ = windows.TerminateJobObject(job, 1)
 	}
+	// Acquiring the write lock waits for in-flight nonblocking pipe I/O. Close
+	// the pipe before unlocking so no later operation can snapshot a stale handle.
 	if pipe != 0 {
 		_ = windows.CloseHandle(pipe)
 	}
+	p.mu.Unlock()
+
+	// Do not hold the mutex during the potentially long process wait.
 	if process != 0 {
 		_, _ = windows.WaitForSingleObject(process, uint32(5*time.Second/time.Millisecond))
 		_ = windows.CloseHandle(process)

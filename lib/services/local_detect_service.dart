@@ -168,11 +168,28 @@ class LocalDetectService {
     // произвольный сайт) не допускается — плюс обязательный wake-токен.
     if (request.uri.path == '/autoshare') {
       if (request.method == 'POST') {
+        // Лимит действует и для chunked-body: не накапливаем неограниченный
+        // поток до проверки wake-токена. Content-Length проверяется сразу.
+        if (request.headers.contentLength > kAutoshareMaxBodyBytes) {
+          final res = request.response;
+          res.statusCode = 413;
+          await res.close();
+          return;
+        }
         String? bodyToken;
         String? sid;
         try {
-          final content = await utf8.decoder.bind(request).join();
-          final data = jsonDecode(content);
+          final bytes = <int>[];
+          await for (final chunk in request) {
+            if (bytes.length + chunk.length > kAutoshareMaxBodyBytes) {
+              final res = request.response;
+              res.statusCode = 413;
+              await res.close();
+              return;
+            }
+            bytes.addAll(chunk);
+          }
+          final data = jsonDecode(utf8.decode(bytes));
           sid = data is Map ? data['session_id']?.toString() : null;
           bodyToken = data is Map ? data['wake_token']?.toString() : null;
         } catch (e) {
@@ -266,6 +283,7 @@ bool autoshareAuthorized(
 /// Порт и путь контракта с сервером 2fa (см. класс выше).
 const int kLocalDetectPort = 8757;
 const String kLocalDetectPath = '/ligament';
+const int kAutoshareMaxBodyBytes = 4096;
 
 /// Иммутутабельный ответ локального детекта.
 class LocalDetectReply {

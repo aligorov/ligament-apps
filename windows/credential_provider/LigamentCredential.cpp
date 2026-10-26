@@ -522,17 +522,19 @@ HRESULT LigamentCredential::SetTransparentLogo(ICredentialProviderCredentialEven
 
 HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
     if (dwFieldID == FID_LOGO && phbmp) {
-        HBITMAP src = nullptr;
+        bool defaultLogo = false;
         EnterCriticalSection(&m_csPoll);
-        src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        HBITMAP src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        defaultLogo = src && src == m_hDefaultLogoBmp;
+        // The source can be deleted by the poll worker immediately after the
+        // unlock, so clone it while its lifetime is protected by m_csPoll.
+        HBITMAP copy = src ? CloneAlphaDIB(src) : nullptr;
         LeaveCriticalSection(&m_csPoll);
-        if (src) {
-            *phbmp = CloneAlphaDIB(src);
-            if (*phbmp) {
-                CPLog(L"GetBitmapValue: returning copy of %s bitmap=%p",
-                    (src != m_hDefaultLogoBmp) ? L"QR" : L"DefaultLogo", *phbmp);
-                return S_OK;
-            }
+        if (copy) {
+            *phbmp = copy;
+            CPLog(L"GetBitmapValue: returning copy of %s bitmap=%p",
+                defaultLogo ? L"DefaultLogo" : L"QR", *phbmp);
+            return S_OK;
         }
     }
     if (phbmp) *phbmp = nullptr;
@@ -731,17 +733,20 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
             CoTaskMemFree(psz);
         }
     } else if (dwFieldID == FID_LOGO) {
-        HBITMAP bmp = nullptr;
         EnterCriticalSection(&m_csPoll);
-        bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        HBITMAP bmp = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+        const bool defaultLogo = bmp && bmp == m_hDefaultLogoBmp;
+        // Copy under m_csPoll: ClearQrBitmap may delete bmp on another thread.
+        // A default-logo copy is retained as fallback if Events3 rejects PNG.
+        HBITMAP copyBmp = bmp
+            ? (HBITMAP)CopyImage(bmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)
+            : nullptr;
         LeaveCriticalSection(&m_csPoll);
-        if (bmp == m_hDefaultLogoBmp && SUCCEEDED(SetTransparentLogo(pEvents))) {
+        if (defaultLogo && SUCCEEDED(SetTransparentLogo(pEvents))) {
             // Logo restored with alpha after clearing the QR.
-        } else if (bmp) {
-            HBITMAP copyBmp = (HBITMAP)CopyImage(bmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
-            if (copyBmp) {
-                pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
-            }
+            if (copyBmp) DeleteObject(copyBmp);
+        } else if (copyBmp) {
+            pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
         }
         pEvents->SetFieldState(this, FID_LOGO, cpfs);
         GdiFlush();
@@ -787,15 +792,18 @@ void LigamentCredential::UpdateFieldStates() {
 }
 
 void LigamentCredential::NotifyQrChanged() {
-    HBITMAP src = nullptr;
     EnterCriticalSection(&m_csPoll);
-    src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+    HBITMAP src = m_hQrBmp ? m_hQrBmp : m_hDefaultLogoBmp;
+    const bool defaultLogo = src && src == m_hDefaultLogoBmp;
+    HBITMAP copyBmp = src
+        ? (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)
+        : nullptr;
     LeaveCriticalSection(&m_csPoll);
     if (m_pEvents && src) {
-        if (src == m_hDefaultLogoBmp && SUCCEEDED(SetTransparentLogo(m_pEvents))) {
+        if (defaultLogo && SUCCEEDED(SetTransparentLogo(m_pEvents))) {
+            if (copyBmp) DeleteObject(copyBmp);
             m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
         } else {
-            HBITMAP copyBmp = (HBITMAP)CopyImage(src, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
             if (copyBmp) {
                 HRESULT hr = m_pEvents->SetFieldBitmap(this, FID_LOGO, copyBmp);
                 CPLog(L"NotifyQrChanged: SetFieldBitmap hr=0x%08X", (unsigned)hr);
@@ -803,6 +811,8 @@ void LigamentCredential::NotifyQrChanged() {
             m_pEvents->SetFieldState(this, FID_LOGO, CPFS_DISPLAY_IN_SELECTED_TILE);
             GdiFlush();
         }
+    } else if (copyBmp) {
+        DeleteObject(copyBmp);
     }
     if (m_pProviderEvents && m_providerAdviseContext) {
         CPLog(L"NotifyQrChanged: triggering CredentialsChanged to reload tile avatar");
@@ -1160,6 +1170,7 @@ void LigamentCredential::RunAsyncJob() {
                 m_statusText = L"Ошибка Passkey: " + DescribeServerError(r.error, m_worker.retryAfterSec);
             }
         }
+        HBITMAP activeQrBmp = m_hQrBmp;
         LeaveCriticalSection(&m_csPoll);
 
         if (newQrBmp) {
@@ -1167,7 +1178,7 @@ void LigamentCredential::RunAsyncJob() {
         }
 
         CPLog(L"passkey: WebAuthnBegin (воркер) ok=%d err=%hs qrBmp=%p",
-            ok ? 1 : 0, r.error.c_str(), m_hQrBmp);
+            ok ? 1 : 0, r.error.c_str(), activeQrBmp);
 
         if (stop) return;
         NotifyFieldChanged(FID_STATUS_TEXT);

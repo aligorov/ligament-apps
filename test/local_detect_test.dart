@@ -350,6 +350,36 @@ void main() {
           await post(wakeToken: token, origin: 'http://localhost:5173'), 200);
     });
 
+    test('A-2: chunked /autoshare ограничен по размеру до авторизации',
+        () async {
+      if (await foreignPortBusy()) {
+        markTestSkipped(
+            'порт 8757 занят внешним процессом (запущено приложение?)');
+        return;
+      }
+      SharedPreferences.setMockInitialValues({});
+      var delivered = false;
+      final svc = LocalDetectService();
+      svc.onAutoshare = (_) => delivered = true;
+      addTearDown(svc.stop);
+      await svc.start('uuid-a');
+      final token = svc.wakeTokenForTest!;
+
+      final client = HttpClient();
+      try {
+        final req =
+            await client.post('127.0.0.1', kLocalDetectPort, '/autoshare');
+        req.contentLength = -1; // Transfer-Encoding: chunked
+        req.headers.set('X-Wake-Token', token);
+        req.write('x' * (kAutoshareMaxBodyBytes + 1));
+        final response = await req.close();
+        expect(response.statusCode, 413);
+        expect(delivered, isFalse);
+      } finally {
+        client.close(force: true);
+      }
+    });
+
     test('A-2: рестарт слушателя ротирует wake-токен; stop() убирает файл',
         () async {
       if (await foreignPortBusy()) {

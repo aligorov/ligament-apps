@@ -55,7 +55,16 @@ class ReconnectBackoff {
 /// Сервис постоянного WebSocket соединения для мгновенных push-уведомлений
 /// с поддержкой автоматического failover на локальные Relay-узлы филиалов.
 class WebSocketService {
+  WebSocketService({
+    @visibleForTesting
+    WebSocketChannel Function(Uri uri, Map<String, String> headers)?
+        channelFactory,
+  }) : _channelFactory = channelFactory;
+
+  final WebSocketChannel Function(Uri uri, Map<String, String> headers)?
+      _channelFactory;
   WebSocketChannel? _channel;
+  int _generation = 0;
   Timer? _reconnectTimer;
   Timer? _stableResetTimer;
   bool _disposed = false;
@@ -98,6 +107,7 @@ class WebSocketService {
     required String token,
     List<String> fallbackUrls = const [],
   }) {
+    _closeCurrentChannel();
     _disposed = false;
     _authFailed = false;
     _primaryBaseUrl = baseUrl;
@@ -109,12 +119,29 @@ class WebSocketService {
     _connectCandidate();
   }
 
-  void _connectCandidate() {
+  void _closeCurrentChannel() {
+    _generation++;
+    final previous = _channel;
+    _channel = null;
+    previous?.sink.close();
+    _stableResetTimer?.cancel();
+  }
+
+  bool _isCurrent(int generation, WebSocketChannel channel) =>
+      !_disposed && _generation == generation && identical(_channel, channel);
+
+  void _connectCandidate([int? expectedGeneration]) {
     // Локальный биндинг вместо `_primaryBaseUrl!`/`_token!`: между проверкой
     // и использованием объект мог быть разобран параллельным disconnect().
     final primary = _primaryBaseUrl;
     final tok = _token;
-    if (_disposed || _authFailed || primary == null || tok == null) return;
+    if (_disposed ||
+        _authFailed ||
+        primary == null ||
+        tok == null ||
+        (expectedGeneration != null && expectedGeneration != _generation)) {
+      return;
+    }
 
     final candidates = [primary, ..._fallbackUrls];
     if (candidates.isEmpty) return;
@@ -140,7 +167,7 @@ class WebSocketService {
     try {
       final uri = Uri.parse(wsUrl);
       if (uri.scheme != 'wss') {
-        debugPrint('ws_service: итоговый URL "$wsUrl" не wss — отказ');
+        debugPrint('ws_service: итоговый URL не wss — отказ');
         _scheduleReconnect(advanceCandidate: true);
         return;
       }
@@ -148,57 +175,63 @@ class WebSocketService {
         if (tok.isNotEmpty) 'Authorization': 'Bearer $tok',
       };
 
+      _closeCurrentChannel();
+      final generation = _generation;
+      final channel = _channelFactory?.call(uri, headers) ??
+          IOWebSocketChannel.connect(
+            uri,
+            headers: headers,
+            connectTimeout: const Duration(seconds: 4),
+            pingInterval: const Duration(seconds: 20),
+          );
+      _channel = channel;
       _wasReady = false;
-      _channel = IOWebSocketChannel.connect(
-        uri,
-        headers: headers,
-        connectTimeout: const Duration(seconds: 4),
-        pingInterval: const Duration(seconds: 20),
-      );
 
-      _channel!.ready.then((_) {
-        if (!_disposed) {
-          _wasReady = true;
-          _backoff.reset();
-          _armStableReset();
-          currentEndpoint = targetUrl;
-          isUsingRelay = isRelay;
-          onEndpointChanged?.call(isRelay ? _extractHost(targetUrl) : null, isRelay);
-          onConnected?.call();
-        }
+      channel.ready.then((_) {
+        if (!_isCurrent(generation, channel)) return;
+        _wasReady = true;
+        _backoff.reset();
+        _armStableReset(generation, channel);
+        currentEndpoint = targetUrl;
+        isUsingRelay = isRelay;
+        onEndpointChanged?.call(
+            isRelay ? _extractHost(targetUrl) : null, isRelay);
+        onConnected?.call();
       }).catchError((Object e) {
-        debugPrint('ws_service: соединение с $wsUrl не удалось: $e');
-        if (!_disposed) {
-          _channel = null;
-          onDisconnected?.call();
-          if (_isUnauthorized(e)) {
-            _handleUnauthorized();
-            return;
-          }
-          // Кандидат недоступен (handshake не прошёл) — сдвигаем индекс.
-          _scheduleReconnect(advanceCandidate: true);
+        debugPrint('ws_service: handshake с кандидатом не удался: $e');
+        if (!_isCurrent(generation, channel)) return;
+        _channel = null;
+        channel.sink.close();
+        _stableResetTimer?.cancel();
+        onDisconnected?.call();
+        if (_isUnauthorized(e)) {
+          _handleUnauthorized();
+          return;
         }
+        // Кандидат недоступен (handshake не прошёл) — сдвигаем индекс.
+        _scheduleReconnect(advanceCandidate: true);
       });
 
-      _channel!.stream.listen(
+      channel.stream.listen(
         (message) {
-          _handleMessage(message);
+          if (_isCurrent(generation, channel)) _handleMessage(message);
         },
         onDone: () {
+          if (!_isCurrent(generation, channel)) return;
           _channel = null;
           _stableResetTimer?.cancel();
           onDisconnected?.call();
-          if (_disposed) return;
           // Соединение было установлено и закрыто сервером/сетью —
           // кандидат тот же, следующий коннект по backoff.
           _scheduleReconnect(advanceCandidate: false);
         },
         onError: (err) {
-          debugPrint('ws_service: ошибка соединения $wsUrl: $err');
+          debugPrint('ws_service: ошибка соединения: $err');
+          if (!_isCurrent(generation, channel)) return;
           _channel = null;
+          channel.sink.close();
           _stableResetTimer?.cancel();
           onDisconnected?.call();
-          if (_disposed) return;
           if (_isUnauthorized(err)) {
             _handleUnauthorized();
             return;
@@ -208,7 +241,7 @@ class WebSocketService {
         cancelOnError: true,
       );
     } catch (e) {
-      debugPrint('ws_service: исключение при подключении к $wsUrl: $e');
+      debugPrint('ws_service: исключение при подключении: $e');
       _scheduleReconnect(advanceCandidate: true);
     }
   }
@@ -234,10 +267,10 @@ class WebSocketService {
 
   /// После 60с стабильного соединения сбрасываем backoff и индекс кандидатов:
   /// следующий обрыв начнёт с primary-сервера и задержки 1с.
-  void _armStableReset() {
+  void _armStableReset(int generation, WebSocketChannel channel) {
     _stableResetTimer?.cancel();
     _stableResetTimer = Timer(_stableResetDelay, () {
-      if (!_disposed && _channel != null) {
+      if (_isCurrent(generation, channel)) {
         _backoff.reset();
         _attemptIndex = 0;
         debugPrint('ws_service: ${_stableResetDelay.inSeconds}с стабильного соединения — backoff и индекс кандидатов сброшены');
@@ -257,6 +290,8 @@ class WebSocketService {
   void _scheduleReconnect({required bool advanceCandidate}) {
     if (_disposed || _authFailed) return;
     _reconnectTimer?.cancel();
+    final generation = _generation;
+    final channelAtSchedule = _channel;
     // Индекс кандидата сдвигается ТОЛЬКО при недоступности кандидата;
     // обрыв уже установленного соединения ретраит тот же кандидат.
     if (advanceCandidate) {
@@ -269,8 +304,11 @@ class WebSocketService {
     debugPrint('ws_service: повтор через ${delay.inMilliseconds}мс '
         '(кандидат ${totalCandidates == 0 ? 0 : _attemptIndex % totalCandidates})');
     _reconnectTimer = Timer(delay, () {
-      if (!_disposed && !_authFailed) {
-        _connectCandidate();
+      if (!_disposed &&
+          !_authFailed &&
+          _generation == generation &&
+          identical(_channel, channelAtSchedule)) {
+        _connectCandidate(generation);
       }
     });
   }
@@ -319,9 +357,10 @@ class WebSocketService {
   void disconnect() {
     _disposed = true;
     _reconnectTimer?.cancel();
-    _stableResetTimer?.cancel();
-    _channel?.sink.close();
-    _channel = null;
+    _closeCurrentChannel();
+    _primaryBaseUrl = null;
+    _token = null;
+    _fallbackUrls = [];
     currentEndpoint = null;
     isUsingRelay = false;
   }

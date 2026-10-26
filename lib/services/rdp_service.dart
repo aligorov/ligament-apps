@@ -215,6 +215,11 @@ class RdpConnectorService extends ChangeNotifier {
         directSocket = null;
       }
     }
+    if (_connectGeneration != generation || _session != session) {
+      try { directSocket?.destroy(); } catch (_) {}
+      await _quietTeardown(session, null);
+      return;
+    }
 
     IOWebSocketChannel? ws;
     if (directSocket != null) {
@@ -224,7 +229,14 @@ class RdpConnectorService extends ChangeNotifier {
       } catch (e) {
         try { directSocket.destroy(); } catch (_) {}
         await _teardownListener(session);
+        if (_connectGeneration != generation || _session != session) return;
         _fail(rdpConnectErrorText(e, isRu: isRu));
+        return;
+      }
+      if (_connectGeneration != generation || _session != session) {
+        try { directSocket.destroy(); } catch (_) {}
+        await _quietTeardown(session, null);
+        try { await api.rdpClose(grantId); } catch (_) {}
         return;
       }
       session.remote = directSocket;
@@ -261,6 +273,11 @@ class RdpConnectorService extends ChangeNotifier {
       session.ws = ws;
     }
 
+    if (_connectGeneration != generation || _session != session) {
+      await _quietTeardown(session, ws);
+      return;
+    }
+
     // 4. mstsc (только Windows: на остальных платформах этапа 2 — «Экран»).
     _setPhase(RdpTunnelPhase.launching);
     final tempRdp = _createTempRdpFile(
@@ -274,7 +291,14 @@ class RdpConnectorService extends ChangeNotifier {
     try {
       mstsc = await _startRdpClient(host: host, port: port, tempRdpFile: tempRdp);
     } catch (e) {
-      _fail(rdpConnectErrorText(e, isRu: isRu));
+      if (_connectGeneration == generation && _session == session) {
+        _fail(rdpConnectErrorText(e, isRu: isRu));
+      }
+      await _quietTeardown(session, ws);
+      return;
+    }
+    if (_connectGeneration != generation || _session != session) {
+      try { mstsc?.kill(); } catch (_) {}
       await _quietTeardown(session, ws);
       return;
     }

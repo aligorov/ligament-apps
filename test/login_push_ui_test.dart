@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +12,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 class FakeAuthState extends AuthState {
   bool loginCalled = false;
   bool shouldThrowSecondFactor = true;
+  bool deferClaims = false;
+  final claimRequests = <Completer<Map<String, dynamic>>>[];
 
   @override
   Future<void> login(String username, String password, [String? code]) async {
@@ -34,6 +38,11 @@ class FakeAuthState extends AuthState {
     required String challengeId,
     required String claimToken,
   }) async {
+    if (deferClaims) {
+      final request = Completer<Map<String, dynamic>>();
+      claimRequests.add(request);
+      return request.future;
+    }
     return {'status': 'pending'};
   }
 }
@@ -105,5 +114,43 @@ void main() {
 
     expect(find.textContaining('Запрос подтверждения отправлен на телефон'), findsNothing);
     expect(find.byType(TextField), findsNWidgets(2)); // username and password fields restored
+  });
+
+  testWidgets('claim polling не overlap; отмена блокирует stale navigation',
+      (tester) async {
+    final fakeAuth = FakeAuthState()..deferClaims = true;
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AuthState>.value(
+        value: fakeAuth,
+        child: const MaterialApp(
+          home: LoginScreen(serverConfig: {'server_name': 'Test Server'}),
+        ),
+      ),
+    );
+    await tester.enterText(find.byType(TextField).at(0), 'alice');
+    await tester.enterText(find.byType(TextField).at(1), 'password');
+    await tester.tap(find.byType(ElevatedButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.pump(const Duration(milliseconds: 1600));
+    expect(fakeAuth.claimRequests, hasLength(1));
+    await tester.pump(const Duration(milliseconds: 1600));
+    expect(fakeAuth.claimRequests, hasLength(1),
+        reason: 'следующий tick ждёт завершения предыдущего claim');
+
+    final backBtn = find.text('← Вернуться к вводу пароля');
+    await tester.ensureVisible(backBtn);
+    await tester.tap(backBtn);
+    await tester.pump();
+    fakeAuth.claimRequests.single.complete({
+      'token': 'stale-token',
+      'user': {'username': 'alice'},
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(fakeAuth.token, isNull);
   });
 }

@@ -139,11 +139,19 @@ const (
 	wtsProtocolTypeRDP             = 2
 )
 
+func decodeWTSClientProtocolType(buffer *uint16, bytesReturned uint32) (uint16, bool) {
+	if buffer == nil || bytesReturned < uint32(unsafe.Sizeof(*buffer)) {
+		return 0, false
+	}
+	return *buffer, true
+}
+
 func isRemoteDesktopSession(sessionID uint32) bool {
 	if procWTSQuerySessionInformation.Find() != nil {
 		return false
 	}
-	var buffer *uint32
+	// WTSClientProtocolType is returned as a USHORT, not a DWORD.
+	var buffer *uint16
 	var bytesReturned uint32
 	result, _, _ := procWTSQuerySessionInformation.Call(
 		0, uintptr(sessionID), wtsClientProtocolTypeInfoClass,
@@ -153,7 +161,8 @@ func isRemoteDesktopSession(sessionID uint32) bool {
 		return false
 	}
 	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(buffer)))
-	return *buffer == wtsProtocolTypeRDP
+	protocol, ok := decodeWTSClientProtocolType(buffer, bytesReturned)
+	return ok && protocol == wtsProtocolTypeRDP
 }
 
 func queryWTSUsername(sessionID uint32) string {

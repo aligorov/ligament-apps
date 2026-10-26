@@ -410,8 +410,19 @@ public:
           m_rng((uint32_t)GetTickCount()) {}
 
     int NextDelayMs() {
-        const int exp = m_attempt++;
-        long long delayMs = (long long)m_baseMs << exp; // base * 2^attempt
+        // Saturating multiplication avoids a signed left shift overflowing
+        // after enough reconnect failures. Capping the exponent also keeps it
+        // bounded for the entire service lifetime.
+        const int exp = m_attempt;
+        if (m_attempt < 31) ++m_attempt;
+        long long delayMs = m_baseMs < 0 ? 0 : m_baseMs;
+        for (int i = 0; i < exp && delayMs < m_maxMs; ++i) {
+            if (delayMs > m_maxMs / 2) {
+                delayMs = m_maxMs;
+                break;
+            }
+            delayMs *= 2;
+        }
         if (delayMs > m_maxMs) delayMs = m_maxMs;
         if (m_jitter > 0) {
             std::uniform_real_distribution<double> d(-m_jitter, m_jitter);
@@ -640,13 +651,12 @@ bool SpawnAppInSession(HANDLE hToken, DWORD sessionId, const std::wstring& autos
 struct StreamCtx {
     unsigned long long id = 0;
 
-    // ЕДИНСТВЕННОЕ закрытие сокета (RDP-09): atomic compare_exchange не
-    // пускает второго closesocket, хэндл зануляется под тем же локом —
-    // двойного закрытия и попадания переиспользованного хэндла в send/recv
-    // нет. send/recv по снапшоту БЕЗ удержания lock'а — closesocket из
-    // другого потока разбивает блокированный вызов, не дедлочась на мьютексе.
-    std::mutex sockMu;
-    SOCKET sock = INVALID_SOCKET;
+    // closesocket выполняется только после выхода активных recv/send. Иначе
+    // Windows может переиспользовать SOCKET, пока другой поток работает со
+    // старым snapshot. Отдельные mutex'ы сохраняют полнодуплексный TCP.
+    std::mutex sockReadMu;
+    std::mutex sockWriteMu;
+    std::atomic<SOCKET> sock{INVALID_SOCKET};
     std::atomic<bool> sockClosed{false};
     // Стрим погашен (KillStream/ошибка/Teardown): данные больше не ходят.
     std::atomic<bool> dead{false};
@@ -660,9 +670,18 @@ struct StreamCtx {
     size_t queuedBytes = 0;
     bool qAbort = false; // writer: завершиться (сокет закрыт/стрим погашен)
 
-    SOCKET SockSnapshot() {
-        std::lock_guard<std::mutex> lk(sockMu);
-        return sock;
+    int Receive(char* buffer, int length) {
+        std::lock_guard<std::mutex> lk(sockReadMu);
+        SOCKET s = sock.load();
+        if (dead.load() || s == INVALID_SOCKET) return 0;
+        return recv(s, buffer, length, 0);
+    }
+
+    int Send(const char* buffer, int length) {
+        std::lock_guard<std::mutex> lk(sockWriteMu);
+        SOCKET s = sock.load();
+        if (dead.load() || s == INVALID_SOCKET) return 0;
+        return send(s, buffer, length, 0);
     }
 
     void WakeWriter() {
@@ -673,23 +692,24 @@ struct StreamCtx {
         qCv.notify_all();
     }
 
-    // Закрыть сокет РОВНО ОДИН РАЗ; последующие вызовы — no-op, но writer
-    // всё равно разбужены (идемпотентно).
+    // Сначала dead+shutdown: они запрещают новые операции и выталкивают уже
+    // заблокированные recv/send. Только затем ждём I/O-mutex'ы и закрываем
+    // дескриптор ровно один раз — closesocket под активным I/O отсутствует.
     void CloseSocketOnce() {
+        dead.store(true);
         bool already = false;
         if (!sockClosed.compare_exchange_strong(already, true)) {
             WakeWriter();
             return;
         }
-        SOCKET s = INVALID_SOCKET;
-        {
-            std::lock_guard<std::mutex> lk(sockMu);
-            s = sock;
-            sock = INVALID_SOCKET; // зануляем тем же локом, что и закрываем
-        }
-        dead.store(true);
-        if (s != INVALID_SOCKET) closesocket(s);
+        SOCKET s = sock.load();
+        if (s != INVALID_SOCKET) shutdown(s, SD_BOTH);
         WakeWriter();
+        {
+            std::scoped_lock lk(sockReadMu, sockWriteMu);
+            s = sock.exchange(INVALID_SOCKET);
+            if (s != INVALID_SOCKET) closesocket(s);
+        }
     }
 
     // Поставить данные в очередь writer'а. false — переполнение лимита
@@ -709,13 +729,7 @@ struct StreamCtx {
 
     ~StreamCtx() {
         // Страховка: если никто не позвал CloseSocketOnce — закрыть здесь.
-        if (!sockClosed.exchange(true)) {
-            std::lock_guard<std::mutex> lk(sockMu);
-            if (sock != INVALID_SOCKET) {
-                closesocket(sock);
-                sock = INVALID_SOCKET;
-            }
-        }
+        CloseSocketOnce();
     }
 };
 
@@ -1251,9 +1265,8 @@ private:
     void StreamReader(std::shared_ptr<StreamCtx> ctx) {
         std::vector<char> buf(32 * 1024 + 8); // [8B id][данные] — как agentChunkSize ядра
         for (;;) {
-            SOCKET s = ctx->SockSnapshot();
-            if (s == INVALID_SOCKET || ctx->dead.load()) break;
-            int n = recv(s, buf.data() + 8, 32 * 1024, 0);
+            if (ctx->dead.load()) break;
+            int n = ctx->Receive(buf.data() + 8, 32 * 1024);
             if (n <= 0) break;
             for (int i = 0; i < 8; i++) buf[i] = (char)((ctx->id >> (56 - 8 * i)) & 0xFF);
             if (!WsSendRaw(WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE, buf.data(), (DWORD)(n + 8))) {
@@ -1289,9 +1302,8 @@ private:
             }
             size_t off = 0;
             while (off < chunk.size()) {
-                SOCKET s = ctx->SockSnapshot();
-                if (s == INVALID_SOCKET || ctx->dead.load()) return; // стрим погашен
-                int w = send(s, chunk.data() + off, (int)(chunk.size() - off), 0);
+                if (ctx->dead.load()) return; // стрим погашен
+                int w = ctx->Send(chunk.data() + off, (int)(chunk.size() - off));
                 if (w <= 0) {
                     Log(L"стрим %llu: TCP-запись сломалась (WSA %d) — гашу стрим",
                         ctx->id, WSAGetLastError());

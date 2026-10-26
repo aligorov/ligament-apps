@@ -264,9 +264,12 @@ class LinkHostRecorder {
     this.onMandatoryViolation,
     DateTime Function()? clock,
     Stopwatch? leaseStopwatch,
+    Duration? stopFlushTimeout,
   })  : _clock = clock ?? DateTime.now,
         _startedAt = (clock ?? DateTime.now)().toUtc(),
         _leaseStopwatch = leaseStopwatch ?? Stopwatch(),
+        _stopFlushTimeout =
+            stopFlushTimeout ?? const Duration(seconds: 25),
         sendBatch = sendBatch ??
             ((batch) => defaultHttpSendBatch(
                   config.ingestUrl,
@@ -292,25 +295,81 @@ class LinkHostRecorder {
   }
 
   @visibleForTesting
+  static bool isSecureIngestUri(Uri? uri) {
+    if (uri == null) return false;
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme == 'https') return true;
+    if (scheme != 'http') return false;
+    final host = uri.host.toLowerCase();
+    if (host == 'localhost') return true;
+    final address = InternetAddress.tryParse(host);
+    return address != null && address.isLoopback;
+  }
+
+  static const Duration _httpTimeout = Duration(seconds: 10);
+  static const int _maxAckBodyBytes = 64 * 1024;
+
+  static Future<String> _readAckBody(
+    HttpClientResponse response,
+    Duration timeLimit,
+  ) {
+    final completer = Completer<String>();
+    final bytes = <int>[];
+    StreamSubscription<List<int>>? subscription;
+    Timer? timeout;
+    void finish(void Function() complete) {
+      if (completer.isCompleted) return;
+      timeout?.cancel();
+      complete();
+    }
+
+    subscription = response.listen(
+      (chunk) {
+        if (completer.isCompleted) return;
+        if (bytes.length + chunk.length > _maxAckBodyBytes) {
+          unawaited(subscription?.cancel());
+          finish(() => completer.completeError(
+              const FormatException('Recorder ACK body too large')));
+          return;
+        }
+        bytes.addAll(chunk);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        finish(() => completer.completeError(error, stackTrace));
+      },
+      onDone: () {
+        finish(() => completer.complete(utf8.decode(bytes)));
+      },
+      cancelOnError: true,
+    );
+    timeout = Timer(timeLimit, () {
+      unawaited(subscription?.cancel());
+      finish(() => completer.completeError(
+          TimeoutException('Recorder ACK body timeout', timeLimit)));
+    });
+    return completer.future;
+  }
+
   static Future<LinkRecorderBatchAck> defaultHttpSendBatch(
     String ingestUrl,
     String ingestToken,
     Map<String, dynamic> batch, {
     HttpClient? client,
+    Duration timeout = _httpTimeout,
   }) async {
     final uri = Uri.tryParse(ingestUrl);
-    if (uri == null || uri.scheme.toLowerCase() != 'https') {
+    if (!isSecureIngestUri(uri)) {
       throw const FormatException('recorder_insecure_ingest');
     }
     final httpClient = client ?? _getSharedClient();
-    final request = await httpClient.postUrl(uri);
+    final request = await httpClient.postUrl(uri!);
     request.headers.contentType = ContentType.json;
     if (ingestToken.isNotEmpty) {
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $ingestToken');
     }
     request.add(utf8.encode(jsonEncode(batch)));
-    final response = await request.close().timeout(const Duration(seconds: 10));
-    final body = await response.transform(utf8.decoder).join();
+    final response = await request.close().timeout(timeout);
+    final body = await _readAckBody(response, timeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException('Recorder ingest status ${response.statusCode}');
     }
@@ -403,7 +462,7 @@ class LinkHostRecorder {
 
     if (config.ingestUrl.isNotEmpty && (config.mandatory || config.requireFirstFrame)) {
       final uri = Uri.tryParse(config.ingestUrl);
-      if (uri == null || uri.scheme.toLowerCase() != 'https') {
+      if (!isSecureIngestUri(uri)) {
         _triggerMandatoryStop('recorder_insecure_ingest');
         return;
       }
@@ -426,18 +485,25 @@ class LinkHostRecorder {
     });
   }
 
+  final Duration _stopFlushTimeout;
+
   Future<bool> stop({String reason = ''}) async {
     _flushTimer?.cancel();
     _flushTimer = null;
     while (_activeFlush != null) {
       try {
-        await _activeFlush;
+        await _activeFlush!.timeout(_stopFlushTimeout);
+      } on TimeoutException {
+        _tailFlushed = false;
+        _stopped = true;
+        return false;
       } catch (_) {}
     }
     if (!config.enabled) {
       _stopped = true;
       return true;
     }
+    _stopped = true;
     if (!_sessionEndedRecorded) {
       _sessionEndedRecorded = true;
       _nextSeq++;
@@ -460,7 +526,15 @@ class LinkHostRecorder {
     }
     while (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
       final prevCount = _pendingFrames.length + _pendingEvents.length;
-      final ok = await _flushInternal();
+      late final bool ok;
+      try {
+        ok = await _flushInternal().timeout(_stopFlushTimeout);
+      } on TimeoutException {
+        _tailFlushed = false;
+        return false;
+      } catch (_) {
+        ok = false;
+      }
       final newCount = _pendingFrames.length + _pendingEvents.length;
       if (!ok || newCount >= prevCount) break;
     }
@@ -483,12 +557,11 @@ class LinkHostRecorder {
       _pendingEvents.clear();
       _pendingEvents.add(gapEvent);
       try {
-        await _flushInternal();
+        await _flushInternal().timeout(_stopFlushTimeout);
       } catch (_) {}
       _pendingEvents.clear();
       _queuedBytes = 0;
     }
-    _stopped = true;
     return isTailFlushed;
   }
 
@@ -720,7 +793,7 @@ class LinkHostRecorder {
 
     if (config.ingestUrl.isNotEmpty && (config.mandatory || config.requireFirstFrame)) {
       final uri = Uri.tryParse(config.ingestUrl);
-      if (uri == null || uri.scheme.toLowerCase() != 'https') {
+      if (uri == null || !isSecureIngestUri(uri)) {
         _triggerMandatoryStop('recorder_insecure_ingest');
         return false;
       }

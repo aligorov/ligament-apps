@@ -124,10 +124,10 @@ void main() {
       );
     });
 
-    test('Closed => grace-завершение', () {
+    test('Closed => терминален, ICE restart не запускается', () {
       expect(
         pcStateRequiresGraceTermination(RTCPeerConnectionState.RTCPeerConnectionStateClosed),
-        isTrue,
+        isFalse,
       );
     });
 

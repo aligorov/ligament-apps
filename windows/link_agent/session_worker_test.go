@@ -219,7 +219,12 @@ func TestSessionWorkerBrokerFailsClosedWithoutLauncher(t *testing.T) {
 }
 
 func TestValidWorkerResponseAcceptsScopedTerminationReasons(t *testing.T) {
-	for _, reason := range []string{"host_local_disconnect", "peer_failed", "host_media_failed", "signaling_failed", "tail_lost", "recorder_tail_lost"} {
+	for _, reason := range []string{
+		"host_local_disconnect", "peer_failed", "host_media_failed", "signaling_failed", "tail_lost", "recorder_tail_lost",
+		"host_worker_failed", "host_screen_capture_unavailable", "host_ready_timeout", "host_ui_unavailable", "host_consent_denied",
+		"number_matching_failed", "number_matching_required", "invalid_offer", "invalid_offer_media", "candidate_queue_full",
+		"session_ended", "user_closed", "ended_by_server",
+	} {
 		frame := []byte(`{"type":"session_terminate","session_id":"` + testSessionID + `","payload":{"session_id":"` + testSessionID + `","reason":"` + reason + `"}}`)
 		if !validWorkerResponse(frame, testSessionID) {
 			t.Fatalf("expected scoped termination %q to be accepted", reason)

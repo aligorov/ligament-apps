@@ -98,3 +98,16 @@ func TestResolveInteractiveSession(t *testing.T) {
 		}
 	})
 }
+
+func TestDecodeWTSClientProtocolTypeUsesUSHORTLength(t *testing.T) {
+	protocol := uint16(wtsProtocolTypeRDP)
+	if got, ok := decodeWTSClientProtocolType(&protocol, 2); !ok || got != wtsProtocolTypeRDP {
+		t.Fatalf("decode two-byte RDP protocol = %d, %t", got, ok)
+	}
+	if _, ok := decodeWTSClientProtocolType(&protocol, 1); ok {
+		t.Fatal("accepted a truncated WTSClientProtocolType buffer")
+	}
+	if _, ok := decodeWTSClientProtocolType(nil, 2); ok {
+		t.Fatal("accepted a nil WTSClientProtocolType buffer")
+	}
+}

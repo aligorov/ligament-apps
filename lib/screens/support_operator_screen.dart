@@ -146,12 +146,10 @@ String mediaTransportFromStats(List<StatsReport> reports, String fallback) {
   return usesRelay ? 'TURN relay (WebRTC)' : 'Direct WebRTC';
 }
 
-/// Ш4: Failed/Closed — завершение через grace-таймер; Disconnected —
-/// временный статус (ICE restart должен работать), таймер не запускает.
-/// Чистая функция — покрыта юнит-тестами.
+/// Failed допускает ограниченную попытку восстановления. Closed терминален:
+/// тот же peer нельзя оживить ICE restart — нужен новый сценарий подключения.
 bool pcStateRequiresGraceTermination(RTCPeerConnectionState state) =>
-    state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-    state == RTCPeerConnectionState.RTCPeerConnectionStateClosed;
+    state == RTCPeerConnectionState.RTCPeerConnectionStateFailed;
 
 class SupportOperatorScreen extends StatefulWidget {
   final String sessionId;
@@ -197,6 +195,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Timer? _linkHeartbeatTimer;
   Timer? _linkHostAnswerTimer;
   bool _linkPolling = false;
+  bool _linkRestarting = false;
+  int _linkAttemptGeneration = 0;
   bool _linkRemoteDescriptionSet = false;
   final List<Map<String, dynamic>> _linkQueuedCandidates = [];
   final List<Map<String, dynamic>> _linkPendingRemoteCandidates = [];
@@ -262,9 +262,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool get _isInputUnavailable =>
       !_isViewOnlySession && _isControlEnabled && !_isDataChannelActive;
 
-  /// Управление готово = управление включено И (DataChannel открыт ИЛИ готов WS signaling / P2P).
-  bool get _controlReady =>
-      _isControlEnabled && (_isDataChannelActive || _signalReady || _isConnected);
+  /// Ввод разрешён только через живой DTLS DataChannel.
+  bool get _controlReady => _isControlEnabled && _isDataChannelActive;
 
   /// Ш3: активна ошибка стадии с кнопкой «Повторить».
   bool get _stageRetryActive =>
@@ -579,7 +578,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _resetStageReadiness();
     _setStatus('stage_retry');
     if (widget.isLink) {
-      _startLinkConnection();
+      unawaited(_restartLinkConnection());
       return;
     }
     if (_signalReady) {
@@ -595,7 +594,60 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  /// Ш4: grace-таймер завершения по Failed/Closed (60-секундное окно восстановления).
+  Future<void> _restartLinkConnection() async {
+    if (_linkRestarting || _isCleanedUp) return;
+    _linkRestarting = true;
+    _linkAttemptGeneration++;
+    final peer = _peerConnection;
+    final channel = _dataChannel;
+    final closeId = _linkSessionId;
+    _peerConnection = null;
+    _dataChannel = null;
+    _linkSessionId = null;
+    _linkSignalTimer?.cancel();
+    _linkSignalTimer = null;
+    _linkHeartbeatTimer?.cancel();
+    _linkHeartbeatTimer = null;
+    _linkHostAnswerTimer?.cancel();
+    _linkHostAnswerTimer = null;
+    _linkRemoteDescriptionSet = false;
+    _linkQueuedCandidates.clear();
+    _linkPendingRemoteCandidates.clear();
+    _linkCursor = 0;
+    try {
+      _remoteRenderer.srcObject = null;
+    } catch (_) {}
+    if (closeId != null && mounted) {
+      final auth = _auth ?? context.read<AuthState>();
+      unawaited(auth.api?.closeLinkSession(closeId).catchError((_) => null) ??
+          Future<void>.value());
+    }
+    try {
+      channel?.onMessage = null;
+      channel?.onDataChannelState = null;
+      await channel?.close();
+    } catch (_) {}
+    if (peer != null) {
+      peer.onIceCandidate = null;
+      peer.onIceConnectionState = null;
+      peer.onConnectionState = null;
+      peer.onTrack = null;
+      peer.onDataChannel = null;
+      try {
+        await peer.close();
+      } catch (_) {}
+      try {
+        await peer.dispose();
+      } catch (_) {}
+    }
+    try {
+      if (mounted && !_isCleanedUp) await _startLinkConnection();
+    } finally {
+      _linkRestarting = false;
+    }
+  }
+
+  /// Ш4: grace-таймер завершения по Failed (60-секундное окно восстановления).
   void _schedulePcGraceTermination() {
     if (!mounted || _isCleanedUp) return;
     if (_pcGraceTimer != null) return;
@@ -813,13 +865,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   String? _terminationErrorReason;
 
   void _retryAfterTermination() {
-    if (!mounted || _isCleanedUp) return;
-    setState(() {
-      _sessionTerminatedHandled = false;
-      _hasTerminationError = false;
-      _terminationErrorReason = null;
-    });
-    _retryConnectionStage();
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => SupportOperatorScreen(
+          sessionId: widget.sessionId,
+          numberMatch: widget.numberMatch,
+          sessionData: widget.sessionData,
+          isChatOnly: widget.isChatOnly,
+          ownerMode: widget.ownerMode,
+          isLink: widget.isLink,
+          linkAgentId: widget.linkAgentId,
+          linkAccessMode: widget.linkAccessMode,
+        ),
+      ),
+    );
   }
 
   /// Ш4: единое завершение — полный teardown, корректный выход со страницы
@@ -941,6 +1001,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return strings.isRu
             ? 'Подтверждение числа на целевом ПК не выполнено.'
             : 'Number confirmation on the target PC was not completed.';
+      case 'recorder_insecure_ingest':
+        return strings.isRu
+            ? 'Аудит записи отклонен: небезопасный адрес сервера аудита.'
+            : 'Session audit rejected: insecure audit server URL.';
+      case 'recorder_first_frame_unavailable':
+      case 'recorder_first_frame_unacked':
+      case 'recorder_ack_lag':
+      case 'recorder_ack_lag_exceeded':
+      case 'recorder_lease_expired':
+      case 'recorder_tail_lost':
+        return strings.isRu
+            ? 'Сервер аудита сессии не подтвердил сохранение записи.'
+            : 'Session audit server failed to acknowledge recording.';
       case 'session_ended':
         return strings.sessionEndedByUser;
       case 'pc_failed':
@@ -1097,6 +1170,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _startLinkConnection() async {
+    final attempt = ++_linkAttemptGeneration;
+    RTCPeerConnection? attemptPeer;
+    String? attemptSessionId;
     final auth = context.read<AuthState>();
     final api = auth.api;
     if (api == null) {
@@ -1117,19 +1193,25 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         debugPrint('support_operator (link): getLinkIceServers fallback: $e');
         iceServers = auth.iceServers;
       }
-      if (_isCleanedUp) return;
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) return;
 
       final peer = await createPeerConnection({
         'iceServers': iceServers,
         'sdpSemantics': 'unified-plan',
       });
-      _peerConnection = peer;
-      if (_isCleanedUp) {
+      attemptPeer = peer;
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) {
         await peer.close();
         return;
       }
+      _peerConnection = peer;
 
       peer.onIceCandidate = (candidate) {
+        if (_isCleanedUp ||
+            attempt != _linkAttemptGeneration ||
+            _peerConnection != peer) {
+          return;
+        }
         if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
           final signal = {
             'type': 'candidate',
@@ -1145,7 +1227,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       peer.onIceConnectionState = (iceState) {
         debugPrint('support_operator (link): ICE connection state: $iceState');
-        if (!mounted || _isCleanedUp) return;
+        if (!mounted ||
+            _isCleanedUp ||
+            attempt != _linkAttemptGeneration ||
+            _peerConnection != peer) {
+          return;
+        }
         if (iceState == RTCIceConnectionState.RTCIceConnectionStateConnected ||
             iceState == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
           _pcGraceTimer?.cancel();
@@ -1165,7 +1252,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       peer.onConnectionState = (state) {
         debugPrint('support_operator (link): connection state: $state');
-        if (!mounted || _isCleanedUp) return;
+        if (!mounted ||
+            _isCleanedUp ||
+            attempt != _linkAttemptGeneration ||
+            _peerConnection != peer) {
+          return;
+        }
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           _pcGraceTimer?.cancel();
           _pcGraceTimer = null;
@@ -1177,7 +1269,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          _onSessionTerminated('session_ended');
+          _onSessionTerminated('pc_failed');
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           if (!_linkRemoteDescriptionSet) {
@@ -1205,17 +1297,28 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _statusKey = 'disconnected';
             _statusArg = state.name;
           });
-          if (_pcGraceTimer != null) _schedulePcGraceTermination();
+          _schedulePcGraceTermination();
         }
       };
 
       peer.onTrack = (RTCTrackEvent event) async {
         debugPrint(
             'support_operator (link): remote track: ${event.track.kind}, id=${event.track.id}, streams=${event.streams.length}');
-        if (!mounted || _isCleanedUp) return;
+        if (!mounted ||
+            _isCleanedUp ||
+            attempt != _linkAttemptGeneration ||
+            _peerConnection != peer) {
+          return;
+        }
         try {
           await Helper.ensureAudioSession();
         } catch (_) {}
+        if (!mounted ||
+            _isCleanedUp ||
+            attempt != _linkAttemptGeneration ||
+            _peerConnection != peer) {
+          return;
+        }
 
         if (event.track.kind == 'audio') {
           _remoteAudioTrack = event.track;
@@ -1234,7 +1337,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               await currentStream.addTrack(event.track);
             } catch (_) {}
           }
-          if (mounted) setState(() {});
+          if (mounted &&
+              !_isCleanedUp &&
+              attempt == _linkAttemptGeneration &&
+              _peerConnection == peer) {
+            setState(() {});
+          }
           return;
         }
 
@@ -1266,7 +1374,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           }
         }
 
-        if (mounted && stream != null) {
+        if (mounted &&
+            !_isCleanedUp &&
+            stream != null &&
+            attempt == _linkAttemptGeneration &&
+            _peerConnection == peer) {
           setState(() {
             _remoteRenderer.srcObject = stream;
             _isConnected = true;
@@ -1282,6 +1394,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       peer.onDataChannel = (channel) {
         debugPrint(
             'support_operator (link): remote data channel: ${channel.label}');
+        if (_isCleanedUp ||
+            attempt != _linkAttemptGeneration ||
+            _peerConnection != peer) {
+          return;
+        }
         _setupDataChannel(channel);
       };
 
@@ -1293,6 +1410,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         kind: RTCRtpMediaType.RTCRtpMediaTypeAudio,
         init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
       );
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) {
+        await peer.close();
+        return;
+      }
 
       // View sessions need monitor discovery/selection too. The host enforces
       // access mode and DLP for every input command, not channel presence.
@@ -1310,7 +1431,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       final offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
-      if (_isCleanedUp) return;
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) {
+        await peer.close();
+        return;
+      }
 
       final targetAgentId = widget.linkAgentId ??
           widget.sessionData['agent_id']?.toString() ??
@@ -1338,6 +1462,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (id == null || id.isEmpty) {
         throw StateError('Server did not return session_id');
       }
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) {
+        unawaited(api.closeLinkSession(id).catchError((_) => null));
+        await peer.close();
+        return;
+      }
+      attemptSessionId = id;
       _linkSessionId = id;
       if (session['access_mode'] != null) {
         _effectiveAccessMode = session['access_mode']?.toString();
@@ -1354,7 +1484,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
       _linkHostAnswerTimer?.cancel();
       _linkHostAnswerTimer = Timer(const Duration(seconds: 120), () {
-        if (!_linkRemoteDescriptionSet && mounted && !_isCleanedUp) {
+        if (!_linkRemoteDescriptionSet &&
+            mounted &&
+            !_isCleanedUp &&
+            attempt == _linkAttemptGeneration) {
           _setStatus('pc_no_offer');
           _onSessionTerminated('pc_failed');
         }
@@ -1366,7 +1499,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             .sendLinkSessionSignal(sessionId: id, signal: cand)
             .catchError((_) => null);
       }
-      _linkQueuedCandidates.clear();
+      if (attempt == _linkAttemptGeneration) _linkQueuedCandidates.clear();
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) return;
 
       _linkSignalTimer?.cancel();
       _linkSignalTimer = Timer.periodic(
@@ -1381,30 +1515,45 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _pollLinkSignals();
     } catch (e) {
       debugPrint('support_operator (link): error starting session: $e');
-      final failedPeer = _peerConnection;
-      _peerConnection = null;
-      _linkQueuedCandidates.clear();
+      final failedPeer = attemptPeer;
+      if (identical(_peerConnection, failedPeer)) _peerConnection = null;
       if (failedPeer != null) {
         failedPeer.onIceCandidate = null;
         failedPeer.onIceConnectionState = null;
         failedPeer.onConnectionState = null;
         failedPeer.onTrack = null;
+        failedPeer.onDataChannel = null;
         unawaited(failedPeer.close());
       }
-      if (mounted) {
-        if (e is ApiException &&
-            e.statusCode == 403 &&
-            (e.code == 'external_perimeter_stepup_required' ||
-             e.message.contains('external_perimeter_stepup_required'))) {
-          final token = await _promptStepUpAuth();
-          if (token != null && token.isNotEmpty) {
-            _stepUpToken = token;
-            unawaited(_startLinkConnection());
-            return;
-          }
-        }
-        _setStatus('conn_error', e.toString());
+      final failedSessionId = attemptSessionId;
+      if (failedSessionId != null) {
+        unawaited(api.closeLinkSession(failedSessionId).catchError((_) => null));
       }
+      if (!mounted || _isCleanedUp || attempt != _linkAttemptGeneration) return;
+      if (_linkSessionId == failedSessionId) _linkSessionId = null;
+      _linkRemoteDescriptionSet = false;
+      _linkQueuedCandidates.clear();
+      _linkSignalTimer?.cancel();
+      _linkSignalTimer = null;
+      _linkHeartbeatTimer?.cancel();
+      _linkHeartbeatTimer = null;
+      _linkHostAnswerTimer?.cancel();
+      _linkHostAnswerTimer = null;
+      if (e is ApiException &&
+          e.statusCode == 403 &&
+          (e.code == 'external_perimeter_stepup_required' ||
+              e.message.contains('external_perimeter_stepup_required'))) {
+        final token = await _promptStepUpAuth();
+        if (!mounted || _isCleanedUp || attempt != _linkAttemptGeneration) {
+          return;
+        }
+        if (token != null && token.isNotEmpty) {
+          _stepUpToken = token;
+          unawaited(_startLinkConnection());
+          return;
+        }
+      }
+      _setStatus('conn_error', e.toString());
     }
   }
 
@@ -1417,6 +1566,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     try {
       final result =
           await api.getLinkSessionSignals(sessionId: id, after: _linkCursor);
+      if (_isCleanedUp || id != _linkSessionId) return;
       final nextCursor = result['next_cursor'];
       if (nextCursor is int && nextCursor > _linkCursor) {
         _linkCursor = nextCursor;
@@ -1471,6 +1621,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (sdp != null && sdp.isNotEmpty) {
         try {
           await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
+          if (_isCleanedUp || _peerConnection != peer) return;
           _linkRemoteDescriptionSet = true;
           _linkHostAnswerTimer?.cancel();
           _linkHostAnswerTimer = null;
@@ -1495,6 +1646,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               in List<Map<String, dynamic>>.from(_linkPendingRemoteCandidates)) {
             await _addLinkRemoteCandidate(peer, cand);
           }
+          if (_isCleanedUp || _peerConnection != peer) return;
           _linkPendingRemoteCandidates.clear();
         } catch (e) {
           debugPrint(
@@ -1517,8 +1669,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       return;
     }
 
+    if (type == 'session_terminate') {
+      final reason = message['reason']?.toString() ??
+          message['status']?.toString() ??
+          'ended_by_server';
+      _onSessionTerminated(reason);
+      return;
+    }
+
     if (isSessionTerminatedMessage(message)) {
-      _onSessionTerminated('session_ended');
+      final reason = message['reason']?.toString() ??
+          message['status']?.toString() ??
+          'session_ended';
+      _onSessionTerminated(reason);
     }
   }
 
@@ -1785,7 +1948,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     _peerConnection!.onConnectionState = (state) {
       debugPrint('support_operator: connection state: $state');
-      if (mounted) {
+      if (mounted && !_isCleanedUp) {
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           // Ш4: восстановление отменяет grace-завершение
           _pcGraceTimer?.cancel();
@@ -1798,7 +1961,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          _onSessionTerminated('session_ended');
+          _onSessionTerminated('pc_failed');
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           setState(() {
@@ -1818,17 +1981,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _statusKey = 'disconnected';
             _statusArg = state.name;
           });
-          if (_pcGraceTimer != null) _schedulePcGraceTermination();
+          _schedulePcGraceTermination();
         }
       }
     };
 
     _peerConnection!.onIceConnectionState = (state) {
       debugPrint('support_operator: ice connection state: $state');
+      if (_isCleanedUp) return;
       if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
         _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
       } else if (state == RTCIceConnectionState.RTCIceConnectionStateClosed) {
-        _onSessionTerminated('session_ended');
+        if (!_isCleanedUp) _onSessionTerminated('pc_failed');
       } else if (state ==
           RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
         _schedulePcGraceTermination();
@@ -1971,7 +2135,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _handleDataChannelMessage(Map<String, dynamic> data) {
     if (isSessionTerminatedMessage(data)) {
-      _onSessionTerminated('session_ended');
+      final reason = data['reason']?.toString() ??
+          data['status']?.toString() ??
+          'session_ended';
+      _onSessionTerminated(reason);
       return;
     }
     final type = data['type']?.toString();
@@ -2182,7 +2349,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } else if (isSessionTerminatedMessage(data)) {
         // Ш4 (Д6): завершение матчится и в верхнем data['type'], и в
         // нормализованном payload['type'] (как SDP)
-        _onSessionTerminated('session_ended');
+        final reason = data['reason']?.toString() ??
+            payload['reason']?.toString() ??
+            data['status']?.toString() ??
+            payload['status']?.toString() ??
+            'session_ended';
+        _onSessionTerminated(reason);
       } else {
         final innerType = payload['type'] ?? data['type'];
         if (innerType != null &&
@@ -2536,7 +2708,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } catch (_) {}
   }
 
-  void _sendDataMessage(Map<String, dynamic> msg) {
+  bool _sendDataMessage(Map<String, dynamic> msg) {
     final type = msg['type']?.toString() ?? '';
     // A-1: команды управления/буфера/файлов — только через DataChannel (DTLS);
     // сигнальный WS-фолбэк для них отключён (приёмник их не исполнит).
@@ -2583,6 +2755,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         setState(() => _transportErrorBannerVisible = true);
       }
     }
+    return sent;
   }
 
   bool _isOutsideVideo(Offset globalPos) {
@@ -2853,8 +3026,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendSpecialKey(String key) {
-    _sendDataMessage({'type': 'key_down', 'key': key});
-    _sendDataMessage({'type': 'key_up', 'key': key});
+    if (!_controlReady) return;
+    final downSent = _sendDataMessage({'type': 'key_down', 'key': key});
+    final upSent = _sendDataMessage({'type': 'key_up', 'key': key});
+    if (!downSent || !upSent) return;
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -2872,7 +3047,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           const SnackBar(content: Text('Maximum: 4096 UTF-16 characters')));
       return;
     }
-    _sendDataMessage({'type': 'text_input', 'text': text});
+    if (!_sendDataMessage({'type': 'text_input', 'text': text})) return;
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -2886,15 +3061,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _toggleBlockInput() {
     if (!_controlReady) return;
-    setState(() {
-      _isInputBlocked = !_isInputBlocked;
-    });
-    _sendDataMessage({'type': 'block_input', 'blocked': _isInputBlocked});
+    final next = !_isInputBlocked;
+    if (!_sendDataMessage({'type': 'block_input', 'blocked': next})) return;
+    setState(() => _isInputBlocked = next);
   }
 
   void _sendHotkey(String action) {
     if (!_controlReady) return;
-    _sendDataMessage({'type': 'hotkey', 'action': action});
+    if (!_sendDataMessage({'type': 'hotkey', 'action': action})) return;
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -2922,7 +3096,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
       return;
     }
-    _sendDataMessage({'type': 'clipboard_set', 'text': text});
+    if (!_sendDataMessage({'type': 'clipboard_set', 'text': text})) return;
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.clipboardSentNotice(text.length))),
@@ -3020,6 +3194,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         pc.onConnectionState = null;
         pc.onIceCandidate = null;
+        pc.onIceConnectionState = null;
         pc.onTrack = null;
         pc.onDataChannel = null;
       } catch (_) {}
@@ -3490,6 +3665,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return;
       }
 
+      if (!mounted || _isCleanedUp) return;
       await _sendFileViaDataChannel(file);
     } catch (e) {
       debugPrint('support_operator_screen: pick file error: $e');
@@ -3501,6 +3677,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final filename = file.uri.pathSegments.last;
     final totalSize = await file.length();
     final bytes = await file.readAsBytes();
+    if (!mounted || _isCleanedUp) return;
     final checksum = crypto.sha256.convert(bytes).toString();
 
     const chunkSize = 32768; // 32 KB
@@ -3524,7 +3701,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _currentFileAckCompleter = Completer<bool>();
 
     try {
-      _sendDataMessage({
+      if (!_sendDataMessage({
         'type': 'file_start',
         'transfer_id': transferId,
         'filename': filename,
@@ -3532,7 +3709,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'total_chunks': totalChunks,
         'checksum': checksum,
         'sender': 'operator',
-      });
+      })) {
+        throw StateError('data_channel_unavailable');
+      }
 
       for (int i = 0; i < totalChunks; i++) {
         if (transferItem.isCancelled) {
@@ -3542,9 +3721,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             'filename': filename,
             'reason': 'cancelled_by_operator',
           });
-          setState(() {
-            transferItem.status = 'cancelled';
-          });
+          if (mounted) {
+            setState(() {
+              transferItem.status = 'cancelled';
+            });
+          }
           return;
         }
 
@@ -3554,12 +3735,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         final chunkBytes = bytes.sublist(start, end);
         final b64 = base64Encode(chunkBytes);
 
-        _sendDataMessage({
+        if (!_sendDataMessage({
           'type': 'file_chunk',
           'transfer_id': transferId,
           'chunk_index': i,
           'data': b64,
-        });
+        })) {
+          throw StateError('data_channel_unavailable');
+        }
 
         if (mounted) {
           setState(() {
@@ -3573,12 +3756,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         }
       }
 
-      _sendDataMessage({
+      if (!_sendDataMessage({
         'type': 'file_end',
         'transfer_id': transferId,
         'checksum': checksum,
-      });
+      })) {
+        throw StateError('data_channel_unavailable');
+      }
 
+      if (!mounted || _isCleanedUp) return;
       setState(() {
         transferItem.status = 'waiting_ack';
       });
@@ -4348,8 +4534,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     ],
                   ),
 
-                  // Полноэкранный режим (B3.1)
-                  IconButton(
+                  // Полноэкранный режим доступен только в desktop window_manager.
+                  if (!kIsWeb &&
+                      (Platform.isWindows || Platform.isMacOS || Platform.isLinux))
+                    IconButton(
                     icon: Icon(
                       _isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
                       color: _isFullScreen

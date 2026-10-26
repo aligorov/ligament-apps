@@ -186,9 +186,13 @@ void main() {
       addTearDown(() => server.close());
 
       final auth = makeAuth(server);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('auth_logged_out', true);
       await auth.login('ivanov', 'secret');
       expect(auth.isLoggedIn, isTrue);
       expect(auth.token, 'tok-1');
+      expect(prefs.getBool('auth_logged_out'), isNull,
+          reason: 'успешный вход снимает durable logout tombstone');
     });
   });
 

@@ -284,6 +284,7 @@ class SupportService extends ChangeNotifier {
       }.contains(type);
 
   int _captureEpoch = 0;
+  Future<void> _captureStartQueue = Future<void>.value();
   DateTime _lastMouseCheck = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastInputError = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -842,6 +843,29 @@ class SupportService extends ChangeNotifier {
     required String sessionId,
     required ApiClient api,
     String accessMode = 'full_control',
+  }) {
+    final expectedEpoch = _captureEpoch;
+    final operation = _captureStartQueue.then((_) async {
+      while (_isStopping) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      if (expectedEpoch != _captureEpoch) {
+        throw StateError('capture_start_cancelled');
+      }
+      await _startScreenSharing(
+        sessionId: sessionId,
+        api: api,
+        accessMode: accessMode,
+      );
+    });
+    _captureStartQueue = operation.catchError((_) {});
+    return operation;
+  }
+
+  Future<void> _startScreenSharing({
+    required String sessionId,
+    required ApiClient api,
+    String accessMode = 'full_control',
   }) async {
     final epoch = ++_captureEpoch;
     _activeSessionId = sessionId;
@@ -1166,13 +1190,17 @@ class SupportService extends ChangeNotifier {
 
   DateTime? _localLeaseDeadline;
 
-  void _cancelResilienceTimers() {
+  void _cancelEstablishmentTimers() {
     _establishmentTimer?.cancel();
     _establishmentTimer = null;
     _establishmentDeadlineTimer?.cancel();
     _establishmentDeadlineTimer = null;
     _disconnectedTimer?.cancel();
     _disconnectedTimer = null;
+  }
+
+  void _cancelResilienceTimers() {
+    _cancelEstablishmentTimers();
     _leaseWatchdogTimer?.cancel();
     _leaseWatchdogTimer = null;
     _localLeaseDeadline = null;
@@ -1231,7 +1259,7 @@ class SupportService extends ChangeNotifier {
 
   void _onP2pConnected() {
     _p2pConnected = true;
-    _cancelResilienceTimers();
+    _cancelEstablishmentTimers();
     _iceRestartAttempts = 0;
     _lastIceRestartAt = null;
     if (_state != SupportSessionState.active) {
@@ -2339,6 +2367,8 @@ class SupportService extends ChangeNotifier {
     ++_captureEpoch;
     if (_isStopping) return;
     _isStopping = true;
+    final endedSessionId = _activeSessionId;
+    final api = _api;
 
     try {
       // 1. Немедленно освобождаем мышь и ввод пользователя
@@ -2395,9 +2425,14 @@ class SupportService extends ChangeNotifier {
               onTimeout: () => null);
         } catch (_) {}
       }
-      try {
-        _sendSignalOrData({'type': 'session_ended'});
-      } catch (_) {}
+      if (endedSessionId != null && api != null) {
+        try {
+          unawaited(api.sendSupportSignal(
+            sessionId: endedSessionId,
+            signal: const {'type': 'session_ended'},
+          ).catchError((_) {}));
+        } catch (_) {}
+      }
 
       // 3. Закрываем PeerConnection ПЕРЕД остановкой треков, чтобы остановить RTP sender threads в libwebrtc
       final pc = _peerConnection;

@@ -490,14 +490,32 @@ func validWorkerResponse(frame []byte, sessionID string) bool {
 			SessionID string `json:"session_id"`
 			Reason    string `json:"reason"`
 		}
-		return json.Unmarshal(envelope.Payload, &request) == nil &&
-			request.SessionID == sessionID &&
-			(request.Reason == "host_local_disconnect" ||
-				request.Reason == "peer_failed" ||
-				request.Reason == "host_media_failed" ||
-				request.Reason == "signaling_failed" ||
-				request.Reason == "tail_lost" ||
-				strings.HasPrefix(request.Reason, "recorder_"))
+		if json.Unmarshal(envelope.Payload, &request) != nil || request.SessionID != sessionID {
+			return false
+		}
+		switch request.Reason {
+		case "host_local_disconnect",
+			"peer_failed",
+			"host_media_failed",
+			"signaling_failed",
+			"tail_lost",
+			"host_worker_failed",
+			"host_screen_capture_unavailable",
+			"host_ready_timeout",
+			"host_ui_unavailable",
+			"host_consent_denied",
+			"number_matching_failed",
+			"number_matching_required",
+			"invalid_offer",
+			"invalid_offer_media",
+			"candidate_queue_full",
+			"session_ended",
+			"user_closed",
+			"ended_by_server":
+			return true
+		default:
+			return strings.HasPrefix(request.Reason, "recorder_")
+		}
 	case "session_answer":
 		var answer struct {
 			SessionID string `json:"session_id"`

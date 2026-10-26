@@ -99,3 +99,46 @@ func TestRemoteSessionIgnoresPhysicalConsoleMismatch(t *testing.T) {
 		t.Fatalf("expected RDP mismatch timer to remain zero, got %v", p.consoleMismatchSince)
 	}
 }
+
+func TestRemoteSessionProbeTracksProtocolChanges(t *testing.T) {
+	remote := false
+	probes := 0
+	p := &windowsSessionWorkerProcess{
+		sessionID: 2,
+		pid:       1234,
+		remoteProbe: func(sessionID uint32) bool {
+			if sessionID != 2 {
+				t.Fatalf("probe session = %d, want 2", sessionID)
+			}
+			probes++
+			return remote
+		},
+	}
+	t0 := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	p.refreshRemoteSession(t0)
+	p.refreshRemoteSession(t0.Add(100 * time.Millisecond))
+	if probes != 1 {
+		t.Fatalf("probe count before interval = %d, want 1", probes)
+	}
+
+	remote = true
+	p.refreshRemoteSession(t0.Add(linkHostRemoteProbePeriod))
+	if !p.remoteSession {
+		t.Fatal("console-to-RDP transition was not observed")
+	}
+	if err := p.checkConsoleSessionMismatch(13, t0.Add(linkHostRemoteProbePeriod)); err != nil {
+		t.Fatalf("new RDP state must ignore physical console mismatch: %v", err)
+	}
+
+	remote = false
+	p.refreshRemoteSession(t0.Add(2 * linkHostRemoteProbePeriod))
+	if p.remoteSession {
+		t.Fatal("RDP-to-console transition was not observed")
+	}
+	if err := p.checkConsoleSessionMismatch(13, t0.Add(2*linkHostRemoteProbePeriod)); err != nil {
+		t.Fatalf("first mismatch after return to console should start grace period: %v", err)
+	}
+	if p.consoleMismatchSince.IsZero() {
+		t.Fatal("return to console did not re-enable console mismatch tracking")
+	}
+}

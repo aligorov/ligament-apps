@@ -97,8 +97,23 @@ bool PolicyAllowExit() {
     return true;
 }
 
-// ---------- Есть ли живой процесс приложения в сессии ----------
+std::wstring InstalledAppPath() {
+    // exe службы лежит рядом с приложением (один INSTALLFOLDER).
+    wchar_t exePath[MAX_PATH] = {0};
+    DWORD length = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return {};
+    wchar_t* slash = wcsrchr(exePath, L'\\');
+    if (!slash) return {};
+    *(slash + 1) = 0;
+    wchar_t appPath[MAX_PATH] = {0};
+    swprintf_s(appPath, L"%s%s", exePath, kAppExe);
+    return appPath;
+}
+
+// ---------- Есть ли живой процесс установленного приложения в сессии ----------
 bool AppRunningInSession(DWORD sessionId) {
+    const std::wstring installedPath = InstalledAppPath();
+    if (installedPath.empty()) return true; // не знаем — не перезапускаем
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return true; // не знаем — не перезапускаем
     PROCESSENTRY32W pe = {};
@@ -108,7 +123,14 @@ bool AppRunningInSession(DWORD sessionId) {
         do {
             if (_wcsicmp(pe.szExeFile, kAppExe) != 0) continue;
             DWORD pidSession = 0;
-            if (ProcessIdToSessionId(pe.th32ProcessID, &pidSession) && pidSession == sessionId) {
+            if (!ProcessIdToSessionId(pe.th32ProcessID, &pidSession) || pidSession != sessionId) continue;
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+            if (!process) continue;
+            wchar_t imagePath[32768] = {0};
+            DWORD imageLength = (DWORD)_countof(imagePath);
+            const BOOL queried = QueryFullProcessImageNameW(process, 0, imagePath, &imageLength);
+            CloseHandle(process);
+            if (queried && _wcsicmp(imagePath, installedPath.c_str()) == 0) {
                 found = true;
                 break;
             }
@@ -126,13 +148,12 @@ bool LaunchAppInSession(DWORD sessionId) {
         return false;
     }
 
-    // exe службы лежит рядом с приложением (один INSTALLFOLDER)
-    wchar_t exePath[MAX_PATH] = {0};
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    wchar_t* slash = wcsrchr(exePath, L'\\');
-    if (slash) *(slash + 1) = 0;
-    wchar_t appPath[MAX_PATH] = {0};
-    swprintf_s(appPath, L"%s%s", exePath, kAppExe);
+    const std::wstring installedPath = InstalledAppPath();
+    if (installedPath.empty()) {
+        CloseHandle(hToken);
+        return false;
+    }
+    const wchar_t* appPath = installedPath.c_str();
 
     STARTUPINFOW si = {};
     si.cb = sizeof(si);

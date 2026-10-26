@@ -122,12 +122,14 @@ String? ligamentUriFromArgs(List<String> args) {
 
 /// Отладочная печать разбора (диагностика «кнопка не открыла приложение»).
 void debugLogDeepLink(String raw, LigamentDeepLink? parsed) {
+  // Даже невалидный URI может содержать токен в query: исходную строку в
+  // журнал не выводим. Для валидной ссылки достаточно id и факта наличия токена.
   if (parsed == null) {
-    debugPrint('deep_link: "$raw" → игнорирована');
+    debugPrint('deep_link: ссылка игнорирована');
     return;
   }
   final what = parsed.kind == LigamentDeepLinkKind.target
       ? 'target=${parsed.targetId}'
       : 'grant=${parsed.grantId} token=${parsed.grantToken == null ? "нет" : "есть"}';
-  debugPrint('deep_link: "$raw" → $what');
+  debugPrint('deep_link: $what');
 }

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/services/auth_state.dart';
@@ -184,6 +185,25 @@ void main() {
     test('строчные/прописные схемы', () {
       expect(ligamentUriFromArgs(['LIGAMENT://rdp/$targetId']), isNotNull);
     });
+  });
+
+  test('debugLogDeepLink не раскрывает URI и query-токен', () {
+    final originalDebugPrint = debugPrint;
+    final logs = <String>[];
+    debugPrint = (message, {wrapWidth}) {
+      if (message != null) logs.add(message);
+    };
+    addTearDown(() => debugPrint = originalDebugPrint);
+
+    const secret = 'super-secret-grant-token';
+    const raw = 'ligament://rdp/$grantId?t=$secret';
+    debugLogDeepLink(raw, parseLigamentDeepLink(raw));
+    debugLogDeepLink('ligament://rdp/not-a-uuid?t=$secret', null);
+
+    final output = logs.join('\n');
+    expect(output, isNot(contains(secret)));
+    expect(output, isNot(contains(raw)));
+    expect(output, contains('token=есть'));
   });
 
   group('AuthState: pending deep-link', () {

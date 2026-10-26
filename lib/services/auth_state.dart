@@ -129,6 +129,7 @@ String generateUuidV4() {
 
 class AuthState extends ChangeNotifier {
   static const String _tokenKey = 'auth_token';
+  static const String _logoutMarkerKey = 'auth_logged_out';
   static const String _localeKey = 'app_locale';
 
   String _localeCode = 'ru';
@@ -167,6 +168,31 @@ class AuthState extends ChangeNotifier {
   final LocalDetectService localDetect = LocalDetectService();
 
   int _authEpoch = 0;
+  int _loginGeneration = 0;
+  int _committedLoginGeneration = 0;
+
+  Future<void> _writeLogoutMarker() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_logoutMarkerKey, true);
+  }
+
+  /// Отменяет финализацию всех незавершённых login/loginClaim. UI вызывает
+  /// при смене/сбросе второго фактора и dispose; сетевой ответ при этом может
+  /// завершиться, но не получит права изменить авторизацию.
+  void cancelLoginAttempts() {
+    _loginGeneration++;
+    // Даже если отменённый ответ уже начал запись токена, после рестарта он
+    // не будет восстановлен. Успешный новый login снимает этот tombstone.
+    unawaited(_writeLogoutMarker());
+  }
+
+  bool _isCurrentAuthClient(
+          ApiClient client, int expectedEpoch, String? expectedToken) =>
+      identical(api, client) &&
+      _authEpoch == expectedEpoch &&
+      token == expectedToken &&
+      expectedToken != null &&
+      isLoggedIn;
 
   AuthState() {
     // A-04/A-05: доставка намерения autoshare от службы или второго экземпляра
@@ -447,6 +473,8 @@ class AuthState extends ChangeNotifier {
   /// показываем вовсе; авто-approve — только при включённом тумблере И
   /// серверном auto_allowed, иначе всегда явный диалог.
   Future<void> _surfaceBrowserSso(Map<String, dynamic> raw) async {
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
     final prompt = normalizeBrowserSsoPrompt(raw);
     final id = prompt['id']?.toString();
     if (id == null || id.isEmpty) return;
@@ -460,6 +488,7 @@ class AuthState extends ChangeNotifier {
     try {
       ticket = (await _ssoTicketReader.readTicket())?.value;
     } catch (_) {}
+    if (_authEpoch != expectedEpoch || token != expectedToken) return;
     _browserSsoTicket = ticket;
     browserSsoHasTicket = ticket != null && ticket.isNotEmpty;
     browserSsoMachineOk = machineMatches(
@@ -497,24 +526,39 @@ class AuthState extends ChangeNotifier {
     final id = data['id']?.toString() ?? '';
     if (id.isEmpty) return;
 
-    activeBrowserSsoPrompt = null;
-    _resolvedChallengeIds.add(id);
-    notifyListeners();
-
-    if (api == null) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null) return;
     final useApprove = approve && browserSsoHasTicket && browserSsoMachineOk;
+    final ticket = _browserSsoTicket;
     if (approve && !useApprove) {
       debugPrint(
           'auth_state: browser_sso approve без живого билета — отправляем deny');
     }
     try {
-      await api!.browserSsoDecision(
+      await client.browserSsoDecision(
         challengeId: id,
         approve: useApprove,
-        ssoTicket: useApprove ? _browserSsoTicket : null,
+        ssoTicket: useApprove ? ticket : null,
       );
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      // Только успешный API-ответ делает challenge resolved. Другой prompt,
+      // появившийся за время запроса, не закрываем.
+      _resolvedChallengeIds.add(id);
+      if (activeBrowserSsoPrompt?['id']?.toString() == id) {
+        activeBrowserSsoPrompt = null;
+      }
+      notifyListeners();
     } catch (e) {
       debugPrint('auth_state: browser_sso decision отклонён сервером: $e');
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      // При auto-approve prompt ещё не был активным: возвращаем его для явного
+      // решения. Обычный prompt оставался на месте весь HTTP-запрос.
+      if (activeBrowserSsoPrompt == null) {
+        activeBrowserSsoPrompt = data;
+        notifyListeners();
+      }
     }
   }
 
@@ -578,6 +622,7 @@ class AuthState extends ChangeNotifier {
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
+    final loggedOut = prefs.getBool(_logoutMarkerKey) ?? false;
 
     final savedInst = prefs.getString('installation_id');
     if (savedInst != null && savedInst.isNotEmpty) {
@@ -667,9 +712,11 @@ class AuthState extends ChangeNotifier {
     final legacyToken = prefs.getString(_tokenKey);
     if (legacyToken != null && legacyToken.isNotEmpty) {
       try {
-        final existing = await _secureStorage.read(key: _tokenKey);
-        if (existing == null || existing.isEmpty) {
-          await _secureStorage.write(key: _tokenKey, value: legacyToken);
+        if (!loggedOut) {
+          final existing = await _secureStorage.read(key: _tokenKey);
+          if (existing == null || existing.isEmpty) {
+            await _secureStorage.write(key: _tokenKey, value: legacyToken);
+          }
         }
         await prefs.remove(_tokenKey);
       } catch (e) {
@@ -680,11 +727,19 @@ class AuthState extends ChangeNotifier {
     String? savedToken;
     try {
       savedToken = await _secureStorage.read(key: _tokenKey);
+      if (loggedOut && savedToken != null) {
+        // Logout уже подтверждён локальным tombstone. Если delete ранее
+        // failed, повторяем его, но даже повторный сбой не восстановит вход.
+        try {
+          await _secureStorage.delete(key: _tokenKey);
+        } catch (_) {}
+        savedToken = null;
+      }
     } catch (e) {
       debugPrint('auth_state: ошибка чтения токена из secure storage: $e');
     }
 
-    if (serverUrl != null && savedToken != null) {
+    if (!loggedOut && serverUrl != null && savedToken != null) {
       api = ApiClient(baseUrl: serverUrl!, token: savedToken);
       token = savedToken;
 
@@ -1011,6 +1066,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> setServerUrl(String url) async {
+    cancelLoginAttempts();
     serverUrl = url.trim();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('server_url', serverUrl!);
@@ -1019,6 +1075,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> login(String username, String password, [String? code]) async {
+    final attempt = ++_loginGeneration;
     final base = serverUrl;
     if (base == null || base.isEmpty) {
       throw Exception(
@@ -1034,6 +1091,9 @@ class AuthState extends ChangeNotifier {
           ? 'Клиент API не инициализирован — укажите адрес сервера заново'
           : 'API client is not initialized — re-enter the server address');
     }
+
+    await _writeLogoutMarker();
+    if (attempt != _loginGeneration || !identical(api, client)) return;
 
     final deviceInfo = DeviceInfoPlugin();
     String deviceName = 'Device';
@@ -1099,7 +1159,8 @@ class AuthState extends ChangeNotifier {
       windowsIdentity: WindowsIdentity.snapshot(),
     );
 
-    await _finalizeLogin(resp, base);
+    if (attempt != _loginGeneration || !identical(api, client)) return;
+    await _finalizeLogin(resp, base, attempt: attempt, client: client);
   }
 
   /// Обмен подтверждённого push-челленджа на Bearer-токен устройства (десктоп).
@@ -1107,6 +1168,7 @@ class AuthState extends ChangeNotifier {
     required String challengeId,
     required String claimToken,
   }) async {
+    final attempt = ++_loginGeneration;
     final base = serverUrl;
     if (base == null || base.isEmpty) {
       throw Exception(
@@ -1117,6 +1179,11 @@ class AuthState extends ChangeNotifier {
       throw Exception(isRu
           ? 'Клиент API не инициализирован — укажите адрес сервера заново'
           : 'API client is not initialized — re-enter the server address');
+    }
+
+    await _writeLogoutMarker();
+    if (attempt != _loginGeneration || !identical(api, client)) {
+      return {'status': 'cancelled'};
     }
 
     final deviceInfo = DeviceInfoPlugin();
@@ -1175,17 +1242,31 @@ class AuthState extends ChangeNotifier {
       appVersion: appVersion,
       securityPosture: initialPosture,
       windowsIdentity: WindowsIdentity.snapshot(),
+      // Пока claim не прошёл generation-check, старый ответ не должен даже
+      // менять token внутри переиспользуемого ApiClient.
+      updateToken: false,
     );
 
+    if (attempt != _loginGeneration || !identical(api, client)) {
+      return resp;
+    }
     if (resp['token'] == null) {
       return resp;
     }
 
-    await _finalizeLogin(resp, base);
+    await _finalizeLogin(resp, base, attempt: attempt, client: client);
     return resp;
   }
 
-  Future<void> _finalizeLogin(Map<String, dynamic> resp, String base) async {
+  Future<void> _finalizeLogin(
+    Map<String, dynamic> resp,
+    String base, {
+    required int attempt,
+    required ApiClient client,
+  }) async {
+    bool isCurrent() =>
+        attempt == _loginGeneration && identical(api, client);
+    if (!isCurrent()) return;
     // Разбор ответа сервера — безопасно: отсутствие токена/профиля даёт
     // понятную ошибку вместо TypeError/null-краша, отсутствующий
     // security_posture — просто null (сервер досчитает комплаенс сам).
@@ -1196,18 +1277,27 @@ class AuthState extends ChangeNotifier {
           ? 'Сервер вернул некорректный ответ входа'
           : 'Malformed login response from server');
     }
+
+    final prefs = await SharedPreferences.getInstance();
+    await _secureStorage.write(key: _tokenKey, value: respToken);
+    await prefs.setString('server_url', base);
+    if (!isCurrent()) return; // tombstone остаётся до успешного нового входа
+    await prefs.remove(_logoutMarkerKey);
+    if (!isCurrent()) {
+      await _rollbackCancelledLogin(attempt, respToken, client);
+      return;
+    }
+
+    client.token = respToken;
     token = respToken;
     currentUser = Map<String, dynamic>.from(respUser);
+    _committedLoginGeneration = attempt;
     _updatePerimeter(resp);
     _updatePerimeter(currentUser);
     currentPosture = (resp['security_posture'] is Map)
         ? Map<String, dynamic>.from(resp['security_posture'] as Map)
         : null;
     isCompliant = currentPosture?['is_compliant'] == true;
-
-    final prefs = await SharedPreferences.getInstance();
-    await _secureStorage.write(key: _tokenKey, value: respToken);
-    await prefs.setString('server_url', base);
 
     // Этап D «умный 2FA»: сервер выдаёт сессии устройства device_id
     // (appLoginResponse.DeviceID) — по нему он отличает вход, начатый с
@@ -1218,6 +1308,10 @@ class AuthState extends ChangeNotifier {
       _ownDeviceId = deviceId;
       await prefs.setString(LocalDetectService.kDeviceIdPrefKey, deviceId);
     }
+    if (!isCurrent()) {
+      await _rollbackCancelledLogin(attempt, respToken, client);
+      return;
+    }
 
     _loadBrowserSsoAutoApprove();
     _setupServices();
@@ -1225,15 +1319,48 @@ class AuthState extends ChangeNotifier {
     if (deviceId != null && deviceId.isNotEmpty) {
       await localDetect.start(deviceId);
     }
+    if (!isCurrent()) {
+      await _rollbackCancelledLogin(attempt, respToken, client);
+      return;
+    }
     await refreshProfile();
     await refreshAll();
+    if (!isCurrent()) {
+      await _rollbackCancelledLogin(attempt, respToken, client);
+      return;
+    }
     // Фаза 2: после успешного логина один раз предъявляем CP-билет.
     unawaited(presentSsoTicket());
     notifyListeners();
   }
 
+  Future<void> _rollbackCancelledLogin(
+      int attempt, String respToken, ApiClient client) async {
+    if (_committedLoginGeneration != attempt) return;
+    _committedLoginGeneration = 0;
+    if (token == respToken && identical(api, client)) {
+      token = null;
+      currentUser = null;
+      client.token = null;
+    }
+    _pollingTimer?.cancel();
+    _pollingTimer = null;
+    ws.disconnect();
+    telemetry.stopReporting();
+    await localDetect.stop();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(LocalDetectService.kDeviceIdPrefKey);
+    _ownDeviceId = null;
+    notifyListeners();
+  }
+
   Future<void> logout() async {
     _authEpoch++;
+    _loginGeneration++;
+    _committedLoginGeneration = 0;
+    // Сначала durable tombstone: даже failed secure-storage delete и
+    // недействительный server logout не смогут воскресить токен при рестарте.
+    await _writeLogoutMarker();
     _pollingTimer?.cancel();
     _pollingTimer = null;
     // Д8: ретрай регистрации машины не переживает разлогин.
@@ -1345,12 +1472,18 @@ class AuthState extends ChangeNotifier {
   /// выключена: список пуст, секция скрыта, НЕ ошибка. Прочие сбои —
   /// debugPrint, прежние данные не трогаем (плитка не мигает).
   Future<void> loadRdpTargets() async {
-    if (api == null) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null) return;
     try {
-      rdpTargets = await api!.getRdpTargets(instanceId: instanceId);
+      final targets = await client.getRdpTargets(instanceId: instanceId);
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      rdpTargets = targets;
       rdpFeatureAvailable = true;
       notifyListeners();
     } on ApiException catch (e) {
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
       if (e.statusCode == 404) {
         rdpFeatureAvailable = false;
         rdpTargets = [];
@@ -1573,9 +1706,7 @@ class AuthState extends ChangeNotifier {
     try {
       final p = await client.getProfile();
       // A-38 (аудит 2026-10-10): защита от гонки при logout/смене пользователя
-      if (_authEpoch != expectedEpoch ||
-          token != expectedToken ||
-          !isLoggedIn) {
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) {
         debugPrint(
             'auth_state: refreshProfile ответ проигнорирован — авторизация изменилась');
         return;
@@ -1590,22 +1721,28 @@ class AuthState extends ChangeNotifier {
 
   /// Загрузка и кэширование списка филиальных Relay-узлов
   Future<void> refreshRelays() async {
-    if (api == null) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    final expectedServerUrl = serverUrl;
+    if (client == null || expectedToken == null) return;
     try {
-      final cfg = await api!.getConfig();
-      if (cfg['relays'] is List) {
-        relays = (cfg['relays'] as List)
-            .map((e) => Map<String, dynamic>.from(e as Map))
-            .toList();
-      } else {
-        relays = [];
-      }
+      final cfg = await client.getConfig();
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      final freshRelays = cfg['relays'] is List
+          ? (cfg['relays'] as List)
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .toList()
+          : <Map<String, dynamic>>[];
       final prefs = await SharedPreferences.getInstance();
-      final relayCacheKey = serverUrl != null
-          ? 'cached_relays_${serverUrl!.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}'
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      final relayCacheKey = expectedServerUrl != null
+          ? 'cached_relays_${expectedServerUrl.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}'
           : 'cached_relays';
-      await prefs.setString(relayCacheKey, jsonEncode(relays));
+      await prefs.setString(relayCacheKey, jsonEncode(freshRelays));
       await prefs.remove('cached_relays');
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      relays = freshRelays;
       notifyListeners();
       // ICE-серверы (STUN/TURN) для WebRTC удаленной помощи (B-1)
       final iceFromCfg = parseIceServersConfig(cfg);
@@ -1614,7 +1751,8 @@ class AuthState extends ChangeNotifier {
         support.setIceServers(iceFromCfg);
       }
       try {
-        final iceRaw = await api!.getIceServers();
+        final iceRaw = await client.getIceServers();
+        if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
         final ice = parseIceServersConfig({'ice_servers': iceRaw});
         if (ice.isNotEmpty) {
           iceServers = ice;
@@ -1630,9 +1768,14 @@ class AuthState extends ChangeNotifier {
 
   /// Загрузка очереди входящих обращений на поддержку (для инженеров)
   Future<void> loadSupportQueue() async {
-    if (api == null || !isEngineer) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null || !isEngineer) return;
     try {
-      supportQueue = await api!.getSupportQueue();
+      final queue = await client.getSupportQueue();
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      supportQueue = queue;
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки очереди поддержки: $e');
@@ -1664,14 +1807,18 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> loadPendingChallenges() async {
-    if (api == null) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null) return;
     try {
-      final all = await api!.getPendingChallenges();
+      final all = await client.getPendingChallenges();
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
 
       // browser_sso-челленджи идут отдельным флоу (фаза 2b): их не смешиваем
       // с обычными push-промптами и не показываем как модалку входа.
       final browserSso = <Map<String, dynamic>>[];
-      pendingChallenges = all.where((c) {
+      final freshChallenges = all.where((c) {
         final id = c['id']?.toString();
         if (id == null || _resolvedChallengeIds.contains(id)) return false;
         final isBrowserSso = c['type']?.toString() == 'browser_sso' ||
@@ -1682,20 +1829,23 @@ class AuthState extends ChangeNotifier {
         }
         return true;
       }).toList();
+      pendingChallenges = freshChallenges;
 
       // Polling-доставка browser_sso (WS был offline): нормализуем и
       // показываем; активный/закрытый/истёкший отсеется внутри.
       for (final item in browserSso) {
+        if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
         if (activeBrowserSsoPrompt == null) {
           await _surfaceBrowserSso(item);
         }
       }
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
 
       final activeId = activePrompt?['challenge_id']?.toString();
       final stillPending = activeId != null &&
-          pendingChallenges.any((c) => c['id']?.toString() == activeId);
+          freshChallenges.any((c) => c['id']?.toString() == activeId);
 
-      if (pendingChallenges.isEmpty) {
+      if (freshChallenges.isEmpty) {
         // Все челленджи закрыты (подтверждены в другом канале — например в
         // Telegram — или истекли): гасим модалку и приоритет окна.
         if (activePrompt != null) {
@@ -1709,7 +1859,7 @@ class AuthState extends ChangeNotifier {
         // один раз, и перегенерация кнопок каждые 4с недопустима. Сама
         // модалка это поле для того же challenge_id не перечитывает
         // (отсчёт локальный), значение — для внешних потребителей.
-        final fresh = pendingChallenges.firstWhere(
+        final fresh = freshChallenges.firstWhere(
             (c) => c['id']?.toString() == activeId)['expires_in_seconds'];
         if (fresh != null && activePrompt != null) {
           activePrompt!['expires_in_seconds'] = fresh;
@@ -1718,7 +1868,7 @@ class AuthState extends ChangeNotifier {
         // Активного prompt нет, либо он исчез из pending (закрыт в другом
         // канале) — выводим свежейший из очереди. Это и есть показ
         // RADIUS-push из polling-фолбэка (WS был offline/в трее).
-        final first = pendingChallenges.first;
+        final first = freshChallenges.first;
         final meta = first['metadata'] as Map<String, dynamic>? ?? {};
         final clientIp = meta['client_ip']?.toString();
         final hostIp = meta['host_ip']?.toString();
@@ -1748,9 +1898,14 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> loadAllowedApps() async {
-    if (api == null) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null) return;
     try {
-      allowedApps = await api!.getAllowedApps();
+      final apps = await client.getAllowedApps();
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      allowedApps = apps;
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки приложений: $e');
@@ -1758,9 +1913,14 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> loadHistory() async {
-    if (api == null) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null) return;
     try {
-      history = await api!.getHistory();
+      final items = await client.getHistory();
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      history = items;
       notifyListeners();
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки истории: $e');
@@ -1768,9 +1928,13 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> loadNotifications() async {
-    if (api == null || !isLoggedIn) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null || !isLoggedIn) return;
     try {
-      final list = await api!.getNotifications();
+      final list = await client.getNotifications();
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
       notifications = list;
       unreadNotificationsCount = list
           .where((n) => n['is_read'] != true && n['read_at'] == null)
@@ -1842,13 +2006,19 @@ class AuthState extends ChangeNotifier {
     String? code,
     bool? passkey,
   }) async {
-    if (api == null) return;
+    final client = api;
+    final expectedEpoch = _authEpoch;
+    final expectedToken = token;
+    if (client == null || expectedToken == null) return;
 
     // Снимок карточки ДО закрытия (W08): сохраняем snapshot, но НЕ считаем
     // челлендж завершённым (resolved) до успешного ответа сервера.
     // При отмене биометрии, неверном коде, ошибке сети или 5xx карточка
     // возвращается на экран, чтобы пользователь мог повторить действие.
-    final promptSnapshot = activePrompt;
+    final promptSnapshot =
+        activePrompt?['challenge_id']?.toString() == challengeId
+            ? activePrompt
+            : null;
     await alert.resetWindowPriority();
 
     try {
@@ -1917,7 +2087,7 @@ class AuthState extends ChangeNotifier {
         }
 
         // 2. Отправка подтверждения
-        await api!.challengeDecision(
+        await client.challengeDecision(
           challengeId: challengeId,
           decision: 'approve',
           numberMatch: selectedNumberMatch,
@@ -1925,18 +2095,23 @@ class AuthState extends ChangeNotifier {
           passkey: passkeyVerified,
         );
       } else {
-        await api!.challengeDecision(
+        await client.challengeDecision(
           challengeId: challengeId,
           decision: 'deny',
         );
       }
 
-      // Успешно подтверждено сервером: фиксируем в resolved и гасим активный prompt
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
+      // Успешно подтверждено сервером: resolved только своего challenge;
+      // activePrompt другого challenge, появившийся за время await, не трогаем.
       if (challengeId.isNotEmpty) {
         _resolvedChallengeIds.add(challengeId);
       }
-      activePrompt = null;
+      if (activePrompt?['challenge_id']?.toString() == challengeId) {
+        activePrompt = null;
+      }
     } catch (e) {
+      if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) rethrow;
       // W08: Терминальные ошибки (например, промах числа number_match_mismatch или истёкший челлендж)
       // закрывают карточку. Любые временные сбои (отмена биометрии, ошибка сети, 5xx,
       // desktop_confirm_forbidden, invalid_code) восстанавливают карточку для повтора.
@@ -1944,14 +2119,17 @@ class AuthState extends ChangeNotifier {
           (e.code == 'number_match_mismatch' ||
               e.code == 'challenge_expired' ||
               e.code == 'challenge_closed');
+      final activeId = activePrompt?['challenge_id']?.toString();
 
       if (isTerminal) {
         if (challengeId.isNotEmpty) {
           _resolvedChallengeIds.add(challengeId);
         }
-        activePrompt = null;
+        if (activeId == challengeId) activePrompt = null;
       } else {
-        activePrompt = promptSnapshot;
+        if (activePrompt == null || activeId == challengeId) {
+          activePrompt = promptSnapshot;
+        }
         if (challengeId.isNotEmpty) {
           _resolvedChallengeIds.remove(challengeId);
         }
@@ -2465,6 +2643,7 @@ class AuthState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _loginGeneration++;
     _pollingTimer?.cancel();
     _machineRetryTimer?.cancel();
     unawaited(localDetect.stop());

@@ -65,7 +65,7 @@ void main() {
   });
 
   group('RdpTargetTile @ 390px', () {
-    testWidgets('не-десктоп: подсказка «RDP — Windows / macOS» + «Console», без overflow', (tester) async {
+    testWidgets('не-десктоп: подсказка «RDP — Windows / macOS», без Console и overflow', (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1.0;
@@ -80,13 +80,13 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.text('RDP — Windows / macOS'), findsOneWidget);
-      expect(find.text('Console'), findsOneWidget);
+      expect(find.text('Console'), findsNothing);
       // Длинный маршрут обрезается многоточием, а не ломает строку чипов.
       expect(find.textContaining('agent-relay-moscow'), findsOneWidget);
       debugDefaultTargetPlatformOverride = null;
     });
 
-    testWidgets('macOS + online: «Подключить» + «Console» в ряд, без overflow', (tester) async {
+    testWidgets('macOS + online: только «Подключиться», без Console и overflow', (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1.0;
@@ -100,12 +100,12 @@ void main() {
       await tester.pump();
 
       expect(tester.takeException(), isNull);
-      expect(find.text('Подключить'), findsOneWidget);
-      expect(find.text('Console'), findsOneWidget);
+      expect(find.text('Подключиться'), findsOneWidget);
+      expect(find.text('Console'), findsNothing);
       debugDefaultTargetPlatformOverride = null;
     });
 
-    testWidgets('Windows + online: «Подключить» + «Console» в ряд, без overflow', (tester) async {
+    testWidgets('Windows + online: только «Подключиться», без Console и overflow', (tester) async {
       // Сброс обязателен в теле теста: flutter_test проверяет foundation-
       // инварианты ДО tearDown.
       debugDefaultTargetPlatformOverride = TargetPlatform.windows;
@@ -121,8 +121,8 @@ void main() {
       await tester.pump();
 
       expect(tester.takeException(), isNull);
-      expect(find.text('Подключить'), findsOneWidget);
-      expect(find.text('Console'), findsOneWidget);
+      expect(find.text('Подключиться'), findsOneWidget);
+      expect(find.text('Console'), findsNothing);
       debugDefaultTargetPlatformOverride = null;
     });
 

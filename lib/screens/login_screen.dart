@@ -27,15 +27,31 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _challengeId;
   String? _claimToken;
   Timer? _claimPollingTimer;
+  bool _claimPollInFlight = false;
+  int _claimGeneration = 0;
+  AuthState? _auth;
   String? _error;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _auth = context.read<AuthState>();
+  }
 
   void _stopClaimPolling() {
     _claimPollingTimer?.cancel();
     _claimPollingTimer = null;
+    _claimPollInFlight = false;
+  }
+
+  void _cancelClaimPolling() {
+    _claimGeneration++;
+    _stopClaimPolling();
   }
 
   void _resetSecondFactor() {
-    _stopClaimPolling();
+    _cancelClaimPolling();
+    _auth?.cancelLoginAttempts();
     setState(() {
       _requiresSecondFactor = false;
       _pushSent = false;
@@ -47,22 +63,34 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _startClaimPolling() {
-    _stopClaimPolling();
-    if (!mounted || _challengeId == null || _claimToken == null) return;
+    _cancelClaimPolling();
+    final generation = _claimGeneration;
+    final challengeId = _challengeId;
+    final claimToken = _claimToken;
+    final auth = _auth;
+    if (!mounted ||
+        challengeId == null ||
+        claimToken == null ||
+        auth == null) {
+      return;
+    }
 
-    _claimPollingTimer = Timer.periodic(const Duration(milliseconds: 1500), (timer) async {
-      if (!mounted) {
+    _claimPollingTimer =
+        Timer.periodic(const Duration(milliseconds: 1500), (timer) async {
+      if (!mounted || generation != _claimGeneration) {
         timer.cancel();
         return;
       }
+      // Медленный claim не накапливает параллельные HTTP-запросы на тиках.
+      if (_claimPollInFlight) return;
+      _claimPollInFlight = true;
       try {
-        final auth = context.read<AuthState>();
         final res = await auth.loginClaim(
-          challengeId: _challengeId!,
-          claimToken: _claimToken!,
+          challengeId: challengeId,
+          claimToken: claimToken,
         );
 
-        if (!mounted) return;
+        if (!mounted || generation != _claimGeneration) return;
 
         final status = res['status']?.toString();
         if (res['token'] != null) {
@@ -87,7 +115,7 @@ class _LoginScreenState extends State<LoginScreen> {
           });
         }
       } on ApiException catch (e) {
-        if (!mounted) return;
+        if (!mounted || generation != _claimGeneration) return;
         if (e.code == 'challenge_denied' || e.code == 'denied') {
           timer.cancel();
           _claimPollingTimer = null;
@@ -105,13 +133,18 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       } catch (e) {
         debugPrint('login push claim error: $e');
+      } finally {
+        if (generation == _claimGeneration) _claimPollInFlight = false;
       }
     });
   }
 
   @override
   void dispose() {
-    _stopClaimPolling();
+    _cancelClaimPolling();
+    // После успешной навигации LoginScreen разрушается, но готовую сессию
+    // отменять нельзя. Незавершённый claim, наоборот, теряет право на login.
+    if (_auth?.isLoggedIn != true) _auth?.cancelLoginAttempts();
     _usernameController.dispose();
     _passwordController.dispose();
     _codeController.dispose();
@@ -120,7 +153,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _handleLogin() async {
     if (_isLoading) return;
-    _stopClaimPolling();
+    _cancelClaimPolling();
+    final generation = _claimGeneration;
+    _auth?.cancelLoginAttempts();
     final s = context.stringsRead;
     final username = _usernameController.text.trim();
     final password = _passwordController.text;
@@ -142,15 +177,15 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final auth = context.read<AuthState>();
+      final auth = _auth ?? context.read<AuthState>();
       await auth.login(username, password, _requiresSecondFactor ? code : null);
-      if (mounted) {
+      if (mounted && generation == _claimGeneration) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const HomeScreen()),
         );
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && generation == _claimGeneration) {
         final msg = e.toString();
         setState(() {
           if (msg.contains('second_factor_required')) {
