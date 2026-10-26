@@ -648,6 +648,47 @@ void main() {
     expect(violation, 'recorder_lease_expired');
   });
 
+  test('optional recording does not stop the session when Recorder is unreachable', () async {
+    String? violation;
+    final recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(enabled: true, mandatory: false),
+      onMandatoryViolation: (reason) => violation = reason,
+      sendBatch: (_) async => throw const HttpException('network down'),
+    );
+    recorder.enqueueFrame(frameKind: 'keyframe', payload: Uint8List(10));
+
+    expect(await recorder.flushAndVerifyHealth(), isTrue);
+    expect(violation, isNull);
+  });
+
+  test('optional recording does not stop the session on an expired ACK lease', () async {
+    for (final ttl in [0, -1]) {
+      String? violation;
+      var sends = 0;
+      final recorder = LinkHostRecorder(
+        sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+        config: const LinkRecordingConfig(enabled: true, mandatory: false),
+        onMandatoryViolation: (reason) => violation = reason,
+        sendBatch: (_) async {
+          sends++;
+          return LinkRecorderBatchAck(
+            ackHighWatermarkSeq: 1,
+            firstFrameAcked: false,
+            leaseExpiresAt: DateTime.now(),
+            leaseTtlMs: ttl,
+          );
+        },
+      );
+      recorder.enqueueFrame(frameKind: 'keyframe', payload: Uint8List(10));
+
+      expect(await recorder.flushAndVerifyHealth(), isFalse);
+      expect(violation, isNull);
+      await recorder.flushAndVerifyHealth();
+      expect(sends, 2, reason: 'optional Recorder must remain able to retry');
+    }
+  });
+
   test('5.3: stop returns false when unconfirmed tail could not be flushed', () async {
     var currentNow = DateTime.utc(2026, 10, 24, 12, 0, 0);
 

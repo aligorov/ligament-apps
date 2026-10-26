@@ -10,6 +10,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'input_injector.dart';
 import 'link_host_readiness.dart';
 import 'link_host_recorder.dart';
+import 'debug_log_service.dart';
 import 'support_service.dart'
     show SupportChatMessage, assembleFileChunks, resolveNonCollidingFilePath;
 import '../models/link_control_messages.dart';
@@ -147,6 +148,7 @@ class LinkHostSession {
         await _reject('invalid_offer_media');
         return;
       }
+      DebugLogService.instance.record('link.peer.start');
       final answer = await peer.start(
         offerSdp: offerSdp,
         iceServers: iceServers,
@@ -155,6 +157,7 @@ class LinkHostSession {
         onFailure: () => unawaited(_reject('host_media_failed')),
       );
       if (_closed) return;
+      DebugLogService.instance.record('link.peer.answer_ready');
       if (answer.isEmpty || utf8.encode(answer).length > maxOfferSdpBytes) {
         throw const FormatException('Invalid Link answer SDP');
       }
@@ -170,6 +173,7 @@ class LinkHostSession {
       });
       if (_closed) return;
       _ready = true;
+      DebugLogService.instance.record('link.session.ready');
       _readyTimer?.cancel();
       for (final candidate
           in List<Map<String, dynamic>>.of(_pendingCandidates)) {
@@ -285,6 +289,7 @@ class LinkHostSession {
 
   Future<void> _rejectOnce(String reason) async {
     if (_closed) return;
+    DebugLogService.instance.record('link.reject.$reason');
     // An accepted session has already been committed by the server. Notify
     // the server with session_terminate so the operator does not freeze.
     if (_ready) {
@@ -693,6 +698,7 @@ Future<void> _runConnectedLinkHostWorker(
   required _UnixLinkHostTransport? unixTransport,
 }) async {
   String rawBootstrap;
+  DebugLogService.instance.record('link.ipc.bootstrap.begin');
   try {
     rawBootstrap = unixTransport == null
         ? await LinkHostSession._nativeChannel
@@ -741,6 +747,7 @@ Future<void> _runConnectedLinkHostWorker(
     await unixTransport?.close();
     throw const FormatException('Invalid Link session offer bootstrap');
   }
+  DebugLogService.instance.record('link.ipc.bootstrap.ready');
   final recordingConfig = LinkRecordingConfig.fromWire(offer['recording']);
   state.showSession(
     sessionId,
@@ -777,6 +784,7 @@ Future<void> _runConnectedLinkHostWorker(
       : null;
   final peer = FlutterLinkHostPeer(
     onConnected: () {
+      DebugLogService.instance.record('link.session.connected');
       state.markActive();
       recorder?.start();
     },
@@ -854,6 +862,7 @@ Future<void> _runConnectedLinkHostWorker(
         }
       }
     } catch (e) {
+      DebugLogService.instance.record('link.ipc.failed', error: e);
       debugPrint('link host IPC transport error: $e');
       await session.close();
     } finally {
@@ -867,6 +876,10 @@ Future<void> _runConnectedLinkHostWorker(
             session.done.then((_) => false),
           ])
         : false;
+    if (accessType == 'attended') {
+      DebugLogService.instance.record(
+          consentGranted ? 'link.consent.allowed' : 'link.consent.denied');
+    }
     if (session.isClosed ||
         state.phase == LinkHostWorkerPhase.closing ||
         (accessType == 'attended' && !consentGranted)) {
@@ -901,7 +914,10 @@ Future<void> _runConnectedLinkHostWorker(
     }
   } finally {
     timer.cancel();
+    DebugLogService.instance.record('link.shutdown.begin');
     final isTailFlushed = await recorder?.stop(reason: 'session_ended') ?? true;
+    DebugLogService.instance.record(
+        isTailFlushed ? 'link.recorder.tail_saved' : 'link.recorder.tail_lost');
     if (!isTailFlushed) {
       await session.reject('tail_lost');
     }

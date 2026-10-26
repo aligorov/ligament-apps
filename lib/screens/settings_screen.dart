@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/rdp_service_settings_card.dart';
@@ -12,7 +14,9 @@ import '../app_version.dart';
 import 'connect_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({super.key, this.debugLogs});
+
+  final DebugLogService? debugLogs;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -22,10 +26,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Обновление приложения (v1.1.49+): latest с сервера, когда есть.
   Map<String, dynamic>? _appUpdate;
   bool _isLoggingOut = false;
+  bool _savingDebugLogs = false;
+
+  DebugLogService get _debugLogs => widget.debugLogs ?? DebugLogService.instance;
 
   @override
   void initState() {
     super.initState();
+    unawaited(_debugLogs.initialize());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         context.read<AuthState>().refreshProfile();
@@ -476,6 +484,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 16),
 
+          if (!kIsWeb) ...[
+            AnimatedBuilder(
+              animation: _debugLogs,
+              builder: (context, _) => Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFF334155)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(s.diagnosticsSection,
+                        style: const TextStyle(fontWeight: FontWeight.bold,
+                            color: Colors.white, fontSize: 14)),
+                    _switchTile(
+                      title: s.debugLogsTitle,
+                      subtitle: _debugLogs.available
+                          ? s.debugLogsDescription
+                          : s.debugLogsUnavailable,
+                      value: _debugLogs.enabled,
+                      onChanged: _debugLogs.initialized &&
+                              _debugLogs.available && !_savingDebugLogs
+                          ? _setDebugLogsEnabled
+                          : null,
+                    ),
+                    if (_debugLogs.path != null)
+                      SelectableText(
+                        _debugLogs.path!,
+                        style: const TextStyle(fontSize: 11,
+                            color: Color(0xFF94A3B8)),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
           // Карточка филиальных узлов Relay
           Container(
             padding: const EdgeInsets.all(16),
@@ -838,7 +886,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String title,
     required String subtitle,
     required bool value,
-    required ValueChanged<bool> onChanged,
+    required ValueChanged<bool>? onChanged,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -865,6 +913,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _setDebugLogsEnabled(bool enabled) async {
+    setState(() => _savingDebugLogs = true);
+    try {
+      await _debugLogs.setEnabled(enabled);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(context.stringsRead.debugLogsSaveError)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _savingDebugLogs = false);
+    }
   }
 
   Future<void> _handleLogout(AuthState auth, AppStrings s) async {

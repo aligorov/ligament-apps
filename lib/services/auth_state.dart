@@ -13,6 +13,7 @@ import '../api/client.dart';
 import '../app_version.dart';
 import 'alert_service.dart';
 import 'deep_link_service.dart';
+import 'debug_log_service.dart';
 import 'gpo_service.dart';
 import 'local_detect_service.dart';
 import 'rdp_service.dart';
@@ -621,7 +622,9 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> init() async {
+    DebugLogService.instance.record('auth.preferences.begin');
     final prefs = await SharedPreferences.getInstance();
+    DebugLogService.instance.record('auth.preferences.ready');
     final loggedOut = prefs.getBool(_logoutMarkerKey) ?? false;
 
     final savedInst = prefs.getString('installation_id');
@@ -725,6 +728,7 @@ class AuthState extends ChangeNotifier {
     }
 
     String? savedToken;
+    DebugLogService.instance.record('auth.secure_storage.begin');
     try {
       savedToken = await _secureStorage.read(key: _tokenKey);
       if (loggedOut && savedToken != null) {
@@ -736,15 +740,19 @@ class AuthState extends ChangeNotifier {
         savedToken = null;
       }
     } catch (e) {
+      DebugLogService.instance.record('auth.secure_storage.failed', error: e);
       debugPrint('auth_state: ошибка чтения токена из secure storage: $e');
     }
+    DebugLogService.instance.record('auth.secure_storage.ready');
 
     if (!loggedOut && serverUrl != null && savedToken != null) {
       api = ApiClient(baseUrl: serverUrl!, token: savedToken);
       token = savedToken;
 
       try {
+        DebugLogService.instance.record('auth.profile.begin');
         currentUser = await api!.getProfile();
+        DebugLogService.instance.record('auth.profile.ready');
         _updatePerimeter(currentUser);
         // Этап D «умный 2FA»: восстанавливаем локальный детект по device_id,
         // сохранённому при логине (сессия устройства живёт и через рестарт
@@ -756,12 +764,16 @@ class AuthState extends ChangeNotifier {
           unawaited(localDetect.start(savedDeviceId));
         }
         await _loadBrowserSsoAutoApprove();
+        DebugLogService.instance.record('auth.services.begin');
         _setupServices();
+        DebugLogService.instance.record('auth.refresh.begin');
         await refreshAll();
+        DebugLogService.instance.record('auth.refresh.ready');
         // Фаза 2: предъявляем CP-билет при старте сессии (TTL ~5 мин с
         // входа в Windows) — тихо, любой сбой не влияет на работу.
         unawaited(presentSsoTicket());
       } catch (e) {
+        DebugLogService.instance.record('auth.restore.failed', error: e);
         debugPrint(
             'auth_state: токен недействителен или сервер недоступен: $e');
         // Если ошибка 401, сбрасываем токен

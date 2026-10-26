@@ -384,6 +384,17 @@ class AppStrings {
   String get languageSection => isRu ? 'Язык интерфейса' : 'Interface Language';
   String get languageRussian => isRu ? 'Русский' : 'Russian';
   String get languageEnglish => 'English';
+  String get diagnosticsSection => isRu ? 'Диагностика' : 'Diagnostics';
+  String get debugLogsTitle => isRu ? 'Debug-логи' : 'Debug logs';
+  String get debugLogsDescription => isRu
+      ? 'Логи запуска и LINK без токенов, паролей и текста ввода. Журнал до 2 МБ + одна резервная копия.'
+      : 'Startup and LINK logs without tokens, passwords or typed text. Stored locally, up to 4 MB including a backup.';
+  String get debugLogsUnavailable => isRu
+      ? 'Не удалось инициализировать диагностический журнал.'
+      : 'The diagnostic log could not be initialized.';
+  String get debugLogsSaveError => isRu
+      ? 'Не удалось сохранить настройку debug-логов.'
+      : 'The debug log setting could not be saved.';
   String get gpoMac => isRu ? 'Политики безопасности macOS (MDM)' : 'macOS Security Policies (MDM)';
   String get gpoWin => isRu ? 'Групповые политики Windows (GPO)' : 'Windows Group Policy (GPO)';
   String get gpoCorp => isRu ? 'Корпоративные политики безопасности' : 'Corporate Security Policies';

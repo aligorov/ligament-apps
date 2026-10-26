@@ -3,6 +3,7 @@
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
 
 #include <memory>
 
@@ -40,6 +41,7 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<ServiceConsoleBridge> service_console_bridge_;
   std::unique_ptr<LinkAgentBindingBridge> link_agent_binding_bridge_;
   std::unique_ptr<LinkHostBridge> link_host_bridge_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> diagnostics_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

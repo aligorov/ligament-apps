@@ -22,6 +22,7 @@ import '../models/link_session_policy.dart';
 import '../widgets/remote_pointer_surface.dart';
 import '../services/remote_keyboard.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../services/support_service.dart';
 import '../services/ws_service.dart';
 import '../i18n/app_strings.dart';
@@ -272,6 +273,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _statusKey == 'no_first_frame';
 
   void _setStatus(String key, [String? arg]) {
+    DebugLogService.instance.record('operator.status.$key');
     setState(() {
       _statusKey = key;
       _statusArg = arg;

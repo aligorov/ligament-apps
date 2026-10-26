@@ -10,6 +10,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'services/auth_state.dart';
 import 'services/autoshare_service.dart';
 import 'services/deep_link_service.dart';
+import 'services/debug_log_service.dart';
 import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
 import 'services/service_console_host.dart';
@@ -47,16 +48,31 @@ Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  FlutterError.onError = (FlutterErrorDetails details) {
+    DebugLogService.instance.record('flutter.error', error: details.exception);
+    FlutterError.presentError(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    DebugLogService.instance.record('dart.unhandled', error: error);
+    return false;
+  };
+  await DebugLogService.instance.initialize();
+  DebugLogService.instance.record('dart.bootstrap.begin');
   if (args.any((arg) => arg.startsWith('--link-host'))) {
     if (kIsWeb ||
         !(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       exit(2);
     }
+    DebugLogService.instance.record('link.worker.begin');
     try {
       final endpoint = Platform.isWindows
           ? linkHostPipeFromArgs(args)
           : linkHostUnixSocketFromArgs(args);
-      if (endpoint == null) exit(2);
+      if (endpoint == null) {
+        DebugLogService.instance.record('link.worker.invalid_endpoint');
+        await DebugLogService.instance.flush();
+        exit(2);
+      }
       final workerState = LinkHostWorkerState();
       try {
         await windowManager.ensureInitialized();
@@ -79,6 +95,7 @@ void main(List<String> args) async {
           },
         );
       } catch (e) {
+        DebugLogService.instance.record('link.worker.window_unavailable', error: e);
         debugPrint('link_host: window layout unavailable, running headless: $e');
         workerState.markConsentUiUnavailable();
         runApp(const SizedBox.shrink());
@@ -87,28 +104,39 @@ void main(List<String> args) async {
         Platform.isWindows ? endpoint : 'unix:$endpoint',
         state: workerState,
       );
-    } catch (_) {
+    } catch (error) {
+      DebugLogService.instance.record('link.worker.bootstrap_failed', error: error);
+      await DebugLogService.instance.flush();
       debugPrint('link_host: worker_bootstrap_failed');
       exit(2);
     }
+    DebugLogService.instance.record('link.worker.ended');
+    await DebugLogService.instance.flush();
     exit(0);
   }
   // A service worker has its own machine-scoped authorization. Never restore
   // a GUI user's tokens, local HTTP listener, notifications, tray or window.
   if (args.any((arg) => arg.startsWith('--service-console'))) {
     if (kIsWeb || !Platform.isWindows) exit(2);
+    DebugLogService.instance.record('console.worker.begin');
     try {
       final pipe = serviceConsolePipeFromArgs(args);
       if (pipe == null) exit(2);
       runApp(const SizedBox.shrink());
       await runServiceConsoleHost(pipe);
-    } catch (_) {
+    } catch (error) {
+      DebugLogService.instance.record('console.worker.bootstrap_failed', error: error);
+      await DebugLogService.instance.flush();
       debugPrint('service_console: bootstrap_failed');
       exit(2);
     }
+    DebugLogService.instance.record('console.worker.ended');
+    await DebugLogService.instance.flush();
     return;
   }
+  DebugLogService.instance.record('app.version.begin');
   await initAppVersion();
+  DebugLogService.instance.record('app.version.ready');
 
   // Deep-link ligament://rdp/<uuid> (аудит RDP-11, контракт T6), холодный
   // старт: Windows передаёт URI схемы в argv (windows/runner/main.cpp
@@ -143,11 +171,6 @@ void main(List<String> args) async {
       exit(0);
     }
   }
-
-  FlutterError.onError = (FlutterErrorDetails details) {
-    FlutterError.presentError(details);
-    debugPrint('Flutter Unhandled Error: ${details.exception}');
-  };
 
   ErrorWidget.builder = (FlutterErrorDetails details) {
     return Material(
@@ -194,6 +217,7 @@ void main(List<String> args) async {
 
   // Инициализация оконного менеджера для Windows, macOS и Linux
   if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    DebugLogService.instance.record('app.window.initialize');
     await windowManager.ensureInitialized();
 
     const windowOptions = WindowOptions(
@@ -214,12 +238,17 @@ void main(List<String> args) async {
       await windowManager.show();
       await windowManager.focus();
     });
+    DebugLogService.instance.record(
+        startMinimized ? 'app.window.hidden' : 'app.window.shown');
   }
 
+  DebugLogService.instance.record('app.auth.initialize');
   final authState = AuthState();
   try {
     await authState.init();
+    DebugLogService.instance.record('app.auth.ready');
   } catch (e, st) {
+    DebugLogService.instance.record('app.auth.failed', error: e);
     debugPrint('auth_state: ошибка инициализации: $e\n$st');
   }
 
@@ -236,12 +265,16 @@ void main(List<String> args) async {
     authState.requestAutoshare(autoshareSessionId);
   }
 
+  DebugLogService.instance.record('app.ui.attach');
   runApp(
     ChangeNotifierProvider.value(
       value: authState,
       child: const LigamentApp(),
     ),
   );
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    DebugLogService.instance.record('app.ui.first_frame');
+  });
 }
 
 class LigamentApp extends StatefulWidget {

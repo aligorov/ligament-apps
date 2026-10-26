@@ -945,7 +945,7 @@ class LinkHostRecorder {
   }
 
   void _triggerMandatoryStop(String reason) {
-    if (_stopped) return;
+    if (_stopped || (!config.mandatory && !config.requireFirstFrame)) return;
     _stopped = true;
     onMandatoryViolation?.call(reason);
   }

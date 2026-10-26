@@ -2,6 +2,7 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include "debug_log.h"
 #include "flutter_window.h"
 #include "utils.h"
 
@@ -11,11 +12,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
     CreateAndAttachConsole();
   }
-
-  // Инициализация COM для системного трея и WMI
-  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-
-  flutter::DartProject project(L"data");
 
   // Deep-link ligament://rdp/<grant_id> (аудит RDP-11), ХОЛОДНЫЙ старт:
   // ОС запускает exe со ссылкой в командной строке — аргументы ниже уже
@@ -51,7 +47,23 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
       autoshare = true;
     }
   }
-  if (service_console && link_host_worker) return EXIT_FAILURE;
+  debug_log::Initialize(link_host_worker ? debug_log::Mode::link_host :
+      service_console ? debug_log::Mode::service_console : debug_log::Mode::gui);
+  debug_log::Write(link_host_worker ? "startup.mode.link_host" :
+      service_console ? "startup.mode.service_console" : "startup.mode.gui");
+  if (start_minimized) debug_log::Write("startup.minimized");
+  if (autoshare) debug_log::Write("startup.autoshare");
+  if (service_console && link_host_worker) {
+    debug_log::Write("startup.mode.conflict");
+    return EXIT_FAILURE;
+  }
+
+  const HRESULT com_result = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(com_result)) {
+    debug_log::Write("startup.com.failed", "HRESULT", {},
+                     static_cast<int64_t>(com_result));
+  }
+  flutter::DartProject project(L"data");
 
   // Single-instance protection for the main GUI application.
   // Dedicated headless workers (--service-console, --link-host) and
@@ -59,22 +71,27 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   HANDLE single_instance_mutex = nullptr;
   if (!service_console && !link_host_worker && !autoshare) {
     single_instance_mutex = ::CreateMutexW(nullptr, TRUE, L"Local\\Ligament2FA_App_SingleInstance");
-    if (single_instance_mutex != nullptr && ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    const DWORD mutex_error = ::GetLastError();
+    if (single_instance_mutex == nullptr) {
+      debug_log::Write("startup.mutex.failed", {}, {}, mutex_error);
+    } else if (mutex_error == ERROR_ALREADY_EXISTS) {
+      debug_log::Write("startup.mutex.existing", {}, {}, mutex_error);
       ::CloseHandle(single_instance_mutex);
-      if (!start_minimized) {
-        // Bring existing window to foreground if user explicitly launched the app
-        HWND existing_wnd = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Ligament 2FA Authenticator");
-        if (existing_wnd != nullptr) {
-          if (::IsIconic(existing_wnd)) {
-            ::ShowWindow(existing_wnd, SW_RESTORE);
-          } else {
-            ::ShowWindow(existing_wnd, SW_SHOW);
-          }
-          ::SetForegroundWindow(existing_wnd);
+      HWND existing_wnd = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Ligament 2FA Authenticator");
+      debug_log::Write(existing_wnd ? "startup.window.found" : "startup.window.missing");
+      if (!start_minimized && existing_wnd != nullptr) {
+        if (::IsIconic(existing_wnd)) {
+          ::ShowWindow(existing_wnd, SW_RESTORE);
+        } else {
+          ::ShowWindow(existing_wnd, SW_SHOW);
         }
+        ::SetForegroundWindow(existing_wnd);
       }
-      ::CoUninitialize();
+      debug_log::Write("startup.single_instance.exit");
+      if (SUCCEEDED(com_result)) ::CoUninitialize();
       return EXIT_SUCCESS;
+    } else {
+      debug_log::Write("startup.mutex.created");
     }
   }
 
@@ -83,22 +100,32 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project, service_console, link_host_worker, start_minimized);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(440, 720);
+  debug_log::Write("window.create.begin");
   if (!window.Create(L"Ligament 2FA Authenticator", origin, size)) {
+    debug_log::Write("window.create.failed", {}, {}, ::GetLastError());
     if (single_instance_mutex != nullptr) ::CloseHandle(single_instance_mutex);
+    if (SUCCEEDED(com_result)) ::CoUninitialize();
     return EXIT_FAILURE;
   }
+  debug_log::Write("window.create.ready");
   window.SetQuitOnClose(false); // Поддержка сворачивания в трей
 
-  ::MSG msg;
-  while (::GetMessage(&msg, nullptr, 0, 0)) {
+  ::MSG msg{};
+  BOOL message_result = 0;
+  while ((message_result = ::GetMessage(&msg, nullptr, 0, 0)) > 0) {
     ::TranslateMessage(&msg);
     ::DispatchMessage(&msg);
+  }
+  if (message_result == -1) {
+    debug_log::Write("message_loop.failed", {}, {}, ::GetLastError());
+  } else {
+    debug_log::Write("message_loop.exit");
   }
 
   if (single_instance_mutex != nullptr) {
     ::CloseHandle(single_instance_mutex);
   }
 
-  ::CoUninitialize();
-  return EXIT_SUCCESS;
+  if (SUCCEEDED(com_result)) ::CoUninitialize();
+  return message_result == -1 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
