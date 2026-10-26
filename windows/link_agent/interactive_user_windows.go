@@ -134,6 +134,28 @@ func CurrentInteractiveUser() string {
 	return sess.Username
 }
 
+const (
+	wtsClientProtocolTypeInfoClass = 16
+	wtsProtocolTypeRDP             = 2
+)
+
+func isRemoteDesktopSession(sessionID uint32) bool {
+	if procWTSQuerySessionInformation.Find() != nil {
+		return false
+	}
+	var buffer *uint32
+	var bytesReturned uint32
+	result, _, _ := procWTSQuerySessionInformation.Call(
+		0, uintptr(sessionID), wtsClientProtocolTypeInfoClass,
+		uintptr(unsafe.Pointer(&buffer)), uintptr(unsafe.Pointer(&bytesReturned)),
+	)
+	if result == 0 || buffer == nil {
+		return false
+	}
+	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(buffer)))
+	return *buffer == wtsProtocolTypeRDP
+}
+
 func queryWTSUsername(sessionID uint32) string {
 	var buffer *uint16
 	var bytesReturned uint32

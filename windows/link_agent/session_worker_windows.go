@@ -110,17 +110,18 @@ func (*WindowsSessionWorkerLauncher) Launch(ctx context.Context, offer SessionOf
 		return nil, err
 	}
 	worker := &windowsSessionWorkerProcess{
-		pipe:        pipe,
-		process:     process.Process,
-		job:         process.job,
-		pid:         process.ProcessId,
-		sessionID:   sessionID,
-		desktopName: desktop,
-		startedAt:   time.Now(),
+		pipe:          pipe,
+		process:       process.Process,
+		job:           process.job,
+		pid:           process.ProcessId,
+		sessionID:     sessionID,
+		desktopName:   desktop,
+		startedAt:     time.Now(),
+		remoteSession: isRemoteDesktopSession(sessionID),
 	}
 	activeConsole := getActiveConsoleSessionID()
-	workerLog("interactive host started: pid=%d target_session=%d active_console=%d desktop=%s pipe=%s offer_session=%s",
-		process.ProcessId, sessionID, activeConsole, desktop, pipeName, offer.SessionID)
+	workerLog("interactive host started: pid=%d target_session=%d active_console=%d remote_rdp=%t desktop=%s pipe=%s offer_session=%s",
+		process.ProcessId, sessionID, activeConsole, worker.remoteSession, desktop, pipeName, offer.SessionID)
 	if err := worker.acceptChild(ctx, process.ProcessId); err != nil {
 		var exitCode uint32
 		_ = windows.GetExitCodeProcess(process.Process, &exitCode)
@@ -316,14 +317,15 @@ func newLinkHostPipeName() (string, error) {
 }
 
 type windowsSessionWorkerProcess struct {
-	pipe        windows.Handle
-	process     windows.Handle
-	job         windows.Handle
-	pid         uint32
-	sessionID   uint32
-	desktopName string
+	pipe                 windows.Handle
+	process              windows.Handle
+	job                  windows.Handle
+	pid                  uint32
+	sessionID            uint32
+	desktopName          string
 	startedAt            time.Time
 	consoleMismatchSince time.Time
+	remoteSession        bool
 
 	mu     sync.RWMutex
 	sendMu sync.Mutex
@@ -466,6 +468,10 @@ func peekPipeBytes(pipe windows.Handle) (uint32, error) {
 }
 
 func (p *windowsSessionWorkerProcess) checkConsoleSessionMismatch(activeConsole uint32, now time.Time) error {
+	if p.remoteSession {
+		p.consoleMismatchSince = time.Time{}
+		return nil
+	}
 	if activeConsole != 0 && activeConsole != 0xFFFFFFFF && activeConsole != p.sessionID {
 		if p.consoleMismatchSince.IsZero() {
 			p.consoleMismatchSince = now

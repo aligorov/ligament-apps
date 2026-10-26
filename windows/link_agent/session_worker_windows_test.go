@@ -80,3 +80,22 @@ func TestConsoleSessionMismatch15sTimeout(t *testing.T) {
 		t.Fatalf("expected error message to contain 'persisted > 15s', got: %v", err)
 	}
 }
+
+func TestRemoteSessionIgnoresPhysicalConsoleMismatch(t *testing.T) {
+	p := &windowsSessionWorkerProcess{
+		sessionID:     2,
+		pid:           1234,
+		remoteSession: true,
+	}
+	t0 := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+
+	if err := p.checkConsoleSessionMismatch(13, t0); err != nil {
+		t.Fatalf("unexpected error for RDP session: %v", err)
+	}
+	if err := p.checkConsoleSessionMismatch(13, t0.Add(time.Hour)); err != nil {
+		t.Fatalf("RDP worker must not be killed by physical console change: %v", err)
+	}
+	if !p.consoleMismatchSince.IsZero() {
+		t.Fatalf("expected RDP mismatch timer to remain zero, got %v", p.consoleMismatchSince)
+	}
+}
