@@ -717,7 +717,8 @@ class LinkHostRecorder {
       _pendingFrames.isEmpty &&
       _pendingEvents.isEmpty &&
       _droppedFrames == 0 &&
-      _droppedEvents == 0;
+      _droppedEvents == 0 &&
+      (spool == null || !spool!.hasPendingChunks);
   int get queuedBytes => _queuedBytes;
 
   void notifyDesktopChanged() {
@@ -845,7 +846,8 @@ class LinkHostRecorder {
         _pendingFrames.isEmpty &&
         _pendingEvents.isEmpty &&
         _droppedFrames == 0 &&
-        _droppedEvents == 0;
+        _droppedEvents == 0 &&
+        (spool == null || !spool!.hasPendingChunks);
     _snapshot('recorder.stop',
         fields: {'result': isTailFlushed ? 'tail_flushed' : 'tail_lost'});
     return isTailFlushed;
@@ -1042,39 +1044,44 @@ class LinkHostRecorder {
 
   Future<void> _doSpillToSpool() async {
     try {
-      final batchFrames = <Map<String, dynamic>>[];
-      final batchEvents = <Map<String, dynamic>>[];
-      var spilledBytes = 0;
+      while (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
+        final batchFrames = <Map<String, dynamic>>[];
+        final batchEvents = <Map<String, dynamic>>[];
+        var spilledBytes = 0;
 
-      while (_pendingFrames.isNotEmpty && batchFrames.length < maxBatchFrames) {
-        final frame = _pendingFrames.removeAt(0);
-        batchFrames.add(frame);
-        spilledBytes += _jsonBytes(frame);
+        while (_pendingFrames.isNotEmpty && batchFrames.length < maxBatchFrames) {
+          final frame = _pendingFrames.removeAt(0);
+          batchFrames.add(frame);
+          spilledBytes += _jsonBytes(frame);
+        }
+        while (_pendingEvents.isNotEmpty && batchEvents.length < maxBatchEvents) {
+          final event = _pendingEvents.removeAt(0);
+          batchEvents.add(event);
+          spilledBytes += _jsonBytes(event);
+        }
+
+        if (batchFrames.isEmpty && batchEvents.isEmpty) break;
+        _queuedBytes = (_queuedBytes - spilledBytes).clamp(0, 0x7fffffffffffffff);
+
+        final batch = {
+          'session_id': sessionId,
+          'epoch': config.epoch,
+          'lease_ttl_seconds': config.leaseTtl.inSeconds,
+          'frames': batchFrames,
+          'events': batchEvents,
+        };
+
+        await spool!.writeBatch(++_spoolBatchIndex, batch);
+        _snapshot('recorder.spool.buffered', fields: {
+          'batch_index': _spoolBatchIndex,
+          'frames': batchFrames.length,
+          'events': batchEvents.length,
+          'spilled_bytes': spilledBytes,
+        });
+
+        // Сбрасываем до нижнего порога гистерезиса (25% от maxQueueBytes)
+        if (_queuedBytes <= (config.maxQueueBytes ~/ 4)) break;
       }
-      while (_pendingEvents.isNotEmpty && batchEvents.length < maxBatchEvents) {
-        final event = _pendingEvents.removeAt(0);
-        batchEvents.add(event);
-        spilledBytes += _jsonBytes(event);
-      }
-
-      if (batchFrames.isEmpty && batchEvents.isEmpty) return;
-      _queuedBytes = (_queuedBytes - spilledBytes).clamp(0, 0x7fffffffffffffff);
-
-      final batch = {
-        'session_id': sessionId,
-        'epoch': config.epoch,
-        'lease_ttl_seconds': config.leaseTtl.inSeconds,
-        'frames': batchFrames,
-        'events': batchEvents,
-      };
-
-      await spool!.writeBatch(++_spoolBatchIndex, batch);
-      _snapshot('recorder.spool.buffered', fields: {
-        'batch_index': _spoolBatchIndex,
-        'frames': batchFrames.length,
-        'events': batchEvents.length,
-        'spilled_bytes': spilledBytes,
-      });
     } on LinkSpoolQuotaExceededException catch (error) {
       _snapshot('recorder.spool.quota_exceeded', error: error);
       _triggerMandatoryStop('recorder_spool_quota_exceeded');
@@ -1258,7 +1265,8 @@ class LinkHostRecorder {
       if (!ok) return false;
       final after = _snapshotCount(upperSeq);
       if (after < before) _noProgressSince = null;
-      if (before == 0 || after == 0 || after >= before) {
+      final hasSpooledChunks = spool != null && spool!.hasPendingChunks;
+      if (!hasSpooledChunks && (before == 0 || after == 0 || after >= before)) {
         if (before > 0 && after >= before) {
           _noProgressSince ??= _clock().toUtc();
           _snapshot('recorder.batch.no_progress', fields: {'result': 'retry'});
@@ -1290,16 +1298,35 @@ class LinkHostRecorder {
         final spooledBatch = await spool!.readBatch(file);
         if (spooledBatch != null) {
           try {
-            await sendBatch(spooledBatch);
+            final ack = await sendBatch(spooledBatch);
             await spool!.removeBatch(file);
             _snapshot('recorder.spool.drained', fields: {'file': file.path});
+
+            // Обновляем Lease и ACK состояние на основе ответа на батч спула
+            final ackNow = _clock().toUtc();
+            _lastAckAt = ackNow;
+            if (ack.leaseTtlMs != null && ack.leaseTtlMs! > 0) {
+              _leaseTtl = Duration(milliseconds: ack.leaseTtlMs!);
+            } else if (ack.leaseExpiresAt.isAfter(ackNow)) {
+              _leaseTtl = ack.leaseExpiresAt.difference(ackNow);
+            }
+            _leaseStopwatch.reset();
+            _leaseStopwatch.start();
+            if (ack.ackHighWatermarkSeq > _ackedSeq) {
+              _ackedSeq = ack.ackHighWatermarkSeq;
+            }
+            _firstFrameAcked = true;
           } catch (error) {
             _snapshot('recorder.spool.drain_retry', error: error);
-            break;
+            // Прерываем флаш: нельзя отправлять свежие кадры из памяти вперед старых со спула.
+            // Статус здоровья определяется допустимым лагом и арендой.
+            return _checkLeaseAndLag(now);
           }
         } else {
           await spool!.removeBatch(file);
         }
+        // Отправляем максимум 1 батч спула за цикл флаша, чтобы не забивать WebRTC полосу
+        break;
       }
     }
 
@@ -1514,7 +1541,8 @@ class LinkHostRecorder {
     if (!config.isStrict &&
         (reason == 'recorder_queue_overflow' ||
             reason == 'recorder_lease_expired' ||
-            reason == 'recorder_ack_lag_exceeded')) {
+            reason == 'recorder_ack_lag_exceeded' ||
+            reason == 'recorder_first_frame_unavailable')) {
       _snapshot('recorder.resilient.degraded', fields: {'reason': reason});
       unawaited(_spillToSpool());
       return;

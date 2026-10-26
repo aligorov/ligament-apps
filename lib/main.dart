@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -14,6 +15,7 @@ import 'services/debug_log_service.dart';
 import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
 import 'services/link_host_session.dart';
+import 'services/link_spool_storage.dart';
 import 'screens/link_host_overlay.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
@@ -117,6 +119,9 @@ void main(List<String> args) async {
   DebugLogService.instance.record('app.version.begin');
   await initAppVersion();
   DebugLogService.instance.record('app.version.ready');
+  if (!kIsWeb) {
+    unawaited(LinkSpoolStorage.purgeOrphanedSpools());
+  }
 
   // Deep-link ligament://rdp/<uuid> (аудит RDP-11, контракт T6), холодный
   // старт: Windows передаёт URI схемы в argv (windows/runner/main.cpp

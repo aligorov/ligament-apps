@@ -64,4 +64,50 @@ void main() {
       throwsA(isA<LinkSpoolQuotaExceededException>()),
     );
   });
+
+  test('encrypts data-at-rest and rejects tampered files', () async {
+    const sensitiveText = 'SUPER_SECRET_ADMIN_TOKEN_12345';
+    await spool.writeBatch(1, {'secret': sensitiveText});
+
+    final files = await spool.getPendingBatches();
+    expect(files.length, 1);
+
+    // 1. Verify file on disk does NOT contain plaintext sensitive text
+    final rawBytes = await files.first.readAsBytes();
+    final rawString = String.fromCharCodes(rawBytes);
+    expect(rawString.contains(sensitiveText), isFalse);
+
+    // 2. Legitimate read decrypts accurately
+    final decrypted = await spool.readBatch(files.first);
+    expect(decrypted?['secret'], sensitiveText);
+
+    // 3. Modifying a byte in the encrypted spool triggers HMAC failure and returns null
+    final tamperedBytes = List<int>.from(rawBytes);
+    tamperedBytes[tamperedBytes.length - 1] ^= 0x01; // flip a bit
+    await files.first.writeAsBytes(tamperedBytes);
+
+    final tamperedResult = await spool.readBatch(files.first);
+    expect(tamperedResult, isNull);
+  });
+
+  test('purgeOrphanedSpools deletes directories older than threshold', () async {
+    final baseDir = await Directory.systemTemp.createTemp('spool_reaper_base_');
+    try {
+      final oldDir = Directory('${baseDir.path}/old_session')..createSync();
+      final freshDir = Directory('${baseDir.path}/fresh_session')..createSync();
+
+      // Run purge with 0ms maxAge to test reaper cleanup
+      final purged = await LinkSpoolStorage.purgeOrphanedSpools(
+        baseDir: baseDir,
+        maxAge: Duration.zero,
+      );
+      expect(purged, 2);
+      expect(oldDir.existsSync(), isFalse);
+      expect(freshDir.existsSync(), isFalse);
+    } finally {
+      if (baseDir.existsSync()) {
+        baseDir.deleteSync(recursive: true);
+      }
+    }
+  });
 }

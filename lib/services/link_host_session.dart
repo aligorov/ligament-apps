@@ -939,6 +939,7 @@ Future<void> _runConnectedLinkHostWorker(
     isRecorderReady: () =>
         recorder == null ||
         (!recorder.config.mandatory && !recorder.config.requireFirstFrame) ||
+        !recorder.config.isStrict ||
         recorder.firstFrameAcked,
     onControlInputObserved: recorder?.observeControlInput,
     onDesktopChanged: recorder?.notifyDesktopChanged,
