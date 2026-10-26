@@ -388,7 +388,7 @@ class DebugLogService extends ChangeNotifier {
     Object? error,
     Map<String, Object?> fields = const {},
   }) {
-    if (!_available || !_eventPattern.hasMatch(event)) return;
+    if (!_initialized || !_available || !_eventPattern.hasMatch(event)) return;
     if (!_nativeWindows && !_enabled) return;
     if (_queuedWrites >= maxPendingEntries) {
       _droppedWrites++;

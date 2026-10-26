@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/api/client.dart';
@@ -264,6 +265,54 @@ void main() {
     rejectWrite = true;
     await expectLater(logs.setEnabled(true), throwsA(isA<PlatformException>()));
     expect(logs.enabled, isFalse);
+  });
+
+  testWidgets('uninitialized Windows logger does not leave a widget timer',
+      (tester) async {
+    final pending = Completer<bool>();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'write') return pending.future;
+      return {'enabled': false, 'path': 'log'};
+    });
+    final logs = DebugLogService(nativeWindows: true, channel: channel);
+    await tester.pumpWidget(MaterialApp(
+        home: TextButton(
+      onPressed: () => logs.record('ui.test.action'),
+      child: const Text('Action'),
+    )));
+    await tester.tap(find.text('Action'));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(logs.initialized, isFalse);
+  });
+
+  testWidgets(
+      'initialized Windows writer times out and continues while cached off',
+      (tester) async {
+    final pending = Completer<bool>();
+    final events = <String>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'getState') return {'enabled': false, 'path': 'log'};
+      if (call.method == 'write') {
+        events.add((call.arguments as Map)['event'] as String);
+        if (events.length == 1) return pending.future;
+      }
+      return true;
+    });
+    final logs = DebugLogService(nativeWindows: true, channel: channel);
+    await logs.initialize();
+    expect(logs.enabled, isFalse);
+    logs.record('native.first');
+    logs.record('native.second');
+    await tester.pump();
+    expect(events, ['native.first']);
+    await tester.pump(const Duration(milliseconds: 1100));
+    await logs.flush();
+    expect(events, ['native.first', 'native.second']);
+    pending.complete(false);
+    await tester.pump();
   });
 
   test('native worker responds to changes made by another process', () async {
