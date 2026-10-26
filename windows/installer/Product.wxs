@@ -101,7 +101,7 @@
       <RegistrySearch Id="ExistingAllowSelfSigned" Root="HKLM" Key="SOFTWARE\Ligament\2FA"
                       Name="AllowSelfSigned" Type="raw" />
     </Property>
-    <Property Id="BYPASSACCOUNTS" Value="" Secure="yes">
+    <Property Id="BYPASSACCOUNTS" Secure="yes">
       <RegistrySearch Id="ExistingBypassAccounts" Root="HKLM" Key="SOFTWARE\Ligament\2FA"
                       Name="BypassAccounts" Type="raw" />
     </Property>
