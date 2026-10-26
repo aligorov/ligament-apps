@@ -116,6 +116,36 @@ String consoleConnectionStatusKey(bool connected, bool frameReady) {
   return 'init';
 }
 
+String mediaTransportFromStats(List<StatsReport> reports, String fallback) {
+  String? localId;
+  String? remoteId;
+  for (final report in reports) {
+    if (report.type != 'candidate-pair') continue;
+    final values = report.values;
+    if (values['state'] == 'succeeded' &&
+        (values['nominated'] == true || values['selected'] == true)) {
+      localId = values['localCandidateId']?.toString();
+      remoteId = values['remoteCandidateId']?.toString();
+      break;
+    }
+  }
+  if (localId == null || remoteId == null) return fallback;
+
+  var resolved = 0;
+  var usesRelay = false;
+  for (final report in reports) {
+    if (report.type != 'local-candidate' &&
+        report.type != 'remote-candidate') {
+      continue;
+    }
+    if (report.id != localId && report.id != remoteId) continue;
+    resolved++;
+    if (report.values['candidateType'] == 'relay') usesRelay = true;
+  }
+  if (resolved != 2) return fallback;
+  return usesRelay ? 'TURN relay (WebRTC)' : 'Direct WebRTC';
+}
+
 /// Ш4: Failed/Closed — завершение через grace-таймер; Disconnected —
 /// временный статус (ICE restart должен работать), таймер не запускает.
 /// Чистая функция — покрыта юнит-тестами.
@@ -894,6 +924,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return strings.isRu
             ? 'Хост не подготовил рабочий стол. Проверьте службу Link и журнал на целевом ПК.'
             : 'The host desktop is not ready. Check the Link service and host log.';
+      case 'host_ui_unavailable':
+        return strings.isRu
+            ? 'На целевом ПК не удалось показать окно подтверждения. Проверьте журнал Link worker.'
+            : 'The target PC could not display the consent window. Check the Link worker log.';
+      case 'host_media_failed':
+        return strings.isRu
+            ? 'Медиаканал с целевым ПК потерян. Проверьте сеть, ICE/TURN и журнал Link worker.'
+            : 'The media connection to the target PC was lost. Check the network, ICE/TURN and Link worker log.';
+      case 'tail_lost':
+        return strings.isRu
+            ? 'Сессия остановлена: хост не подтвердил сохранение конца записи.'
+            : 'The session stopped because the host could not confirm the recording tail.';
       case 'number_matching_failed':
       case 'number_matching_required':
         return strings.isRu
@@ -3309,10 +3351,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     String packetsLost = '—';
     String resolution =
         '${_remoteRenderer.videoWidth}x${_remoteRenderer.videoHeight}';
-    String transportType =
-        _isDataChannelActive ? 'DataChannel (P2P)' : 'WebSocket';
+    String transportType = 'WebRTC (path unknown)';
 
     if (reports != null) {
+      transportType = mediaTransportFromStats(reports, transportType);
       for (final r in reports) {
         final values = r.values;
         if (r.type == 'inbound-rtp' && values['kind'] == 'video') {
@@ -4626,8 +4668,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       child: Tooltip(
                         message: _isDataChannelActive
                             ? (strings.isRu
-                                ? 'Канал управления: DataChannel (прямой P2P)'
-                                : 'Control channel: DataChannel (direct P2P)')
+                                ? 'Канал управления: DataChannel (WebRTC)'
+                                : 'Control channel: DataChannel (WebRTC)')
                             : (widget.isLink
                                 ? (strings.isRu
                                     ? 'Канал управления: DataChannel недоступен'
@@ -4651,8 +4693,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           ),
                           child: Text(
                             _isDataChannelActive
-                                ? 'P2P'
-                                : (widget.isLink ? 'NO P2P' : 'WS'),
+                                ? 'DC'
+                                : (widget.isLink ? 'NO DC' : 'WS'),
                             style: TextStyle(
                               color: _isDataChannelActive
                                   ? const Color(0xFF34D399)
@@ -4674,8 +4716,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 4),
                       child: Tooltip(
                         message: strings.isRu
-                            ? 'Удалённый ввод недоступен: нет P2P-канала (DataChannel). Управление возможно только при прямом соединении; просмотр и чат работают.'
-                            : 'Remote input unavailable: no P2P DataChannel. Control requires a direct connection; viewing and chat still work.',
+                            ? 'Удалённый ввод недоступен: нет WebRTC DataChannel. Просмотр и чат работают.'
+                            : 'Remote input unavailable: no WebRTC DataChannel. Viewing and chat still work.',
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 3),

@@ -23,6 +23,8 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
   Size? _currentWindowSize;
   bool _chatOpen = false;
   Future<void> _windowUpdates = Future<void>.value();
+  Timer? _windowRetry;
+  int _windowFailures = 0;
   final TextEditingController _chatController = TextEditingController();
   final ScrollController _chatScrollController = ScrollController();
 
@@ -70,6 +72,8 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
   }
 
   void _syncWindow() {
+    _windowRetry?.cancel();
+    _windowRetry = null;
     final phase = widget.state.phase;
     if (phase == LinkHostWorkerPhase.starting ||
         phase == LinkHostWorkerPhase.closing ||
@@ -94,8 +98,20 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
         await windowManager.setAlwaysOnTop(true);
         await windowManager.show();
       }
+      _windowFailures = 0;
     }).catchError((Object error) {
-      debugPrint('link_host: window layout unavailable: ${error.runtimeType}');
+      debugPrint('link_host: window layout unavailable: $error');
+      if (!mounted) return;
+      if (_currentWindowSize == targetSize) _currentWindowSize = null;
+      _windowFailures++;
+      if (expanded && _windowFailures >= 3) {
+        widget.state.markConsentUiUnavailable();
+        return;
+      }
+      if (expanded) {
+        _windowRetry?.cancel();
+        _windowRetry = Timer(const Duration(milliseconds: 750), _syncWindow);
+      }
     });
   }
 
@@ -127,6 +143,7 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
 
   @override
   void dispose() {
+    _windowRetry?.cancel();
     _chatController.dispose();
     _chatScrollController.dispose();
     if (!kIsWeb &&

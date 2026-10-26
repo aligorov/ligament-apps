@@ -487,6 +487,9 @@ func validWorkerResponse(frame []byte, sessionID string) bool {
 			request.SessionID == sessionID &&
 			(request.Reason == "host_local_disconnect" ||
 				request.Reason == "peer_failed" ||
+				request.Reason == "host_media_failed" ||
+				request.Reason == "signaling_failed" ||
+				request.Reason == "tail_lost" ||
 				strings.HasPrefix(request.Reason, "recorder_"))
 	case "session_answer":
 		var answer struct {

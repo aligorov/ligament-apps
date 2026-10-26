@@ -218,10 +218,12 @@ func TestSessionWorkerBrokerFailsClosedWithoutLauncher(t *testing.T) {
 	}
 }
 
-func TestValidWorkerResponseAllowsOnlyScopedLocalDisconnect(t *testing.T) {
-	valid := []byte(`{"type":"session_terminate","session_id":"` + testSessionID + `","payload":{"session_id":"` + testSessionID + `","reason":"host_local_disconnect"}}`)
-	if !validWorkerResponse(valid, testSessionID) {
-		t.Fatal("expected scoped host-local disconnect to be accepted")
+func TestValidWorkerResponseAcceptsScopedTerminationReasons(t *testing.T) {
+	for _, reason := range []string{"host_local_disconnect", "peer_failed", "host_media_failed", "signaling_failed", "tail_lost", "recorder_tail_lost"} {
+		frame := []byte(`{"type":"session_terminate","session_id":"` + testSessionID + `","payload":{"session_id":"` + testSessionID + `","reason":"` + reason + `"}}`)
+		if !validWorkerResponse(frame, testSessionID) {
+			t.Fatalf("expected scoped termination %q to be accepted", reason)
+		}
 	}
 	wrongSession := []byte(`{"type":"session_terminate","session_id":"` + testOperatorID + `","payload":{"session_id":"` + testOperatorID + `","reason":"host_local_disconnect"}}`)
 	if validWorkerResponse(wrongSession, testSessionID) {
@@ -229,7 +231,7 @@ func TestValidWorkerResponseAllowsOnlyScopedLocalDisconnect(t *testing.T) {
 	}
 	wrongReason := []byte(`{"type":"session_terminate","session_id":"` + testSessionID + `","payload":{"session_id":"` + testSessionID + `","reason":"revoke_other_session"}}`)
 	if validWorkerResponse(wrongReason, testSessionID) {
-		t.Fatal("accepted a worker termination reason other than local disconnect")
+		t.Fatal("accepted an unscoped worker termination reason")
 	}
 }
 

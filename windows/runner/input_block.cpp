@@ -19,9 +19,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -239,21 +241,23 @@ void ExecuteSendSas() {
   }
 }
 
+// A dequeued capture can outlive a timed-out FFI call, so both the request and
+// its output buffer are owned by native shared state, never by the caller.
 struct CaptureRequest {
   int max_w = 0;
   int max_h = 0;
-  uint8_t* out_buf = nullptr;
   int buf_size = 0;
-  int* out_len = nullptr;
-  int* out_w = nullptr;
-  int* out_h = nullptr;
+  std::vector<uint8_t> out_buf;
+  int out_len = 0;
+  int out_w = 0;
+  int out_h = 0;
   int result = -1;
   bool done = false;
 };
 
 std::mutex g_capture_mutex;
 std::condition_variable g_capture_cv;
-CaptureRequest* g_active_capture_request = nullptr;
+std::shared_ptr<CaptureRequest> g_active_capture_request;
 
 void DesktopInputWorkerLoop();
 
@@ -342,13 +346,13 @@ int DoWorkerCaptureDesktopBmp(CaptureRequest* req) {
   bmfHeader.bfSize = total_bmp_size;
   bmfHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
 
-  memcpy(req->out_buf, &bmfHeader, sizeof(BITMAPFILEHEADER));
-  memcpy(req->out_buf + sizeof(BITMAPFILEHEADER), &bi.bmiHeader, sizeof(BITMAPINFOHEADER));
-  memcpy(req->out_buf + bmfHeader.bfOffBits, pBits, pixel_data_size);
+  memcpy(req->out_buf.data(), &bmfHeader, sizeof(BITMAPFILEHEADER));
+  memcpy(req->out_buf.data() + sizeof(BITMAPFILEHEADER), &bi.bmiHeader, sizeof(BITMAPINFOHEADER));
+  memcpy(req->out_buf.data() + bmfHeader.bfOffBits, pBits, pixel_data_size);
 
-  *req->out_len = total_bmp_size;
-  *req->out_w = target_w;
-  *req->out_h = target_h;
+  req->out_len = total_bmp_size;
+  req->out_w = target_w;
+  req->out_h = target_h;
 
   SelectObject(hMemDC, hOld);
   DeleteObject(hDIB);
@@ -366,7 +370,7 @@ void DesktopInputWorkerLoop() {
   for (;;) {
     NativeInputTask task{};
     bool has_task = false;
-    CaptureRequest* cap_req = nullptr;
+    std::shared_ptr<CaptureRequest> cap_req;
     {
       std::unique_lock<std::mutex> lock(g_input_mutex);
       g_input_cv.wait_for(lock, std::chrono::milliseconds(250), [] {
@@ -379,7 +383,7 @@ void DesktopInputWorkerLoop() {
       }
       if (g_active_capture_request != nullptr) {
         cap_req = g_active_capture_request;
-        g_active_capture_request = nullptr;
+        g_active_capture_request.reset();
       }
     }
 
@@ -390,7 +394,7 @@ void DesktopInputWorkerLoop() {
     }
 
     if (cap_req != nullptr) {
-      cap_req->result = DoWorkerCaptureDesktopBmp(cap_req);
+      cap_req->result = DoWorkerCaptureDesktopBmp(cap_req.get());
       {
         std::lock_guard<std::mutex> cap_lock(g_capture_mutex);
         cap_req->done = true;
@@ -687,23 +691,33 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
 
   EnsureInputWorkerStarted();
 
-  CaptureRequest req{max_w, max_h, out_buf, buf_size, out_len, out_w, out_h, -1, false};
+  auto req = std::make_shared<CaptureRequest>();
+  req->max_w = max_w;
+  req->max_h = max_h;
+  req->buf_size = buf_size;
+  req->out_buf.resize(static_cast<size_t>(buf_size));
   {
     std::unique_lock<std::mutex> lock(g_input_mutex);
-    g_active_capture_request = &req;
+    g_active_capture_request = req;
     g_input_cv.notify_one();
   }
 
   std::unique_lock<std::mutex> cap_lock(g_capture_mutex);
-  if (!g_capture_cv.wait_for(cap_lock, std::chrono::milliseconds(1200), [&req] { return req.done; })) {
+  if (!g_capture_cv.wait_for(cap_lock, std::chrono::milliseconds(1200), [&req] { return req->done; })) {
     std::lock_guard<std::mutex> lock(g_input_mutex);
-    if (g_active_capture_request == &req) {
-      g_active_capture_request = nullptr;
+    if (g_active_capture_request == req) {
+      g_active_capture_request.reset();
     }
     return -99;
   }
 
-  return req.result;
+  if (req->result == 0) {
+    memcpy(out_buf, req->out_buf.data(), req->out_len);
+    *out_len = req->out_len;
+    *out_w = req->out_w;
+    *out_h = req->out_h;
+  }
+  return req->result;
 }
 
 } // extern "C"

@@ -80,6 +80,7 @@ void main(List<String> args) async {
         );
       } catch (e) {
         debugPrint('link_host: window layout unavailable, running headless: $e');
+        workerState.markConsentUiUnavailable();
         runApp(const SizedBox.shrink());
       }
       await runLinkHostWorker(

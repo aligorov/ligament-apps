@@ -400,7 +400,8 @@ void main() {
     );
   });
 
-  test('LinkHostWorkerState handles bidirectional chat and unread counters', () {
+  test('LinkHostWorkerState handles bidirectional chat and unread counters',
+      () {
     final state = LinkHostWorkerState();
     final sentMessages = <Map<String, dynamic>>[];
     state.bindChatSender((msg) => sentMessages.add(msg));
@@ -470,6 +471,108 @@ void main() {
     // Clear unread
     state.clearUnreadChat();
     expect(state.unreadChatCount, 0);
+  });
+
+  test('attended consent fails immediately when the window is unavailable',
+      () async {
+    final state = LinkHostWorkerState()
+      ..markConsentUiUnavailable()
+      ..showSession(_sessionId, 'control', 'operator@example.com');
+
+    expect(await state.awaitConsent(), isFalse);
+    expect(state.consentUiAvailable, isFalse);
+  });
+
+  test('window failure during consent completes denial without a timeout',
+      () async {
+    final state = LinkHostWorkerState()
+      ..showSession(_sessionId, 'control', 'operator@example.com');
+    final decision = state.awaitConsent();
+
+    state.markConsentUiUnavailable();
+
+    expect(await decision, isFalse);
+    expect(state.phase, LinkHostWorkerPhase.closing);
+  });
+
+  test('media failure after accepted answer emits session termination',
+      () async {
+    final peer = _FakeLinkHostPeer();
+    final sent = <Map<String, dynamic>>[];
+    final session = LinkHostSession(
+      sessionId: _sessionId,
+      accessMode: 'control',
+      peer: peer,
+      send: (frame) async => sent.add(frame),
+    );
+    await session.start(
+      offerSdp: _controlOffer,
+      iceServers: const [],
+      consentGranted: true,
+    );
+    sent.clear();
+
+    peer.failureCallback!();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(sent, hasLength(1));
+    expect(sent.single['type'], 'session_terminate');
+    expect((sent.single['payload'] as Map)['reason'], 'host_media_failed');
+    expect(session.isClosed, isTrue);
+  });
+
+  testWidgets('consent window retries after a transient show failure',
+      (tester) async {
+    const windowChannel = MethodChannel('window_manager');
+    const screenChannel = MethodChannel('screen_retriever');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    var showAttempts = 0;
+    messenger.setMockMethodCallHandler(windowChannel, (call) async {
+      if (call.method == 'isMinimized') return false;
+      if (call.method == 'getBounds') {
+        return {'x': 0.0, 'y': 0.0, 'width': 560.0, 'height': 760.0};
+      }
+      if (call.method == 'show') {
+        showAttempts++;
+        if (showAttempts == 1) {
+          throw PlatformException(code: 'show_failed');
+        }
+      }
+      return null;
+    });
+    const display = {
+      'id': 1,
+      'name': 'test',
+      'size': {'width': 1200.0, 'height': 800.0},
+      'visiblePosition': {'x': 0.0, 'y': 0.0},
+      'visibleSize': {'width': 1200.0, 'height': 800.0},
+      'scaleFactor': 1.0,
+    };
+    messenger.setMockMethodCallHandler(screenChannel, (call) async {
+      if (call.method == 'getPrimaryDisplay') return display;
+      if (call.method == 'getAllDisplays') {
+        return {'displays': [display]};
+      }
+      if (call.method == 'getCursorScreenPoint') {
+        return {'x': 0.0, 'y': 0.0};
+      }
+      return null;
+    });
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(windowChannel, null);
+      messenger.setMockMethodCallHandler(screenChannel, null);
+    });
+
+    final state = LinkHostWorkerState()
+      ..showSession(_sessionId, 'control', 'Иванов Иван');
+    await tester.pumpWidget(LinkHostOverlay(state: state));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(showAttempts, greaterThanOrEqualTo(2));
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('LinkHostOverlay toggles chat panel and sends messages',

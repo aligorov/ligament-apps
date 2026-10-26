@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:ligament_authenticator/api/client.dart';
+import 'package:ligament_authenticator/screens/support_operator_screen.dart';
 
 void main() {
   Future<ApiClient> clientFor(int status, String body) async {
@@ -54,5 +56,40 @@ void main() {
       () async {
     final client = await clientFor(200, '{"ice_servers":[]}');
     expect(await client.getLinkIceServers(), isEmpty);
+  });
+
+  test('ICE stats identify direct and TURN media paths', () {
+    final pair = StatsReport('pair-1', 'candidate-pair', 0, {
+      'state': 'succeeded',
+      'nominated': true,
+      'localCandidateId': 'local-1',
+      'remoteCandidateId': 'remote-1',
+    });
+    final direct = mediaTransportFromStats([
+      pair,
+      StatsReport('local-1', 'local-candidate', 0, {'candidateType': 'host'}),
+      StatsReport('remote-1', 'remote-candidate', 0, {'candidateType': 'srflx'}),
+    ], 'unknown');
+    final relayed = mediaTransportFromStats([
+      pair,
+      StatsReport('local-1', 'local-candidate', 0, {'candidateType': 'relay'}),
+      StatsReport('remote-1', 'remote-candidate', 0, {'candidateType': 'host'}),
+    ], 'unknown');
+
+    expect(direct, 'Direct WebRTC');
+    expect(relayed, 'TURN relay (WebRTC)');
+  });
+
+  test('ICE stats stay unknown without a resolved candidate pair', () {
+    final reports = [
+      StatsReport('pair-1', 'candidate-pair', 0, {
+        'state': 'in-progress',
+        'nominated': true,
+        'localCandidateId': 'local-1',
+        'remoteCandidateId': 'remote-1',
+      }),
+      StatsReport('local-1', 'local-candidate', 0, {'candidateType': 'host'}),
+    ];
+    expect(mediaTransportFromStats(reports, 'unknown'), 'unknown');
   });
 }

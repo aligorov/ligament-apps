@@ -265,7 +265,7 @@ class AppStrings {
   String get requestingScreenAccess => isRu ? 'Запрос доступа к экрану у пользователя...' : 'Requesting screen access from user...';
   String get reqErrorPrefix => isRu ? 'Ошибка запроса:' : 'Request error:';
   String get reqScreenErrorPrefix => isRu ? 'Ошибка запроса экрана:' : 'Screen request error:';
-  String get p2pConnected => isRu ? 'Подключено (P2P)' : 'Connected (P2P)';
+  String get p2pConnected => isRu ? 'Подключено (WebRTC)' : 'Connected (WebRTC)';
   String get streamActive => isRu ? 'Трансляция активна' : 'Stream Active';
   String get sessionEndedByUser => isRu ? 'Сеанс поддержки был завершен пользователем' : 'Support session was ended by the user';
   String get defaultEngineerName => isRu ? 'Инженер' : 'Engineer';

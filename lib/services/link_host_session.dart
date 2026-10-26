@@ -152,9 +152,7 @@ class LinkHostSession {
         iceServers: iceServers,
         allowControl: accessMode == 'control' || accessMode == 'full_control',
         onCandidate: (candidate) => unawaited(_sendCandidate(candidate)),
-        onFailure: () => unawaited(
-          _ready ? close() : _reject('host_media_failed'),
-        ),
+        onFailure: () => unawaited(_reject('host_media_failed')),
       );
       if (_closed) return;
       if (answer.isEmpty || utf8.encode(answer).length > maxOfferSdpBytes) {
@@ -346,6 +344,18 @@ class LinkHostWorkerState extends ChangeNotifier {
   final Completer<void> _disconnect = Completer<void>();
   Completer<bool>? _consent;
   void Function()? _disconnectHandler;
+  bool _consentUiAvailable = true;
+
+  bool get consentUiAvailable => _consentUiAvailable;
+
+  void markConsentUiUnavailable() {
+    _consentUiAvailable = false;
+    if (_consent?.isCompleted == false) _consent!.complete(false);
+    if (phase == LinkHostWorkerPhase.awaitingConsent) {
+      phase = LinkHostWorkerPhase.closing;
+      notifyListeners();
+    }
+  }
 
   LinkHostWorkerPhase phase = LinkHostWorkerPhase.starting;
   String accessMode = 'view';
@@ -383,7 +393,9 @@ class LinkHostWorkerState extends ChangeNotifier {
   }
 
   Future<bool> awaitConsent() {
-    if (_disconnect.isCompleted || phase == LinkHostWorkerPhase.closed) {
+    if (_disconnect.isCompleted ||
+        phase == LinkHostWorkerPhase.closed ||
+        !_consentUiAvailable) {
       return Future<bool>.value(false);
     }
     _consent = Completer<bool>();
@@ -858,7 +870,11 @@ Future<void> _runConnectedLinkHostWorker(
     if (session.isClosed ||
         state.phase == LinkHostWorkerPhase.closing ||
         (accessType == 'attended' && !consentGranted)) {
-      if (!session.isClosed) await session.reject('host_consent_denied');
+      if (!session.isClosed) {
+        await session.reject(accessType == 'attended' && !state.consentUiAvailable
+            ? 'host_ui_unavailable'
+            : 'host_consent_denied');
+      }
     } else {
       final enteredCode = state.confirmationCode;
       state.confirmationCode = '';
@@ -1251,6 +1267,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   }) async {
     _allowControl = allowControl;
     await ensureLinkHostInputReady(allowControl: allowControl);
+    InputInjector.instance.setDesktopScope(policy.desktopScope);
     final peer = await createPeerConnection({
       'iceServers': iceServers,
       'sdpSemantics': 'unified-plan',
@@ -1314,7 +1331,6 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         _connectionGraceTimer?.cancel();
         _connectionGraceTimer = null;
         InputInjector.instance.setKeepSessionAwake(true);
-        InputInjector.instance.setDesktopScope(policy.desktopScope);
         if (!kIsWeb && Platform.isWindows) {
           _desktopSwitchTimer?.cancel();
           _desktopSwitchTimer = Timer.periodic(
