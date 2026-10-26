@@ -25,6 +25,9 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
   Future<void> _windowUpdates = Future<void>.value();
   Timer? _windowRetry;
   int _windowFailures = 0;
+  int _windowRevision = 0;
+  String? _windowSessionId;
+  LinkHostWorkerPhase? _windowPhase;
   final TextEditingController _chatController = TextEditingController();
   final ScrollController _chatScrollController = ScrollController();
 
@@ -38,7 +41,10 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
       _initTray();
     }
     widget.state.addListener(_syncWindow);
-    unawaited(windowManager.setPreventClose(true));
+    unawaited(windowManager.setPreventClose(true).catchError((Object error) {
+      debugPrint('link_host: prevent close unavailable: $error');
+      if (mounted) widget.state.markConsentUiUnavailable();
+    }));
     _syncWindow();
   }
 
@@ -75,33 +81,48 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
     _windowRetry?.cancel();
     _windowRetry = null;
     final phase = widget.state.phase;
+    final requestChanged = _windowSessionId != widget.state.sessionId ||
+        (_windowPhase == LinkHostWorkerPhase.awaitingConsent) !=
+            (phase == LinkHostWorkerPhase.awaitingConsent);
+    _windowSessionId = widget.state.sessionId;
+    _windowPhase = phase;
+    if (requestChanged) _windowFailures = 0;
     if (phase == LinkHostWorkerPhase.starting ||
         phase == LinkHostWorkerPhase.closing ||
         phase == LinkHostWorkerPhase.closed) {
+      _windowRevision++;
+      _currentWindowSize = null;
       return;
     }
     final expanded = phase == LinkHostWorkerPhase.awaitingConsent;
     final targetSize = expanded
         ? const Size(560, 760)
         : (_chatOpen ? const Size(560, 480) : const Size(560, 84));
-    if (_currentWindowSize == targetSize) return;
+    if (_currentWindowSize == targetSize && !requestChanged) return;
     _currentWindowSize = targetSize;
+    final revision = ++_windowRevision;
+    bool isCurrent() => mounted && revision == _windowRevision;
     _windowUpdates = _windowUpdates.then((_) async {
-      if (!mounted) return;
+      if (!isCurrent()) return;
       await windowManager.setMinimumSize(const Size(400, 72));
+      if (!isCurrent()) return;
       await windowManager.setSize(targetSize);
+      if (!isCurrent()) return;
       if (expanded) {
         await windowManager.center();
+        if (!isCurrent()) return;
         await windowManager.show();
+        if (!isCurrent()) return;
         await windowManager.focus();
       } else {
         await windowManager.setAlwaysOnTop(true);
+        if (!isCurrent()) return;
         await windowManager.show();
       }
-      _windowFailures = 0;
+      if (isCurrent()) _windowFailures = 0;
     }).catchError((Object error) {
       debugPrint('link_host: window layout unavailable: $error');
-      if (!mounted) return;
+      if (!isCurrent()) return;
       if (_currentWindowSize == targetSize) _currentWindowSize = null;
       _windowFailures++;
       if (expanded && _windowFailures >= 3) {

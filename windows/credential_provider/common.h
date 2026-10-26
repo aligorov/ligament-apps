@@ -315,7 +315,7 @@ inline void LogCPFileLine(const wchar_t* line) {
             return false;
         }
         DWORD rc = SetNamedSecurityInfoW(const_cast<LPWSTR>(objectPath), SE_FILE_OBJECT,
-            PROTECTED_DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
             sidSystem, nullptr, dacl, nullptr);
         FreeSid(sidSystem);
         return rc == ERROR_SUCCESS;

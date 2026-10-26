@@ -36,7 +36,7 @@ jobs:
         shell: pwsh
         run: |
           flutter pub get
-          flutter test test/remote_pointer_surface_test.dart test/service_console_input_test.dart test/remote_keyboard_test.dart test/screen_mapping_test.dart test/link_host_session_test.dart test/link_number_matching_test.dart test/link_key_messages_test.dart test/link_host_readiness_test.dart test/link_ice_configuration_test.dart test/link_session_control_test.dart test/link_archive_test.dart
+          flutter test test/remote_pointer_surface_test.dart test/remote_keyboard_test.dart test/screen_mapping_test.dart test/link_host_session_test.dart test/link_number_matching_test.dart test/link_key_messages_test.dart test/link_host_readiness_test.dart test/link_ice_configuration_test.dart test/link_session_control_test.dart test/link_archive_test.dart
           if ($LASTEXITCODE -ne 0) { throw 'Flutter remote input tests failed' }
           flutter test test/support_approval_modal_test.dart test/link_agent_binding_service_test.dart
           if ($LASTEXITCODE -ne 0) { throw 'SOS approval or Link binding regression tests failed' }

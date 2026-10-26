@@ -13,7 +13,6 @@ import 'services/deep_link_service.dart';
 import 'services/debug_log_service.dart';
 import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
-import 'services/service_console_host.dart';
 import 'services/link_host_session.dart';
 import 'screens/link_host_overlay.dart';
 import 'screens/connect_screen.dart';
@@ -114,26 +113,6 @@ void main(List<String> args) async {
     DebugLogService.instance.record('link.worker.ended');
     await DebugLogService.instance.flush();
     exit(0);
-  }
-  // A service worker has its own machine-scoped authorization. Never restore
-  // a GUI user's tokens, local HTTP listener, notifications, tray or window.
-  if (args.any((arg) => arg.startsWith('--service-console'))) {
-    if (kIsWeb || !Platform.isWindows) exit(2);
-    DebugLogService.instance.record('console.worker.begin');
-    try {
-      final pipe = serviceConsolePipeFromArgs(args);
-      if (pipe == null) exit(2);
-      runApp(const SizedBox.shrink());
-      await runServiceConsoleHost(pipe);
-    } catch (error) {
-      DebugLogService.instance.record('console.worker.bootstrap_failed', error: error);
-      await DebugLogService.instance.flush();
-      debugPrint('service_console: bootstrap_failed');
-      exit(2);
-    }
-    DebugLogService.instance.record('console.worker.ended');
-    await DebugLogService.instance.flush();
-    return;
   }
   DebugLogService.instance.record('app.version.begin');
   await initAppVersion();

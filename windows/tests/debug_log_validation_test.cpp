@@ -6,6 +6,61 @@
 
 int main() {
   using namespace debug_log;
+  using detail::DecideSecurity;
+  using detail::SafeParentAllow;
+  using detail::SecurityDecision;
+  using detail::SecurityUse;
+  static_assert(SafeParentAllow(false, false, 0x001200a9u));  // Read/execute.
+  static_assert(SafeParentAllow(false, false, 0xa0000000u));  // Generic read/execute.
+  static_assert(SafeParentAllow(true, false, 0x001f01ffu));   // SYSTEM/Admin full.
+  static_assert(SafeParentAllow(false, true, 0x001f01ffu));   // Inherit-only, not effective.
+  for (unsigned bit = 0; bit < 32; ++bit) {
+    const uint32_t access = uint32_t{1} << bit;
+    const bool read_only = (access & detail::kParentReadOnlyAccess) != 0;
+    assert(SafeParentAllow(false, false, access) == read_only);
+    assert(SafeParentAllow(false, false, access | 0x001200a9u) == read_only);
+  }
+  for (const uint32_t access : {0x2u, 0x4u, 0x10u, 0x40u, 0x100u, 0x10000u,
+                                0x40000u, 0x80000u, 0x40000000u, 0x10000000u,
+                                0x01000000u, 0x02000000u, 0xffffffffu}) {
+    // Create/write data, EA, delete-child, attributes, delete, ACL/owner,
+    // generic write/all, system security, maximum allowed and unknown rights.
+    assert(!SafeParentAllow(false, false, access));
+  }
+  for (unsigned flags = 0; flags < 256; ++flags) {
+    const auto ace_flags = static_cast<uint8_t>(flags);
+    // Private ACEs must be effective, explicit allows. Denies, inherit-only,
+    // inherited, no-propagate and unknown flags cannot satisfy the exact DACL.
+    assert(detail::PrivateAllow(true, 0x001f01ffu, ace_flags) == (flags <= 3));
+    assert(!detail::PrivateAllow(false, 0x001f01ffu, ace_flags));
+    assert(!detail::PrivateAllow(true, 0x001200a9u, ace_flags));
+  }
+  for (const auto use : {SecurityUse::parent, SecurityUse::log_directory,
+                         SecurityUse::log_file}) {
+    for (const bool safe_acl : {false, true}) {
+      for (const bool private_acl : {false, true}) {
+        // Wrong object type, reparse/hardlink or untrusted owner: never repair.
+        assert(DecideSecurity(use, false, true, safe_acl, private_acl) ==
+               SecurityDecision::reject);
+        assert(DecideSecurity(use, true, false, safe_acl, private_acl) ==
+               SecurityDecision::reject);
+      }
+    }
+  }
+  static_assert(DecideSecurity(SecurityUse::parent, true, true, true, false) ==
+                SecurityDecision::accept);  // Privileged parent with user read ACEs.
+  static_assert(DecideSecurity(SecurityUse::parent, true, true, false, false) ==
+                SecurityDecision::reject);  // Never rewrite an unsafe parent.
+  static_assert(DecideSecurity(SecurityUse::log_directory, true, true, true, false) ==
+                SecurityDecision::tighten); // Legacy read-only/inherited Logs ACL.
+  static_assert(DecideSecurity(SecurityUse::log_directory, true, true, false, false) ==
+                SecurityDecision::reject);  // Unsafe grants/retained write handles.
+  static_assert(DecideSecurity(SecurityUse::log_directory, true, true, true, true) ==
+                SecurityDecision::accept);  // Already private: no mutation.
+  static_assert(DecideSecurity(SecurityUse::log_file, true, true, true, false) ==
+                SecurityDecision::reject);  // Never repair a file's ACL.
+  static_assert(DecideSecurity(SecurityUse::log_file, true, true, true, true) ==
+                SecurityDecision::accept);
   static_assert(ValidEvent("startup.mode.link_host"));
   static_assert(!ValidEvent("Startup"));
   static_assert(!ValidEvent(""));

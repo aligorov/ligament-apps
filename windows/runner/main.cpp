@@ -34,12 +34,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
-  bool service_console = false;
   bool link_host_worker = false;
   bool start_minimized = false;
   bool autoshare = false;
   for (const auto& argument : command_line_arguments) {
-    if (argument.rfind("--service-console=", 0) == 0) service_console = true;
     if (argument.rfind("--link-host=", 0) == 0) link_host_worker = true;
     if (argument == "--minimized") start_minimized = true;
     if (argument.rfind("--autoshare=", 0) == 0) {
@@ -48,15 +46,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     }
   }
   debug_log::Initialize(link_host_worker ? debug_log::Mode::link_host :
-      service_console ? debug_log::Mode::service_console : debug_log::Mode::gui);
-  debug_log::Write(link_host_worker ? "startup.mode.link_host" :
-      service_console ? "startup.mode.service_console" : "startup.mode.gui");
+      debug_log::Mode::gui);
+  debug_log::Write(link_host_worker ? "startup.mode.link_host" : "startup.mode.gui");
   if (start_minimized) debug_log::Write("startup.minimized");
   if (autoshare) debug_log::Write("startup.autoshare");
-  if (service_console && link_host_worker) {
-    debug_log::Write("startup.mode.conflict");
-    return EXIT_FAILURE;
-  }
 
   const HRESULT com_result = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(com_result)) {
@@ -65,11 +58,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
   flutter::DartProject project(L"data");
 
-  // Single-instance protection for the main GUI application.
-  // Dedicated headless workers (--service-console, --link-host) and
-  // autoshare forwarders have their own IPC lifecycle.
+  // Workers and autoshare forwarders have their own IPC lifecycle.
   HANDLE single_instance_mutex = nullptr;
-  if (!service_console && !link_host_worker && !autoshare) {
+  if (!link_host_worker && !autoshare) {
     single_instance_mutex = ::CreateMutexW(nullptr, TRUE, L"Local\\Ligament2FA_App_SingleInstance");
     const DWORD mutex_error = ::GetLastError();
     if (single_instance_mutex == nullptr) {
@@ -97,7 +88,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
-  FlutterWindow window(project, service_console, link_host_worker, start_minimized);
+  FlutterWindow window(project, link_host_worker, start_minimized);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(440, 720);
   debug_log::Write("window.create.begin");

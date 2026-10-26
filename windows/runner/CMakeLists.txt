@@ -18,7 +18,6 @@ add_executable(${BINARY_NAME} WIN32
   "input_block.cpp"
   "link_agent_binding_bridge.cpp"
   "link_host_bridge.cpp"
-  "service_console_bridge.cpp"
 )
 
 # Apply the standard set of build settings. This can be removed for applications

@@ -2,11 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ligament_authenticator/api/client.dart';
 import 'package:ligament_authenticator/services/debug_log_service.dart';
 import 'package:ligament_authenticator/services/link_host_recorder.dart';
 import 'package:ligament_authenticator/services/link_host_session.dart';
-import 'package:ligament_authenticator/services/service_console_host.dart';
 import 'package:ligament_authenticator/services/support_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -42,27 +40,6 @@ class _Peer implements LinkHostPeer {
 
   @override
   Future<void> close() async => closeCount++;
-}
-
-class _Capture implements ServiceConsoleCapture {
-  Object? stopError;
-
-  @override
-  void setFailureHandler(void Function() handler) {}
-
-  @override
-  Future<void> start(
-      {required String sessionId,
-      required String accessMode,
-      required ApiClient api}) async {}
-
-  @override
-  Future<void> handleSignal(Map<String, dynamic> signal) async {}
-
-  @override
-  Future<void> stop() async {
-    if (stopError != null) throw stopError!;
-  }
 }
 
 void main() {
@@ -123,31 +100,6 @@ void main() {
     ]) {
       expect(supportDebugMessageType(value), 'unknown');
     }
-  });
-
-  test('console capture stop failure is not reported as successful shutdown',
-      () async {
-    final capture = _Capture()
-      ..stopError = PlatformException(
-          code: 'capture_unavailable', message: 'private-error-secret');
-    String? stoppedReason;
-    final controller = ServiceConsoleController(
-      sessionId: _sessionId,
-      capture: capture,
-      debugLog: logs,
-      send: (_) {},
-      onStopped: (reason) async => stoppedReason = reason,
-    );
-    await controller.stop('private-error-secret', report: false);
-    expect(stoppedReason, 'private-error-secret');
-    final text = await content();
-    expect(text, contains('event=console.stop'));
-    expect(text, contains('phase=capture_stop'));
-    expect(text, contains('result=failed'));
-    expect(text, contains('reason=unknown'));
-    expect(text, isNot(contains('capture_stopped')));
-    expect(text, isNot(contains('connected=true')));
-    expectNoPayload(text);
   });
 
   test(

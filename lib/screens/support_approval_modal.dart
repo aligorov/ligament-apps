@@ -37,6 +37,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   final TextEditingController _codeController = TextEditingController();
   final FocusNode _codeFocus = FocusNode();
   bool _processing = false;
+  bool _expired = false;
   String? _error;
   Timer? _expiryTimer;
 
@@ -75,9 +76,11 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   }
 
   void _close() {
+    if (!mounted || _expired) return;
+    _expired = true;
     DebugLogService.instance.record('ui.support_approval.close', fields: {'session_id': widget.prompt['session_id'], 'reason': 'expired'});
     if (_standalone) {
-      if (!_processing) unawaited(_deny());
+      unawaited(_deny(expired: true));
       return;
     }
     if (mounted && Navigator.of(context).canPop()) {
@@ -103,7 +106,9 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
       : (widget.numberMatchLength ?? 0);
 
   bool get _codeEntered =>
-      _codeLength > 0 && _codeController.text.trim().length == _codeLength;
+      !_expired &&
+      _codeLength > 0 &&
+      _codeController.text.trim().length == _codeLength;
 
   Future<void> _approve() async {
     final watch = Stopwatch()..start();
@@ -150,7 +155,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
       }
     } catch (e) {
       DebugLogService.instance.record('ui.support_approval.failed', error: e, fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
-      if (mounted) {
+      if (mounted && !_expired) {
         setState(() {
           _processing = false;
           _error = '${strings.errApprovalPrefix}: $e';
@@ -159,11 +164,11 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
     }
   }
 
-  Future<void> _deny() async {
+  Future<void> _deny({bool expired = false}) async {
     final watch = Stopwatch()..start();
     final fields = <String, Object?>{'session_id': widget.prompt['session_id'], 'operation': 'deny'};
     DebugLogService.instance.record('ui.support_approval.started', fields: fields);
-    if (_processing) {
+    if (_processing && !expired) {
       DebugLogService.instance.record('ui.support_approval.blocked', fields: {...fields, 'reason': 'busy'});
       return;
     }
@@ -425,7 +430,6 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
                           const BorderSide(color: Color(0xFF38BDF8), width: 2),
                     ),
                   ),
-                  onSubmitted: (_) => _codeEntered ? _approve() : null,
                 ),
               ),
             ] else ...[

@@ -56,32 +56,16 @@ if (Test-Path "$SvcDir\CMakeLists.txt") {
     }
 }
 
-# 3b. Сборка Ligament Endpoint Service (RDP Access Gateway; входит в MSI
-#     как endpoint_service.exe — компонент EndpointServiceComponent)
-$EpDir = "$ClientDir\windows\endpoint_service"
-if (Test-Path "$EpDir\CMakeLists.txt") {
-    Write-Host "`n[2c/5] Компиляция Ligament Endpoint Service (ligament_endpoint.exe)..." -ForegroundColor Yellow
-    # Версия агента = версия приложения из pubspec (rdp_endpoints.agent_version
-    # на сервере): «1.0.0» вечно зашитая версия сбивала диагностику обновлений.
-    $epVersion = "dev"
-    $epPubspec = Get-Content "$ClientDir\pubspec.yaml" -Raw
-    if ($epPubspec -match '(?m)^version:\s*(\d+\.\d+\.\d+(?:\+\d+)?)') {
-        $epVersion = $Matches[1]
-    }
-    cmake -B "$EpDir\build" -S "$EpDir" -A x64 "-DLigamentAgentVersion=$epVersion"
-    cmake --build "$EpDir\build" --config Release
-    if (Test-Path "$EpDir\build\Release\ligament_endpoint.exe") {
-        Write-Host " Успешно скомпилирована служба: ligament_endpoint.exe (agent $epVersion)" -ForegroundColor Green
-    } else {
-        Write-Error "Ошибка: ligament_endpoint.exe не скомпилировалась!"
-    }
-}
-
-# 3c. Сборка Windows Ligament Link Agent (LocalSystem host service; входит в MSI).
+# 3b. Сборка Windows Ligament Link Agent (LocalSystem host service; входит в MSI).
 $LinkAgentDir = "$ClientDir\windows\link_agent"
 $LinkAgentBuildDir = "$LinkAgentDir\build\Release"
 if (Test-Path "$LinkAgentDir\go.mod") {
-    Write-Host "`n[2d/5] Сборка Ligament Link Agent (Go Windows service)..." -ForegroundColor Yellow
+    Write-Host "`n[2c/5] Сборка Ligament Link Agent (Go Windows service)..." -ForegroundColor Yellow
+    $linkAgentVersion = "dev"
+    $linkAgentPubspec = Get-Content "$ClientDir\pubspec.yaml" -Raw
+    if ($linkAgentPubspec -match '(?m)^version:\s*(\d+\.\d+\.\d+(?:\+\d+)?)') {
+        $linkAgentVersion = $Matches[1]
+    }
     if (-not (Get-Command "go.exe" -ErrorAction SilentlyContinue)) {
         Write-Error "Go 1.23+ is required to build windows/link_agent."
     }
@@ -92,7 +76,7 @@ if (Test-Path "$LinkAgentDir\go.mod") {
         if ($LASTEXITCODE -ne 0) { throw 'Link agent Go tests failed' }
         go vet ./...
         if ($LASTEXITCODE -ne 0) { throw 'Link agent go vet failed' }
-        go build -trimpath -ldflags "-s -w -X main.agentVersion=$epVersion" -o "$LinkAgentBuildDir\ligament_link_agent.exe" .\cmd\link-agent
+        go build -trimpath -ldflags "-s -w -X main.agentVersion=$linkAgentVersion" -o "$LinkAgentBuildDir\ligament_link_agent.exe" .\cmd\link-agent
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$LinkAgentBuildDir\ligament_link_agent.exe")) {
             throw 'Link agent Windows service build failed'
         }

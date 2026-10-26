@@ -194,11 +194,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Timer? _linkSignalTimer;
   Timer? _linkHeartbeatTimer;
   Timer? _linkHostAnswerTimer;
-  bool _linkPolling = false;
+  int? _linkPollingAttempt;
   bool _linkRestarting = false;
   int _linkAttemptGeneration = 0;
   bool _linkRemoteDescriptionSet = false;
   final List<Map<String, dynamic>> _linkQueuedCandidates = [];
+  Future<void>? _linkCandidateFlush;
+  int? _linkCandidateRejectedAttempt;
+  final Map<String, Future<void>> _linkCloseFutures = {};
+  Timer? _linkRecoveryTimer;
+  int? _linkIceRestartAttempt;
   final List<Map<String, dynamic>> _linkPendingRemoteCandidates = [];
 
   RTCPeerConnection? _peerConnection;
@@ -210,9 +215,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   String? _currentNumberMatch;
   String _statusKey = 'init';
   String? _statusArg;
-  // Ш3 (§4.3): готовность консоли — независимые признаки. WS-открытие НЕ
-  // означает «подключено»: _isConnected поднимается только P2P/track,
-  // _frameReady — нативным onFirstFrameRendered (трек ≠ кадр).
+  // Readiness signals are independent: connection comes from the real peer,
+  // not onTrack. onFirstFrameRendered is renderer telemetry, not proof that
+  // the user sees non-black pixels in the window.
   bool _signalReady = false;
   bool _isConnected = false;
   bool _frameReady = false;
@@ -660,25 +665,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final audioTrack = _remoteAudioTrack;
     if (audioTrack != null) {
       audioTrack.enabled = !nextMuted;
-      try {
-        unawaited(Helper.setVolume(nextMuted ? 0.0 : 1.0, audioTrack));
-      } catch (error) {
-        _logConnection('operator.exception',
-            error: error,
-            fields: {'phase': 'toggle_remote_audio', 'result': 'failed'});
-      }
+      unawaited(_runOperatorTask('toggle_remote_audio',
+          () => Helper.setVolume(nextMuted ? 0.0 : 1.0, audioTrack)));
     }
     final stream = _remoteRenderer.srcObject;
     if (stream != null) {
       for (final track in stream.getAudioTracks()) {
         track.enabled = !nextMuted;
-        try {
-          unawaited(Helper.setVolume(nextMuted ? 0.0 : 1.0, track));
-        } catch (error) {
-          _logConnection('operator.exception',
-              error: error,
-              fields: {'phase': 'toggle_remote_audio', 'result': 'failed'});
-        }
+        unawaited(_runOperatorTask('toggle_remote_audio',
+            () => Helper.setVolume(nextMuted ? 0.0 : 1.0, track)));
       }
     }
   }
@@ -691,8 +686,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _releaseAllPressedInputs();
   }
 
-  /// Ш3: кадр реально отрисован — граница «изображение появилось».
+  /// Renderer first-frame callback; it does not validate visible pixel content.
   void _markFrameReady() {
+    if (!mounted || _isCleanedUp || _sessionTerminatedHandled) return;
     _logConnection('operator.frame.first', fields: {
       'width': _remoteRenderer.videoWidth,
       'height': _remoteRenderer.videoHeight,
@@ -738,16 +734,68 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
+  String? get _linkCloseId =>
+      _linkSessionId ??
+      widget.sessionData['session_id']?.toString() ??
+      widget.sessionData['sos_session_id']?.toString();
+
+  Future<void> _closeLinkSessionOnce(String? id, {ApiClient? api}) {
+    api ??= _auth?.api;
+    if (id == null || id.isEmpty || api == null) return Future<void>.value();
+    final client = api;
+    return _linkCloseFutures.putIfAbsent(id, () {
+      return _runOperatorTask(
+          'close_link_session', () => client.closeLinkSession(id));
+    });
+  }
+
+  Future<void> _runOperatorTask(
+      String phase, Future<void> Function() operation) async {
+    try {
+      await operation();
+    } catch (error) {
+      _logConnection('operator.exception',
+          error: error, fields: {'phase': phase, 'result': 'failed'});
+    }
+  }
+
+  Future<void> _ensureOperatorAudioSession() async {
+    if (!kIsWeb && Platform.isIOS) {
+      await _runOperatorTask('ensure_audio_session', Helper.ensureAudioSession);
+    }
+  }
+
+  Future<void> _disposeOperatorPeer(
+      RTCPeerConnection? peer, RTCDataChannel? channel) async {
+    if (channel != null) {
+      channel.onMessage = null;
+      channel.onDataChannelState = null;
+      await _runOperatorTask('data_channel_close', channel.close);
+    }
+    if (peer == null) return;
+    peer.onIceGatheringState = null;
+    peer.onIceCandidate = null;
+    peer.onIceConnectionState = null;
+    peer.onConnectionState = null;
+    peer.onTrack = null;
+    peer.onDataChannel = null;
+    await _runOperatorTask('peer_close', peer.close);
+    await _runOperatorTask('peer_dispose', peer.dispose);
+  }
+
   Future<void> _restartLinkConnection() async {
-    if (_linkRestarting || _isCleanedUp) return;
+    if (_linkRestarting || _isCleanedUp || _sessionTerminatedHandled) return;
     _linkRestarting = true;
     _linkAttemptGeneration++;
     final peer = _peerConnection;
     final channel = _dataChannel;
-    final closeId = _linkSessionId;
+    final closeId = _linkCloseId;
     _peerConnection = null;
     _dataChannel = null;
     _linkSessionId = null;
+    _linkCandidateFlush = null;
+    _linkRecoveryTimer?.cancel();
+    _linkRecoveryTimer = null;
     _linkSignalTimer?.cancel();
     _linkSignalTimer = null;
     _linkHeartbeatTimer?.cancel();
@@ -765,47 +813,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           error: error,
           fields: {'phase': 'restart_link_connection', 'result': 'failed'});
     }
-    if (closeId != null && mounted) {
-      final auth = _auth ?? context.read<AuthState>();
-      unawaited(auth.api?.closeLinkSession(closeId).catchError((Object error) {
-            _logConnection('operator.async.error',
-                error: error, fields: {'operation': 'cleanup_or_lease'});
-            return null;
-          }) ??
-          Future<void>.value());
-    }
+    unawaited(_closeLinkSessionOnce(closeId));
+    await _disposeOperatorPeer(peer, channel);
     try {
-      channel?.onMessage = null;
-      channel?.onDataChannelState = null;
-      await channel?.close();
-    } catch (error) {
-      _logConnection('operator.exception',
-          error: error,
-          fields: {'phase': 'restart_link_connection', 'result': 'failed'});
-    }
-    if (peer != null) {
-      peer.onIceCandidate = null;
-      peer.onIceConnectionState = null;
-      peer.onConnectionState = null;
-      peer.onTrack = null;
-      peer.onDataChannel = null;
-      try {
-        await peer.close();
-      } catch (error) {
-        _logConnection('operator.exception',
-            error: error,
-            fields: {'phase': 'restart_link_connection', 'result': 'failed'});
+      if (mounted && !_isCleanedUp && !_sessionTerminatedHandled) {
+        await _startLinkConnection();
       }
-      try {
-        await peer.dispose();
-      } catch (error) {
-        _logConnection('operator.exception',
-            error: error,
-            fields: {'phase': 'restart_link_connection', 'result': 'failed'});
-      }
-    }
-    try {
-      if (mounted && !_isCleanedUp) await _startLinkConnection();
     } finally {
       _linkRestarting = false;
     }
@@ -813,7 +826,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   /// Ш4: grace-таймер завершения по Failed (60-секундное окно восстановления).
   void _schedulePcGraceTermination() {
-    if (!mounted || _isCleanedUp) return;
+    if (!mounted || _isCleanedUp || _sessionTerminatedHandled) return;
     if (_pcGraceTimer != null) return;
 
     _graceSecondsLeft = 60;
@@ -836,23 +849,44 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _onSessionTerminated('pc_failed', origin: 'timeout');
     });
 
-    _triggerIceRestart();
+    if (widget.isLink) {
+      // A host stop can close DTLS/ICE before its terminal signal arrives.
+      // Give signaling priority; a closed channel is not restartable by ICE.
+      unawaited(_pollLinkSignals());
+      final attempt = _linkAttemptGeneration;
+      _linkRecoveryTimer?.cancel();
+      _linkRecoveryTimer = Timer(const Duration(seconds: 2), () {
+        _linkRecoveryTimer = null;
+        if (attempt == _linkAttemptGeneration && _pcGraceTimer != null) {
+          _triggerIceRestart();
+        }
+      });
+    } else {
+      _triggerIceRestart();
+    }
   }
 
+  bool get _canRestartIce =>
+      mounted &&
+      !_isCleanedUp &&
+      !_sessionTerminatedHandled &&
+      !_sessionEnding &&
+      !_linkRestarting &&
+      _peerConnection != null &&
+      _peerConnection!.connectionState !=
+          RTCPeerConnectionState.RTCPeerConnectionStateClosed &&
+      (!widget.isLink ||
+          (_linkSessionId != null &&
+              _dataChannel?.state != RTCDataChannelState.RTCDataChannelClosed));
+
   void _triggerIceRestart() {
+    if (!_canRestartIce) return;
     _logConnection('operator.ice.restart', fields: {'result': 'begin'});
-    try {
-      if (_peerConnection != null) {
-        _peerConnection!.restartIce();
-      }
-    } catch (e) {
-      _logConnection('operator.exception',
-          error: e,
-          fields: {'phase': 'trigger_ice_restart', 'result': 'failed'});
-    }
     if (widget.isLink) {
       unawaited(_performLinkIceRestart());
     } else {
+      unawaited(
+          _runOperatorTask('trigger_ice_restart', _peerConnection!.restartIce));
       _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
     }
   }
@@ -860,27 +894,33 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Future<void> _performLinkIceRestart() async {
     final peer = _peerConnection;
     final sessionId = _linkSessionId;
-    final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
-    final api = auth?.api;
-    if (peer == null || sessionId == null || api == null || _isCleanedUp) {
+    final attempt = _linkAttemptGeneration;
+    final api = _auth?.api;
+    if (!_canRestartIce || _linkIceRestartAttempt == attempt || api == null) {
       return;
     }
+    bool isCurrent() =>
+        _canRestartIce &&
+        attempt == _linkAttemptGeneration &&
+        _peerConnection == peer &&
+        _linkSessionId == sessionId;
+    _linkIceRestartAttempt = attempt;
     try {
-      final offer = await peer.createOffer({'iceRestart': true});
-      if (_isCleanedUp || _peerConnection != peer) return;
+      final offer = await peer!.createOffer({'iceRestart': true});
+      if (!isCurrent()) return;
       await peer.setLocalDescription(offer);
+      if (!isCurrent()) return;
       _linkRemoteDescriptionSet = false;
       await api.sendLinkSessionSignal(
-        sessionId: sessionId,
-        signal: {
-          'type': 'ice_restart',
-          'sdp': offer.sdp,
-        },
+        sessionId: sessionId!,
+        signal: {'type': 'ice_restart', 'sdp': offer.sdp},
       );
     } catch (e) {
       _logConnection('operator.exception',
           error: e,
           fields: {'phase': 'perform_link_ice_restart', 'result': 'failed'});
+    } finally {
+      if (_linkIceRestartAttempt == attempt) _linkIceRestartAttempt = null;
     }
   }
 
@@ -1069,6 +1109,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   bool _sessionTerminatedHandled = false;
+  bool _sessionEnding = false;
   bool _hasTerminationError = false;
   String? _terminationErrorReason;
 
@@ -1120,14 +1161,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHeartbeatTimer = null;
     _linkHostAnswerTimer?.cancel();
     _linkHostAnswerTimer = null;
-    if (widget.isLink && _linkSessionId != null) {
-      final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
-      auth?.api?.closeLinkSession(_linkSessionId!).catchError((Object error) {
-        _logConnection('operator.async.error',
-            error: error, fields: {'operation': 'cleanup_or_lease'});
-        return null;
-      });
-    }
+    if (widget.isLink) unawaited(_closeLinkSessionOnce(_linkCloseId));
     _setStatus(reasonKey);
     _isControlEnabled = false;
     _cleanupResources();
@@ -1225,6 +1259,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return strings.isRu
             ? 'Аудит записи отклонен: небезопасный адрес сервера аудита.'
             : 'Session audit rejected: insecure audit server URL.';
+      case 'recorder_queue_overflow':
+        return strings.isRu
+            ? 'Сеанс остановлен: переполнена очередь обязательной записи Recorder.'
+            : 'The session stopped because the mandatory Recorder queue overflowed.';
       case 'recorder_first_frame_unavailable':
       case 'recorder_first_frame_unacked':
       case 'recorder_ack_lag':
@@ -1421,8 +1459,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       logStep('begin');
     }
 
+    if (!mounted || _isCleanedUp || _sessionTerminatedHandled) return;
     RTCPeerConnection? attemptPeer;
-    String? attemptSessionId;
+    RTCDataChannel? attemptChannel;
+    String? attemptSessionId = _linkCloseId;
     final auth = context.read<AuthState>();
     final api = auth.api;
     if (api == null) {
@@ -1435,17 +1475,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     try {
       await _remoteRenderer.initialize();
       logStep('ready');
-    } catch (error) {
-      _logConnection('operator.exception',
-          error: error, fields: {'phase': 'begin_step', 'result': 'failed'});
-      logStep('failed', error: error);
-      rethrow;
-    }
-    _remoteRenderer.onFirstFrameRendered = () {
-      _markFrameReady();
-    };
-
-    try {
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) return;
+      _remoteRenderer.onFirstFrameRendered = _markFrameReady;
       List<Map<String, dynamic>> iceServers = [];
       beginStep('get_ice');
       try {
@@ -1472,7 +1503,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       attemptPeer = peer;
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
         logStep('cancelled', fields: {'reason': 'stale_attempt'});
-        await peer.close();
+        await _disposeOperatorPeer(peer, attemptChannel);
         return;
       }
       _peerConnection = peer;
@@ -1541,7 +1572,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          _onSessionTerminated('pc_failed', origin: 'pc_state');
+          _schedulePcGraceTermination();
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           if (!_linkRemoteDescriptionSet) {
@@ -1584,13 +1615,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _peerConnection != peer) {
           return;
         }
-        try {
-          await Helper.ensureAudioSession();
-        } catch (error) {
-          _logConnection('operator.exception',
-              error: error,
-              fields: {'phase': 'begin_step', 'result': 'failed'});
-        }
+        await _ensureOperatorAudioSession();
         if (!mounted ||
             _isCleanedUp ||
             attempt != _linkAttemptGeneration ||
@@ -1659,13 +1684,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           for (final audio in stream.getAudioTracks()) {
             _remoteAudioTrack = audio;
             audio.enabled = !_isAudioMuted;
-            try {
-              unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
-            } catch (error) {
-              _logConnection('operator.exception',
-                  error: error,
-                  fields: {'phase': 'begin_step', 'result': 'failed'});
-            }
+            unawaited(_runOperatorTask('remote_audio_volume',
+                () => Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio)));
           }
         }
 
@@ -1676,7 +1696,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _peerConnection == peer) {
           setState(() {
             _remoteRenderer.srcObject = stream;
-            _isConnected = true;
+            _isConnected = peer.connectionState ==
+                RTCPeerConnectionState.RTCPeerConnectionStateConnected;
             _currentNumberMatch = null;
             _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
             _statusArg = null;
@@ -1706,7 +1727,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       );
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
         logStep('cancelled', fields: {'reason': 'stale_attempt'});
-        await peer.close();
+        await _disposeOperatorPeer(peer, attemptChannel);
         return;
       }
 
@@ -1724,6 +1745,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'link-control-v1',
         RTCDataChannelInit()..ordered = true,
       );
+      attemptChannel = channel;
+      if (_isCleanedUp || attempt != _linkAttemptGeneration) {
+        await _disposeOperatorPeer(peer, channel);
+        return;
+      }
       _setupDataChannel(channel);
       logStep('ready');
 
@@ -1735,7 +1761,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       logStep('ready');
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
         logStep('cancelled', fields: {'reason': 'stale_attempt'});
-        await peer.close();
+        await _disposeOperatorPeer(peer, attemptChannel);
         return;
       }
 
@@ -1767,17 +1793,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (id == null || id.isEmpty) {
         throw StateError('Server did not return session_id');
       }
+      attemptSessionId = id;
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
         logStep('cancelled', fields: {'reason': 'stale_attempt'});
-        unawaited(api.closeLinkSession(id).catchError((Object error) {
-          _logConnection('operator.async.error',
-              error: error, fields: {'operation': 'cleanup_or_lease'});
-          return null;
-        }));
-        await peer.close();
+        unawaited(_closeLinkSessionOnce(id, api: api));
+        await _disposeOperatorPeer(peer, attemptChannel);
         return;
       }
-      attemptSessionId = id;
       _linkSessionId = id;
       _emptySignalPollCount = 0;
       _emptyPollLogWatch.reset();
@@ -1808,19 +1830,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         }
       });
 
-      for (final cand
-          in List<Map<String, dynamic>>.from(_linkQueuedCandidates)) {
-        await api
-            .sendLinkSessionSignal(sessionId: id, signal: cand)
-            .catchError((Object error) {
-          _logConnection('operator.async.error',
-              error: error, fields: {'operation': 'cleanup_or_lease'});
-          return null;
-        });
-      }
-      if (attempt == _linkAttemptGeneration) _linkQueuedCandidates.clear();
       if (_isCleanedUp || attempt != _linkAttemptGeneration) return;
-
       _linkSignalTimer?.cancel();
       _linkSignalTimer = Timer.periodic(
         const Duration(milliseconds: 500),
@@ -1831,30 +1841,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         const Duration(seconds: 20),
         (_) => _sendLinkHeartbeat(),
       );
-      _pollLinkSignals();
+      unawaited(_pollLinkSignals());
+      // Ordered, one POST at a time, independently of polling and heartbeat.
+      _flushLinkCandidates();
     } catch (e) {
       _logConnection('operator.exception',
           error: e, fields: {'phase': 'begin_step', 'result': 'failed'});
       logStep('failed', error: e);
       final failedPeer = attemptPeer;
       if (identical(_peerConnection, failedPeer)) _peerConnection = null;
-      if (failedPeer != null) {
-        failedPeer.onIceCandidate = null;
-        failedPeer.onIceConnectionState = null;
-        failedPeer.onConnectionState = null;
-        failedPeer.onTrack = null;
-        failedPeer.onDataChannel = null;
-        unawaited(failedPeer.close());
-      }
+      if (identical(_dataChannel, attemptChannel)) _dataChannel = null;
+      unawaited(_disposeOperatorPeer(failedPeer, attemptChannel));
       final failedSessionId = attemptSessionId;
-      if (failedSessionId != null) {
-        unawaited(
-            api.closeLinkSession(failedSessionId).catchError((Object error) {
-          _logConnection('operator.async.error',
-              error: error, fields: {'operation': 'cleanup_or_lease'});
-          return null;
-        }));
-      }
+      unawaited(_closeLinkSessionOnce(failedSessionId, api: api));
       if (!mounted || _isCleanedUp || attempt != _linkAttemptGeneration) return;
       if (_linkSessionId == failedSessionId) _linkSessionId = null;
       _linkRemoteDescriptionSet = false;
@@ -1883,6 +1882,62 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
+  void _flushLinkCandidates() {
+    final id = _linkSessionId;
+    final api = _auth?.api;
+    if (_linkCandidateFlush != null ||
+        _linkQueuedCandidates.isEmpty ||
+        id == null ||
+        api == null ||
+        _isCleanedUp ||
+        _sessionEnding ||
+        _sessionTerminatedHandled) {
+      return;
+    }
+    _linkCandidateFlush = _drainLinkCandidates(api, id, _linkAttemptGeneration);
+  }
+
+  Future<void> _drainLinkCandidates(
+      ApiClient api, String id, int attempt) async {
+    try {
+      while (!_isCleanedUp &&
+          !_sessionTerminatedHandled &&
+          !_sessionEnding &&
+          attempt == _linkAttemptGeneration &&
+          id == _linkSessionId &&
+          _linkQueuedCandidates.isNotEmpty) {
+        final candidate = _linkQueuedCandidates.removeAt(0);
+        try {
+          await api.sendLinkSessionSignal(sessionId: id, signal: candidate);
+          _logConnection('operator.candidate.local', fields: {
+            'attempt': attempt,
+            'result': 'request_complete',
+            'candidates': 1,
+          });
+        } catch (error) {
+          _logConnection('operator.candidate.local', error: error, fields: {
+            'attempt': attempt,
+            'result': 'failed',
+            'candidates': 1,
+          });
+          if (error is ApiException &&
+              const {403, 404, 409, 410}.contains(error.statusCode)) {
+            // Stop POSTs to a terminal session, including later ICE callbacks,
+            // but let host signaling explain the actual stop reason.
+            if (attempt == _linkAttemptGeneration) {
+              _linkCandidateRejectedAttempt = attempt;
+              _linkQueuedCandidates.clear();
+              unawaited(_pollLinkSignals());
+            }
+            break;
+          }
+        }
+      }
+    } finally {
+      if (attempt == _linkAttemptGeneration) _linkCandidateFlush = null;
+    }
+  }
+
   final Stopwatch _emptyPollLogWatch = Stopwatch()..start();
   int _emptySignalPollCount = 0;
 
@@ -1890,12 +1945,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final id = _linkSessionId;
     final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
     final api = auth?.api;
-    if (_linkPolling || _isCleanedUp || id == null || api == null) return;
-    _linkPolling = true;
+    if (_linkPollingAttempt == _linkAttemptGeneration ||
+        _isCleanedUp ||
+        _sessionTerminatedHandled ||
+        id == null ||
+        api == null) {
+      return;
+    }
+    final attempt = _linkAttemptGeneration;
+    _linkPollingAttempt = attempt;
     try {
       final result =
           await api.getLinkSessionSignals(sessionId: id, after: _linkCursor);
-      if (_isCleanedUp || id != _linkSessionId) return;
+      if (_isCleanedUp ||
+          _sessionTerminatedHandled ||
+          attempt != _linkAttemptGeneration ||
+          id != _linkSessionId) {
+        return;
+      }
       final nextCursor = result['next_cursor'];
       if (nextCursor is int && nextCursor > _linkCursor) {
         _linkCursor = nextCursor;
@@ -1923,21 +1990,45 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         });
       }
       if (rawSignals is List) {
-        for (final raw in rawSignals.whereType<Map>()) {
-          await _handleLinkSignal(Map<String, dynamic>.from(raw));
+        final signals = rawSignals
+            .whereType<Map>()
+            .map((raw) => Map<String, dynamic>.from(raw))
+            .toList();
+        // Terminal events must not sit behind awaited SDP/ICE operations.
+        for (final event in signals) {
+          final payload = event['payload'];
+          if (payload is! Map) continue;
+          final message = Map<String, dynamic>.from(payload);
+          if (linkSignalType(event, message) == 'session_terminate' ||
+              isSessionTerminatedMessage(message) ||
+              (linkSignalType(event, message) == 'session_answer' &&
+                  message['stage'] != 'consent' &&
+                  message['accepted'] != true)) {
+            await _handleLinkSignal(event);
+            return;
+          }
+        }
+        for (final event in signals) {
+          if (_isCleanedUp ||
+              _sessionTerminatedHandled ||
+              attempt != _linkAttemptGeneration ||
+              id != _linkSessionId) {
+            return;
+          }
+          await _handleLinkSignal(event);
         }
       }
     } catch (e) {
       _logConnection('operator.exception',
           error: e, fields: {'phase': 'poll_link_signals', 'result': 'failed'});
     } finally {
-      _linkPolling = false;
+      if (_linkPollingAttempt == attempt) _linkPollingAttempt = null;
     }
   }
 
   Future<void> _handleLinkSignal(Map<String, dynamic> event) async {
     final peer = _peerConnection;
-    if (peer == null || _isCleanedUp) return;
+    if (_isCleanedUp || _sessionTerminatedHandled) return;
     final payload = event['payload'];
     if (payload is! Map) return;
     final message = Map<String, dynamic>.from(payload);
@@ -1947,6 +2038,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       'origin': 'host_signal',
     });
 
+    if (type == 'session_terminate' || isSessionTerminatedMessage(message)) {
+      _onSessionTerminated(
+          message['reason']?.toString() ??
+              message['status']?.toString() ??
+              'ended_by_server',
+          origin: 'host_signal');
+      return;
+    }
+    if (peer == null) return;
+    final attempt = _linkAttemptGeneration;
     final isReconnecting =
         _pcGraceTimer != null || !_isConnected || _statusKey == 'disconnected';
     if (type == 'session_answer' &&
@@ -1981,7 +2082,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (sdp != null && sdp.isNotEmpty) {
         try {
           await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
-          if (_isCleanedUp || _peerConnection != peer) return;
+          if (_isCleanedUp ||
+              _sessionTerminatedHandled ||
+              attempt != _linkAttemptGeneration ||
+              _peerConnection != peer) {
+            return;
+          }
           _linkRemoteDescriptionSet = true;
           _logConnection('operator.host.answer',
               fields: {'result': 'applied', 'phase': 'set_remote'});
@@ -2035,25 +2141,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
       return;
     }
-
-    if (type == 'session_terminate') {
-      final reason = message['reason']?.toString() ??
-          message['status']?.toString() ??
-          'ended_by_server';
-      _onSessionTerminated(reason, origin: 'host_signal');
-      return;
-    }
-
-    if (isSessionTerminatedMessage(message)) {
-      final reason = message['reason']?.toString() ??
-          message['status']?.toString() ??
-          'session_ended';
-      _onSessionTerminated(reason, origin: 'host_signal');
-    }
   }
 
   Future<void> _addLinkRemoteCandidate(
       RTCPeerConnection peer, Map<String, dynamic> candidate) async {
+    if (_isCleanedUp || _sessionTerminatedHandled || _peerConnection != peer) {
+      return;
+    }
     try {
       await peer.addCandidate(RTCIceCandidate(
         candidate['candidate']?.toString(),
@@ -2075,7 +2169,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final id = _linkSessionId;
     final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
     final api = auth?.api;
-    if (id == null || api == null || _isCleanedUp) return;
+    if (id == null || api == null || _isCleanedUp || _sessionTerminatedHandled) {
+      return;
+    }
+    final attempt = _linkAttemptGeneration;
     try {
       await api.heartbeatLinkSession(id);
       _logConnection('operator.heartbeat',
@@ -2084,7 +2181,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _logConnection('operator.exception',
           error: e,
           fields: {'phase': 'send_link_heartbeat', 'result': 'failed'});
-      if (e is ApiException &&
+      if (!_isCleanedUp &&
+          !_sessionTerminatedHandled &&
+          attempt == _linkAttemptGeneration &&
+          id == _linkSessionId &&
+          e is ApiException &&
           (e.statusCode == 409 ||
               e.statusCode == 404 ||
               e.statusCode == 410 ||
@@ -2395,7 +2496,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
     };
 
-    _peerConnection!.onTrack = (RTCTrackEvent event) async {
+    final peer = _peerConnection!;
+    peer.onTrack = (RTCTrackEvent event) async {
+      if (!mounted || _isCleanedUp || _peerConnection != peer) return;
       _logConnection('operator.track.received', fields: {
         'phase': event.track.kind == 'audio'
             ? 'audio'
@@ -2405,13 +2508,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'count': event.streams.length,
       });
       if (mounted) {
-        try {
-          await Helper.ensureAudioSession();
-        } catch (error) {
-          _logConnection('operator.exception',
-              error: error,
-              fields: {'phase': 'setup_peer_connection', 'result': 'failed'});
-        }
+        await _ensureOperatorAudioSession();
+        if (!mounted || _isCleanedUp || _peerConnection != peer) return;
 
         if (event.track.kind == 'audio') {
           _remoteAudioTrack = event.track;
@@ -2473,20 +2571,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           for (final audio in stream.getAudioTracks()) {
             _remoteAudioTrack = audio;
             audio.enabled = !_isAudioMuted;
-            try {
-              unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
-            } catch (error) {
-              _logConnection('operator.exception', error: error, fields: {
-                'phase': 'setup_peer_connection',
-                'result': 'failed'
-              });
-            }
+            unawaited(_runOperatorTask('remote_audio_volume',
+                () => Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio)));
           }
         }
-        if (mounted && stream != null) {
+        if (mounted &&
+            !_isCleanedUp &&
+            _peerConnection == peer &&
+            stream != null) {
           setState(() {
             _remoteRenderer.srcObject = stream;
-            _isConnected = true;
+            _isConnected = peer.connectionState ==
+                RTCPeerConnectionState.RTCPeerConnectionStateConnected;
             _currentNumberMatch = null;
             // Ш3: «Трансляция активна» — только после первого кадра
             _statusKey = consoleConnectionStatusKey(_isConnected, _frameReady);
@@ -2507,6 +2603,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _dataChannel = channel;
     void handleState(RTCDataChannelState state) {
       _logConnection('operator.dc.state', fields: {'dc_state': state.name});
+      if (_isCleanedUp || _sessionTerminatedHandled || _dataChannel != channel) {
+        return;
+      }
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
         if (mounted) {
           setState(() {
@@ -2536,6 +2635,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
         _dataChannelPingTimer?.cancel();
         _dataChannelPingTimer = null;
+        if (widget.isLink) {
+          _linkRecoveryTimer?.cancel();
+          _linkRecoveryTimer = null;
+          unawaited(_pollLinkSignals());
+        }
         if (mounted) {
           setState(() {});
         }
@@ -2548,7 +2652,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
 
     channel.onMessage = (RTCDataChannelMessage msg) {
-      if (msg.isBinary) return;
+      if (_isCleanedUp ||
+          _sessionTerminatedHandled ||
+          _dataChannel != channel ||
+          msg.isBinary) {
+        return;
+      }
       try {
         final data = jsonDecode(msg.text) as Map<String, dynamic>;
         _logConnection('operator.data.inbound', fields: {
@@ -3165,6 +3274,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _logConnection('operator.signal.outbound',
         fields: {...fields, 'result': 'begin'});
     if (widget.isLink) {
+      if (_isCleanedUp || _sessionTerminatedHandled) return;
+      if (type == 'candidate') {
+        if (_sessionEnding ||
+            _linkCandidateRejectedAttempt == _linkAttemptGeneration) {
+          return;
+        }
+        _linkQueuedCandidates.add(signal);
+        _logConnection('operator.signal.outbound', fields: {
+          ...fields,
+          'result': 'queued',
+          'count': _linkQueuedCandidates.length,
+        });
+        _flushLinkCandidates();
+        return;
+      }
       final id = _linkSessionId;
       final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
       final api = auth?.api;
@@ -3177,12 +3301,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               error: error, fields: {...fields, 'result': 'failed'});
         });
       } else {
-        _linkQueuedCandidates.add(signal);
-        _logConnection('operator.signal.outbound', fields: {
-          ...fields,
-          'result': 'queued',
-          'count': _linkQueuedCandidates.length,
-        });
+        _logConnection('operator.signal.outbound',
+            fields: {...fields, 'result': 'blocked'});
       }
       return;
     }
@@ -3714,10 +3834,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _flushMouseLog();
     if (_isCleanedUp) return;
     _isCleanedUp = true;
+    _linkAttemptGeneration++;
+    _linkQueuedCandidates.clear();
+    _linkRecoveryTimer?.cancel();
+    _linkRecoveryTimer = null;
     // Ш3/Ш4: единая отмена стадийных и grace-таймеров
     _cancelStageTimers();
     _pcGraceTimer?.cancel();
     _pcGraceTimer = null;
+    _graceCountdownTimer?.cancel();
+    _graceCountdownTimer = null;
     _dataChannelPingTimer?.cancel();
     _dataChannelPingTimer = null;
     _leaseTimer?.cancel();
@@ -3728,14 +3854,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHeartbeatTimer = null;
     _linkHostAnswerTimer?.cancel();
     _linkHostAnswerTimer = null;
-    if (widget.isLink && _linkSessionId != null) {
-      final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
-      auth?.api?.closeLinkSession(_linkSessionId!).catchError((Object error) {
-        _logConnection('operator.async.error',
-            error: error, fields: {'operation': 'cleanup_or_lease'});
-        return null;
-      });
-    }
+    if (widget.isLink) unawaited(_closeLinkSessionOnce(_linkCloseId));
 
     // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
     _releaseAllPressedInputs();
@@ -3794,32 +3913,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _wsReconnectTimer?.cancel();
     _wsReconnectTimer = null;
 
-    // Освобождение нативных текстур рендерера и WebRTC-соединения.
-    // На macOS: unregister текстуры (renderer.dispose) во время pop-анимации/resize
-    // ловит raster-поток Flutter на живом кадре -> дедлок (черный экран).
-    // Поэтому srcObject=null синхронно (стоп кадров), а renderer на macOS не уничтожаем,
-    // сохраняя зарегистрированную Metal текстуру.
-    void disposeNative() {
-      try {
-        _remoteRenderer.dispose();
-      } catch (error) {
-        _logConnection('operator.exception',
-            error: error,
-            fields: {'phase': 'dispose_native', 'result': 'failed'});
-      }
-      try {
-        pc?.dispose();
-      } catch (error) {
-        _logConnection('operator.exception',
-            error: error,
-            fields: {'phase': 'dispose_native', 'result': 'failed'});
-      }
-    }
-
-    Future.delayed(const Duration(milliseconds: 500), disposeNative);
+    // Keep native texture disposal outside the route/resize animation, but
+    // await each operation so asynchronous failures are recorded as well.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () async {
+      await _runOperatorTask('renderer_dispose', _remoteRenderer.dispose);
+      await _disposeOperatorPeer(pc, dc);
+    }));
   }
 
   void _endSession() async {
+    if (_sessionEnding) return;
     final strings = context.stringsRead;
     final action = await showDialog<String>(
       context: context,
@@ -3885,13 +3988,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _logConnection('operator.exception',
             error: error, fields: {'phase': 'end_session', 'result': 'failed'});
       }
+      _sessionEnding = true;
+      _linkRecoveryTimer?.cancel();
+      _linkRecoveryTimer = null;
+      _linkSignalTimer?.cancel();
+      _linkHeartbeatTimer?.cancel();
       try {
-        // Оператор SOS бьёт в operator-маршрут (app-токен + роль инженера):
-        // прежний /app/.../end для него всегда 403 — сессия не закрывалась.
-        if (widget.isLink && _linkSessionId != null) {
-          await auth.api?.closeLinkSession(_linkSessionId!).timeout(
-                const Duration(seconds: 2),
-              );
+        // LINK never falls back to legacy support endpoints, even if creation
+        // failed. A claimed SOS session still has a real id to release.
+        if (widget.isLink) {
+          await _closeLinkSessionOnce(_linkCloseId, api: auth.api).timeout(
+            const Duration(seconds: 2),
+          );
         } else if (isOwner) {
           await auth.api?.endSupportSession(sessionId: sessId).timeout(
                 const Duration(seconds: 2),
@@ -3945,8 +4053,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final auth = _auth;
     final sessId = widget.sessionId;
     // Принятая заявка SOS держит сессию с момента claim, даже если start не дошёл.
-    final linkCloseId =
-        _linkSessionId ?? widget.sessionData['sos_session_id']?.toString();
+    final linkCloseId = _linkCloseId;
     if (auth != null && auth.api != null) {
       final isOwner = widget.ownerMode ||
           widget.sessionData['owner'] == true ||
@@ -3955,12 +4062,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         // dispose() у оператора — тоже корректный конец сессии (окно
         // закрыли = сеанс завершён), иначе она висит active в очереди.
-        if (widget.isLink && linkCloseId != null && linkCloseId.isNotEmpty) {
-          auth.api!.closeLinkSession(linkCloseId).catchError((Object error) {
-            _logConnection('operator.async.error',
-                error: error, fields: {'operation': 'cleanup_or_lease'});
-            return null;
-          });
+        if (widget.isLink) {
+          unawaited(_closeLinkSessionOnce(linkCloseId, api: auth.api));
         } else if (sessId.isNotEmpty) {
           if (isOwner) {
             auth.api!

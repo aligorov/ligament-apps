@@ -16,7 +16,8 @@ Value DiagnosticsState() {
                    {Value("path"), Value(state.path)}});
 }
 
-bool WriteDiagnostic(const Value* arguments) {
+bool WriteDiagnostic(const Value* arguments, uint32_t* diagnostic_code) {
+  *diagnostic_code = ERROR_INVALID_PARAMETER;
   const auto* fields = arguments ? std::get_if<Map>(arguments) : nullptr;
   if (!fields || fields->empty() || fields->size() > 5) return false;
   const std::string* context = nullptr;
@@ -46,7 +47,7 @@ bool WriteDiagnostic(const Value* arguments) {
   }
   return event && debug_log::Write(*event, error_type ? *error_type : "",
                                    error_code ? *error_code : "", os_error,
-                                   context ? *context : "");
+                                   context ? *context : "", diagnostic_code);
 }
 
 void HandleDiagnostics(const flutter::MethodCall<Value>& call,
@@ -73,7 +74,14 @@ void HandleDiagnostics(const flutter::MethodCall<Value>& call,
       }
       result->Success(DiagnosticsState());
     } else if (call.method_name() == "write") {
-      result->Success(Value(WriteDiagnostic(call.arguments())));
+      uint32_t code = ERROR_SUCCESS;
+      const bool written = WriteDiagnostic(call.arguments(), &code);
+      if (!written && code != ERROR_NOT_READY) {
+        result->Error("diagnostic_write_failed", "Cannot write diagnostics.",
+                      Value(static_cast<int64_t>(code)));
+        return;
+      }
+      result->Success(Value(written));
     } else {
       result->NotImplemented();
     }
@@ -84,11 +92,9 @@ void HandleDiagnostics(const flutter::MethodCall<Value>& call,
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project,
-                             bool service_console,
                              bool link_host_worker,
                              bool start_minimized)
     : project_(project),
-      service_console_(service_console),
       link_host_worker_(link_host_worker),
       start_minimized_(start_minimized) {}
 
@@ -126,16 +132,11 @@ bool FlutterWindow::OnCreate() {
   debug_log::Write("plugins.register.begin");
   RegisterPlugins(flutter_controller_->engine());
   debug_log::Write("plugins.register.end");
-  if (!service_console_ && !link_host_worker_) {
+  if (!link_host_worker_) {
     debug_log::Write("link.binding.init.begin");
     link_agent_binding_bridge_ = std::make_unique<LinkAgentBindingBridge>(
         flutter_controller_->engine()->messenger());
     debug_log::Write("link.binding.init.ready");
-  }
-  if (service_console_) {
-    debug_log::Write("service_console.bridge.init.begin");
-    service_console_bridge_ = std::make_unique<ServiceConsoleBridge>(flutter_controller_->engine()->messenger());
-    debug_log::Write("service_console.bridge.init.ready");
   }
   if (link_host_worker_) {
     debug_log::Write("link.host_bridge.init.begin");
@@ -146,7 +147,7 @@ bool FlutterWindow::OnCreate() {
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     debug_log::Write("startup.first_frame");
-    if (!service_console_ && !link_host_worker_ && !start_minimized_) this->Show();
+    if (!link_host_worker_ && !start_minimized_) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -163,7 +164,6 @@ void FlutterWindow::OnDestroy() {
     diagnostics_channel_.reset();
   }
   link_agent_binding_bridge_.reset();
-  service_console_bridge_.reset();
   link_host_bridge_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;

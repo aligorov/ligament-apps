@@ -128,6 +128,7 @@ class DebugLogService extends ChangeNotifier {
         'recorder_lease_expired',
         'recorder_tail_lost',
         'recorder_unreachable',
+        'recorder_queue_overflow',
         'tail_lost',
         'normal',
         'access_denied',
@@ -307,8 +308,23 @@ class DebugLogService extends ChangeNotifier {
   int _requestSequence = 0;
   int _queuedWrites = 0;
   int _droppedWrites = 0;
+  String? _writeFailure;
+  bool _disposed = false;
 
   int nextRequestId() => ++_requestSequence;
+  String? get writeFailure => _writeFailure;
+
+  void _setWriteFailure(String? value) {
+    if (_disposed || _writeFailure == value) return;
+    _writeFailure = value;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
 
   bool get enabled => _enabled;
   bool get available => _available;
@@ -388,7 +404,12 @@ class DebugLogService extends ChangeNotifier {
     Object? error,
     Map<String, Object?> fields = const {},
   }) {
-    if (!_initialized || !_available || !_eventPattern.hasMatch(event)) return;
+    if (_disposed ||
+        !_initialized ||
+        !_available ||
+        !_eventPattern.hasMatch(event)) {
+      return;
+    }
     if (!_nativeWindows && !_enabled) return;
     if (_queuedWrites >= maxPendingEntries) {
       _droppedWrites++;
@@ -420,9 +441,10 @@ class DebugLogService extends ChangeNotifier {
     final operation = _pendingWrites.then((_) async {
       if (!_nativeWindows && !_enabled) return;
       if (_nativeWindows) {
-        await _channel
+        final written = await _channel
             .invokeMethod<bool>('write', entry)
             .timeout(const Duration(seconds: 1));
+        if (written == true) _setWriteFailure(null);
       } else {
         final path = _path;
         if (path == null) return;
@@ -450,9 +472,15 @@ class DebugLogService extends ChangeNotifier {
           mode: FileMode.append,
           flush: true,
         );
+        _setWriteFailure(null);
       }
     });
-    _pendingWrites = operation.catchError((_) {}).whenComplete(() {
+    _pendingWrites = operation.catchError((Object error) {
+      final code = error is PlatformException && error.details is int
+          ? 'win32_${error.details}'
+          : error.runtimeType.toString();
+      _setWriteFailure(_fieldPattern.hasMatch(code) ? code : 'write_failed');
+    }).whenComplete(() {
       _queuedWrites--;
       if (_droppedWrites > 0) {
         final dropped = _droppedWrites;

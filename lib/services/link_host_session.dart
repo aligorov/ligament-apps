@@ -10,6 +10,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'input_injector.dart';
 import 'link_host_readiness.dart';
 import 'link_host_recorder.dart';
+import 'link_spool_storage.dart';
 import 'debug_log_service.dart';
 import 'support_service.dart'
     show
@@ -488,6 +489,8 @@ class LinkHostWorkerState extends ChangeNotifier {
       bool recording = false,
       bool mandatoryRecording = false,
       String policyReason = ''}) {
+    if (_consent?.isCompleted == false) _consent!.complete(false);
+    _consent = null;
     confirmationCode = '';
     sessionId = id;
     accessMode = mode;
@@ -506,16 +509,22 @@ class LinkHostWorkerState extends ChangeNotifier {
 
   Future<bool> awaitConsent() {
     if (_disconnect.isCompleted ||
+        phase == LinkHostWorkerPhase.closing ||
         phase == LinkHostWorkerPhase.closed ||
         !_consentUiAvailable) {
       return Future<bool>.value(false);
     }
-    _consent = Completer<bool>();
+    final pending = _consent;
+    if (pending != null) return pending.future;
+    final consent = _consent = Completer<bool>();
     phase = LinkHostWorkerPhase.awaitingConsent;
     notifyListeners();
-    return _consent!.future.timeout(
+    return consent.future.timeout(
       const Duration(seconds: 45),
-      onTimeout: () => false,
+      onTimeout: () {
+        if (identical(_consent, consent)) denyConsent();
+        return false;
+      },
     );
   }
 
@@ -911,6 +920,12 @@ Future<void> _runConnectedLinkHostWorker(
       ? LinkHostRecorder(
           sessionId: sessionId,
           config: recordingConfig,
+          spool: recordingConfig.spoolEnabled
+              ? LinkSpoolStorage(
+                  sessionId: sessionId,
+                  maxSpoolBytes: recordingConfig.maxSpoolBytes,
+                )
+              : null,
           onMandatoryViolation: (reason) => unawaited(session.reject(reason)),
         )
       : null;

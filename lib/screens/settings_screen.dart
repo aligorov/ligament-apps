@@ -9,7 +9,6 @@ import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
-import '../widgets/rdp_service_settings_card.dart';
 import '../app_version.dart';
 import 'connect_screen.dart';
 
@@ -536,6 +535,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ? _setDebugLogsEnabled
                           : null,
                     ),
+                    if (_debugLogs.writeFailure != null)
+                      Text('${s.debugLogsWriteError}: ${_debugLogs.writeFailure}',
+                          style: const TextStyle(color: Color(0xFFF59E0B), fontSize: 12)),
                     if (_debugLogs.path != null)
                       SelectableText(
                         _debugLogs.path!,
@@ -707,10 +709,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-          if (isWin) ...[
-            const RdpServiceSettingsCard(),
-            const SizedBox(height: 16),
-          ],
 
           // Карточка телеметрии устройства
           Container(

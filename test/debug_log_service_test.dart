@@ -164,10 +164,14 @@ void main() {
     logs.record('http.rejected',
         error: ApiException(403, 'private-error-secret'));
     logs.record('http.rejected', error: ApiException(403, 'access_denied'));
+    logs.record('operator.session.terminated', fields: {
+      'reason': DebugLogService.protocolLabel('recorder_queue_overflow'),
+    });
     await logs.flush();
     final text = await File(logs.path!).readAsString();
     expect(text, contains('error_code=http_403.unknown'));
     expect(text, contains('error_code=http_403.access_denied'));
+    expect(text, contains('reason=recorder_queue_overflow'));
     expect(text, isNot(contains('private-error-secret')));
     for (final value in [
       null,

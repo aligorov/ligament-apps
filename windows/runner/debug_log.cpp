@@ -100,19 +100,36 @@ bool ReadEnabled() {
   return ReadRegistry(HKEY_USERS, std::wstring(sid) + L"\\" + kSettingsKey);
 }
 
-bool ProtectedSecurity(HANDLE handle) {
+DWORD Win32Failure() {
+  const DWORD error = ::GetLastError();
+  return error == ERROR_SUCCESS ? ERROR_GEN_FAILURE : error;
+}
+
+DWORD CheckHandle(HANDLE handle, detail::SecurityUse use, PACL repair_acl = nullptr) {
+  const bool directory = use != detail::SecurityUse::log_file;
+  BY_HANDLE_FILE_INFORMATION info{};
+  if (!::GetFileInformationByHandle(handle, &info)) return Win32Failure();
+  if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+      ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) != directory ||
+      info.nNumberOfLinks != 1) return ERROR_ACCESS_DENIED;
+  if (!Worker()) return ERROR_SUCCESS;
+
   PSID owner = nullptr;
   PACL acl = nullptr;
   PSECURITY_DESCRIPTOR descriptor = nullptr;
-  if (::GetSecurityInfo(handle, SE_FILE_OBJECT,
+  const DWORD status = ::GetSecurityInfo(handle, SE_FILE_OBJECT,
       OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-      &owner, nullptr, &acl, nullptr, &descriptor) != ERROR_SUCCESS) return false;
+      &owner, nullptr, &acl, nullptr, &descriptor);
   LocalMemory memory;
   memory.value = descriptor;
+  if (status != ERROR_SUCCESS) return status;
   SECURITY_DESCRIPTOR_CONTROL control = 0;
   DWORD revision = 0;
-  if (!::GetSecurityDescriptorControl(descriptor, &control, &revision) ||
-      !(control & SE_DACL_PROTECTED) || !acl || acl->AceCount != 2) return false;
+  if (!descriptor || !::IsValidSecurityDescriptor(descriptor) ||
+      !::GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+      !(control & SE_DACL_PRESENT) || !acl || !::IsValidAcl(acl))
+    return ERROR_INVALID_ACL;
+  if (!owner || !::IsValidSid(owner)) return ERROR_INVALID_OWNER;
   std::array<BYTE, SECURITY_MAX_SID_SIZE> system_sid{};
   std::array<BYTE, SECURITY_MAX_SID_SIZE> admin_sid{};
   DWORD system_size = static_cast<DWORD>(system_sid.size());
@@ -120,72 +137,109 @@ bool ProtectedSecurity(HANDLE handle) {
   if (!::CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid.data(),
                            &system_size) ||
       !::CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
-                           admin_sid.data(), &admin_size)) return false;
-  if (!owner || (!::EqualSid(owner, system_sid.data()) &&
-                 !::EqualSid(owner, admin_sid.data()))) return false;
+                           admin_sid.data(), &admin_size)) return Win32Failure();
+  const bool privileged_owner = ::EqualSid(owner, system_sid.data()) ||
+                                ::EqualSid(owner, admin_sid.data());
+  bool private_acl = (control & SE_DACL_PROTECTED) && acl->AceCount == 2;
+  bool safe_parent_acl = true;
   bool system = false;
   bool admin = false;
+  static_assert(detail::kParentReadOnlyAccess ==
+      (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | GENERIC_READ | GENERIC_EXECUTE));
+  static_assert(detail::kFileAllAccess == FILE_ALL_ACCESS);
+  static_assert(detail::kPrivateAceFlags == (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE));
   for (DWORD i = 0; i < acl->AceCount; ++i) {
     void* raw_ace = nullptr;
-    if (!::GetAce(acl, i, &raw_ace)) return false;
+    if (!::GetAce(acl, i, &raw_ace)) return ERROR_INVALID_ACL;
+    const auto* header = static_cast<const ACE_HEADER*>(raw_ace);
+    // Object/callback/unknown ACEs require richer access evaluation; reject.
+    if ((header->AceType != ACCESS_ALLOWED_ACE_TYPE &&
+         header->AceType != ACCESS_DENIED_ACE_TYPE) ||
+        (header->AceFlags & ~(OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE |
+                             NO_PROPAGATE_INHERIT_ACE | INHERIT_ONLY_ACE |
+                             INHERITED_ACE))) return ERROR_INVALID_ACL;
+    constexpr size_t sid_offset = offsetof(ACCESS_ALLOWED_ACE, SidStart);
+    if (header->AceSize < sid_offset + 8) return ERROR_INVALID_ACL;
     const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
-    if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE ||
-        ace->Mask != FILE_ALL_ACCESS) return false;
     PSID sid = const_cast<DWORD*>(&ace->SidStart);
-    if (::EqualSid(sid, system_sid.data()) && !system) system = true;
-    else if (::EqualSid(sid, admin_sid.data()) && !admin) admin = true;
-    else return false;
+    if (::GetSidLengthRequired(static_cast<SID*>(sid)->SubAuthorityCount) >
+        header->AceSize - sid_offset || !::IsValidSid(sid)) return ERROR_INVALID_ACL;
+    const bool is_system = ::EqualSid(sid, system_sid.data()) != FALSE;
+    const bool is_admin = ::EqualSid(sid, admin_sid.data()) != FALSE;
+    const bool allow = header->AceType == ACCESS_ALLOWED_ACE_TYPE;
+    // Conservative: never rely on deny ordering, group membership, or denies
+    // cancelling an unsafe grant. INHERIT_ONLY grants do not apply to this parent.
+    if (allow && !detail::SafeParentAllow(is_system || is_admin,
+            (header->AceFlags & INHERIT_ONLY_ACE) != 0, ace->Mask))
+      safe_parent_acl = false;
+    if (!detail::PrivateAllow(allow, ace->Mask, header->AceFlags))
+      private_acl = false;
+    if (is_system && !system) system = true;
+    else if (is_admin && !admin) admin = true;
+    else private_acl = false;
   }
-  return system && admin;
+  const auto decision = detail::DecideSecurity(use, true, privileged_owner,
+      safe_parent_acl, private_acl && system && admin);
+  if (decision == detail::SecurityDecision::accept) return ERROR_SUCCESS;
+  if (decision != detail::SecurityDecision::tighten || !repair_acl)
+    return ERROR_ACCESS_DENIED;
+  // Only Logs is repairable. Keep its verified owner; never touch the parent,
+  // files or descendants. The caller pins this object with MAXIMUM_ALLOWED,
+  // which prevents SetSecurityInfo from propagating ACEs to existing children.
+  const DWORD repair = ::SetSecurityInfo(handle, SE_FILE_OBJECT,
+      DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+      nullptr, nullptr, repair_acl, nullptr);
+  if (repair != ERROR_SUCCESS) return repair;
+  return CheckHandle(handle, use);  // Revalidate the same handle after tightening.
 }
 
-bool SafeHandle(HANDLE handle, bool directory) {
-  BY_HANDLE_FILE_INFORMATION info{};
-  if (!::GetFileInformationByHandle(handle, &info) ||
-      (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
-      ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) != directory)
-    return false;
-  if (!directory && info.nNumberOfLinks != 1) return false;
-  return !Worker() || ProtectedSecurity(handle);
-}
-
-bool WriteAll(HANDLE file, const char* data, DWORD size) {
+DWORD WriteAll(HANDLE file, const char* data, DWORD size) {
   while (size != 0) {
     DWORD written = 0;
-    if (!::WriteFile(file, data, size, &written, nullptr) || written == 0)
-      return false;
+    if (!::WriteFile(file, data, size, &written, nullptr)) return Win32Failure();
+    if (written == 0) return ERROR_WRITE_FAULT;
     data += written;
     size -= written;
   }
-  return true;
+  return ERROR_SUCCESS;
 }
 
-bool Seek(HANDLE file, LONGLONG position) {
+DWORD Seek(HANDLE file, LONGLONG position) {
   LARGE_INTEGER offset{};
   offset.QuadPart = position;
-  return ::SetFilePointerEx(file, offset, nullptr, FILE_BEGIN) != FALSE;
+  return ::SetFilePointerEx(file, offset, nullptr, FILE_BEGIN)
+      ? ERROR_SUCCESS : Win32Failure();
 }
 
-bool Rotate(HANDLE current, const std::wstring& path,
-            SECURITY_ATTRIBUTES* security, LONGLONG size) {
+DWORD Rotate(HANDLE current, const std::wstring& path,
+             SECURITY_ATTRIBUTES* security, LONGLONG size) {
   Handle backup(::CreateFileW((path + L".1").c_str(),
       GENERIC_READ | GENERIC_WRITE | READ_CONTROL, 0, security, OPEN_ALWAYS,
       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  if (!backup || !SafeHandle(backup.value, false) ||
-      !Seek(backup.value, 0) || !::SetEndOfFile(backup.value) ||
-      !Seek(current, size > kMaxBytes ? size - kMaxBytes : 0)) return false;
+  if (!backup) return Win32Failure();
+  DWORD status = CheckHandle(backup.value, detail::SecurityUse::log_file);
+  if (status != ERROR_SUCCESS) return status;
+  status = Seek(backup.value, 0);
+  if (status != ERROR_SUCCESS) return status;
+  if (!::SetEndOfFile(backup.value)) return Win32Failure();
+  status = Seek(current, size > kMaxBytes ? size - kMaxBytes : 0);
+  if (status != ERROR_SUCCESS) return status;
   std::array<char, 16 * 1024> buffer{};
   LONGLONG remaining = size > kMaxBytes ? kMaxBytes : size;
   while (remaining > 0) {
     const DWORD wanted = static_cast<DWORD>(
         remaining < static_cast<LONGLONG>(buffer.size()) ? remaining : buffer.size());
     DWORD read = 0;
-    if (!::ReadFile(current, buffer.data(), wanted, &read, nullptr) || read == 0 ||
-        !WriteAll(backup.value, buffer.data(), read)) return false;
+    if (!::ReadFile(current, buffer.data(), wanted, &read, nullptr)) return Win32Failure();
+    if (read == 0) return ERROR_READ_FAULT;
+    status = WriteAll(backup.value, buffer.data(), read);
+    if (status != ERROR_SUCCESS) return status;
     remaining -= read;
   }
-  return ::FlushFileBuffers(backup.value) && Seek(current, 0) &&
-         ::SetEndOfFile(current);
+  if (!::FlushFileBuffers(backup.value)) return Win32Failure();
+  status = Seek(current, 0);
+  if (status != ERROR_SUCCESS) return status;
+  return ::SetEndOfFile(current) ? ERROR_SUCCESS : Win32Failure();
 }
 
 std::string Line(std::string_view event, std::string_view error_type,
@@ -243,20 +297,25 @@ std::string Line(std::string_view event, std::string_view error_type,
   return line;
 }
 
-bool Append(std::string_view event, std::string_view error_type = {},
-            std::string_view error_code = {},
-            std::optional<int64_t> os_error = std::nullopt,
-            std::string_view context = {}) {
-  if (base_path.empty() || log_path.empty()) return false;
+DWORD Append(std::string_view event, std::string_view error_type = {},
+             std::string_view error_code = {},
+             std::optional<int64_t> os_error = std::nullopt,
+             std::string_view context = {}) {
+  if (base_path.empty() || log_path.empty()) return ERROR_PATH_NOT_FOUND;
   LocalMemory descriptor;
   SECURITY_ATTRIBUTES attributes{};
   SECURITY_ATTRIBUTES* security = nullptr;
+  PACL repair_acl = nullptr;
   if (Worker()) {
     PSECURITY_DESCRIPTOR raw = nullptr;
     if (!::ConvertStringSecurityDescriptorToSecurityDescriptorW(
         L"O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", SDDL_REVISION_1,
-        &raw, nullptr)) return false;
+        &raw, nullptr)) return Win32Failure();
     descriptor.value = raw;
+    BOOL present = FALSE;
+    BOOL defaulted = FALSE;
+    if (!::GetSecurityDescriptorDacl(raw, &present, &repair_acl, &defaulted) ||
+        !present || !repair_acl) return ERROR_INVALID_ACL;
     attributes.nLength = sizeof(attributes);
     attributes.lpSecurityDescriptor = raw;
     security = &attributes;
@@ -264,32 +323,45 @@ bool Append(std::string_view event, std::string_view error_type = {},
   const std::wstring app = base_path + L"\\Ligament";
   const std::wstring directory = app + L"\\Logs";
   if (!::CreateDirectoryW(app.c_str(), security) &&
-      ::GetLastError() != ERROR_ALREADY_EXISTS) return false;
+      ::GetLastError() != ERROR_ALREADY_EXISTS) return Win32Failure();
   Handle app_handle(::CreateFileW(app.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
       FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  if (!app_handle || !SafeHandle(app_handle.value, true)) return false;
+  if (!app_handle) return Win32Failure();
+  DWORD status = CheckHandle(app_handle.value, detail::SecurityUse::parent);
+  if (status != ERROR_SUCCESS) return status;
   if (!::CreateDirectoryW(directory.c_str(), security) &&
-      ::GetLastError() != ERROR_ALREADY_EXISTS) return false;
+      ::GetLastError() != ERROR_ALREADY_EXISTS) return Win32Failure();
+  // MAXIMUM_ALLOWED suppresses ACL propagation to unverified children during
+  // repair. No FILE_SHARE_DELETE: keep both checked directories pinned to paths.
   Handle directory_handle(::CreateFileW(directory.c_str(),
-      FILE_READ_ATTRIBUTES | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_WRITE,
-      nullptr, OPEN_EXISTING,
+      Worker() ? MAXIMUM_ALLOWED : FILE_READ_ATTRIBUTES | READ_CONTROL,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  if (!directory_handle || !SafeHandle(directory_handle.value, true)) return false;
+  if (!directory_handle) return Win32Failure();
+  status = CheckHandle(directory_handle.value, detail::SecurityUse::log_directory,
+                       repair_acl);
+  if (status != ERROR_SUCCESS) return status;
   // The exclusive current-file handle serializes writes and rotation.
   Handle current(::CreateFileW(log_path.c_str(),
       GENERIC_READ | GENERIC_WRITE | READ_CONTROL, 0, security, OPEN_ALWAYS,
       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  if (!current || !SafeHandle(current.value, false)) return false;
+  if (!current) return Win32Failure();
+  status = CheckHandle(current.value, detail::SecurityUse::log_file);
+  if (status != ERROR_SUCCESS) return status;
   LARGE_INTEGER size{};
   const std::string line = Line(event, error_type, error_code, os_error, context);
-  if (line.empty() || line.size() > static_cast<size_t>(kMaxBytes) ||
-      !::GetFileSizeEx(current.value, &size)) return false;
+  if (line.empty() || line.size() > static_cast<size_t>(kMaxBytes)) return ERROR_INVALID_DATA;
+  if (!::GetFileSizeEx(current.value, &size)) return Win32Failure();
   if (size.QuadPart > kMaxBytes - static_cast<LONGLONG>(line.size())) {
-    if (!Rotate(current.value, log_path, security, size.QuadPart)) return false;
-  } else if (!Seek(current.value, size.QuadPart)) return false;
-  return WriteAll(current.value, line.data(), static_cast<DWORD>(line.size())) &&
-         ::FlushFileBuffers(current.value);
+    status = Rotate(current.value, log_path, security, size.QuadPart);
+  } else {
+    status = Seek(current.value, size.QuadPart);
+  }
+  if (status != ERROR_SUCCESS) return status;
+  status = WriteAll(current.value, line.data(), static_cast<DWORD>(line.size()));
+  if (status != ERROR_SUCCESS) return status;
+  return ::FlushFileBuffers(current.value) ? ERROR_SUCCESS : Win32Failure();
 }
 }  // namespace
 
@@ -301,8 +373,7 @@ void Initialize(Mode mode) noexcept {
     initialized = true;
     base_path.clear();
     log_path.clear();
-    file_name = mode == Mode::gui ? L"app-debug.log" :
-        mode == Mode::link_host ? L"link-debug.log" : L"console-debug.log";
+    file_name = mode == Mode::gui ? L"app-debug.log" : L"link-debug.log";
     TaskMemory path;
     if (SUCCEEDED(::SHGetKnownFolderPath(Worker() ? FOLDERID_ProgramData :
         FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &path.value)) && path.value) {
@@ -321,6 +392,7 @@ State GetState() noexcept {
 }
 
 bool IsWorker() noexcept {
+  LastErrorGuard error;
   try {
     std::lock_guard<std::mutex> lock(log_mutex);
     return Worker();
@@ -342,7 +414,7 @@ uint32_t SetEnabled(bool enabled) noexcept {
     status = ::RegSetValueExW(key.value, kSetting, 0, REG_DWORD,
         reinterpret_cast<const BYTE*>(&value), sizeof(value));
     if (status != ERROR_SUCCESS) return static_cast<uint32_t>(status);
-    // The final off event uses the pre-toggle state only in the GUI.
+    // A log write failure must not misreport an already persisted toggle.
     try {
       if (enabled && ReadEnabled()) Append("debug.enabled");
       else if (!enabled && previously_enabled) Append("debug.disabled");
@@ -353,16 +425,20 @@ uint32_t SetEnabled(bool enabled) noexcept {
 
 bool Write(std::string_view event, std::string_view error_type,
            std::string_view error_code, std::optional<int64_t> os_error,
-           std::string_view context) noexcept {
+           std::string_view context, uint32_t* diagnostic_code) noexcept {
   LastErrorGuard error;
+  const auto result = [diagnostic_code](DWORD status) {
+    if (diagnostic_code) *diagnostic_code = status;
+    return status == ERROR_SUCCESS;
+  };
   if (!ValidEvent(event) ||
       (!error_type.empty() && !ValidErrorType(error_type)) ||
       (!error_code.empty() && !ValidErrorCode(error_code)) ||
-      !ValidContext(context)) return false;
+      !ValidContext(context)) return result(ERROR_INVALID_PARAMETER);
   try {
     std::lock_guard<std::mutex> lock(log_mutex);
-    if (!ReadEnabled()) return false;
-    return Append(event, error_type, error_code, os_error, context);
-  } catch (...) { return false; }
+    if (!ReadEnabled()) return result(ERROR_NOT_READY);
+    return result(Append(event, error_type, error_code, os_error, context));
+  } catch (...) { return result(ERROR_NOT_ENOUGH_MEMORY); }
 }
 }  // namespace debug_log

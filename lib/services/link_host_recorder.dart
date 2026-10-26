@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'debug_log_service.dart';
+import 'link_spool_storage.dart';
 
 void _recorderLog(String event,
         {Object? error, Map<String, Object?> fields = const {}}) =>
@@ -203,7 +204,10 @@ class LinkRecordingConfig {
     this.epoch = 1,
     this.leaseTtl = const Duration(seconds: 45),
     this.maxAckLag = const Duration(seconds: 30),
-    this.maxQueueBytes = 16 * 1024 * 1024,
+    this.maxQueueBytes = 64 * 1024 * 1024,
+    this.failurePolicy = 'strict',
+    this.spoolEnabled = false,
+    this.maxSpoolBytes = 1024 * 1024 * 1024,
   });
 
   final String contractVersion;
@@ -219,9 +223,14 @@ class LinkRecordingConfig {
   final Duration leaseTtl;
   final Duration maxAckLag;
   final int maxQueueBytes;
+  final String failurePolicy; // resilient, strict
+  final bool spoolEnabled;
+  final int maxSpoolBytes;
 
   bool get isActive =>
       enabled && effectiveMode != 'exclude' && ingestUrl.isNotEmpty;
+
+  bool get isStrict => mandatory && failurePolicy == 'strict';
 
   static LinkRecordingConfig fromWire(Object? raw) {
     if (raw is! Map) return const LinkRecordingConfig();
@@ -236,6 +245,13 @@ class LinkRecordingConfig {
     final lagSec = raw['max_ack_lag_seconds'] is int
         ? (raw['max_ack_lag_seconds'] as int).clamp(5, 180)
         : 30;
+    final failurePolicy = raw['failure_policy'] is String
+        ? (raw['failure_policy'] as String).trim().toLowerCase()
+        : 'resilient';
+    final spoolEnabled = raw['spool_enabled'] != false;
+    final maxSpoolBytes = raw['max_spool_bytes'] is int
+        ? raw['max_spool_bytes'] as int
+        : 1024 * 1024 * 1024;
     return LinkRecordingConfig(
       contractVersion: raw['contract_version']?.toString() ?? 'v1',
       enabled: enabled && mode != 'exclude',
@@ -250,6 +266,9 @@ class LinkRecordingConfig {
       epoch: raw['epoch'] is int ? (raw['epoch'] as int) : 1,
       leaseTtl: Duration(seconds: leaseSec),
       maxAckLag: Duration(seconds: lagSec),
+      failurePolicy: failurePolicy,
+      spoolEnabled: spoolEnabled,
+      maxSpoolBytes: maxSpoolBytes,
     );
   }
 }
@@ -273,6 +292,28 @@ typedef LinkRecorderBatchSender = Future<LinkRecorderBatchAck> Function(
   Map<String, dynamic> batchPayload,
 );
 
+/// HTTP failure facts only; response text, tokens and query strings are excluded.
+class LinkRecorderHttpException implements Exception {
+  const LinkRecorderHttpException({
+    required this.statusCode,
+    required this.code,
+    required this.server,
+    required this.route,
+    required this.requestId,
+  });
+
+  final int statusCode;
+  final String code;
+  final String server;
+  final String route;
+  final int requestId;
+  String get method => 'POST';
+
+  @override
+  String toString() =>
+      'Recorder HTTP $statusCode ($code), $method $server$route';
+}
+
 /// Наблюдатель захвата и событий на стороне хоста (Этапы 2, 9, 10).
 /// Работает независимо от прямого P2P WebRTC и окна оператора:
 /// - фильтрует события ввода (исключая печатный текст, пароли и буфер обмена);
@@ -284,11 +325,20 @@ class LinkHostRecorder {
     required this.config,
     LinkRecorderBatchSender? sendBatch,
     this.onMandatoryViolation,
+    LinkSpoolStorage? spool,
     DateTime Function()? clock,
     Stopwatch? leaseStopwatch,
     Duration? stopFlushTimeout,
     DebugLogService? debugLog,
   })  : _debugLog = debugLog ?? DebugLogService.instance,
+        spool = spool ??
+            (config.spoolEnabled
+                ? LinkSpoolStorage(
+                    sessionId: sessionId,
+                    maxSpoolBytes: config.maxSpoolBytes,
+                    debugLog: debugLog,
+                  )
+                : null),
         _clock = clock ?? DateTime.now,
         _startedAt = (clock ?? DateTime.now)().toUtc(),
         _leaseStopwatch = leaseStopwatch ?? Stopwatch(),
@@ -298,6 +348,7 @@ class LinkHostRecorder {
                   config.ingestUrl,
                   config.ingestToken,
                   batch,
+                  debugLog: debugLog,
                 )) {
     if (sessionId.toLowerCase().startsWith('link_')) {
       throw const FormatException(
@@ -305,6 +356,11 @@ class LinkHostRecorder {
       );
     }
   }
+
+  final LinkSpoolStorage? spool;
+  int _spoolBatchIndex = 0;
+
+  bool get isThrottled => _queuedBytes >= (config.maxQueueBytes ~/ 2);
 
   static HttpClient? _sharedHttpClient;
 
@@ -362,7 +418,12 @@ class LinkHostRecorder {
         finish(() => completer.completeError(error, stackTrace));
       },
       onDone: () {
-        finish(() => completer.complete(utf8.decode(bytes)));
+        try {
+          final body = utf8.decode(bytes);
+          finish(() => completer.complete(body));
+        } catch (error, stackTrace) {
+          finish(() => completer.completeError(error, stackTrace));
+        }
       },
       cancelOnError: true,
     );
@@ -380,49 +441,106 @@ class LinkHostRecorder {
     Map<String, dynamic> batch, {
     HttpClient? client,
     Duration timeout = _httpTimeout,
+    DebugLogService? debugLog,
   }) async {
+    final log = debugLog ?? DebugLogService.instance;
     final uri = Uri.tryParse(ingestUrl);
     if (!isSecureIngestUri(uri)) {
-      _recorderLog('recorder.http.blocked',
+      log.record('recorder.http.blocked',
           fields: {'reason': 'insecure_ingest', 'result': 'blocked'});
       throw const FormatException('recorder_insecure_ingest');
     }
+    final destination = uri!;
+    final server =
+        '${destination.host.contains(':') ? '[${destination.host}]' : destination.host}:${destination.port}';
+    final path = destination.path;
+    final route =
+        RegExp(r'^/api/v1/link/sessions/[^/]+/recorder/batch$').hasMatch(path)
+            ? '/api/v1/link/sessions/{id}/recorder/batch'
+            : RegExp(r'^/api/v1/ingest/sessions/[^/]+/batch$').hasMatch(path)
+                ? '/api/v1/ingest/sessions/{id}/batch'
+                : '/{recorder_ingest}';
+    final requestId = log.nextRequestId();
     final watch = Stopwatch()..start();
     var phase = 'request_open';
-    _recorderLog('recorder.http',
-        fields: {'method': 'POST', 'server': uri!.host, 'result': 'begin'});
+    var sentBytes = 0;
+    var responseBytes = 0;
+    int? status;
+    HttpClientRequest? request;
+    var openExpired = false;
+    Duration remaining() {
+      final time = timeout - watch.elapsed;
+      if (time <= Duration.zero) {
+        throw TimeoutException('Recorder HTTP operation timeout', timeout);
+      }
+      return time;
+    }
+
+    void diagnostic(String event, String result,
+        {Object? error, String? code}) {
+      log.record(event, error: error, fields: {
+        'request_id': requestId,
+        'method': 'POST',
+        'server': server,
+        'route': route,
+        'phase': phase,
+        if (status != null) 'http_status': status,
+        'duration_ms': watch.elapsedMilliseconds,
+        'sent_bytes': sentBytes,
+        'response_bytes': responseBytes,
+        if (code != null) 'reason': DebugLogService.protocolLabel(code),
+        'result': result,
+      });
+    }
+
+    diagnostic('recorder.http', 'begin');
     try {
+      final encoded = utf8.encode(jsonEncode(batch));
       final httpClient = client ?? _getSharedClient();
-      final request = await httpClient.postUrl(uri);
+      request = await httpClient.postUrl(destination).then((opened) {
+        if (openExpired) opened.abort();
+        return opened;
+      }).timeout(remaining(), onTimeout: () {
+        openExpired = true;
+        throw TimeoutException('Recorder request open timeout', timeout);
+      });
+      // Do not forward the ingest bearer token to a redirected destination.
+      request.followRedirects = false;
       request.headers.contentType = ContentType.json;
       if (ingestToken.isNotEmpty) {
         request.headers
             .set(HttpHeaders.authorizationHeader, 'Bearer $ingestToken');
       }
-      final encoded = utf8.encode(jsonEncode(batch));
       request.add(encoded);
+      sentBytes = encoded.length;
       phase = 'response_wait';
-      _recorderLog('recorder.http', fields: {
-        'method': 'POST',
-        'sent_bytes': encoded.length,
-        'result': 'queued'
-      });
-      final response = await request.close().timeout(timeout);
+      diagnostic('recorder.http', 'queued');
+      final response = await request.close().timeout(remaining());
+      status = response.statusCode;
       phase = 'ack_read';
-      _recorderLog('recorder.http', fields: {
-        'method': 'POST',
-        'http_status': response.statusCode,
-        'duration_ms': watch.elapsedMilliseconds,
-        'result': 'response'
-      });
-      final body = await _readAckBody(response, timeout);
-      _recorderLog('recorder.http', fields: {
-        'response_bytes': utf8.encode(body).length,
-        'result': 'received'
-      });
+      diagnostic('recorder.http', 'response');
+      final body = await _readAckBody(response, remaining());
+      responseBytes = utf8.encode(body).length;
+      diagnostic('recorder.http', 'received');
       phase = 'ack_validate';
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HttpException('Recorder ingest status ${response.statusCode}');
+      if (status < 200 || status >= 300) {
+        String code = 'unknown';
+        try {
+          final errorBody = jsonDecode(body);
+          if (errorBody is Map) {
+            code = DebugLogService.protocolLabel(
+                errorBody['code'] ?? errorBody['error']);
+          }
+        } on FormatException {
+          // Non-JSON errors still retain HTTP facts, never the response text.
+        }
+        throw LinkRecorderHttpException(
+          statusCode: status,
+          code: code,
+          server: server,
+          route: route,
+          requestId: requestId,
+        );
       }
       final decoded = jsonDecode(body);
       if (decoded is! Map) {
@@ -445,6 +563,7 @@ class LinkHostRecorder {
       final leaseTtlMs = decoded['lease_ttl_ms'] is num
           ? (decoded['lease_ttl_ms'] as num).toInt()
           : null;
+      diagnostic('recorder.http', 'validated');
       return LinkRecorderBatchAck(
         ackHighWatermarkSeq: (decoded['ack_high_watermark_seq'] as num).toInt(),
         firstFrameAcked: decoded['first_frame_acked'] == true,
@@ -452,12 +571,10 @@ class LinkHostRecorder {
         leaseTtlMs: leaseTtlMs,
       );
     } catch (error) {
-      _recorderLog('recorder.http.failed', error: error, fields: {
-        'method': 'POST',
-        'phase': phase,
-        'duration_ms': watch.elapsedMilliseconds,
-        'result': 'failed'
-      });
+      request?.abort();
+      diagnostic('recorder.http.failed', 'failed',
+          error: error,
+          code: error is LinkRecorderHttpException ? error.code : null);
       rethrow;
     }
   }
@@ -538,6 +655,14 @@ class LinkHostRecorder {
   static const int maxBatchBytes = 2 * 1024 * 1024;
   static const int maxBatchFrames = 20;
   static const int maxBatchEvents = 200;
+  static const int _maxFrameBytes = 8 * 1024 * 1024;
+  static const int _maxMetadataBytes = 16 * 1024;
+  static const int _maxQueuedFrames = 1024;
+  static const int _maxQueuedEvents = 4096;
+  static const int _maxFlushBatches = 128;
+  // Reserve a coverage frame marker, loss counters and lifecycle events.
+  static const int _queueControlReserveBytes = 1024;
+  static const int _maxLossCount = 0x7fffffffffffffff;
 
   final List<Map<String, dynamic>> _pendingFrames = [];
   final List<Map<String, dynamic>> _pendingEvents = [];
@@ -548,6 +673,7 @@ class LinkHostRecorder {
   int _ackedSeq = 0;
   bool _firstFrameAcked = false;
   DateTime? _lastAckAt;
+  DateTime? _noProgressSince;
   final Stopwatch _leaseStopwatch;
   Duration? _leaseTtl;
   DateTime? _desktopGraceUntil;
@@ -556,6 +682,12 @@ class LinkHostRecorder {
   bool _sessionEndedRecorded = false;
   bool _tailFlushed = true;
   Future<bool>? _activeFlush;
+  Future<bool>? _activeStop;
+  Stopwatch? _stopWatch;
+  Map<String, dynamic>? _gapMarker;
+  bool _gapMarkerFrozen = false;
+  int _droppedFrames = 0;
+  int _droppedEvents = 0;
 
   void _snapshot(String event,
       {Object? error, Map<String, Object?> fields = const {}}) {
@@ -581,7 +713,11 @@ class LinkHostRecorder {
   bool get isFirstFrameAcked => !config.enabled || _firstFrameAcked;
   bool get firstFrameAcked => _firstFrameAcked;
   bool get isTailFlushed =>
-      _tailFlushed && _pendingFrames.isEmpty && _pendingEvents.isEmpty;
+      _tailFlushed &&
+      _pendingFrames.isEmpty &&
+      _pendingEvents.isEmpty &&
+      _droppedFrames == 0 &&
+      _droppedEvents == 0;
   int get queuedBytes => _queuedBytes;
 
   void notifyDesktopChanged() {
@@ -599,8 +735,8 @@ class LinkHostRecorder {
           ? 'ignored'
           : 'begin'
     });
-    _startedAt = _clock().toUtc();
     if (!config.enabled || _stopped || _flushTimer != null) return;
+    _startedAt = _clock().toUtc();
 
     if (config.ingestUrl.isNotEmpty &&
         (config.mandatory || config.requireFirstFrame)) {
@@ -612,122 +748,104 @@ class LinkHostRecorder {
     }
 
     if (_nextSeq == 0 && _pendingEvents.isEmpty) {
-      _nextSeq++;
-      final startEvent = {
-        'seq': _nextSeq,
-        'event_type': 'session_started',
-        'source': 'session_lifecycle',
-        'occurred_at': _clock().toUtc().toIso8601String(),
-        'metadata': {'mode': config.effectiveMode},
-      };
-      _pendingEvents.add(startEvent);
-      _queuedBytes += utf8.encode(jsonEncode(startEvent)).length;
+      _appendLifecycle('session_started', {'mode': config.effectiveMode});
     }
     _flushTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      unawaited(flushAndVerifyHealth());
+      unawaited(flushAndVerifyHealth().catchError((Object error) {
+        _snapshot('recorder.flush.failed',
+            error: error, fields: {'result': 'failed'});
+        return _checkLeaseAndLag(_clock().toUtc());
+      }));
     });
   }
 
   final Duration _stopFlushTimeout;
 
   Future<bool> stop({String reason = ''}) async {
+    if (_activeStop != null) return await _activeStop!;
+    final stopping = _stop(reason);
+    _activeStop = stopping;
+    try {
+      return await stopping;
+    } finally {
+      _activeStop = null;
+    }
+  }
+
+  Duration _remainingStopTime() {
+    final remaining = _stopFlushTimeout - _stopWatch!.elapsed;
+    if (remaining <= Duration.zero) {
+      throw TimeoutException('Recorder stop deadline', _stopFlushTimeout);
+    }
+    return remaining;
+  }
+
+  Future<bool> _stop(String reason) async {
+    _stopWatch = Stopwatch()..start();
+    _stopped = true;
+    _flushTimer?.cancel();
+    _flushTimer = null;
     _snapshot('recorder.stop', fields: {
       'reason': reason,
       'result': 'begin',
       'timeout_ms': _stopFlushTimeout.inMilliseconds
     });
-    _flushTimer?.cancel();
-    _flushTimer = null;
-    while (_activeFlush != null) {
-      try {
-        await _activeFlush!.timeout(_stopFlushTimeout);
-      } on TimeoutException catch (error) {
-        _snapshot('recorder.stop.timeout', error: error, fields: {
-          'phase': 'tail_flush',
-          'result': 'failed',
-          'timeout_ms': _stopFlushTimeout.inMilliseconds
-        });
-        _tailFlushed = false;
-        _stopped = true;
-        return false;
-      } catch (error) {
-        _recorderLog('recorder.exception',
-            error: error, fields: {'phase': 'stop', 'result': 'failed'});
+    if (!config.enabled) return true;
+    try {
+      if (_activeSpill != null) {
+        try {
+          await _activeSpill!.timeout(_remainingStopTime());
+        } catch (_) {}
       }
-    }
-    if (!config.enabled) {
-      _stopped = true;
-      return true;
-    }
-    _stopped = true;
-    if (!_sessionEndedRecorded) {
-      _sessionEndedRecorded = true;
-      _nextSeq++;
-      final isViolation = reason.isNotEmpty &&
-          reason != 'normal' &&
-          reason != 'user_disconnected' &&
-          reason != 'session_ended';
-      final endEvent = {
-        'seq': _nextSeq,
-        'event_type': isViolation ? 'mandatory_violation' : 'session_ended',
-        'source': 'session_lifecycle',
-        'occurred_at': _clock().toUtc().toIso8601String(),
-        'metadata': {
-          'reason': reason.isNotEmpty ? reason : 'normal',
-          if (isViolation) 'violation': reason,
-        },
-      };
-      _pendingEvents.add(endEvent);
-      _queuedBytes += utf8.encode(jsonEncode(endEvent)).length;
-    }
-    while (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
-      final prevCount = _pendingFrames.length + _pendingEvents.length;
-      late final bool ok;
-      try {
-        ok = await _flushInternal().timeout(_stopFlushTimeout);
-      } on TimeoutException catch (error) {
-        _snapshot('recorder.stop.timeout', error: error, fields: {
-          'phase': 'tail_flush',
-          'result': 'failed',
-          'timeout_ms': _stopFlushTimeout.inMilliseconds
-        });
-        _tailFlushed = false;
-        return false;
-      } catch (error) {
-        _recorderLog('recorder.exception',
-            error: error, fields: {'phase': 'stop', 'result': 'failed'});
-        ok = false;
+      // The same budget covers an already-running cycle and every tail batch.
+      if (_activeFlush != null) {
+        try {
+          await _activeFlush!.timeout(_remainingStopTime());
+        } on TimeoutException {
+          rethrow;
+        } catch (error) {
+          _snapshot('recorder.stop.flush_failed',
+              error: error,
+              fields: {'phase': 'active_flush', 'result': 'retry'});
+        }
       }
-      final newCount = _pendingFrames.length + _pendingEvents.length;
-      if (!ok || newCount >= prevCount) break;
-    }
-    if (_pendingFrames.isNotEmpty || _pendingEvents.isNotEmpty) {
-      // Потеря хвоста — фиксируем gap_marker
-      _tailFlushed = false;
-      _nextSeq++;
-      final gapEvent = {
-        'seq': _nextSeq,
-        'event_type': 'gap_marker',
-        'source': 'session_lifecycle',
-        'occurred_at': _clock().toUtc().toIso8601String(),
-        'metadata': {
-          'reason': 'tail_lost',
-          'dropped_frames': _pendingFrames.length,
-          'dropped_events': _pendingEvents.length,
-        },
-      };
-      _pendingFrames.clear();
-      _pendingEvents.clear();
-      _pendingEvents.add(gapEvent);
-      try {
-        await _flushInternal().timeout(_stopFlushTimeout);
-      } catch (error) {
-        _recorderLog('recorder.exception',
-            error: error, fields: {'phase': 'stop', 'result': 'failed'});
+      if (!_sessionEndedRecorded) {
+        final isViolation = reason.isNotEmpty &&
+            reason != 'normal' &&
+            reason != 'user_disconnected' &&
+            reason != 'session_ended';
+        final label = reason.isNotEmpty ? reason : 'normal';
+        _sessionEndedRecorded = _appendLifecycle(
+          isViolation ? 'mandatory_violation' : 'session_ended',
+          {'reason': label, if (isViolation) 'violation': label},
+        );
       }
-      _pendingEvents.clear();
-      _queuedBytes = 0;
+      while (_pendingFrames.isNotEmpty ||
+          _pendingEvents.isNotEmpty ||
+          _droppedFrames > 0 ||
+          _droppedEvents > 0) {
+        final before = _pendingFrames.length + _pendingEvents.length;
+        final ok = await _serializedFlush().timeout(_remainingStopTime());
+        final after = _pendingFrames.length + _pendingEvents.length;
+        if (!ok || after >= before) break;
+      }
+    } on TimeoutException catch (error) {
+      _snapshot('recorder.stop.timeout', error: error, fields: {
+        'phase': 'tail_flush',
+        'result': 'failed',
+        'timeout_ms': _stopFlushTimeout.inMilliseconds
+      });
+    } catch (error) {
+      _snapshot('recorder.stop.failed',
+          error: error, fields: {'phase': 'tail_flush', 'result': 'failed'});
     }
+    // Never replace or clear unconfirmed data, even on timeout. A late ACK may
+    // still remove only its own snapshot; subsequent stop() may retry the tail.
+    _tailFlushed = _sessionEndedRecorded &&
+        _pendingFrames.isEmpty &&
+        _pendingEvents.isEmpty &&
+        _droppedFrames == 0 &&
+        _droppedEvents == 0;
     _snapshot('recorder.stop',
         fields: {'result': isTailFlushed ? 'tail_flushed' : 'tail_lost'});
     return isTailFlushed;
@@ -865,17 +983,168 @@ class LinkHostRecorder {
     return true;
   }
 
+  static int _jsonBytes(Object value) => utf8.encode(jsonEncode(value)).length;
+
   void _recalculateQueuedBytes() {
-    var total = 0;
-    for (final f in _pendingFrames) {
-      final b64 = f['payload_base64'] as String? ?? '';
-      total += b64.length * 3 ~/ 4;
-    }
-    for (final e in _pendingEvents) {
-      total += utf8.encode(jsonEncode(e)).length;
-    }
-    _queuedBytes = total;
+    _queuedBytes =
+        _pendingFrames.fold<int>(0, (sum, f) => sum + _jsonBytes(f)) +
+            _pendingEvents.fold<int>(0, (sum, e) => sum + _jsonBytes(e));
   }
+
+  bool _appendLifecycle(String type, Map<String, dynamic> metadata) {
+    final event = {
+      'seq': _nextSeq + 1,
+      'event_type': type,
+      'source': 'session_lifecycle',
+      'occurred_at': _clock().toUtc().toIso8601String(),
+      'metadata': metadata,
+    };
+    final bytes = _jsonBytes(event);
+    if (bytes > _maxMetadataBytes ||
+        _queuedBytes + bytes > config.maxQueueBytes ||
+        _pendingEvents.length >= _maxQueuedEvents + 3) {
+      _recordDrop(isFrame: false, bytes: bytes);
+      return false;
+    }
+    _nextSeq++;
+    _pendingEvents.add(event);
+    _queuedBytes += bytes;
+    return true;
+  }
+
+  void _recordDrop({required bool isFrame, required int bytes}) {
+    if (isFrame) {
+      _droppedFrames = (_droppedFrames + 1).clamp(0, _maxLossCount);
+    } else {
+      _droppedEvents = (_droppedEvents + 1).clamp(0, _maxLossCount);
+    }
+    _materializeLossMarker();
+    _snapshot('recorder.queue.overflow',
+        fields: {'bytes': bytes, 'result': 'dropped'});
+    if (config.mandatory) {
+      if (config.isStrict) {
+        _triggerMandatoryStop('recorder_queue_overflow');
+      } else {
+        unawaited(_spillToSpool());
+      }
+    }
+  }
+
+  Future<void>? _activeSpill;
+
+  Future<void> _spillToSpool() {
+    if (_activeSpill != null) return _activeSpill!;
+    if (_stopped || spool == null) return Future.value();
+    final spilling = _doSpillToSpool();
+    _activeSpill = spilling;
+    return spilling.whenComplete(() => _activeSpill = null);
+  }
+
+  Future<void> _doSpillToSpool() async {
+    try {
+      final batchFrames = <Map<String, dynamic>>[];
+      final batchEvents = <Map<String, dynamic>>[];
+      var spilledBytes = 0;
+
+      while (_pendingFrames.isNotEmpty && batchFrames.length < maxBatchFrames) {
+        final frame = _pendingFrames.removeAt(0);
+        batchFrames.add(frame);
+        spilledBytes += _jsonBytes(frame);
+      }
+      while (_pendingEvents.isNotEmpty && batchEvents.length < maxBatchEvents) {
+        final event = _pendingEvents.removeAt(0);
+        batchEvents.add(event);
+        spilledBytes += _jsonBytes(event);
+      }
+
+      if (batchFrames.isEmpty && batchEvents.isEmpty) return;
+      _queuedBytes = (_queuedBytes - spilledBytes).clamp(0, 0x7fffffffffffffff);
+
+      final batch = {
+        'session_id': sessionId,
+        'epoch': config.epoch,
+        'lease_ttl_seconds': config.leaseTtl.inSeconds,
+        'frames': batchFrames,
+        'events': batchEvents,
+      };
+
+      await spool!.writeBatch(++_spoolBatchIndex, batch);
+      _snapshot('recorder.spool.buffered', fields: {
+        'batch_index': _spoolBatchIndex,
+        'frames': batchFrames.length,
+        'events': batchEvents.length,
+        'spilled_bytes': spilledBytes,
+      });
+    } on LinkSpoolQuotaExceededException catch (error) {
+      _snapshot('recorder.spool.quota_exceeded', error: error);
+      _triggerMandatoryStop('recorder_spool_quota_exceeded');
+    } catch (error) {
+      _snapshot('recorder.spool.failed', error: error);
+    }
+  }
+
+  void _materializeLossMarker() {
+    if ((_droppedFrames == 0 && _droppedEvents == 0) ||
+        (_gapMarker != null && _gapMarkerFrozen)) {
+      return;
+    }
+    final previous = _gapMarker;
+    final previousMetadata = previous?['metadata'] as Map?;
+    final frameMarker = previous == null
+        ? <String, dynamic>{
+            'seq': _nextSeq + 1,
+            'frame_kind': 'gap_marker',
+            'monitor_id': 'primary',
+            'width': 0,
+            'height': 0,
+            'codec': 'png',
+            'payload_base64': '',
+            'captured_at': _clock().toUtc().toIso8601String(),
+          }
+        : null;
+    final marker = <String, dynamic>{
+      'seq': previous?['seq'] ?? _nextSeq + 2,
+      'event_type': 'gap_marker',
+      'source': 'session_lifecycle',
+      'occurred_at':
+          previous?['occurred_at'] ?? _clock().toUtc().toIso8601String(),
+      'metadata': {
+        'reason': 'recorder_queue_overflow',
+        'dropped_frames': ((_droppedFrames +
+                ((previousMetadata?['dropped_frames'] as int?) ?? 0)))
+            .clamp(0, _maxLossCount),
+        'dropped_events': ((_droppedEvents +
+                ((previousMetadata?['dropped_events'] as int?) ?? 0)))
+            .clamp(0, _maxLossCount),
+      },
+    };
+    final delta = _jsonBytes(marker) -
+        (previous == null ? 0 : _jsonBytes(previous)) +
+        (frameMarker == null ? 0 : _jsonBytes(frameMarker));
+    if (_queuedBytes + delta > config.maxQueueBytes ||
+        (previous == null &&
+            (_pendingEvents.length >= _maxQueuedEvents + 3 ||
+                _pendingFrames.length >= _maxQueuedFrames + 1))) {
+      return;
+    }
+    if (previous == null) {
+      _nextSeq += 2;
+      _pendingFrames.add(frameMarker!);
+      _gapMarker = marker;
+      _gapMarkerFrozen = false;
+      _pendingEvents.add(marker);
+    } else {
+      // Only a never-sent marker may be updated. Failed/partial sends freeze it
+      // until durable ACK; later loss stays in bounded counters, not new items.
+      previous['metadata'] = marker['metadata'];
+    }
+    _queuedBytes += delta;
+    _droppedFrames = 0;
+    _droppedEvents = 0;
+  }
+
+  bool _fitsDataQueue(int bytes) =>
+      _queuedBytes + bytes <= config.maxQueueBytes - _queueControlReserveBytes;
 
   /// Добавляет кадр в ограниченную очередь (Инвариант 7, 8, 9).
   /// Для периодических снимков (`periodic`) пропускает дубликаты, если экран не изменился.
@@ -891,44 +1160,37 @@ class LinkHostRecorder {
     if (frameKind == 'periodic' &&
         _lastFramePayload != null &&
         _lastMonitorId == monitorId &&
-        _bytesEqual(_lastFramePayload!, payload)) {
-      // Экран находится в состоянии покоя (простой) — не засоряем архив идентичными кадрами.
+        (_bytesEqual(_lastFramePayload!, payload) || isThrottled)) {
+      // Экран находится в состоянии покоя (простой) или активен троттлинг очереди — не засоряем архив избыточными кадрами.
       return true;
     }
-    if (_queuedBytes + payload.length > config.maxQueueBytes) {
-      _snapshot('recorder.queue.overflow',
-          fields: {'bytes': payload.length, 'result': 'dropped'});
-      // Фиксируем явный gap_marker вместо бесконтрольного роста RAM.
-      _nextSeq++;
-      _pendingFrames.add({
-        'seq': _nextSeq,
-        'frame_kind': 'gap_marker',
-        'monitor_id': monitorId,
-        'width': width,
-        'height': height,
-        'codec': codec,
-        'payload_base64': '',
-        'captured_at': _clock().toUtc().toIso8601String(),
-      });
-      if (config.mandatory) {
-        _triggerMandatoryStop('recorder_queue_overflow');
-      }
-      return false;
-    }
-    _lastFramePayload = Uint8List.fromList(payload);
-    _lastMonitorId = monitorId;
-    _nextSeq++;
-    _queuedBytes += payload.length;
-    _pendingFrames.add({
-      'seq': _nextSeq,
+    final frame = <String, dynamic>{
+      'seq': _nextSeq + 1,
       'frame_kind': frameKind,
       'monitor_id': monitorId,
       'width': width,
       'height': height,
       'codec': codec,
-      'payload_base64': base64Encode(payload),
+      'payload_base64': '',
       'captured_at': _clock().toUtc().toIso8601String(),
-    });
+    };
+    final metadataBytes = _jsonBytes(frame);
+    final encodedBytes = metadataBytes + ((payload.length + 2) ~/ 3) * 4;
+    if (payload.length > _maxFrameBytes ||
+        metadataBytes > _maxMetadataBytes ||
+        !_fitsDataQueue(encodedBytes) ||
+        _pendingFrames.length >= _maxQueuedFrames ||
+        (encodedBytes > maxBatchBytes &&
+            !const {'jpeg', 'png', 'webp'}.contains(codec))) {
+      _recordDrop(isFrame: true, bytes: encodedBytes);
+      return false;
+    }
+    frame['payload_base64'] = base64Encode(payload);
+    _lastFramePayload = Uint8List.fromList(payload);
+    _lastMonitorId = monitorId;
+    _nextSeq++;
+    _queuedBytes += encodedBytes;
+    _pendingFrames.add(frame);
     return true;
   }
 
@@ -937,20 +1199,36 @@ class LinkHostRecorder {
     if (!config.enabled || _stopped) return;
     final sanitized = sanitizeInputEvent(rawInput, occurredAt: _clock());
     if (sanitized == null) return;
+    sanitized['seq'] = _nextSeq + 1;
+    String encoded;
+    try {
+      encoded = jsonEncode(sanitized);
+    } on JsonUnsupportedObjectError {
+      _recordDrop(isFrame: false, bytes: 0);
+      return;
+    }
+    final eventBytes = utf8.encode(encoded).length;
+    if (eventBytes > _maxMetadataBytes ||
+        !_fitsDataQueue(eventBytes) ||
+        _pendingEvents.length >= _maxQueuedEvents) {
+      _recordDrop(isFrame: false, bytes: eventBytes);
+      return;
+    }
     _nextSeq++;
-    sanitized['seq'] = _nextSeq;
-    final eventBytes = utf8.encode(jsonEncode(sanitized)).length;
-    _pendingEvents.add(sanitized);
+    // Detach any metadata values originating from the caller's mutable input.
+    _pendingEvents.add(jsonDecode(encoded) as Map<String, dynamic>);
     _queuedBytes += eventBytes;
   }
 
   /// Отправляет накопленный пакет в Recorder и проверяет долговечный ACK (Инвариант 1, 2, 5).
   Future<bool> flushAndVerifyHealth() async {
     if (!config.enabled || _stopped) return true;
-    if (_activeFlush != null) {
-      return await _activeFlush!;
-    }
-    final f = _flushInternal();
+    return await _serializedFlush();
+  }
+
+  Future<bool> _serializedFlush() async {
+    if (_activeFlush != null) return await _activeFlush!;
+    final f = _flushCycle();
     _activeFlush = f;
     try {
       return await f;
@@ -959,7 +1237,42 @@ class LinkHostRecorder {
     }
   }
 
-  Future<bool> _flushInternal() async {
+  int _snapshotCount(int upperSeq) =>
+      _pendingFrames.where((f) => (f['seq'] as int) <= upperSeq).length +
+      _pendingEvents.where((e) => (e['seq'] as int) <= upperSeq).length;
+
+  Future<bool> _flushCycle() async {
+    if (_activeSpill != null) {
+      await _activeSpill;
+    }
+    _materializeLossMarker();
+    final upperSeq = _nextSeq;
+    // Freeze the complete cycle snapshot, including markers not yet selected.
+    if (_gapMarker != null) _gapMarkerFrozen = true;
+    for (var i = 0; i < _maxFlushBatches; i++) {
+      if (_stopWatch != null && _stopWatch!.elapsed >= _stopFlushTimeout) {
+        return false;
+      }
+      final before = _snapshotCount(upperSeq);
+      final ok = await _flushInternal(upperSeq);
+      if (!ok) return false;
+      final after = _snapshotCount(upperSeq);
+      if (after < before) _noProgressSince = null;
+      if (before == 0 || after == 0 || after >= before) {
+        if (before > 0 && after >= before) {
+          _noProgressSince ??= _clock().toUtc();
+          _snapshot('recorder.batch.no_progress', fields: {'result': 'retry'});
+          return _checkLeaseAndLag(_clock().toUtc());
+        }
+        return true;
+      }
+    }
+    _snapshot('recorder.flush.capped',
+        fields: {'count': _maxFlushBatches, 'result': 'retry'});
+    return true;
+  }
+
+  Future<bool> _flushInternal(int upperSeq) async {
     final now = _clock().toUtc();
 
     if (config.ingestUrl.isNotEmpty &&
@@ -971,30 +1284,74 @@ class LinkHostRecorder {
       }
     }
 
-    final batchFrames = <Map<String, dynamic>>[];
-    var currentBatchBytes = 0;
-    for (final frame in _pendingFrames) {
-      if (batchFrames.length >= maxBatchFrames) break;
-      final b64 = frame['payload_base64'] as String? ?? '';
-      final frameBytes = b64.length * 3 ~/ 4;
-      if (batchFrames.isNotEmpty &&
-          currentBatchBytes + frameBytes > maxBatchBytes) {
-        break;
+    if (spool != null && spool!.hasPendingChunks) {
+      final pendingFiles = await spool!.getPendingBatches();
+      for (final file in pendingFiles) {
+        final spooledBatch = await spool!.readBatch(file);
+        if (spooledBatch != null) {
+          try {
+            await sendBatch(spooledBatch);
+            await spool!.removeBatch(file);
+            _snapshot('recorder.spool.drained', fields: {'file': file.path});
+          } catch (error) {
+            _snapshot('recorder.spool.drain_retry', error: error);
+            break;
+          }
+        } else {
+          await spool!.removeBatch(file);
+        }
       }
-      batchFrames.add(frame);
-      currentBatchBytes += frameBytes;
     }
 
+    final batchFrames = <Map<String, dynamic>>[];
     final batchEvents = <Map<String, dynamic>>[];
-    for (final event in _pendingEvents) {
-      if (batchEvents.length >= maxBatchEvents) break;
-      final eventBytes = utf8.encode(jsonEncode(event)).length;
-      if (batchEvents.isNotEmpty &&
-          currentBatchBytes + eventBytes > maxBatchBytes) {
+    final batch = {
+      'session_id': sessionId,
+      'epoch': config.epoch,
+      'lease_ttl_seconds': config.leaseTtl.inSeconds,
+      'frames': batchFrames,
+      'events': batchEvents,
+    };
+    var currentBatchBytes = _jsonBytes(batch);
+    var frameIndex = 0;
+    var eventIndex = 0;
+    while (true) {
+      final frame = frameIndex < _pendingFrames.length &&
+              (_pendingFrames[frameIndex]['seq'] as int) <= upperSeq
+          ? _pendingFrames[frameIndex]
+          : null;
+      final event = eventIndex < _pendingEvents.length &&
+              (_pendingEvents[eventIndex]['seq'] as int) <= upperSeq
+          ? _pendingEvents[eventIndex]
+          : null;
+      if (frame == null && event == null) break;
+      final isFrame = frame != null &&
+          (event == null || (frame['seq'] as int) < (event['seq'] as int));
+      final item = isFrame ? frame : event;
+      final selected = isFrame ? batchFrames : batchEvents;
+      if (selected.length >= (isFrame ? maxBatchFrames : maxBatchEvents)) break;
+      final nextBytes =
+          currentBatchBytes + _jsonBytes(item!) + (selected.isEmpty ? 0 : 1);
+      if (nextBytes > maxBatchBytes) {
+        // The Core 20 MiB proxy can carry one supported <=8 MiB raw frame.
+        // Never append events or other frames to that exceptional batch.
+        if (batchFrames.isEmpty &&
+            batchEvents.isEmpty &&
+            isFrame &&
+            const {'jpeg', 'png', 'webp'}.contains(item['codec']) &&
+            nextBytes <= 20 * 1024 * 1024) {
+          selected.add(item);
+          currentBatchBytes = nextBytes;
+        }
         break;
       }
-      batchEvents.add(event);
-      currentBatchBytes += eventBytes;
+      selected.add(item);
+      currentBatchBytes = nextBytes;
+      if (isFrame) {
+        frameIndex++;
+      } else {
+        eventIndex++;
+      }
     }
 
     if (batchFrames.isEmpty && batchEvents.isEmpty) {
@@ -1006,14 +1363,6 @@ class LinkHostRecorder {
         return _checkLeaseAndLag(now);
       }
     }
-
-    final batch = {
-      'session_id': sessionId,
-      'epoch': config.epoch,
-      'lease_ttl_seconds': config.leaseTtl.inSeconds,
-      'frames': batchFrames,
-      'events': batchEvents,
-    };
 
     final inFlightFrameSeqs = batchFrames.map((f) => f['seq'] as int).toSet();
     final inFlightEventSeqs = batchEvents.map((e) => e['seq'] as int).toSet();
@@ -1086,7 +1435,12 @@ class LinkHostRecorder {
           inFlightEventSeqs.contains(e['seq'] as int) &&
           (e['seq'] as int) <= _ackedSeq);
 
+      if (_gapMarker != null && !_pendingEvents.contains(_gapMarker)) {
+        _gapMarker = null;
+        _gapMarkerFrozen = false;
+      }
       _recalculateQueuedBytes();
+      _materializeLossMarker();
       _snapshot('recorder.batch.ack_validated',
           fields: {'rtt_ms': rtt.inMilliseconds, 'result': 'validated'});
 
@@ -1107,6 +1461,14 @@ class LinkHostRecorder {
         'bytes': currentBatchBytes,
         'frames': batchFrames.length,
         'count': batchEvents.length,
+        if (e is LinkRecorderHttpException) ...{
+          'request_id': e.requestId,
+          'method': e.method,
+          'server': e.server,
+          'route': e.route,
+          'http_status': e.statusCode,
+          'reason': e.code,
+        },
         'result': 'failed'
       });
       if (e is FormatException) {
@@ -1137,7 +1499,10 @@ class LinkHostRecorder {
       _triggerMandatoryStop('recorder_lease_expired');
       return false;
     }
-    if (_lastAckAt != null && now.difference(_lastAckAt!) > config.maxAckLag) {
+    if ((_lastAckAt != null &&
+            now.difference(_lastAckAt!) > config.maxAckLag) ||
+        (_noProgressSince != null &&
+            now.difference(_noProgressSince!) >= config.maxAckLag)) {
       _triggerMandatoryStop('recorder_ack_lag_exceeded');
       return false;
     }
@@ -1146,9 +1511,19 @@ class LinkHostRecorder {
 
   void _triggerMandatoryStop(String reason) {
     if (_stopped || (!config.mandatory && !config.requireFirstFrame)) return;
+    if (!config.isStrict &&
+        (reason == 'recorder_queue_overflow' ||
+            reason == 'recorder_lease_expired' ||
+            reason == 'recorder_ack_lag_exceeded')) {
+      _snapshot('recorder.resilient.degraded', fields: {'reason': reason});
+      unawaited(_spillToSpool());
+      return;
+    }
     _snapshot('recorder.mandatory.violation',
         fields: {'reason': reason, 'result': 'stopping'});
     _stopped = true;
+    _flushTimer?.cancel();
+    _flushTimer = null;
     onMandatoryViolation?.call(reason);
   }
 }

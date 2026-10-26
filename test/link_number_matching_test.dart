@@ -121,11 +121,40 @@ void main() {
     const channel = MethodChannel('window_manager');
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(channel, (_) async => null);
-    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      if (call.method == 'isMinimized') return false;
+      if (call.method == 'getBounds') {
+        return {'x': 0.0, 'y': 0.0, 'width': 560.0, 'height': 760.0};
+      }
+      return null;
+    });
+    const screen = MethodChannel('screen_retriever');
+    const display = {
+      'id': 1,
+      'name': 'test',
+      'size': {'width': 1200.0, 'height': 900.0},
+      'visiblePosition': {'x': 0.0, 'y': 0.0},
+      'visibleSize': {'width': 1200.0, 'height': 900.0},
+      'scaleFactor': 1.0,
+    };
+    messenger.setMockMethodCallHandler(screen, (call) async {
+      if (call.method == 'getPrimaryDisplay') return display;
+      if (call.method == 'getAllDisplays') return {'displays': [display]};
+      if (call.method == 'getCursorScreenPoint') return {'x': 0.0, 'y': 0.0};
+      return null;
+    });
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(channel, null);
+      messenger.setMockMethodCallHandler(screen, null);
+    });
     final state = LinkHostWorkerState()..showSession(_id, 'view', 'Оператор');
     final consent = state.awaitConsent();
     await tester.pumpWidget(LinkHostOverlay(state: state));
+    await tester.pump();
+    expect(calls, containsAllInOrder(['show', 'focus']));
+    expect(state.consentUiAvailable, true);
     expect(find.byType(SupportApprovalModal), findsOneWidget);
     expect(
         tester

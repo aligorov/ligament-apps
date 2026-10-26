@@ -9,12 +9,44 @@
 
 namespace debug_log {
 
-enum class Mode { gui, link_host, service_console };
+enum class Mode { gui, link_host };
 
 struct State {
   bool enabled = false;
   std::string path;
 };
+
+namespace detail {
+// Win32 FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, plus their generic forms.
+// All other bits (including unknown rights) fail closed for untrusted trustees.
+constexpr uint32_t kParentReadOnlyAccess = 0x001200a9u | 0xa0000000u;
+constexpr bool SafeParentAllow(bool privileged, bool inherit_only,
+                               uint32_t access) noexcept {
+  return privileged || inherit_only || (access & ~kParentReadOnlyAccess) == 0;
+}
+
+constexpr uint32_t kFileAllAccess = 0x001f01ffu;
+constexpr uint8_t kPrivateAceFlags = 0x03u;  // Object/container inherit only.
+constexpr bool PrivateAllow(bool allow, uint32_t access, uint8_t flags) noexcept {
+  return allow && access == kFileAllAccess && (flags & ~kPrivateAceFlags) == 0;
+}
+
+enum class SecurityUse { parent, log_directory, log_file };
+enum class SecurityDecision { reject, accept, tighten };
+
+constexpr SecurityDecision DecideSecurity(SecurityUse use, bool safe_object,
+    bool privileged_owner, bool safe_parent_acl, bool private_acl) noexcept {
+  if (!safe_object || !privileged_owner) return SecurityDecision::reject;
+  if (use == SecurityUse::parent) {
+    return safe_parent_acl ? SecurityDecision::accept : SecurityDecision::reject;
+  }
+  if (private_acl) return SecurityDecision::accept;
+  // Do not repair writable/ambiguous ACLs: previously granted write handles
+  // survive DACL changes. Never repair files (including hardlinked files).
+  return use == SecurityUse::log_directory && safe_parent_acl
+      ? SecurityDecision::tighten : SecurityDecision::reject;
+}
+}  // namespace detail
 
 constexpr bool ValidField(std::string_view value, std::size_t limit,
                           bool uppercase, bool hyphen) noexcept {
@@ -137,10 +169,13 @@ void Initialize(Mode mode) noexcept;
 State GetState() noexcept;
 bool IsWorker() noexcept;
 uint32_t SetEnabled(bool enabled) noexcept;
+// Optional Win32 diagnostic code; GetLastError() is preserved on every path.
+// ERROR_NOT_READY means logging is disabled or has not been initialized.
 bool Write(std::string_view event, std::string_view error_type = {},
            std::string_view error_code = {},
            std::optional<int64_t> os_error = std::nullopt,
-           std::string_view context = {}) noexcept;
+           std::string_view context = {},
+           uint32_t* diagnostic_code = nullptr) noexcept;
 
 }  // namespace debug_log
 

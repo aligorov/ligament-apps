@@ -53,6 +53,41 @@ class _FakeLinkHostPeer implements LinkHostPeer {
   }
 }
 
+void _mockHostWindow() {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  const window = MethodChannel('window_manager');
+  const screen = MethodChannel('screen_retriever');
+  const tray = MethodChannel('tray_manager');
+  messenger.setMockMethodCallHandler(window, (call) async {
+    if (call.method == 'isMinimized') return false;
+    if (call.method == 'getBounds') {
+      return {'x': 0.0, 'y': 0.0, 'width': 560.0, 'height': 760.0};
+    }
+    return null;
+  });
+  const display = {
+    'id': 1,
+    'name': 'test',
+    'size': {'width': 1200.0, 'height': 900.0},
+    'visiblePosition': {'x': 0.0, 'y': 0.0},
+    'visibleSize': {'width': 1200.0, 'height': 900.0},
+    'scaleFactor': 1.0,
+  };
+  messenger.setMockMethodCallHandler(screen, (call) async {
+    if (call.method == 'getPrimaryDisplay') return display;
+    if (call.method == 'getAllDisplays') return {'displays': [display]};
+    if (call.method == 'getCursorScreenPoint') return {'x': 0.0, 'y': 0.0};
+    return null;
+  });
+  messenger.setMockMethodCallHandler(tray, (_) async => null);
+  addTearDown(() {
+    messenger.setMockMethodCallHandler(window, null);
+    messenger.setMockMethodCallHandler(screen, null);
+    messenger.setMockMethodCallHandler(tray, null);
+  });
+}
+
 void main() {
   test('Link worker pipe argument accepts only generated local pipe names', () {
     const pipe = r'\\.\pipe\LigamentLinkHost-0123456789abcdef0123456789abcdef';
@@ -124,14 +159,7 @@ void main() {
 
   testWidgets('privacy indicator stays visible and disconnects on request',
       (tester) async {
-    const windowChannel = MethodChannel('window_manager');
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(
-      windowChannel,
-      (call) async => null,
-    );
-    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+    _mockHostWindow();
 
     final state = LinkHostWorkerState()
       ..showSession(_sessionId, 'control', 'Иванов Иван')
@@ -151,11 +179,7 @@ void main() {
 
   testWidgets('attended request shows explicit approve and deny actions',
       (tester) async {
-    const windowChannel = MethodChannel('window_manager');
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(windowChannel, (call) async => null);
-    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+    _mockHostWindow();
 
     final state = LinkHostWorkerState()
       ..showSession(_sessionId, 'control', 'Иванов Иван');
@@ -577,14 +601,7 @@ void main() {
 
   testWidgets('LinkHostOverlay toggles chat panel and sends messages',
       (tester) async {
-    const windowChannel = MethodChannel('window_manager');
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(
-      windowChannel,
-      (call) async => null,
-    );
-    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+    _mockHostWindow();
 
     final state = LinkHostWorkerState()
       ..showSession(_sessionId, 'control', 'Оператор')
