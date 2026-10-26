@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
 
 /// Модальное окно Zero-Trust подтверждения удаленного доступа с Number Matching.
@@ -74,6 +75,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   }
 
   void _close() {
+    DebugLogService.instance.record('ui.support_approval.close', fields: {'session_id': widget.prompt['session_id'], 'reason': 'expired'});
     if (_standalone) {
       if (!_processing) unawaited(_deny());
       return;
@@ -104,14 +106,22 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
       _codeLength > 0 && _codeController.text.trim().length == _codeLength;
 
   Future<void> _approve() async {
-    if (_processing) return;
+    final watch = Stopwatch()..start();
+    final fields = <String, Object?>{'session_id': widget.prompt['session_id'], 'operation': 'approve'};
+    DebugLogService.instance.record('ui.support_approval.started', fields: fields);
+    if (_processing) {
+      DebugLogService.instance.record('ui.support_approval.blocked', fields: {...fields, 'reason': 'busy'});
+      return;
+    }
     final strings = widget.stringsOverride ?? context.stringsRead;
     if (!_codeEntered) {
+      DebugLogService.instance.record('ui.support_approval.blocked', fields: {...fields, 'reason': 'missing_code'});
       setState(() => _error = strings.errEnterMatch);
       return;
     }
     if (_expectedMatch.isNotEmpty &&
         _codeController.text.trim() != _expectedMatch) {
+      DebugLogService.instance.record('ui.support_approval.blocked', fields: {...fields, 'reason': 'number_match'});
       setState(() => _error = strings.errWrongMatchPhone);
       return;
     }
@@ -124,6 +134,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
     try {
       if (_standalone) {
         await widget.onApprove!(_codeController.text.trim());
+        DebugLogService.instance.record('ui.support_approval.completed', fields: {...fields, 'result': 'callback_returned', 'duration_ms': watch.elapsedMilliseconds});
         return;
       }
       final auth = context.read<AuthState>();
@@ -132,11 +143,13 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
         sessionId: sessId,
         numberMatch: _codeController.text.trim(),
       );
+      DebugLogService.instance.record('ui.support_approval.completed', fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
 
       if (mounted) {
         Navigator.of(context).pop(true);
       }
     } catch (e) {
+      DebugLogService.instance.record('ui.support_approval.failed', error: e, fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
       if (mounted) {
         setState(() {
           _processing = false;
@@ -147,17 +160,27 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   }
 
   Future<void> _deny() async {
-    if (_processing) return;
+    final watch = Stopwatch()..start();
+    final fields = <String, Object?>{'session_id': widget.prompt['session_id'], 'operation': 'deny'};
+    DebugLogService.instance.record('ui.support_approval.started', fields: fields);
+    if (_processing) {
+      DebugLogService.instance.record('ui.support_approval.blocked', fields: {...fields, 'reason': 'busy'});
+      return;
+    }
     setState(() => _processing = true);
     try {
       if (_standalone) {
         await widget.onDeny!();
+        DebugLogService.instance.record('ui.support_approval.completed', fields: {...fields, 'result': 'callback_returned', 'duration_ms': watch.elapsedMilliseconds});
         return;
       }
       final auth = context.read<AuthState>();
       final sessId = widget.prompt['session_id']?.toString() ?? '';
       await auth.rejectSupport(sessionId: sessId);
-    } catch (_) {}
+      DebugLogService.instance.record('ui.support_approval.completed', fields: {...fields, 'result': 'local_cleanup_returned', 'duration_ms': watch.elapsedMilliseconds});
+    } catch (error) {
+      DebugLogService.instance.record('ui.support_approval.failed', error: error, fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
+    }
     if (!_standalone && mounted) {
       Navigator.of(context).pop(false);
     }
@@ -179,6 +202,7 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
       if (gone) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && Navigator.of(context).canPop()) {
+            DebugLogService.instance.record('ui.support_approval.cancelled', fields: {'session_id': widget.prompt['session_id'], 'reason': 'prompt_gone'});
             Navigator.of(context).pop(false);
           }
         });

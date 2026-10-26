@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import 'support_operator_screen.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../services/link_agent_binding_service.dart';
 
 /// Lowercase search corpus built once per inventory snapshot. Filtering then
@@ -173,6 +174,26 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   LinkHostSearchIndex? _searchIndex;
   final Map<String, bool> _expansionOverrides = {};
 
+  Future<T> _traceAction<T>(String operation, Future<T> Function() action,
+      {String? agentId, String? state}) async {
+    final watch = Stopwatch()..start();
+    final fields = <String, Object?>{'operation': operation,
+      'request_id': DebugLogService.instance.nextRequestId(),
+      if (agentId != null) 'agent_id': agentId, if (state != null) 'state': state};
+    DebugLogService.instance.record('ui.catalog.action.started', fields: fields);
+    try {
+      final result = await action();
+      DebugLogService.instance.record('ui.catalog.action.completed', fields: {
+        ...fields, 'result': 'await_returned', 'duration_ms': watch.elapsedMilliseconds,
+      });
+      return result;
+    } catch (error) {
+      DebugLogService.instance.record('ui.catalog.action.failed', error: error,
+          fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
+      rethrow;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -214,10 +235,14 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }
 
   Future<void> _bindThisHost(AuthState auth, bool isRu) async {
-    if (_bindingThisHost || auth.api == null) return;
+    DebugLogService.instance.record('ui.catalog.bind.intent');
+    if (_bindingThisHost || auth.api == null) {
+      DebugLogService.instance.record('ui.catalog.bind.blocked', fields: {'reason': _bindingThisHost ? 'busy' : 'no_api'});
+      return;
+    }
     setState(() => _bindingThisHost = true);
     try {
-      final credential = await auth.api!.createLinkEnrollmentCredential();
+      final credential = await _traceAction('enrollment_credential', () => auth.api!.createLinkEnrollmentCredential());
       if (!mounted) return;
       if (!credential.expiresAt.isAfter(DateTime.now().toUtc())) {
         throw StateError('Link enrollment credential expired before binding');
@@ -226,10 +251,10 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       if (serverUrl == null || serverUrl.trim().isEmpty) {
         throw StateError('No active Link server is configured');
       }
-      await LinkAgentBindingService().bindHost(
+      await _traceAction('bind_local_agent', () => LinkAgentBindingService().bindHost(
         serverUrl: serverUrl,
         enrollmentToken: credential.token,
-      );
+      ));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(isRu
@@ -238,6 +263,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       ));
       await auth.loadLinkHosts();
     } catch (error) {
+      DebugLogService.instance.record('ui.catalog.bind.failed', error: error);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(linkAgentBindingErrorMessage(error, isRu: isRu)),
@@ -256,7 +282,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     try {
       isExternal = auth.isExternalPerimeter;
       clientIp = auth.clientIp;
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('ui.catalog.context.failed', error: error); }
     if (!identical(_indexedHosts, auth.linkHosts) ||
         _searchIndex?.length != auth.linkHosts.length) {
       _indexedHosts = auth.linkHosts;
@@ -306,7 +332,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             ),
           IconButton(
             tooltip: isRu ? 'Обновить каталог' : 'Refresh catalog',
-            onPressed: auth.linkHostsLoading ? null : auth.loadLinkHosts,
+            onPressed: auth.linkHostsLoading ? null : () => _traceAction('refresh_cycle', auth.loadLinkHosts),
             icon: const Icon(Icons.refresh_rounded),
           ),
         ],
@@ -367,7 +393,10 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: TextField(
               controller: _search,
-              onChanged: (value) => setState(() => _query = value),
+              onChanged: (value) {
+                DebugLogService.instance.record('ui.catalog.search.changed');
+                setState(() => _query = value);
+              },
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
                 hintText: isRu
@@ -379,6 +408,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     : IconButton(
                         tooltip: isRu ? 'Очистить' : 'Clear',
                         onPressed: () {
+                          DebugLogService.instance.record('ui.catalog.search.clear');
                           _search.clear();
                           setState(() => _query = '');
                         },
@@ -547,6 +577,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   bool _isExpanded(String key) => _expansionOverrides[key] ?? _query.isNotEmpty;
 
   void _toggleExpansion(String key) {
+    DebugLogService.instance.record('ui.catalog.folder.toggle', fields: {'state': _isExpanded(key) ? 'collapse' : 'expand'});
     setState(() => _expansionOverrides[key] = !_isExpanded(key));
   }
 
@@ -897,6 +928,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
 
   void _showHostOptions(
       Map<String, dynamic> host, bool isRu, bool isUnattended, bool canManage) {
+    DebugLogService.instance.record('ui.catalog.host_options.open', fields: {'agent_id': host['id']});
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF1E293B),
@@ -965,15 +997,22 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   Future<void> _toggleUnattended(
       Map<String, dynamic> host, bool enabled, bool isRu) async {
     final agentId = host['id']?.toString();
-    if (agentId == null || agentId.isEmpty) return;
+    DebugLogService.instance.record('ui.catalog.unattended.intent', fields: {'agent_id': agentId, 'state': enabled ? 'enable' : 'disable'});
+    if (agentId == null || agentId.isEmpty) {
+      DebugLogService.instance.record('ui.catalog.unattended.blocked', fields: {'reason': 'missing_agent'});
+      return;
+    }
     final auth = context.read<AuthState>();
     final api = auth.api;
-    if (api == null) return;
+    if (api == null) {
+      DebugLogService.instance.record('ui.catalog.unattended.blocked', fields: {'reason': 'no_api'});
+      return;
+    }
     setState(() {
       host['unattended_enabled'] = enabled;
     });
     try {
-      await api.updateLinkHost(agentId, unattendedEnabled: enabled);
+      await _traceAction('unattended', () => api.updateLinkHost(agentId, unattendedEnabled: enabled), agentId: agentId, state: enabled ? 'enable' : 'disable');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(enabled
@@ -1004,6 +1043,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final auth = context.read<AuthState>();
     final api = auth.api;
     if (api == null) return;
+    DebugLogService.instance.record('ui.catalog.archive.intent', fields: {'agent_id': agentId});
     var reason = '';
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1035,16 +1075,20 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted) {
+      DebugLogService.instance.record('ui.catalog.archive.cancelled', fields: {'agent_id': agentId, 'reason': !mounted ? 'unmounted' : 'dismissed'});
+      return;
+    }
     try {
-      await api.archiveLinkHost(agentId, reason: reason);
+      await _traceAction('archive', () => api.archiveLinkHost(agentId, reason: reason), agentId: agentId);
       await auth.loadLinkHosts();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(isRu
               ? 'ПК удалён из LINK. История сохранена.'
               : 'PC removed from LINK. History preserved.')));
-    } catch (_) {
+    } catch (error) {
+      DebugLogService.instance.record('ui.catalog.archive.failed', error: error, fields: {'agent_id': agentId});
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(isRu
@@ -1054,6 +1098,8 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }
 
   Future<void> _showHostDetails(Map<String, dynamic> host, bool isRu) async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.catalog.host_details.open', fields: {'agent_id': host['id']});
     final online = host['is_online'] == true;
     final unknown = host['is_online'] == null;
     final status = host['status']?.toString() ?? 'enrolled';
@@ -1167,6 +1213,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                 padding: EdgeInsets.zero,
                 icon: const Icon(Icons.copy_rounded, size: 14, color: Color(0xFF94A3B8)),
                 onPressed: () {
+                  DebugLogService.instance.record('ui.catalog.host_details.copy', fields: {'agent_id': host['id'], 'result': 'dispatched'});
                   Clipboard.setData(ClipboardData(text: value));
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                     duration: const Duration(seconds: 1),
@@ -1354,6 +1401,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         ],
       ),
     );
+    DebugLogService.instance.record('ui.catalog.host_details.closed', fields: {'agent_id': host['id'], 'duration_ms': watch.elapsedMilliseconds});
   }
 
   String _getCurrentUserId(AuthState auth) {
@@ -1365,8 +1413,13 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }
 
   Future<void> _startLinkSession(Map<String, dynamic> host, bool isRu) async {
+    final watch = Stopwatch()..start();
     final agentId = host['id']?.toString();
-    if (agentId == null || agentId.isEmpty) return;
+    DebugLogService.instance.record('ui.catalog.connect.intent', fields: {'agent_id': agentId});
+    if (agentId == null || agentId.isEmpty) {
+      DebugLogService.instance.record('ui.catalog.connect.blocked', fields: {'reason': 'missing_agent'});
+      return;
+    }
 
     final isConsoleAllowed = host['console_allowed'] == true;
     final consoleProfile = host['console_profile']?.toString() ?? 'work';
@@ -1402,7 +1455,11 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             ],
           ),
         );
-        if (chosen == null || !mounted) return;
+        if (chosen == null || !mounted) {
+          DebugLogService.instance.record('ui.catalog.connect.cancelled', fields: {'agent_id': agentId, 'duration_ms': watch.elapsedMilliseconds});
+          return;
+        }
+        DebugLogService.instance.record('ui.catalog.connect.mode', fields: {'agent_id': agentId, 'state': chosen});
         sessionKind = chosen;
         if (sessionKind == 'console' && consoleProfile == 'view') {
           mode = 'view';
@@ -1416,6 +1473,10 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final isOwner = currentUserId.isNotEmpty &&
         host['owner_user_id']?.toString() == currentUserId;
 
+    DebugLogService.instance.record('ui.catalog.connect.dispatched', fields: {
+      'agent_id': agentId, 'phase': sessionKind, 'owner': isOwner,
+      'operation': mode, 'elapsed_ms': watch.elapsedMilliseconds,
+    });
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => SupportOperatorScreen(
@@ -1437,6 +1498,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         ),
       ),
     );
+    DebugLogService.instance.record('ui.catalog.connect.screen_closed', fields: {'agent_id': agentId, 'duration_ms': watch.elapsedMilliseconds});
   }
 
   Future<void> _showGroupAccessDialog({
@@ -1448,6 +1510,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
   }) async {
     final api = auth.api;
     if (api == null) return;
+    DebugLogService.instance.record('ui.catalog.group_access.open', fields: {'phase': type});
 
     await showDialog<void>(
       context: context,
@@ -1528,6 +1591,8 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
   }
 
   Future<void> _load() async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.catalog.group_access.load.started', fields: {'phase': widget.type});
     setState(() {
       _loading = true;
       _error = null;
@@ -1551,6 +1616,7 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
           ));
         }
       }
+      DebugLogService.instance.record('ui.catalog.group_access.load.completed', fields: {'count': ops.length, 'duration_ms': watch.elapsedMilliseconds});
       if (mounted) {
         setState(() {
           _operators = ops;
@@ -1558,6 +1624,7 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
         });
       }
     } catch (e) {
+      DebugLogService.instance.record('ui.catalog.group_access.load.failed', error: e, fields: {'duration_ms': watch.elapsedMilliseconds});
       if (mounted) {
         setState(() {
           _error = e.toString();
@@ -1568,6 +1635,8 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
   }
 
   Future<void> _save() async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.catalog.group_access.save.started', fields: {'phase': widget.type, 'count': _operators.length});
     setState(() => _saving = true);
     try {
       final rules = _operators
@@ -1582,6 +1651,7 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
         target: widget.target,
         rules: rules,
       );
+      DebugLogService.instance.record('ui.catalog.group_access.save.completed', fields: {'count': rules.length, 'duration_ms': watch.elapsedMilliseconds});
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1590,6 +1660,7 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
             : 'Group access rights updated.'),
       ));
     } catch (e) {
+      DebugLogService.instance.record('ui.catalog.group_access.save.failed', error: e, fields: {'duration_ms': watch.elapsedMilliseconds});
       if (mounted) {
         setState(() => _saving = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1684,7 +1755,10 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
                 children: [
                   TextButton(
                     onPressed:
-                        _saving ? null : () => Navigator.of(context).pop(),
+                        _saving ? null : () {
+                          DebugLogService.instance.record('ui.catalog.group_access.cancelled');
+                          Navigator.of(context).pop();
+                        },
                     child: Text(isRu ? 'Отмена' : 'Cancel'),
                   ),
                   const SizedBox(width: 8),
@@ -1799,8 +1873,10 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
                   constraints:
                       const BoxConstraints.tightFor(width: 32, height: 32),
                   onPressed: op.hasAccess
-                      ? () => setState(
-                          () => op.allowUnattended = !op.allowUnattended)
+                      ? () {
+                          DebugLogService.instance.record('ui.catalog.group_access.unattended.toggle', fields: {'state': op.allowUnattended ? 'disable' : 'enable', 'code': index});
+                          setState(() => op.allowUnattended = !op.allowUnattended);
+                        }
                       : null,
                   icon: Icon(
                     op.allowUnattended ? Icons.shield : Icons.shield_outlined,
@@ -1823,6 +1899,7 @@ class _GroupAccessDialogState extends State<_GroupAccessDialog> {
                   activeThumbColor: const Color(0xFF38BDF8),
                   activeTrackColor: const Color(0xFF0284C7),
                   onChanged: (val) {
+                    DebugLogService.instance.record('ui.catalog.group_access.permission.toggle', fields: {'state': val ? 'allow' : 'deny', 'code': index});
                     setState(() {
                       op.hasAccess = val;
                       if (!val) op.allowUnattended = false;

@@ -19,6 +19,7 @@ import 'screens/link_host_overlay.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 import 'app_version.dart';
+import 'widgets/debug_action_scope.dart';
 
 Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
   try {
@@ -76,7 +77,7 @@ void main(List<String> args) async {
       final workerState = LinkHostWorkerState();
       try {
         await windowManager.ensureInitialized();
-        runApp(LinkHostOverlay(state: workerState));
+        runApp(DebugActionScope(child: LinkHostOverlay(state: workerState)));
         await windowManager.waitUntilReadyToShow(
           const WindowOptions(
             size: Size(560, 760),
@@ -291,6 +292,7 @@ class _LigamentAppState extends State<LigamentApp>
     with TrayListener, WindowListener {
   String? _lastTrayLocale;
   bool? _wasLoggedIn;
+  final _debugNavigation = DebugNavigationObserver();
 
   @override
   void initState() {
@@ -355,6 +357,8 @@ class _LigamentAppState extends State<LigamentApp>
   /// show() без restore() возвращает его в панель задач, но не на экран,
   /// что выглядело как «из трея не разворачивается».
   Future<void> _restoreWindowFromTray() async {
+    final timer = Stopwatch()..start();
+    DebugLogService.instance.record('ui.tray.restore.begin');
     try {
       if (await windowManager.isMinimized()) {
         await windowManager.restore();
@@ -374,13 +378,18 @@ class _LigamentAppState extends State<LigamentApp>
       }
       WidgetsBinding.instance.scheduleFrame();
       if (mounted) setState(() {});
+      DebugLogService.instance.record('ui.tray.restore.ready',
+          fields: {'duration_ms': timer.elapsedMilliseconds});
     } catch (e) {
+      DebugLogService.instance.record('ui.tray.restore.failed', error: e,
+          fields: {'duration_ms': timer.elapsedMilliseconds});
       debugPrint('tray: ошибка восстановления окна: $e');
     }
   }
 
   @override
   void onTrayIconMouseDown() {
+    DebugLogService.instance.record('ui.tray.icon');
     // Левый клик по иконке трея разворачивает окно (Windows/Linux). На macOS
     // клик по иконке открывает контекстное меню — там работает пункт меню.
     if (Platform.isWindows || Platform.isLinux) {
@@ -390,6 +399,8 @@ class _LigamentAppState extends State<LigamentApp>
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
+    DebugLogService.instance.record('ui.tray.action',
+        fields: {'operation': menuItem.key});
     if (menuItem.key == 'show') {
       _restoreWindowFromTray();
     } else if (menuItem.key == 'exit') {
@@ -403,12 +414,17 @@ class _LigamentAppState extends State<LigamentApp>
   @override
   void onWindowClose() async {
     final auth = context.read<AuthState>();
+    DebugLogService.instance.record('app.window.close.request', fields: {
+      'connected': auth.support.state == SupportSessionState.active,
+      'result': auth.gpo.allowExit ? 'exit_allowed' : 'hide_only',
+    });
 
     // m-8: при активной SOS-сессии закрытие окна требует подтверждения —
     // случайный клик по крестику не должен молча рвать сеанс помощи.
     if (auth.support.state == SupportSessionState.active) {
       final confirmed = await _confirmCloseDuringSupport(auth);
       if (!confirmed) {
+        DebugLogService.instance.record('app.window.close.cancelled');
         // Пользователь передумал — окно остается открытым.
         return;
       }
@@ -418,8 +434,10 @@ class _LigamentAppState extends State<LigamentApp>
     // При закрытии окна не убиваем процесс, а сворачиваем в системный трей
     final isPreventExit = !auth.gpo.allowExit;
     if (isPreventExit) {
+      DebugLogService.instance.record('app.window.hide');
       await windowManager.hide();
     } else {
+      DebugLogService.instance.record('app.window.destroy');
       await windowManager.destroy();
     }
   }
@@ -486,6 +504,10 @@ class _LigamentAppState extends State<LigamentApp>
 
     return MaterialApp(
       navigatorKey: LigamentApp.navigatorKey,
+      navigatorObservers: [_debugNavigation],
+      builder: (context, child) => DebugActionScope(
+        child: child ?? const SizedBox.shrink(),
+      ),
       title: 'Ligament 2FA',
       locale: auth.locale,
       supportedLocales: const [

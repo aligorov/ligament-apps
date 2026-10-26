@@ -12,9 +12,21 @@ import 'link_host_readiness.dart';
 import 'link_host_recorder.dart';
 import 'debug_log_service.dart';
 import 'support_service.dart'
-    show SupportChatMessage, assembleFileChunks, resolveNonCollidingFilePath;
+    show
+        SupportChatMessage,
+        assembleFileChunks,
+        resolveNonCollidingFilePath,
+        supportDebugMessageType;
 import '../models/link_control_messages.dart';
 import '../models/link_session_policy.dart';
+
+void _linkLog(String event,
+        {Object? error, Map<String, Object?> fields = const {}}) =>
+    DebugLogService.instance.record(event, error: error, fields: {
+      ...fields,
+      if (fields.containsKey('reason'))
+        'reason': DebugLogService.protocolLabel(fields['reason']),
+    });
 
 typedef LinkHostSignalSender = Future<void> Function(
   Map<String, dynamic> frame,
@@ -46,7 +58,8 @@ class LinkHostSession {
     required this.peer,
     required this.send,
     this.readyTimeout = const Duration(seconds: 45),
-  }) {
+    DebugLogService? debugLog,
+  }) : _debugLog = debugLog ?? DebugLogService.instance {
     if (!_uuid.hasMatch(sessionId)) {
       throw const FormatException('Invalid Link session ID');
     }
@@ -69,6 +82,7 @@ class LinkHostSession {
   final LinkHostPeer peer;
   final LinkHostSignalSender send;
   final Duration readyTimeout;
+  final DebugLogService _debugLog;
 
   final List<Map<String, dynamic>> _pendingCandidates = [];
   Timer? _readyTimer;
@@ -84,6 +98,46 @@ class LinkHostSession {
   bool get isClosed => _closed;
   Future<void> get done => _done.future;
 
+  void _sessionLog(String event,
+      {Object? error, Map<String, Object?> fields = const {}}) {
+    _debugLog.record(event, error: error, fields: {
+      'session_id': sessionId,
+      'state': _closed
+          ? 'closed'
+          : _ready
+              ? 'ready'
+              : 'starting',
+      'candidates': _pendingCandidates.length,
+      ...fields,
+      if (fields.containsKey('reason'))
+        'reason': DebugLogService.protocolLabel(fields['reason']),
+    });
+  }
+
+  Future<void> _sendFrame(Map<String, dynamic> frame) async {
+    final watch = Stopwatch()..start();
+    final fields = <String, Object?>{
+      'message_type': supportDebugMessageType(frame['type']),
+      'operation': 'send',
+    };
+    _sessionLog('link.signal.outbound', fields: {...fields, 'result': 'begin'});
+    try {
+      await send(frame);
+      _sessionLog('link.signal.outbound', fields: {
+        ...fields,
+        'result': 'queued',
+        'duration_ms': watch.elapsedMilliseconds,
+      });
+    } catch (error) {
+      _sessionLog('link.signal.outbound', error: error, fields: {
+        ...fields,
+        'result': 'failed',
+        'duration_ms': watch.elapsedMilliseconds,
+      });
+      rethrow;
+    }
+  }
+
   Future<void> start({
     required String offerSdp,
     required List<Map<String, dynamic>> iceServers,
@@ -95,6 +149,13 @@ class LinkHostSession {
       throw StateError('Link host session already started or closed');
     }
     _started = true;
+    final watch = Stopwatch()..start();
+    var phase = 'authorization';
+    _sessionLog('link.start', fields: {
+      'phase': phase,
+      'result': 'begin',
+      'ice_servers': iceServers.length
+    });
     _readyTimer = Timer(readyTimeout, () {
       unawaited(_reject('host_ready_timeout'));
     });
@@ -114,7 +175,7 @@ class LinkHostSession {
         _consentNonce = List.generate(32,
                 (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'))
             .join();
-        await send({
+        await _sendFrame({
           'type': 'session_answer',
           'session_id': sessionId,
           'payload': {
@@ -130,6 +191,10 @@ class LinkHostSession {
           _authorization!.future,
           done.then((_) => false),
         ]).timeout(readyTimeout, onTimeout: () => false);
+        _sessionLog('link.authorization', fields: {
+          'result': authorized ? 'allowed' : 'denied',
+          'duration_ms': watch.elapsedMilliseconds,
+        });
         if (!authorized || _closed) {
           await _reject('number_matching_failed');
           return;
@@ -148,7 +213,10 @@ class LinkHostSession {
         await _reject('invalid_offer_media');
         return;
       }
-      DebugLogService.instance.record('link.peer.start');
+      phase = 'peer_start';
+      watch.reset();
+      _sessionLog('link.peer.start',
+          fields: {'phase': phase, 'result': 'begin'});
       final answer = await peer.start(
         offerSdp: offerSdp,
         iceServers: iceServers,
@@ -157,11 +225,13 @@ class LinkHostSession {
         onFailure: () => unawaited(_reject('host_media_failed')),
       );
       if (_closed) return;
-      DebugLogService.instance.record('link.peer.answer_ready');
+      _sessionLog('link.peer.answer_ready',
+          fields: {'duration_ms': watch.elapsedMilliseconds});
+      phase = 'answer_send';
       if (answer.isEmpty || utf8.encode(answer).length > maxOfferSdpBytes) {
         throw const FormatException('Invalid Link answer SDP');
       }
-      await send({
+      await _sendFrame({
         'type': 'session_answer',
         'session_id': sessionId,
         'payload': {
@@ -173,22 +243,38 @@ class LinkHostSession {
       });
       if (_closed) return;
       _ready = true;
-      DebugLogService.instance.record('link.session.ready');
+      _sessionLog('link.session.ready', fields: {'result': 'ready'});
       _readyTimer?.cancel();
       for (final candidate
           in List<Map<String, dynamic>>.of(_pendingCandidates)) {
         await peer.addRemoteCandidate(candidate);
+        _sessionLog('link.candidate',
+            fields: {'result': 'applied', 'candidates': 1});
       }
       _pendingCandidates.clear();
     } on LinkHostReadinessException catch (error) {
+      _sessionLog('link.start.failed', error: error, fields: {
+        'phase': phase,
+        'reason': error.reason,
+        'duration_ms': watch.elapsedMilliseconds
+      });
+      _linkLog('link.exception',
+          error: error, fields: {'phase': 'start', 'result': 'failed'});
       await _reject(error.reason);
-    } catch (_) {
+    } catch (error) {
+      _linkLog('link.exception',
+          error: error, fields: {'phase': 'start', 'result': 'failed'});
+      _sessionLog('link.start.failed',
+          error: error,
+          fields: {'phase': phase, 'duration_ms': watch.elapsedMilliseconds});
       await _reject('host_worker_failed');
     }
   }
 
   Future<void> receive(Map<String, dynamic> frame) async {
     if (_closed) return;
+    _sessionLog('link.signal.inbound',
+        fields: {'message_type': supportDebugMessageType(frame['type'])});
     final frameSession = frame['session_id'];
     if (frameSession != sessionId) {
       await _reject('invalid_session_scope');
@@ -202,10 +288,15 @@ class LinkHostSession {
           return;
         }
         final signal = Map<String, dynamic>.from(raw);
+        _sessionLog('link.signal.dispatch',
+            fields: {'message_type': supportDebugMessageType(signal['type'])});
         if (signal['type'] == 'consent_decision') {
           if (_authorization?.isCompleted == false &&
               _consentNonce != null &&
               signal['consent_nonce'] == _consentNonce) {
+            _sessionLog('link.authorization.decision', fields: {
+              'result': signal['authorized'] == true ? 'allowed' : 'denied'
+            });
             _authorization!.complete(signal['authorized'] == true);
             _consentNonce = null;
           }
@@ -225,7 +316,7 @@ class LinkHostSession {
               if (!_closed &&
                   answer.isNotEmpty &&
                   utf8.encode(answer).length <= maxOfferSdpBytes) {
-                await send({
+                await _sendFrame({
                   'type': 'session_answer',
                   'session_id': sessionId,
                   'payload': {
@@ -237,14 +328,14 @@ class LinkHostSession {
                 });
               }
             } catch (e) {
-              debugPrint('link_host: ice_restart renegotiation failed: $e');
+              _linkLog('link.exception',
+                  error: e, fields: {'phase': 'receive', 'result': 'failed'});
             }
           }
           return;
         }
         final candidateValue = signal['candidate'];
         if (candidateValue is! Map) {
-          debugPrint('link_host: ignoring non-candidate signal: ${signal['type']}');
           return;
         }
         final candidate = Map<String, dynamic>.from(candidateValue);
@@ -254,12 +345,16 @@ class LinkHostSession {
             return;
           }
           _pendingCandidates.add(candidate);
+          _sessionLog('link.candidate', fields: {'result': 'queued'});
           return;
         }
         try {
           await peer.addRemoteCandidate(candidate);
+          _sessionLog('link.candidate',
+              fields: {'result': 'applied', 'candidates': 1});
         } catch (e) {
-          debugPrint('link_host: addRemoteCandidate failed (ignoring): $e');
+          _linkLog('link.exception',
+              error: e, fields: {'phase': 'receive', 'result': 'failed'});
         }
       case 'session_close':
       case 'session_revoke':
@@ -275,12 +370,15 @@ class LinkHostSession {
   Future<void> _sendCandidate(Map<String, dynamic> candidate) async {
     if (_closed) return;
     try {
-      await send({
+      await _sendFrame({
         'type': 'signal',
         'session_id': sessionId,
         'signal': {'type': 'candidate', 'candidate': candidate},
       });
-    } catch (_) {
+    } catch (error) {
+      _linkLog('link.exception',
+          error: error,
+          fields: {'phase': 'send_candidate', 'result': 'failed'});
       await _reject('signaling_failed');
     }
   }
@@ -289,13 +387,14 @@ class LinkHostSession {
 
   Future<void> _rejectOnce(String reason) async {
     if (_closed) return;
-    DebugLogService.instance.record('link.reject.$reason');
+    _sessionLog('link.reject',
+        fields: {'reason': reason, 'result': 'stopping'});
     // An accepted session has already been committed by the server. Notify
     // the server with session_terminate so the operator does not freeze.
     if (_ready) {
       if (reason != 'invalid_session_scope') {
         try {
-          await send({
+          await _sendFrame({
             'type': 'session_terminate',
             'session_id': sessionId,
             'payload': {
@@ -303,13 +402,17 @@ class LinkHostSession {
               'reason': reason,
             },
           });
-        } catch (_) {}
+        } catch (error) {
+          _linkLog('link.exception',
+              error: error,
+              fields: {'phase': 'reject_once', 'result': 'failed'});
+        }
       }
       await close();
       return;
     }
     try {
-      await send({
+      await _sendFrame({
         'type': 'session_answer',
         'session_id': sessionId,
         'payload': {
@@ -318,7 +421,10 @@ class LinkHostSession {
           'reason': reason,
         },
       });
-    } catch (_) {}
+    } catch (error) {
+      _linkLog('link.exception',
+          error: error, fields: {'phase': 'reject_once', 'result': 'failed'});
+    }
     await close();
   }
 
@@ -327,6 +433,7 @@ class LinkHostSession {
   Future<void> close() {
     final existing = _closing;
     if (existing != null) return existing;
+    _sessionLog('link.close', fields: {'result': 'begin'});
     _closed = true;
     _readyTimer?.cancel();
     _pendingCandidates.clear();
@@ -498,7 +605,9 @@ class LinkHostWorkerState extends ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      debugPrint('link_host: receiveChatMessage error: $e');
+      _linkLog('link.exception',
+          error: e,
+          fields: {'phase': 'receive_chat_message', 'result': 'failed'});
     }
   }
 
@@ -611,6 +720,14 @@ class _UnixLinkHostTransport {
     ByteData.sublistView(packet).setUint32(0, payload.length, Endian.big);
     packet.setRange(4, packet.length, payload);
     _socket.add(packet);
+    _linkLog('link.ipc.unix.send', fields: {
+      'operation': 'send',
+      'transport': 'unix',
+      'session_id': frame['session_id'],
+      'message_type': supportDebugMessageType(frame['type']),
+      'bytes': payload.length,
+      'result': 'queued',
+    });
     await _socket.flush();
   }
 
@@ -687,6 +804,9 @@ Future<void> runLinkHostWorker(
       state: state,
       unixTransport: unixTransport,
     );
+  } catch (error) {
+    _linkLog('link.worker.failed', error: error, fields: {'phase': 'worker'});
+    rethrow;
   } finally {
     await unixTransport?.close();
   }
@@ -708,10 +828,18 @@ Future<void> _runConnectedLinkHostWorker(
         : utf8.decode(await unixTransport.receive().timeout(
               const Duration(seconds: 10),
             ));
-  } catch (_) {
+  } catch (error) {
+    _linkLog('link.exception', error: error, fields: {
+      'phase': 'run_connected_link_host_worker',
+      'result': 'failed'
+    });
     await unixTransport?.close();
     rethrow;
   }
+  _linkLog('link.ipc.bootstrap.received', fields: {
+    'operation': 'bootstrap',
+    'bytes': utf8.encode(rawBootstrap).length
+  });
   if (rawBootstrap.length > _linkHostFrameLimit) {
     await unixTransport?.close();
     throw const FormatException('Invalid Link worker bootstrap frame');
@@ -747,7 +875,11 @@ Future<void> _runConnectedLinkHostWorker(
     await unixTransport?.close();
     throw const FormatException('Invalid Link session offer bootstrap');
   }
-  DebugLogService.instance.record('link.ipc.bootstrap.ready');
+  _linkLog('link.ipc.bootstrap.parsed', fields: {
+    'operation': 'bootstrap',
+    'session_id': sessionId,
+    'result': 'validated'
+  });
   final recordingConfig = LinkRecordingConfig.fromWire(offer['recording']);
   state.showSession(
     sessionId,
@@ -783,6 +915,7 @@ Future<void> _runConnectedLinkHostWorker(
         )
       : null;
   final peer = FlutterLinkHostPeer(
+    debugSessionId: sessionId,
     onConnected: () {
       DebugLogService.instance.record('link.session.connected');
       state.markActive();
@@ -821,21 +954,44 @@ Future<void> _runConnectedLinkHostWorker(
     accessMode: accessMode,
     peer: peer,
     send: (frame) {
+      final fields = <String, Object?>{
+        'operation': 'send',
+        'session_id': sessionId,
+        'message_type': supportDebugMessageType(frame['type']),
+      };
+      _linkLog('link.ipc.outbound', fields: {...fields, 'result': 'queued'});
       final next = outgoing.then((_) async {
-        if (unixTransport != null) {
-          await unixTransport.send(frame);
-        } else {
-          final accepted = await LinkHostSession._nativeChannel
-              .invokeMethod<bool>('send', jsonEncode(frame));
-          if (accepted != true) {
-            throw StateError('Link worker pipe rejected frame');
+        _linkLog('link.ipc.outbound', fields: {...fields, 'result': 'begin'});
+        try {
+          if (unixTransport != null) {
+            await unixTransport.send(frame);
+          } else {
+            final text = jsonEncode(frame);
+            fields['bytes'] = utf8.encode(text).length;
+            final accepted = await LinkHostSession._nativeChannel
+                .invokeMethod<bool>('send', text);
+            if (accepted != true) {
+              throw StateError('Link worker pipe rejected frame');
+            }
           }
+          _linkLog('link.ipc.outbound',
+              fields: {...fields, 'result': 'accepted'});
+        } catch (error) {
+          _linkLog('link.ipc.outbound',
+              error: error, fields: {...fields, 'result': 'failed'});
+          rethrow;
         }
       });
       outgoing = next;
       return next;
     },
   );
+  _linkLog('link.ipc.bootstrap.validated', fields: {
+    'session_id': sessionId,
+    'operation': 'bootstrap',
+    'ice_servers': iceServers.length,
+    'result': 'validated'
+  });
   state.setDisconnectHandler(
     () => unawaited(session.reject('host_local_disconnect')),
   );
@@ -850,20 +1006,35 @@ Future<void> _runConnectedLinkHostWorker(
                   .invokeMethod<String?>('receive') ??
               '';
       if (frame.isNotEmpty) {
+        _linkLog('link.ipc.inbound', fields: {
+          'operation': 'receive',
+          'bytes': utf8.encode(frame).length,
+          'session_id': sessionId
+        });
         try {
           final message = jsonDecode(frame);
           if (message is Map) {
             await session.receive(Map<String, dynamic>.from(message));
           }
         } on FormatException catch (e) {
-          debugPrint('link host IPC frame format error: $e');
+          _linkLog('link.exception', error: e, fields: {
+            'phase': 'run_connected_link_host_worker',
+            'result': 'failed'
+          });
         } catch (e) {
-          debugPrint('link host IPC message decode error: $e');
+          _linkLog('link.exception', error: e, fields: {
+            'phase': 'run_connected_link_host_worker',
+            'result': 'failed'
+          });
         }
       }
     } catch (e) {
+      _linkLog('link.exception', error: e, fields: {
+        'phase': 'run_connected_link_host_worker',
+        'result': 'failed'
+      });
       DebugLogService.instance.record('link.ipc.failed', error: e);
-      debugPrint('link host IPC transport error: $e');
+
       await session.close();
     } finally {
       polling = false;
@@ -884,9 +1055,10 @@ Future<void> _runConnectedLinkHostWorker(
         state.phase == LinkHostWorkerPhase.closing ||
         (accessType == 'attended' && !consentGranted)) {
       if (!session.isClosed) {
-        await session.reject(accessType == 'attended' && !state.consentUiAvailable
-            ? 'host_ui_unavailable'
-            : 'host_consent_denied');
+        await session.reject(
+            accessType == 'attended' && !state.consentUiAvailable
+                ? 'host_ui_unavailable'
+                : 'host_consent_denied');
       }
     } else {
       final enteredCode = state.confirmationCode;
@@ -910,7 +1082,12 @@ Future<void> _runConnectedLinkHostWorker(
             'reason': 'host_local_disconnect',
           },
         });
-      } catch (_) {}
+      } catch (error) {
+        _linkLog('link.exception', error: error, fields: {
+          'phase': 'run_connected_link_host_worker',
+          'result': 'failed'
+        });
+      }
     }
   } finally {
     timer.cancel();
@@ -927,7 +1104,12 @@ Future<void> _runConnectedLinkHostWorker(
     } else {
       try {
         await LinkHostSession._nativeChannel.invokeMethod<void>('close');
-      } catch (_) {}
+      } catch (error) {
+        _linkLog('link.exception', error: error, fields: {
+          'phase': 'run_connected_link_host_worker',
+          'result': 'failed'
+        });
+      }
     }
     state.markClosed();
   }
@@ -955,6 +1137,7 @@ class _LinkActiveFileDownload {
 /// Flutter WebRTC peer implementation used by the interactive Link worker.
 class FlutterLinkHostPeer implements LinkHostPeer {
   FlutterLinkHostPeer({
+    this.debugSessionId,
     this.onConnected,
     this.onControlInputObserved,
     this.onDesktopChanged,
@@ -969,7 +1152,55 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   static const int _maxConcurrentDownloads = 4;
   static const Duration _downloadStallTimeout = Duration(seconds: 30);
 
+  final String? debugSessionId;
   final VoidCallback? onConnected;
+
+  void _peerLog(String event,
+      {Object? error, Map<String, Object?> fields = const {}}) {
+    _linkLog(event, error: error, fields: {
+      'session_id': debugSessionId,
+      'state': _closed ? 'closed' : 'open',
+      'control_ready': _allowControl &&
+          _control?.state == RTCDataChannelState.RTCDataChannelOpen,
+      'tracks': _stream?.getTracks().length ?? 0,
+      ...fields,
+    });
+  }
+
+  void _observeDataEnqueue(Future<void> send, String type, int bytes) {
+    _peerLog('link.data.outbound',
+        fields: {'message_type': type, 'bytes': bytes, 'result': 'requested'});
+    unawaited(send.then((_) {
+      _peerLog('link.data.outbound',
+          fields: {'message_type': type, 'bytes': bytes, 'result': 'queued'});
+    }).catchError((Object error) {
+      _peerLog('link.data.outbound',
+          error: error,
+          fields: {'message_type': type, 'bytes': bytes, 'result': 'failed'});
+    }));
+  }
+
+  Future<T> _peerStep<T>(String phase, Future<T> Function() action) async {
+    final watch = Stopwatch()..start();
+    _peerLog('link.peer.step', fields: {'phase': phase, 'result': 'begin'});
+    try {
+      final result = await action();
+      _peerLog('link.peer.step', fields: {
+        'phase': phase,
+        'result': 'ready',
+        'duration_ms': watch.elapsedMilliseconds
+      });
+      return result;
+    } catch (error) {
+      _peerLog('link.peer.step', error: error, fields: {
+        'phase': phase,
+        'result': 'failed',
+        'duration_ms': watch.elapsedMilliseconds
+      });
+      rethrow;
+    }
+  }
+
   final void Function(Map<String, dynamic> input)? onControlInputObserved;
   final void Function()? onDesktopChanged;
   final void Function(Map<String, dynamic> message)? onChatMessageReceived;
@@ -998,6 +1229,56 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   String? _pendingScreenId;
   final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
   final List<Map<String, dynamic>> _pendingChatMessages = [];
+  int _mouseMessages = 0;
+  int _mouseBytes = 0;
+  int _mousePolicyBlocked = 0;
+  int _mouseRecorderBlocked = 0;
+  Timer? _mouseSummaryTimer;
+  void _observeInbound(Map<String, dynamic> message, int bytes) {
+    final type = supportDebugMessageType(message['type']);
+    if (type == 'mouse_move') {
+      _mouseMessages++;
+      _mouseBytes += bytes;
+      _mouseSummaryTimer ??=
+          Timer(const Duration(seconds: 1), _flushMouseSummary);
+      return;
+    }
+    _peerLog('link.data.inbound',
+        fields: {'message_type': type, 'bytes': bytes});
+  }
+
+  void _flushMouseSummary() {
+    _mouseSummaryTimer?.cancel();
+    _mouseSummaryTimer = null;
+    if (_mouseMessages > 0) {
+      _peerLog('link.data.mouse_summary', fields: {
+        'message_type': 'mouse_move',
+        'count': _mouseMessages,
+        'bytes': _mouseBytes,
+      });
+    }
+    if (_mousePolicyBlocked > 0) {
+      _peerLog('link.input.gate_summary', fields: {
+        'message_type': 'mouse_move',
+        'reason': 'policy',
+        'result': 'blocked',
+        'count': _mousePolicyBlocked
+      });
+    }
+    if (_mouseRecorderBlocked > 0) {
+      _peerLog('link.input.gate_summary', fields: {
+        'message_type': 'mouse_move',
+        'reason': 'recorder_not_ready',
+        'result': 'blocked',
+        'count': _mouseRecorderBlocked
+      });
+    }
+    _mouseMessages = 0;
+    _mouseBytes = 0;
+    _mousePolicyBlocked = 0;
+    _mouseRecorderBlocked = 0;
+  }
+
   bool _allowControl = false;
   bool _closed = false;
 
@@ -1012,14 +1293,18 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       // 1. Если ID монитора неизвестен или '0', инициализируем sources в C++ плагине
       if (_selectedScreenId == null || _selectedScreenId == '0') {
         try {
-          final sources = await desktopCapturer
-              .getSources(types: [SourceType.Screen])
-              .timeout(const Duration(seconds: 3));
+          final sources = await desktopCapturer.getSources(
+              types: [SourceType.Screen]).timeout(const Duration(seconds: 3));
           if (sources.isNotEmpty) {
             _selectedScreenId = sources.first.id;
             currentMonitorId = sources.first.id;
           }
-        } catch (_) {}
+        } catch (error) {
+          _peerLog('link.exception', error: error, fields: {
+            'phase': 'capture_recorder_snapshot',
+            'result': 'failed'
+          });
+        }
       }
 
       // 2. Штатный запрос миниатюры через WebRTC
@@ -1034,14 +1319,17 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         if (raw is Uint8List && raw.isNotEmpty) {
           bytes = raw;
         }
-      } catch (_) {}
+      } catch (error) {
+        _peerLog('link.exception',
+            error: error,
+            fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
+      }
 
       // 3. Если sources_ в WebRTC оказались пустыми или устарели, обновляем и повторяем
       if (bytes == null && !_closed) {
         try {
-          final sources = await desktopCapturer
-              .getSources(types: [SourceType.Screen])
-              .timeout(const Duration(seconds: 3));
+          final sources = await desktopCapturer.getSources(
+              types: [SourceType.Screen]).timeout(const Duration(seconds: 3));
           if (sources.isNotEmpty) {
             currentMonitorId = sources.first.id;
             _selectedScreenId = currentMonitorId;
@@ -1056,14 +1344,25 @@ class FlutterLinkHostPeer implements LinkHostPeer {
               bytes = retryRaw;
             }
           }
-        } catch (_) {}
+        } catch (error) {
+          _peerLog('link.exception', error: error, fields: {
+            'phase': 'capture_recorder_snapshot',
+            'result': 'failed'
+          });
+        }
       }
 
       // 4. Резервный канал на Windows: прямой захват активного экрана через Win32 GDI
       if (bytes == null && !_closed && !kIsWeb && Platform.isWindows) {
         try {
-          bytes = InputInjector.instance.captureDesktopBmp(maxWidth: 1280, maxHeight: 720);
-        } catch (_) {}
+          bytes = InputInjector.instance
+              .captureDesktopBmp(maxWidth: 1280, maxHeight: 720);
+        } catch (error) {
+          _peerLog('link.exception', error: error, fields: {
+            'phase': 'capture_recorder_snapshot',
+            'result': 'failed'
+          });
+        }
       }
 
       // NOTE: Never fall back to `tracks.first.captureFrame()` on desktop:
@@ -1073,8 +1372,17 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       if (bytes != null && bytes.isNotEmpty && !_closed) {
         _lastFrameCaptureAt = DateTime.now();
         cb(frameKind, bytes, currentMonitorId);
+      } else if (!_closed) {
+        _peerLog('link.capture.snapshot_unavailable', fields: {
+          'phase': 'recorder_snapshot',
+          'reason': 'empty_capture',
+          'result': 'failed'
+        });
       }
-    } catch (_) {
+    } catch (error) {
+      _peerLog('link.exception',
+          error: error,
+          fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
     } finally {
       _capturingFrame = false;
     }
@@ -1084,9 +1392,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     final control = _control;
     if (control == null || _closed) return;
     try {
-      final sources = await desktopCapturer
-          .getSources(types: [SourceType.Screen])
-          .timeout(const Duration(seconds: 10));
+      final sources = await desktopCapturer.getSources(
+          types: [SourceType.Screen]).timeout(const Duration(seconds: 10));
       final screens = <Map<String, dynamic>>[];
       for (final src in sources) {
         final rect = InputInjector.instance.getMonitorRectForSource(src.id);
@@ -1105,9 +1412,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           'virtual_desktop':
               InputInjector.instance.getVirtualDesktopRect().toJson(),
       };
-      control.send(RTCDataChannelMessage(jsonEncode(payload)));
+      final text = jsonEncode(payload);
+      _observeDataEnqueue(control.send(RTCDataChannelMessage(text)),
+          supportDebugMessageType(payload['type']), utf8.encode(text).length);
+      _peerLog('link.capture.screens', fields: {'count': screens.length});
     } catch (e) {
-      debugPrint('link_host_session: _sendScreenList failed: $e');
+      _peerLog('link.exception',
+          error: e, fields: {'phase': 'send_screen_list', 'result': 'failed'});
     }
   }
 
@@ -1127,11 +1438,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           'video': videoConstraints,
         }).timeout(const Duration(seconds: 4));
         final audioCount = stream.getAudioTracks().length;
-        debugPrint(
-            'link_host_session: loopback getDisplayMedia returned audioTracks=$audioCount');
+        _peerLog('link.capture.audio',
+            fields: {'tracks': audioCount, 'result': 'ready'});
       } catch (e) {
-        debugPrint(
-            'link_host_session: loopback audio unavailable, falling back to video-only: $e');
+        _peerLog('link.exception',
+            error: e,
+            fields: {'phase': 'open_display_stream', 'result': 'failed'});
       }
     }
     stream ??= await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
@@ -1149,6 +1461,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       return;
     }
     _switchingScreen = true;
+    _peerLog('link.capture.switch', fields: {'result': 'begin'});
     try {
       var targetScreenId = screenId;
       MediaStream? newStream;
@@ -1159,12 +1472,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       final startTime = DateTime.now();
       var attempt = 0;
 
-      while (DateTime.now().difference(startTime) < const Duration(seconds: 10)) {
+      while (
+          DateTime.now().difference(startTime) < const Duration(seconds: 10)) {
         if (_closed || _peer == null) return;
         try {
-          final sources = await desktopCapturer
-              .getSources(types: [SourceType.Screen])
-              .timeout(const Duration(seconds: 3));
+          final sources = await desktopCapturer.getSources(
+              types: [SourceType.Screen]).timeout(const Duration(seconds: 3));
           if (sources.isNotEmpty &&
               !sources.any((s) => s.id == targetScreenId)) {
             targetScreenId = sources.first.id;
@@ -1175,12 +1488,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
             break;
           }
         } catch (e) {
-          debugPrint(
-              'link_host_session: _openDisplayStream attempt $attempt failed: $e');
+          _peerLog('link.exception',
+              error: e, fields: {'phase': 'switch_screen', 'result': 'failed'});
         }
         final delayMs = attempt < backoffs.length ? backoffs[attempt] : 1000;
         attempt++;
-        if (DateTime.now().difference(startTime) + Duration(milliseconds: delayMs) >=
+        if (DateTime.now().difference(startTime) +
+                Duration(milliseconds: delayMs) >=
             const Duration(seconds: 10)) {
           break;
         }
@@ -1188,8 +1502,6 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       }
 
       if (newStream == null) {
-        debugPrint(
-            'link_host_session: failed to acquire new stream during switch within 10s backoff limit');
         return;
       }
 
@@ -1247,21 +1559,32 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         for (final t in oldStream.getVideoTracks()) {
           try {
             await t.stop();
-          } catch (_) {}
+          } catch (error) {
+            _peerLog('link.exception',
+                error: error,
+                fields: {'phase': 'switch_screen', 'result': 'failed'});
+          }
         }
         if (oldStream != _audioStream) {
           try {
             await oldStream.dispose();
-          } catch (_) {}
+          } catch (error) {
+            _peerLog('link.exception',
+                error: error,
+                fields: {'phase': 'switch_screen', 'result': 'failed'});
+          }
         }
       }
 
       _screenRect =
           InputInjector.instance.getMonitorRectForSource(targetScreenId);
       InputInjector.instance.setActiveMonitorRect(_screenRect);
+      _peerLog('link.capture.monitor',
+          fields: {'width': _screenRect?.width, 'height': _screenRect?.height});
       await _sendScreenList();
     } catch (e) {
-      debugPrint('link_host_session: switchScreen failed: $e');
+      _peerLog('link.exception',
+          error: e, fields: {'phase': 'switch_screen', 'result': 'failed'});
     } finally {
       _switchingScreen = false;
       if (_pendingScreenSwitch && !_closed) {
@@ -1282,22 +1605,45 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     required void Function() onFailure,
   }) async {
     _allowControl = allowControl;
-    await ensureLinkHostInputReady(allowControl: allowControl);
+    await _peerStep('input_ready',
+        () => ensureLinkHostInputReady(allowControl: allowControl));
     InputInjector.instance.setDesktopScope(policy.desktopScope);
-    final peer = await createPeerConnection({
-      'iceServers': iceServers,
-      'sdpSemantics': 'unified-plan',
-    });
+    final peer = await _peerStep(
+        'peer_create',
+        () => createPeerConnection({
+              'iceServers': iceServers,
+              'sdpSemantics': 'unified-plan',
+            }));
     _peer = peer;
+    peer.onIceGatheringState = (state) =>
+        _peerLog('link.ice.gathering', fields: {'ice_state': state.name});
+    peer.onIceConnectionState = (state) =>
+        _peerLog('link.ice.state', fields: {'ice_state': state.name});
+    peer.onTrack = (event) => _peerLog('link.track.remote', fields: {
+          'phase': event.track.kind == 'audio'
+              ? 'audio'
+              : event.track.kind == 'video'
+                  ? 'video'
+                  : 'unknown',
+          'count': event.streams.length
+        });
     peer.onIceCandidate = (candidate) {
       if (_closed ||
           candidate.candidate == null ||
           candidate.candidate!.isEmpty) {
         return;
       }
+      _peerLog('link.candidate.local',
+          fields: {'candidates': 1, 'result': 'generated'});
       onCandidate(Map<String, dynamic>.from(candidate.toMap()));
     };
     peer.onDataChannel = (channel) {
+      _peerLog('link.dc.received', fields: {
+        'result':
+            (channel.label == 'link-control-v1' || channel.label == 'control')
+                ? 'accepted'
+                : 'rejected'
+      });
       if (channel.label != 'link-control-v1' && channel.label != 'control') {
         unawaited(channel.close());
         return;
@@ -1309,6 +1655,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       }
       _control = channel;
       channel.onDataChannelState = (state) {
+        _peerLog('link.dc.state', fields: {'dc_state': state.name});
         if (state == RTCDataChannelState.RTCDataChannelOpen) {
           _sendScreenList();
           _flushPendingChatMessages();
@@ -1325,24 +1672,34 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           final decoded = jsonDecode(message.text);
           if (decoded is Map) {
             final control = Map<String, dynamic>.from(decoded);
+            _observeInbound(control, utf8.encode(message.text).length);
             if (control['type'] == 'ping') {
               try {
-                channel.send(RTCDataChannelMessage(jsonEncode({
+                final text = jsonEncode({
                   'type': 'pong',
                   'timestamp': control['timestamp'] ??
                       DateTime.now().millisecondsSinceEpoch,
-                })));
-              } catch (_) {}
+                });
+                _observeDataEnqueue(channel.send(RTCDataChannelMessage(text)),
+                    'pong', utf8.encode(text).length);
+              } catch (error) {
+                _peerLog('link.exception',
+                    error: error,
+                    fields: {'phase': 'start', 'result': 'failed'});
+              }
               return;
             }
             if (_isValidInput(control)) _executeInput(control);
           }
-        } on FormatException {
+        } on FormatException catch (error) {
+          _peerLog('link.data.invalid',
+              error: error, fields: {'message_type': 'unknown'});
           // Malformed DTLS payloads are ignored; they never reach the injector.
         }
       };
     };
     peer.onConnectionState = (state) {
+      _peerLog('link.pc.state', fields: {'pc_state': state.name});
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
         _connectionGraceTimer?.cancel();
         _connectionGraceTimer = null;
@@ -1353,6 +1710,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
             const Duration(milliseconds: 200),
             (_) {
               if (!_closed && InputInjector.instance.consumeDesktopChanged()) {
+                _peerLog('link.desktop.changed', fields: {'origin': 'desktop'});
                 onDesktopChanged?.call();
                 final screenId = _selectedScreenId ?? '0';
                 _desktopSwitchDebounceTimer?.cancel();
@@ -1382,7 +1740,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       } else if (state ==
               RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
           state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        _peerLog('link.pc.grace', fields: {
+          'result': 'scheduled',
+          'timeout_ms': connectionGracePeriod.inMilliseconds
+        });
         _connectionGraceTimer ??= Timer(connectionGracePeriod, () {
+          _peerLog('link.pc.grace',
+              fields: {'result': 'expired', 'origin': 'timeout'});
           _connectionGraceTimer = null;
           if (!_closed) {
             onFailure();
@@ -1395,8 +1759,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       }
     };
 
-    await peer.setRemoteDescription(RTCSessionDescription(offerSdp, 'offer'));
-    final capture = await _captureScreen();
+    await _peerStep(
+        'set_remote',
+        () => peer
+            .setRemoteDescription(RTCSessionDescription(offerSdp, 'offer')));
+    final capture = await _peerStep('capture_screen', _captureScreen);
+    _peerLog('link.capture.tracks',
+        fields: {'tracks': capture.getTracks().length});
     if (_closed) {
       capture.getTracks().forEach((track) => track.stop());
       await capture.dispose();
@@ -1418,12 +1787,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         await t.setDirection(TransceiverDirection.SendOnly);
       }
     } catch (e) {
-      debugPrint('link_host_session: setDirection on transceivers: $e');
+      _peerLog('link.exception',
+          error: e, fields: {'phase': 'start', 'result': 'failed'});
     }
-    final answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    debugPrint(
-        'link_host_session: answer created, videoSender=${_videoSender != null}, audioSender=${_audioSender != null}, audioTracks=${capture.getAudioTracks().length}');
+    final answer = await _peerStep('answer_create', peer.createAnswer);
+    await _peerStep('set_local', () => peer.setLocalDescription(answer));
+
     return answer.sdp ?? '';
   }
 
@@ -1435,17 +1804,21 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     }
     _connectionGraceTimer?.cancel();
     _connectionGraceTimer = null;
-    await peer.setRemoteDescription(RTCSessionDescription(offerSdp, 'offer'));
+    await _peerStep(
+        'set_remote',
+        () => peer
+            .setRemoteDescription(RTCSessionDescription(offerSdp, 'offer')));
     try {
       final transceivers = await peer.getTransceivers();
       for (final t in transceivers) {
         await t.setDirection(TransceiverDirection.SendOnly);
       }
     } catch (e) {
-      debugPrint('link_host_session: renegotiate setDirection on transceivers: $e');
+      _peerLog('link.exception',
+          error: e, fields: {'phase': 'renegotiate_offer', 'result': 'failed'});
     }
-    final answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
+    final answer = await _peerStep('answer_create', peer.createAnswer);
+    await _peerStep('set_local', () => peer.setLocalDescription(answer));
     return answer.sdp ?? '';
   }
 
@@ -1579,12 +1952,37 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   }
 
   void _executeInput(Map<String, dynamic> input) {
-    if (_closed || !policy.allows(input, allowControl: _allowControl)) return;
+    if (_closed || !policy.allows(input, allowControl: _allowControl)) {
+      if (input['type'] == 'mouse_move') _mousePolicyBlocked++;
+      if (input['type'] != 'mouse_move') {
+        _peerLog('link.input.gate', fields: {
+          'message_type': supportDebugMessageType(input['type']),
+          'reason': 'policy',
+          'result': 'blocked'
+        });
+      }
+      return;
+    }
     final type = input['type'];
     if (type != 'chat_message' && type != 'chat_sync' && type != 'chat_ack') {
       if (isRecorderReady != null && !isRecorderReady!()) {
+        if (input['type'] == 'mouse_move') _mouseRecorderBlocked++;
+        if (input['type'] != 'mouse_move') {
+          _peerLog('link.input.gate', fields: {
+            'message_type': supportDebugMessageType(input['type']),
+            'reason': 'recorder_not_ready',
+            'result': 'blocked'
+          });
+        }
         return; // Gated until durable first frame is acked (ULR-03)
       }
+    }
+    if (type != 'mouse_move') {
+      _peerLog('link.input.dispatch', fields: {
+        'message_type': supportDebugMessageType(type),
+        'operation': 'execute',
+        'result': 'begin'
+      });
     }
     onControlInputObserved?.call(input);
     if (type == 'chat_message') {
@@ -1679,10 +2077,22 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           if (_closed || !policy.allowClipboardOut || !_allowControl) return;
           final text = clip?.text ?? '';
           if (text.length > LinkSessionPolicy.maxClipboardLength) return;
-          _control?.send(RTCDataChannelMessage(jsonEncode({
-            'type': 'clipboard_data',
-            'text': text,
-          })));
+          final control = _control;
+          if (control == null) {
+            _peerLog('link.data.outbound', fields: {
+              'message_type': 'clipboard_data',
+              'result': 'blocked',
+            });
+          } else {
+            final encoded =
+                jsonEncode({'type': 'clipboard_data', 'text': text});
+            _observeDataEnqueue(control.send(RTCDataChannelMessage(encoded)),
+                'clipboard_data', utf8.encode(encoded).length);
+          }
+        }).catchError((Object error) {
+          _peerLog('link.clipboard.failed',
+              error: error,
+              fields: {'operation': 'clipboard_get', 'result': 'failed'});
         });
       } else if (type == 'block_input') {
         final blocked = input['blocked'] == true;
@@ -1692,7 +2102,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           'blocked': blocked,
         });
       }
-    } catch (_) {
+    } catch (error) {
+      _peerLog('link.exception',
+          error: error, fields: {'phase': 'execute_input', 'result': 'failed'});
       if (type == 'block_input') {
         _sendControlJson({
           'type': 'block_input_ack',
@@ -1709,15 +2121,24 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   bool _sendControlJson(Map<String, dynamic> payload) {
     final control = _control;
+    final type = supportDebugMessageType(payload['type']);
     if (_closed ||
         control == null ||
         control.state != RTCDataChannelState.RTCDataChannelOpen) {
+      _peerLog('link.data.outbound',
+          fields: {'message_type': type, 'result': 'blocked'});
       return false;
     }
     try {
-      control.send(RTCDataChannelMessage(jsonEncode(payload)));
+      final text = jsonEncode(payload);
+      _observeDataEnqueue(control.send(RTCDataChannelMessage(text)),
+          supportDebugMessageType(payload['type']), utf8.encode(text).length);
+
       return true;
-    } catch (_) {
+    } catch (error) {
+      _peerLog('link.exception',
+          error: error,
+          fields: {'phase': 'send_control_json', 'result': 'failed'});
       return false;
     }
   }
@@ -1776,7 +2197,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           }
         }
       } catch (e) {
-        debugPrint('link_host: set video_quality failed: $e');
+        _peerLog('link.exception',
+            error: e,
+            fields: {'phase': 'handle_video_quality', 'result': 'failed'});
       }
     }());
   }
@@ -1793,14 +2216,17 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           'Reboot requested by remote operator',
         ]);
       } else if (!kIsWeb && Platform.isLinux) {
-        Process.run('systemctl', ['reboot']).catchError((_) {
+        Process.run('systemctl', ['reboot']).catchError((Object error) {
+          _linkLog('link.async.failed', error: error);
           return Process.run('shutdown', ['-r', 'now']);
         });
       } else if (!kIsWeb && Platform.isMacOS) {
         Process.run('shutdown', ['-r', 'now']);
       }
     } catch (e) {
-      debugPrint('link_host: reboot failed: $e');
+      _peerLog('link.exception',
+          error: e,
+          fields: {'phase': 'handle_remote_reboot', 'result': 'failed'});
     }
   }
 
@@ -1874,7 +2300,10 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           'ok': false,
         });
       });
-    } catch (_) {
+    } catch (error) {
+      _peerLog('link.exception',
+          error: error,
+          fields: {'phase': 'handle_file_chunk', 'result': 'failed'});
       _activeDownloads.remove(transferId)?.stallTimer?.cancel();
       _sendControlJson({
         'type': 'file_ack',
@@ -1933,19 +2362,30 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         try {
           await File('$targetPath:Zone.Identifier')
               .writeAsString('[ZoneTransfer]\r\nZoneId=3\r\n');
-        } catch (_) {}
+        } catch (error) {
+          _peerLog('link.exception',
+              error: error,
+              fields: {'phase': 'handle_file_end', 'result': 'failed'});
+        }
       }
       _sendControlJson({
         'type': 'file_ack',
         'transfer_id': transferId,
         'ok': true,
       });
-    } catch (_) {
+    } catch (error) {
+      _peerLog('link.exception',
+          error: error,
+          fields: {'phase': 'handle_file_end', 'result': 'failed'});
       if (targetPath != null) {
         try {
           final partFile = File('$targetPath.part');
           if (await partFile.exists()) await partFile.delete();
-        } catch (_) {}
+        } catch (error) {
+          _peerLog('link.exception',
+              error: error,
+              fields: {'phase': 'handle_file_end', 'result': 'failed'});
+        }
       }
       _sendControlJson({
         'type': 'file_ack',
@@ -1959,20 +2399,30 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     final sources = await desktopCapturer
         .getSources(types: [SourceType.Screen])
         .timeout(const Duration(seconds: 20))
-        .catchError((Object _) {
+        .catchError((Object error) {
+          _linkLog('link.capture.failed', error: error, fields: {
+            'phase': 'sources',
+            'reason': 'host_screen_capture_unavailable'
+          });
           throw const LinkHostReadinessException(
               'host_screen_capture_unavailable');
         });
     if (sources.isEmpty) {
       throw const LinkHostReadinessException('host_screen_capture_unavailable');
     }
+    _peerLog('link.capture.sources', fields: {'count': sources.length});
     final source = sources.first;
     _selectedScreenId = source.id;
     _screenRect = InputInjector.instance.getMonitorRectForSource(source.id);
     InputInjector.instance.setActiveMonitorRect(_screenRect);
+    _peerLog('link.capture.monitor',
+        fields: {'width': _screenRect?.width, 'height': _screenRect?.height});
     try {
       return await _openDisplayStream(source.id);
-    } catch (_) {
+    } catch (error) {
+      _peerLog('link.exception',
+          error: error,
+          fields: {'phase': 'capture_screen', 'result': 'failed'});
       throw const LinkHostReadinessException('host_screen_capture_unavailable');
     }
   }
@@ -1998,6 +2448,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   @override
   Future<void> close() async {
     if (_closed) return;
+    _flushMouseSummary();
+    _peerLog('link.peer.close', fields: {'result': 'begin'});
     _closed = true;
     _connectionGraceTimer?.cancel();
     _connectionGraceTimer = null;

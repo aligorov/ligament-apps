@@ -189,7 +189,8 @@ bool Rotate(HANDLE current, const std::wstring& path,
 }
 
 std::string Line(std::string_view event, std::string_view error_type,
-                 std::string_view error_code, std::optional<int64_t> os_error) {
+                 std::string_view error_code, std::optional<int64_t> os_error,
+                 std::string_view context) {
   SYSTEMTIME now{};
   ::GetLocalTime(&now);
   TIME_ZONE_INFORMATION zone{};
@@ -234,13 +235,18 @@ std::string Line(std::string_view event, std::string_view error_type,
     line.append(error_code.data(), error_code.size());
   }
   if (os_error) line += " os_error=" + std::to_string(*os_error);
+  if (!context.empty()) {
+    line += " ";
+    line.append(context.data(), context.size());
+  }
   line += "\r\n";
   return line;
 }
 
 bool Append(std::string_view event, std::string_view error_type = {},
             std::string_view error_code = {},
-            std::optional<int64_t> os_error = std::nullopt) {
+            std::optional<int64_t> os_error = std::nullopt,
+            std::string_view context = {}) {
   if (base_path.empty() || log_path.empty()) return false;
   LocalMemory descriptor;
   SECURITY_ATTRIBUTES attributes{};
@@ -276,7 +282,7 @@ bool Append(std::string_view event, std::string_view error_type = {},
       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   if (!current || !SafeHandle(current.value, false)) return false;
   LARGE_INTEGER size{};
-  const std::string line = Line(event, error_type, error_code, os_error);
+  const std::string line = Line(event, error_type, error_code, os_error, context);
   if (line.empty() || line.size() > static_cast<size_t>(kMaxBytes) ||
       !::GetFileSizeEx(current.value, &size)) return false;
   if (size.QuadPart > kMaxBytes - static_cast<LONGLONG>(line.size())) {
@@ -346,15 +352,17 @@ uint32_t SetEnabled(bool enabled) noexcept {
 }
 
 bool Write(std::string_view event, std::string_view error_type,
-           std::string_view error_code, std::optional<int64_t> os_error) noexcept {
+           std::string_view error_code, std::optional<int64_t> os_error,
+           std::string_view context) noexcept {
   LastErrorGuard error;
   if (!ValidEvent(event) ||
       (!error_type.empty() && !ValidErrorType(error_type)) ||
-      (!error_code.empty() && !ValidErrorCode(error_code))) return false;
+      (!error_code.empty() && !ValidErrorCode(error_code)) ||
+      !ValidContext(context)) return false;
   try {
     std::lock_guard<std::mutex> lock(log_mutex);
     if (!ReadEnabled()) return false;
-    return Append(event, error_type, error_code, os_error);
+    return Append(event, error_type, error_code, os_error, context);
   } catch (...) { return false; }
 }
 }  // namespace debug_log

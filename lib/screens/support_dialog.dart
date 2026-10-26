@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
 
 /// Диалоговое окно отправки экстренной заявки на удаленную помощь (SOS).
@@ -56,7 +57,12 @@ class _SupportDialogState extends State<SupportDialog> {
   }
 
   Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.sos.submit.started');
+    if (!_formKey.currentState!.validate()) {
+      DebugLogService.instance.record('ui.sos.submit.blocked', fields: {'reason': 'invalid_form'});
+      return;
+    }
 
     setState(() {
       _submitting = true;
@@ -70,6 +76,9 @@ class _SupportDialogState extends State<SupportDialog> {
         problemSummary: _summaryController.text.trim(),
         accessMode: _accessMode,
       );
+      DebugLogService.instance.record('ui.sos.submit.completed', fields: {
+        'result': 'request_returned', 'duration_ms': watch.elapsedMilliseconds,
+      });
 
       if (mounted) {
         Navigator.of(context).pop(true);
@@ -87,6 +96,7 @@ class _SupportDialogState extends State<SupportDialog> {
         );
       }
     } catch (e) {
+      DebugLogService.instance.record('ui.sos.submit.failed', error: e, fields: {'duration_ms': watch.elapsedMilliseconds});
       if (mounted) {
         setState(() {
           _errorMessage = '${context.stringsRead.errSendRequest}: $e';
@@ -182,7 +192,10 @@ class _SupportDialogState extends State<SupportDialog> {
                     final is1C = id == '1c';
 
                     return InkWell(
-                      onTap: () => setState(() => _category = id),
+                      onTap: () {
+                        DebugLogService.instance.record('ui.sos.category.changed');
+                        setState(() => _category = id);
+                      },
                       borderRadius: BorderRadius.circular(12),
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
@@ -292,7 +305,10 @@ class _SupportDialogState extends State<SupportDialog> {
                     ),
                   ],
                   onChanged: (val) {
-                    if (val != null) setState(() => _accessMode = val);
+                    if (val != null) {
+                      DebugLogService.instance.record('ui.sos.access_mode.changed', fields: {'state': val == 'view_only' ? 'view_only' : 'full_control'});
+                      setState(() => _accessMode = val);
+                    }
                   },
                 ),
                 const SizedBox(height: 24),
@@ -302,7 +318,10 @@ class _SupportDialogState extends State<SupportDialog> {
                   children: [
                     Expanded(
                       child: TextButton(
-                        onPressed: _submitting ? null : () => Navigator.of(context).pop(),
+                        onPressed: _submitting ? null : () {
+                          DebugLogService.instance.record('ui.sos.cancelled', fields: {'origin': 'user'});
+                          Navigator.of(context).pop();
+                        },
                         child: Text(strings.cancel, style: const TextStyle(color: Color(0xFF94A3B8))),
                       ),
                     ),

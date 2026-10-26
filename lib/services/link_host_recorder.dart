@@ -4,6 +4,11 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'debug_log_service.dart';
+
+void _recorderLog(String event,
+        {Object? error, Map<String, Object?> fields = const {}}) =>
+    DebugLogService.instance.record(event, error: error, fields: fields);
 
 /// Метаданные и полезная нагрузка кадра записи с достоверными размерами и кодеком.
 class RecordedFrameInfo {
@@ -34,8 +39,10 @@ RecordedFrameInfo? parseImageHeader(Uint8List bytes) {
       bytes[6] == 0x1A &&
       bytes[7] == 0x0A &&
       bytes.length >= 24) {
-    final width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
-    final height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+    final width =
+        (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    final height =
+        (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
     return RecordedFrameInfo(
       payload: bytes,
       width: width,
@@ -59,7 +66,9 @@ RecordedFrameInfo? parseImageHeader(Uint8List bytes) {
       final marker = bytes[offset];
       offset++;
 
-      if (marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) {
+      if (marker == 0xD8 ||
+          marker == 0xD9 ||
+          (marker >= 0xD0 && marker <= 0xD7)) {
         continue;
       }
 
@@ -93,7 +102,10 @@ RecordedFrameInfo? parseImageHeader(Uint8List bytes) {
       bytes[9] == 0x45 &&
       bytes[10] == 0x42 &&
       bytes[11] == 0x50) {
-    if (bytes[12] == 0x56 && bytes[13] == 0x50 && bytes[14] == 0x38 && bytes[15] == 0x20) {
+    if (bytes[12] == 0x56 &&
+        bytes[13] == 0x50 &&
+        bytes[14] == 0x38 &&
+        bytes[15] == 0x20) {
       if (bytes.length >= 30) {
         final width = (bytes[26] | ((bytes[27] & 0x3F) << 8));
         final height = (bytes[28] | ((bytes[29] & 0x3F) << 8));
@@ -105,14 +117,18 @@ RecordedFrameInfo? parseImageHeader(Uint8List bytes) {
         );
       }
     }
-    if (bytes[12] == 0x56 && bytes[13] == 0x50 && bytes[14] == 0x38 && bytes[15] == 0x4C) {
+    if (bytes[12] == 0x56 &&
+        bytes[13] == 0x50 &&
+        bytes[14] == 0x38 &&
+        bytes[15] == 0x4C) {
       if (bytes.length >= 25 && bytes[20] == 0x2F) {
         final b1 = bytes[21];
         final b2 = bytes[22];
         final b3 = bytes[23];
         final b4 = bytes[24];
         final width = 1 + (((b2 & 0x3F) << 8) | b1);
-        final height = 1 + (((b4 & 0xF) << 10) | (b3 << 2) | ((b2 & 0xC0) >> 6));
+        final height =
+            1 + (((b4 & 0xF) << 10) | (b3 << 2) | ((b2 & 0xC0) >> 6));
         return RecordedFrameInfo(
           payload: bytes,
           width: width,
@@ -121,7 +137,10 @@ RecordedFrameInfo? parseImageHeader(Uint8List bytes) {
         );
       }
     }
-    if (bytes[12] == 0x56 && bytes[13] == 0x50 && bytes[14] == 0x38 && bytes[15] == 0x58) {
+    if (bytes[12] == 0x56 &&
+        bytes[13] == 0x50 &&
+        bytes[14] == 0x38 &&
+        bytes[15] == 0x58) {
       if (bytes.length >= 30) {
         final width = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
         final height = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
@@ -162,7 +181,9 @@ Future<RecordedFrameInfo?> prepareRecordedFrame(Uint8List rawBytes) async {
       );
     }
   } catch (e) {
-    debugPrint('prepareRecordedFrame: decode/transcode error: $e');
+    _recorderLog('recorder.exception',
+        error: e,
+        fields: {'phase': 'prepare_recorded_frame', 'result': 'failed'});
   }
   return null;
 }
@@ -219,7 +240,8 @@ class LinkRecordingConfig {
       contractVersion: raw['contract_version']?.toString() ?? 'v1',
       enabled: enabled && mode != 'exclude',
       mandatory: enabled && mandatory && mode != 'exclude',
-      requireFirstFrame: enabled && (raw['require_first_frame'] == true || mandatory),
+      requireFirstFrame:
+          enabled && (raw['require_first_frame'] == true || mandatory),
       effectiveMode: mode,
       aiAllowed: raw['ai_allowed'] == true && mode == 'record+AI',
       policyReason: raw['policy_reason']?.toString() ?? '',
@@ -265,11 +287,12 @@ class LinkHostRecorder {
     DateTime Function()? clock,
     Stopwatch? leaseStopwatch,
     Duration? stopFlushTimeout,
-  })  : _clock = clock ?? DateTime.now,
+    DebugLogService? debugLog,
+  })  : _debugLog = debugLog ?? DebugLogService.instance,
+        _clock = clock ?? DateTime.now,
         _startedAt = (clock ?? DateTime.now)().toUtc(),
         _leaseStopwatch = leaseStopwatch ?? Stopwatch(),
-        _stopFlushTimeout =
-            stopFlushTimeout ?? const Duration(seconds: 25),
+        _stopFlushTimeout = stopFlushTimeout ?? const Duration(seconds: 25),
         sendBatch = sendBatch ??
             ((batch) => defaultHttpSendBatch(
                   config.ingestUrl,
@@ -286,7 +309,8 @@ class LinkHostRecorder {
   static HttpClient? _sharedHttpClient;
 
   static HttpClient _getSharedClient() {
-    return _sharedHttpClient ??= (HttpClient()..connectionTimeout = const Duration(seconds: 8));
+    return _sharedHttpClient ??=
+        (HttpClient()..connectionTimeout = const Duration(seconds: 8));
   }
 
   static void closeSharedClient() {
@@ -359,57 +383,148 @@ class LinkHostRecorder {
   }) async {
     final uri = Uri.tryParse(ingestUrl);
     if (!isSecureIngestUri(uri)) {
+      _recorderLog('recorder.http.blocked',
+          fields: {'reason': 'insecure_ingest', 'result': 'blocked'});
       throw const FormatException('recorder_insecure_ingest');
     }
-    final httpClient = client ?? _getSharedClient();
-    final request = await httpClient.postUrl(uri!);
-    request.headers.contentType = ContentType.json;
-    if (ingestToken.isNotEmpty) {
-      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $ingestToken');
+    final watch = Stopwatch()..start();
+    var phase = 'request_open';
+    _recorderLog('recorder.http',
+        fields: {'method': 'POST', 'server': uri!.host, 'result': 'begin'});
+    try {
+      final httpClient = client ?? _getSharedClient();
+      final request = await httpClient.postUrl(uri);
+      request.headers.contentType = ContentType.json;
+      if (ingestToken.isNotEmpty) {
+        request.headers
+            .set(HttpHeaders.authorizationHeader, 'Bearer $ingestToken');
+      }
+      final encoded = utf8.encode(jsonEncode(batch));
+      request.add(encoded);
+      phase = 'response_wait';
+      _recorderLog('recorder.http', fields: {
+        'method': 'POST',
+        'sent_bytes': encoded.length,
+        'result': 'queued'
+      });
+      final response = await request.close().timeout(timeout);
+      phase = 'ack_read';
+      _recorderLog('recorder.http', fields: {
+        'method': 'POST',
+        'http_status': response.statusCode,
+        'duration_ms': watch.elapsedMilliseconds,
+        'result': 'response'
+      });
+      final body = await _readAckBody(response, timeout);
+      _recorderLog('recorder.http', fields: {
+        'response_bytes': utf8.encode(body).length,
+        'result': 'received'
+      });
+      phase = 'ack_validate';
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('Recorder ingest status ${response.statusCode}');
+      }
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) {
+        throw const FormatException('Invalid Recorder ACK JSON');
+      }
+      if (decoded['ack_high_watermark_seq'] == null ||
+          decoded['ack_high_watermark_seq'] is! num) {
+        throw const FormatException(
+            'Recorder ACK missing required ack_high_watermark_seq');
+      }
+      if (decoded['lease_expires_at'] == null) {
+        throw const FormatException(
+            'Recorder ACK missing required lease_expires_at');
+      }
+      final leaseExpiresAt =
+          DateTime.tryParse(decoded['lease_expires_at']?.toString() ?? '');
+      if (leaseExpiresAt == null) {
+        throw const FormatException('Recorder ACK invalid lease_expires_at');
+      }
+      final leaseTtlMs = decoded['lease_ttl_ms'] is num
+          ? (decoded['lease_ttl_ms'] as num).toInt()
+          : null;
+      return LinkRecorderBatchAck(
+        ackHighWatermarkSeq: (decoded['ack_high_watermark_seq'] as num).toInt(),
+        firstFrameAcked: decoded['first_frame_acked'] == true,
+        leaseExpiresAt: leaseExpiresAt,
+        leaseTtlMs: leaseTtlMs,
+      );
+    } catch (error) {
+      _recorderLog('recorder.http.failed', error: error, fields: {
+        'method': 'POST',
+        'phase': phase,
+        'duration_ms': watch.elapsedMilliseconds,
+        'result': 'failed'
+      });
+      rethrow;
     }
-    request.add(utf8.encode(jsonEncode(batch)));
-    final response = await request.close().timeout(timeout);
-    final body = await _readAckBody(response, timeout);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException('Recorder ingest status ${response.statusCode}');
-    }
-    final decoded = jsonDecode(body);
-    if (decoded is! Map) {
-      throw const FormatException('Invalid Recorder ACK JSON');
-    }
-    if (decoded['ack_high_watermark_seq'] == null || decoded['ack_high_watermark_seq'] is! num) {
-      throw const FormatException('Recorder ACK missing required ack_high_watermark_seq');
-    }
-    if (decoded['lease_expires_at'] == null) {
-      throw const FormatException('Recorder ACK missing required lease_expires_at');
-    }
-    final leaseExpiresAt = DateTime.tryParse(decoded['lease_expires_at']?.toString() ?? '');
-    if (leaseExpiresAt == null) {
-      throw const FormatException('Recorder ACK invalid lease_expires_at');
-    }
-    final leaseTtlMs = decoded['lease_ttl_ms'] is num
-        ? (decoded['lease_ttl_ms'] as num).toInt()
-        : null;
-    return LinkRecorderBatchAck(
-      ackHighWatermarkSeq: (decoded['ack_high_watermark_seq'] as num).toInt(),
-      firstFrameAcked: decoded['first_frame_acked'] == true,
-      leaseExpiresAt: leaseExpiresAt,
-      leaseTtlMs: leaseTtlMs,
-    );
   }
 
   static const Set<String> _allowedNonPrintableKeys = {
-    'enter', 'return', 'tab', 'escape', 'esc', 'backspace', 'delete', 'insert',
-    'home', 'end', 'pageup', 'page up', 'pagedown', 'page down',
-    'arrowup', 'arrow up', 'arrowdown', 'arrow down',
-    'arrowleft', 'arrow left', 'arrowright', 'arrow right',
-    'up', 'down', 'left', 'right', 'space',
-    'capslock', 'caps lock', 'numlock', 'num lock', 'scrolllock', 'scroll lock',
-    'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
-    'control', 'ctrl', 'control left', 'control right', 'ctrl left', 'ctrl right',
-    'alt', 'alt left', 'alt right',
-    'shift', 'shift left', 'shift right',
-    'meta', 'meta left', 'meta right', 'win', 'super',
+    'enter',
+    'return',
+    'tab',
+    'escape',
+    'esc',
+    'backspace',
+    'delete',
+    'insert',
+    'home',
+    'end',
+    'pageup',
+    'page up',
+    'pagedown',
+    'page down',
+    'arrowup',
+    'arrow up',
+    'arrowdown',
+    'arrow down',
+    'arrowleft',
+    'arrow left',
+    'arrowright',
+    'arrow right',
+    'up',
+    'down',
+    'left',
+    'right',
+    'space',
+    'capslock',
+    'caps lock',
+    'numlock',
+    'num lock',
+    'scrolllock',
+    'scroll lock',
+    'f1',
+    'f2',
+    'f3',
+    'f4',
+    'f5',
+    'f6',
+    'f7',
+    'f8',
+    'f9',
+    'f10',
+    'f11',
+    'f12',
+    'control',
+    'ctrl',
+    'control left',
+    'control right',
+    'ctrl left',
+    'ctrl right',
+    'alt',
+    'alt left',
+    'alt right',
+    'shift',
+    'shift left',
+    'shift right',
+    'meta',
+    'meta left',
+    'meta right',
+    'win',
+    'super',
   };
 
   final String sessionId;
@@ -417,6 +532,7 @@ class LinkHostRecorder {
   final LinkRecorderBatchSender sendBatch;
   final void Function(String reason)? onMandatoryViolation;
   final DateTime Function() _clock;
+  final DebugLogService _debugLog;
   DateTime _startedAt;
 
   static const int maxBatchBytes = 2 * 1024 * 1024;
@@ -441,14 +557,35 @@ class LinkHostRecorder {
   bool _tailFlushed = true;
   Future<bool>? _activeFlush;
 
+  void _snapshot(String event,
+      {Object? error, Map<String, Object?> fields = const {}}) {
+    _debugLog.record(event, error: error, fields: {
+      'session_id': sessionId,
+      'recorder_enabled': config.enabled,
+      'mandatory': config.mandatory,
+      'seq': _nextSeq,
+      'acked_seq': _ackedSeq,
+      'queue_bytes': _queuedBytes,
+      'frames': _pendingFrames.length,
+      'count': _pendingEvents.length,
+      'first_frame_acked': _firstFrameAcked,
+      'state': _stopped ? 'stopped' : 'running',
+      ...fields,
+      if (fields.containsKey('reason'))
+        'reason': DebugLogService.protocolLabel(fields['reason']),
+    });
+  }
+
   int get nextSeq => _nextSeq;
   int get ackedSeq => _ackedSeq;
   bool get isFirstFrameAcked => !config.enabled || _firstFrameAcked;
   bool get firstFrameAcked => _firstFrameAcked;
-  bool get isTailFlushed => _tailFlushed && _pendingFrames.isEmpty && _pendingEvents.isEmpty;
+  bool get isTailFlushed =>
+      _tailFlushed && _pendingFrames.isEmpty && _pendingEvents.isEmpty;
   int get queuedBytes => _queuedBytes;
 
   void notifyDesktopChanged() {
+    _snapshot('recorder.desktop.changed', fields: {'timeout_ms': 10000});
     final now = _clock().toUtc();
     // Льготный период при смене рабочего стола (≤ 10 с, без продления, пока он активен)
     if (_desktopGraceUntil == null || now.isAfter(_desktopGraceUntil!)) {
@@ -457,10 +594,16 @@ class LinkHostRecorder {
   }
 
   void start() {
+    _snapshot('recorder.start', fields: {
+      'result': !config.enabled || _stopped || _flushTimer != null
+          ? 'ignored'
+          : 'begin'
+    });
     _startedAt = _clock().toUtc();
     if (!config.enabled || _stopped || _flushTimer != null) return;
 
-    if (config.ingestUrl.isNotEmpty && (config.mandatory || config.requireFirstFrame)) {
+    if (config.ingestUrl.isNotEmpty &&
+        (config.mandatory || config.requireFirstFrame)) {
       final uri = Uri.tryParse(config.ingestUrl);
       if (!isSecureIngestUri(uri)) {
         _triggerMandatoryStop('recorder_insecure_ingest');
@@ -488,16 +631,29 @@ class LinkHostRecorder {
   final Duration _stopFlushTimeout;
 
   Future<bool> stop({String reason = ''}) async {
+    _snapshot('recorder.stop', fields: {
+      'reason': reason,
+      'result': 'begin',
+      'timeout_ms': _stopFlushTimeout.inMilliseconds
+    });
     _flushTimer?.cancel();
     _flushTimer = null;
     while (_activeFlush != null) {
       try {
         await _activeFlush!.timeout(_stopFlushTimeout);
-      } on TimeoutException {
+      } on TimeoutException catch (error) {
+        _snapshot('recorder.stop.timeout', error: error, fields: {
+          'phase': 'tail_flush',
+          'result': 'failed',
+          'timeout_ms': _stopFlushTimeout.inMilliseconds
+        });
         _tailFlushed = false;
         _stopped = true;
         return false;
-      } catch (_) {}
+      } catch (error) {
+        _recorderLog('recorder.exception',
+            error: error, fields: {'phase': 'stop', 'result': 'failed'});
+      }
     }
     if (!config.enabled) {
       _stopped = true;
@@ -529,10 +685,17 @@ class LinkHostRecorder {
       late final bool ok;
       try {
         ok = await _flushInternal().timeout(_stopFlushTimeout);
-      } on TimeoutException {
+      } on TimeoutException catch (error) {
+        _snapshot('recorder.stop.timeout', error: error, fields: {
+          'phase': 'tail_flush',
+          'result': 'failed',
+          'timeout_ms': _stopFlushTimeout.inMilliseconds
+        });
         _tailFlushed = false;
         return false;
-      } catch (_) {
+      } catch (error) {
+        _recorderLog('recorder.exception',
+            error: error, fields: {'phase': 'stop', 'result': 'failed'});
         ok = false;
       }
       final newCount = _pendingFrames.length + _pendingEvents.length;
@@ -558,10 +721,15 @@ class LinkHostRecorder {
       _pendingEvents.add(gapEvent);
       try {
         await _flushInternal().timeout(_stopFlushTimeout);
-      } catch (_) {}
+      } catch (error) {
+        _recorderLog('recorder.exception',
+            error: error, fields: {'phase': 'stop', 'result': 'failed'});
+      }
       _pendingEvents.clear();
       _queuedBytes = 0;
     }
+    _snapshot('recorder.stop',
+        fields: {'result': isTailFlushed ? 'tail_flushed' : 'tail_lost'});
     return isTailFlushed;
   }
 
@@ -643,8 +811,9 @@ class LinkHostRecorder {
           'source': 'remote_operator',
           'occurred_at': occurredAt.toUtc().toIso8601String(),
           'metadata': {
-            'direction':
-                type == 'clipboard_set' ? 'operator_to_host' : 'host_to_operator',
+            'direction': type == 'clipboard_set'
+                ? 'operator_to_host'
+                : 'host_to_operator',
             'content_redacted': true,
           },
         };
@@ -727,6 +896,8 @@ class LinkHostRecorder {
       return true;
     }
     if (_queuedBytes + payload.length > config.maxQueueBytes) {
+      _snapshot('recorder.queue.overflow',
+          fields: {'bytes': payload.length, 'result': 'dropped'});
       // Фиксируем явный gap_marker вместо бесконтрольного роста RAM.
       _nextSeq++;
       _pendingFrames.add({
@@ -791,7 +962,8 @@ class LinkHostRecorder {
   Future<bool> _flushInternal() async {
     final now = _clock().toUtc();
 
-    if (config.ingestUrl.isNotEmpty && (config.mandatory || config.requireFirstFrame)) {
+    if (config.ingestUrl.isNotEmpty &&
+        (config.mandatory || config.requireFirstFrame)) {
       final uri = Uri.tryParse(config.ingestUrl);
       if (uri == null || !isSecureIngestUri(uri)) {
         _triggerMandatoryStop('recorder_insecure_ingest');
@@ -805,7 +977,8 @@ class LinkHostRecorder {
       if (batchFrames.length >= maxBatchFrames) break;
       final b64 = frame['payload_base64'] as String? ?? '';
       final frameBytes = b64.length * 3 ~/ 4;
-      if (batchFrames.isNotEmpty && currentBatchBytes + frameBytes > maxBatchBytes) {
+      if (batchFrames.isNotEmpty &&
+          currentBatchBytes + frameBytes > maxBatchBytes) {
         break;
       }
       batchFrames.add(frame);
@@ -816,7 +989,8 @@ class LinkHostRecorder {
     for (final event in _pendingEvents) {
       if (batchEvents.length >= maxBatchEvents) break;
       final eventBytes = utf8.encode(jsonEncode(event)).length;
-      if (batchEvents.isNotEmpty && currentBatchBytes + eventBytes > maxBatchBytes) {
+      if (batchEvents.isNotEmpty &&
+          currentBatchBytes + eventBytes > maxBatchBytes) {
         break;
       }
       batchEvents.add(event);
@@ -845,10 +1019,22 @@ class LinkHostRecorder {
     final inFlightEventSeqs = batchEvents.map((e) => e['seq'] as int).toSet();
 
     final sendStopwatch = Stopwatch()..start();
+    _snapshot('recorder.batch.send', fields: {
+      'result': 'begin',
+      'bytes': currentBatchBytes,
+      'frames': batchFrames.length,
+      'count': batchEvents.length
+    });
     try {
       final ack = await sendBatch(batch);
       sendStopwatch.stop();
       final rtt = sendStopwatch.elapsed;
+      _snapshot('recorder.batch.ack_received', fields: {
+        'acked_seq': ack.ackHighWatermarkSeq,
+        'first_frame_acked': ack.firstFrameAcked,
+        'rtt_ms': rtt.inMilliseconds,
+        'result': 'received'
+      });
 
       if (ack.ackHighWatermarkSeq < _ackedSeq) {
         throw FormatException(
@@ -879,7 +1065,8 @@ class LinkHostRecorder {
           _leaseTtl = Duration(milliseconds: remainingMs);
         }
       } else if (config.mandatory && config.contractVersion != 'v1') {
-        throw const FormatException('Recorder ACK missing required lease_ttl_ms in mandatory mode');
+        throw const FormatException(
+            'Recorder ACK missing required lease_ttl_ms in mandatory mode');
       } else {
         final expiresAt = ack.leaseExpiresAt.toUtc();
         _leaseTtl = expiresAt.isAfter(ackNow)
@@ -892,10 +1079,16 @@ class LinkHostRecorder {
       // Удаляем только подтверждённые сервером элементы, которые реально отправлялись
       // в текущем пакете (seq <= ackHighWatermarkSeq && in inFlightFrameSeqs),
       // чтобы не потерять кадры и события, упавшие в очередь во время HTTP-запроса (LR-03, ULR-02).
-      _pendingFrames.removeWhere((f) => inFlightFrameSeqs.contains(f['seq'] as int) && (f['seq'] as int) <= _ackedSeq);
-      _pendingEvents.removeWhere((e) => inFlightEventSeqs.contains(e['seq'] as int) && (e['seq'] as int) <= _ackedSeq);
+      _pendingFrames.removeWhere((f) =>
+          inFlightFrameSeqs.contains(f['seq'] as int) &&
+          (f['seq'] as int) <= _ackedSeq);
+      _pendingEvents.removeWhere((e) =>
+          inFlightEventSeqs.contains(e['seq'] as int) &&
+          (e['seq'] as int) <= _ackedSeq);
 
       _recalculateQueuedBytes();
+      _snapshot('recorder.batch.ack_validated',
+          fields: {'rtt_ms': rtt.inMilliseconds, 'result': 'validated'});
 
       if ((config.requireFirstFrame || config.mandatory) && !_firstFrameAcked) {
         if (_desktopGraceUntil != null && now.isBefore(_desktopGraceUntil!)) {
@@ -909,6 +1102,13 @@ class LinkHostRecorder {
       }
       return true;
     } catch (e) {
+      _snapshot('recorder.batch.failed', error: e, fields: {
+        'duration_ms': sendStopwatch.elapsedMilliseconds,
+        'bytes': currentBatchBytes,
+        'frames': batchFrames.length,
+        'count': batchEvents.length,
+        'result': 'failed'
+      });
       if (e is FormatException) {
         if (e.message.contains('recorder_insecure_ingest')) {
           _triggerMandatoryStop('recorder_insecure_ingest');
@@ -946,6 +1146,8 @@ class LinkHostRecorder {
 
   void _triggerMandatoryStop(String reason) {
     if (_stopped || (!config.mandatory && !config.requireFirstFrame)) return;
+    _snapshot('recorder.mandatory.violation',
+        fields: {'reason': reason, 'result': 'stopping'});
     _stopped = true;
     onMandatoryViolation?.call(reason);
   }

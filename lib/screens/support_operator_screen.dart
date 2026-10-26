@@ -135,8 +135,7 @@ String mediaTransportFromStats(List<StatsReport> reports, String fallback) {
   var resolved = 0;
   var usesRelay = false;
   for (final report in reports) {
-    if (report.type != 'local-candidate' &&
-        report.type != 'remote-candidate') {
+    if (report.type != 'local-candidate' && report.type != 'remote-candidate') {
       continue;
     }
     if (report.id != localId && report.id != remoteId) continue;
@@ -272,8 +271,124 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _statusKey == 'pc_no_track' ||
       _statusKey == 'no_first_frame';
 
+  void _logConnection(String event,
+      {Object? error, Map<String, Object?> fields = const {}}) {
+    final id = _linkSessionId ?? widget.sessionId;
+    final uuid = RegExp(
+        r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
+    DebugLogService.instance.record(event, error: error, fields: {
+      'attempt': _linkAttemptGeneration,
+      if (uuid.hasMatch(id)) 'session_id': id,
+      'owner': widget.ownerMode,
+      'connected': _peerConnection?.connectionState ==
+          RTCPeerConnectionState.RTCPeerConnectionStateConnected,
+      'frame_ready': _frameReady,
+      'control_ready': _controlReady,
+      ...fields,
+      if (fields.containsKey('reason'))
+        'reason': DebugLogService.protocolLabel(fields['reason']),
+      if (error is ApiException) 'http_status': error.statusCode,
+      if (error is ApiException)
+        'reason': DebugLogService.protocolLabel(error.code),
+    });
+  }
+
+  // Do not put untrusted wire types (or payload values) into diagnostics.
+  static String _debugMessageType(Object? value) => const {
+        'candidate',
+        'session_answer',
+        'session_terminate',
+        'session_ended',
+        'support_ended',
+        'console_end',
+        'request_offer',
+        'ice_restart',
+        'offer',
+        'answer',
+        'input_control',
+        'screen_list',
+        'switch_screen',
+        'chat_message',
+        'chat_sync',
+        'chat_ack',
+        'ping',
+        'pong',
+        'mouse_move',
+        'mouse_down',
+        'mouse_up',
+        'mouse_click',
+        'wheel',
+        'key_down',
+        'key_up',
+        'text_input',
+        'block_input',
+        'block_input_ack',
+        'hotkey',
+        'clipboard_set',
+        'clipboard_get',
+        'clipboard_data',
+        'clipboard_error',
+        'input_error',
+        'file_start',
+        'file_chunk',
+        'file_end',
+        'file_ack',
+        'file_reject',
+        'reboot',
+        'video_quality',
+        'telemetry',
+        'screen_lock_state',
+      }.contains(value)
+          ? value as String
+          : 'unknown';
+
+  final Map<String, int> _mouseLogCounts = {};
+  final Map<String, int> _mouseLogBytes = {};
+  final Map<String, Object> _mouseLogErrors = {};
+  Timer? _mouseLogTimer;
+
+  void _logDataSend(String type, String result, String transport, int bytes,
+      {Object? error}) {
+    if (type == 'mouse_move') {
+      final key = '$transport.$result';
+      _mouseLogCounts[key] = (_mouseLogCounts[key] ?? 0) + 1;
+      _mouseLogBytes[key] = (_mouseLogBytes[key] ?? 0) + bytes;
+      if (error != null) _mouseLogErrors[key] = error;
+      _mouseLogTimer ??= Timer(const Duration(seconds: 1), _flushMouseLog);
+      return;
+    }
+    _logConnection('operator.data.outbound', error: error, fields: {
+      'message_type': type,
+      'operation': 'send',
+      'result': result,
+      'transport': transport,
+      'bytes': bytes,
+    });
+  }
+
+  void _flushMouseLog() {
+    _mouseLogTimer?.cancel();
+    _mouseLogTimer = null;
+    for (final entry in _mouseLogCounts.entries) {
+      final parts = entry.key.split('.');
+      _logConnection('operator.data.mouse_summary',
+          error: _mouseLogErrors[entry.key],
+          fields: {
+            'message_type': 'mouse_move',
+            'transport': parts[0],
+            'result': parts[1],
+            'count': entry.value,
+            'bytes': _mouseLogBytes[entry.key] ?? 0,
+          });
+    }
+    _mouseLogCounts.clear();
+    _mouseLogBytes.clear();
+    _mouseLogErrors.clear();
+  }
+
   void _setStatus(String key, [String? arg]) {
-    DebugLogService.instance.record('operator.status.$key');
+    _logConnection('operator.status',
+        fields: {'state': DebugLogService.protocolLabel(key)});
     setState(() {
       _statusKey = key;
       _statusArg = arg;
@@ -402,14 +517,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _leaseTimer?.cancel();
     final auth = context.read<AuthState>();
     // Немедленное первое продление при открытии консоли (защита от истечения initial lease)
-    auth.api
-        ?.renewSupportLease(widget.sessionId)
-        .catchError((_) => <String, dynamic>{});
+    auth.api?.renewSupportLease(widget.sessionId).catchError((Object error) {
+      _logConnection('operator.async.error',
+          error: error, fields: {'operation': 'cleanup_or_lease'});
+      return <String, dynamic>{};
+    });
     _leaseTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!mounted || _isCleanedUp) return;
       try {
         await auth.api?.renewSupportLease(widget.sessionId);
       } on ApiException catch (e) {
+        _logConnection('operator.exception',
+            error: e,
+            fields: {'phase': 'start_lease_renewal', 'result': 'failed'});
         if (e.statusCode == 410 ||
             e.statusCode == 404 ||
             e.statusCode == 403 ||
@@ -418,10 +538,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _leaseTimer = null;
           // Ш4: lease 410/404/403 — единое завершение с корректным выходом
           if (mounted && !_isCleanedUp) {
-            _onSessionTerminated('ended_by_server');
+            _onSessionTerminated('ended_by_server', origin: 'lease');
           }
         }
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'start_lease_renewal', 'result': 'failed'});
+      }
     });
   }
 
@@ -538,7 +662,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       audioTrack.enabled = !nextMuted;
       try {
         unawaited(Helper.setVolume(nextMuted ? 0.0 : 1.0, audioTrack));
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'toggle_remote_audio', 'result': 'failed'});
+      }
     }
     final stream = _remoteRenderer.srcObject;
     if (stream != null) {
@@ -546,7 +674,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         track.enabled = !nextMuted;
         try {
           unawaited(Helper.setVolume(nextMuted ? 0.0 : 1.0, track));
-        } catch (_) {}
+        } catch (error) {
+          _logConnection('operator.exception',
+              error: error,
+              fields: {'phase': 'toggle_remote_audio', 'result': 'failed'});
+        }
       }
     }
   }
@@ -561,6 +693,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   /// Ш3: кадр реально отрисован — граница «изображение появилось».
   void _markFrameReady() {
+    _logConnection('operator.frame.first', fields: {
+      'width': _remoteRenderer.videoWidth,
+      'height': _remoteRenderer.videoHeight,
+    });
     _cancelFirstFrameStageTimer();
     if (!mounted || _isCleanedUp) return;
     setState(() {
@@ -575,6 +711,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   /// Ш3: повтор зависшей стадии — повторный request_offer и перезапуск
   /// стадийных таймеров; сигнальный канал потерян — реконнект WS.
   void _retryConnectionStage() {
+    _logConnection('operator.action.retry',
+        fields: {'origin': 'user', 'operation': 'retry'});
     if (!mounted || _isCleanedUp) return;
     _cancelStageTimers();
     _resetStageReadiness();
@@ -590,7 +728,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _wsReconnectTimer?.cancel();
       try {
         _wsChannel?.sink.close();
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'retry_connection_stage', 'result': 'failed'});
+      }
       _wsChannel = null;
       _connectWebSocket();
     }
@@ -618,17 +760,29 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkCursor = 0;
     try {
       _remoteRenderer.srcObject = null;
-    } catch (_) {}
+    } catch (error) {
+      _logConnection('operator.exception',
+          error: error,
+          fields: {'phase': 'restart_link_connection', 'result': 'failed'});
+    }
     if (closeId != null && mounted) {
       final auth = _auth ?? context.read<AuthState>();
-      unawaited(auth.api?.closeLinkSession(closeId).catchError((_) => null) ??
+      unawaited(auth.api?.closeLinkSession(closeId).catchError((Object error) {
+            _logConnection('operator.async.error',
+                error: error, fields: {'operation': 'cleanup_or_lease'});
+            return null;
+          }) ??
           Future<void>.value());
     }
     try {
       channel?.onMessage = null;
       channel?.onDataChannelState = null;
       await channel?.close();
-    } catch (_) {}
+    } catch (error) {
+      _logConnection('operator.exception',
+          error: error,
+          fields: {'phase': 'restart_link_connection', 'result': 'failed'});
+    }
     if (peer != null) {
       peer.onIceCandidate = null;
       peer.onIceConnectionState = null;
@@ -637,10 +791,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       peer.onDataChannel = null;
       try {
         await peer.close();
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'restart_link_connection', 'result': 'failed'});
+      }
       try {
         await peer.dispose();
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'restart_link_connection', 'result': 'failed'});
+      }
     }
     try {
       if (mounted && !_isCleanedUp) await _startLinkConnection();
@@ -671,19 +833,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _graceCountdownTimer?.cancel();
       _graceCountdownTimer = null;
       if (!mounted || _isCleanedUp) return;
-      _onSessionTerminated('pc_failed');
+      _onSessionTerminated('pc_failed', origin: 'timeout');
     });
 
     _triggerIceRestart();
   }
 
   void _triggerIceRestart() {
+    _logConnection('operator.ice.restart', fields: {'result': 'begin'});
     try {
       if (_peerConnection != null) {
         _peerConnection!.restartIce();
       }
     } catch (e) {
-      debugPrint('support_operator: restartIce error: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'trigger_ice_restart', 'result': 'failed'});
     }
     if (widget.isLink) {
       unawaited(_performLinkIceRestart());
@@ -713,7 +878,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         },
       );
     } catch (e) {
-      debugPrint('support_operator (link): ICE restart renegotiation error: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'perform_link_ice_restart', 'result': 'failed'});
     }
   }
 
@@ -739,12 +906,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               ),
               title: Row(
                 children: [
-                  const Icon(Icons.security, color: Color(0xFFF59E0B), size: 24),
+                  const Icon(Icons.security,
+                      color: Color(0xFFF59E0B), size: 24),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      isRu ? 'Внешний периметр: Step-Up 2FA' : 'External Perimeter: Step-Up 2FA',
-                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                      isRu
+                          ? 'Внешний периметр: Step-Up 2FA'
+                          : 'External Perimeter: Step-Up 2FA',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
@@ -758,7 +931,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       isRu
                           ? 'Вы подключаетесь к ПК из внешней сети (${auth.clientIp ?? "внешний IP"}).\nВведите 6-значный код подтверждения TOTP из приложения-аутентификатора:'
                           : 'You are connecting from an external network (${auth.clientIp ?? "public IP"}).\nEnter your 6-digit TOTP verification code from your authenticator app:',
-                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                      style: const TextStyle(
+                          color: Color(0xFF94A3B8), fontSize: 13),
                     ),
                     const SizedBox(height: 16),
                     TextField(
@@ -776,16 +950,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       decoration: InputDecoration(
                         counterText: '',
                         hintText: '000000',
-                        hintStyle: const TextStyle(color: Color(0xFF475569), letterSpacing: 8),
+                        hintStyle: const TextStyle(
+                            color: Color(0xFF475569), letterSpacing: 8),
                         filled: true,
                         fillColor: const Color(0xFF1E293B),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFF334155)),
+                          borderSide:
+                              const BorderSide(color: Color(0xFF334155)),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFF59E0B), width: 2),
+                          borderSide: const BorderSide(
+                              color: Color(0xFFF59E0B), width: 2),
                         ),
                       ),
                       onSubmitted: (val) async {
@@ -795,12 +972,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             error = null;
                           });
                           try {
-                            final token = await auth.verifyStepUp(totpCode: val.trim());
+                            final token =
+                                await auth.verifyStepUp(totpCode: val.trim());
                             if (ctx.mounted) Navigator.of(ctx).pop(token);
                           } catch (err) {
+                            _logConnection('operator.exception',
+                                error: err,
+                                fields: {
+                                  'phase': 'prompt_step_up_auth',
+                                  'result': 'failed'
+                                });
                             setDialogState(() {
                               isSubmitting = false;
-                              error = isRu ? 'Неверный код TOTP' : 'Invalid TOTP code';
+                              error = isRu
+                                  ? 'Неверный код TOTP'
+                                  : 'Invalid TOTP code';
                             });
                           }
                         }
@@ -810,7 +996,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       const SizedBox(height: 10),
                       Text(
                         error!,
-                        style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                            color: Color(0xFFEF4444),
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold),
                       ),
                     ],
                   ],
@@ -818,8 +1007,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               ),
               actions: [
                 TextButton(
-                  onPressed: isSubmitting ? null : () => Navigator.of(ctx).pop(null),
-                  child: Text(isRu ? 'Отмена' : 'Cancel', style: const TextStyle(color: Color(0xFF94A3B8))),
+                  onPressed:
+                      isSubmitting ? null : () => Navigator.of(ctx).pop(null),
+                  child: Text(isRu ? 'Отмена' : 'Cancel',
+                      style: const TextStyle(color: Color(0xFF94A3B8))),
                 ),
                 FilledButton(
                   onPressed: isSubmitting
@@ -828,7 +1019,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           final code = controller.text.trim();
                           if (code.length != 6) {
                             setDialogState(() {
-                              error = isRu ? 'Введите 6 цифр' : 'Enter 6 digits';
+                              error =
+                                  isRu ? 'Введите 6 цифр' : 'Enter 6 digits';
                             });
                             return;
                           }
@@ -837,21 +1029,35 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             error = null;
                           });
                           try {
-                            final token = await auth.verifyStepUp(totpCode: code);
+                            final token =
+                                await auth.verifyStepUp(totpCode: code);
                             if (ctx.mounted) Navigator.of(ctx).pop(token);
                           } catch (err) {
+                            _logConnection('operator.exception',
+                                error: err,
+                                fields: {
+                                  'phase': 'prompt_step_up_auth',
+                                  'result': 'failed'
+                                });
                             setDialogState(() {
                               isSubmitting = false;
-                              error = isRu ? 'Неверный код TOTP' : 'Invalid TOTP code';
+                              error = isRu
+                                  ? 'Неверный код TOTP'
+                                  : 'Invalid TOTP code';
                             });
                           }
                         },
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFFD97706),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
                   child: isSubmitting
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
                       : Text(isRu ? 'Подтвердить кодом' : 'Confirm with code'),
                 ),
               ],
@@ -887,8 +1093,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   /// Ш4: единое завершение — полный teardown, корректный выход со страницы
   /// (закрывая открытые диалоги/чаты) и уведомление. Повторный вызов
   /// безопасен — guard по _sessionTerminatedHandled.
-  void _onSessionTerminated(String reasonKey) {
+  void _onSessionTerminated(String reasonKey, {String origin = 'unknown'}) {
+    _logConnection('operator.session.terminated', fields: {
+      'origin': origin,
+      'reason': DebugLogService.protocolLabel(reasonKey),
+      'result': !mounted || _sessionTerminatedHandled ? 'ignored' : 'stopping',
+      'state': DebugLogService.protocolLabel(_statusKey),
+    });
     if (!mounted || _sessionTerminatedHandled) return;
+    _flushMouseLog();
     _sessionTerminatedHandled = true;
     final messenger = ScaffoldMessenger.of(context);
     final strings = context.stringsRead;
@@ -909,7 +1122,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHostAnswerTimer = null;
     if (widget.isLink && _linkSessionId != null) {
       final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
-      auth?.api?.closeLinkSession(_linkSessionId!).catchError((_) => null);
+      auth?.api?.closeLinkSession(_linkSessionId!).catchError((Object error) {
+        _logConnection('operator.async.error',
+            error: error, fields: {'operation': 'cleanup_or_lease'});
+        return null;
+      });
     }
     _setStatus(reasonKey);
     _isControlEnabled = false;
@@ -922,7 +1139,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       Navigator.of(context).popUntil((r) => r == consoleRoute);
     }
 
-    final isVoluntaryEnd = reasonKey == 'session_ended' || reasonKey == 'user_closed';
+    final isVoluntaryEnd =
+        reasonKey == 'session_ended' || reasonKey == 'user_closed';
     if (isVoluntaryEnd) {
       if (Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
@@ -1042,7 +1260,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         await windowManager.setMinimumSize(const Size(800, 600));
         await windowManager.setSize(const Size(1280, 820));
         await windowManager.setResizable(true);
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception', error: error, fields: {
+          'phase': 'expand_window_for_operator',
+          'result': 'failed'
+        });
+      }
     }
   }
 
@@ -1063,7 +1286,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         await Future.delayed(const Duration(milliseconds: 50));
         await windowManager.setSize(targetSize);
         WidgetsBinding.instance.scheduleFrame();
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'restore_window_size', 'result': 'failed'});
+      }
     }
   }
 
@@ -1073,9 +1300,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       return;
     }
     final auth = context.read<AuthState>();
-    final effectiveSessionId = (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty)
-        ? _linkSessionId!
-        : (widget.isLink ? '' : widget.sessionId);
+    final effectiveSessionId =
+        (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty)
+            ? _linkSessionId!
+            : (widget.isLink ? '' : widget.sessionId);
     if (auth.api == null || effectiveSessionId.isEmpty) return;
     try {
       final list = await auth.api!.getSupportMessages(effectiveSessionId);
@@ -1107,7 +1335,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         if (mounted) setState(() {});
       }
     } catch (e) {
-      debugPrint('support_operator: _loadChatHistory error: $e');
+      _logConnection('operator.exception',
+          error: e, fields: {'phase': 'load_chat_history', 'result': 'failed'});
     }
   }
 
@@ -1173,36 +1402,76 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   Future<void> _startLinkConnection() async {
     final attempt = ++_linkAttemptGeneration;
+    final watch = Stopwatch()..start();
+    var phase = 'renderer_init';
+    void logStep(String result,
+        {Object? error, Map<String, Object?> fields = const {}}) {
+      _logConnection('operator.link.step', error: error, fields: {
+        'attempt': attempt,
+        'phase': phase,
+        'result': result,
+        'elapsed_ms': watch.elapsedMilliseconds,
+        ...fields,
+      });
+    }
+
+    void beginStep(String nextPhase) {
+      phase = nextPhase;
+      watch.reset();
+      logStep('begin');
+    }
+
     RTCPeerConnection? attemptPeer;
     String? attemptSessionId;
     final auth = context.read<AuthState>();
     final api = auth.api;
     if (api == null) {
+      logStep('blocked', fields: {'reason': 'api_unavailable'});
       _setStatus('conn_error', 'No active API session');
       return;
     }
     _setStatus('init');
-    await _remoteRenderer.initialize();
+    logStep('begin');
+    try {
+      await _remoteRenderer.initialize();
+      logStep('ready');
+    } catch (error) {
+      _logConnection('operator.exception',
+          error: error, fields: {'phase': 'begin_step', 'result': 'failed'});
+      logStep('failed', error: error);
+      rethrow;
+    }
     _remoteRenderer.onFirstFrameRendered = () {
       _markFrameReady();
     };
 
     try {
       List<Map<String, dynamic>> iceServers = [];
+      beginStep('get_ice');
       try {
         iceServers = await api.getLinkIceServers();
+        logStep('ready', fields: {'ice_servers': iceServers.length});
       } catch (e) {
-        debugPrint('support_operator (link): getLinkIceServers fallback: $e');
+        _logConnection('operator.exception',
+            error: e, fields: {'phase': 'begin_step', 'result': 'failed'});
+        logStep('fallback',
+            error: e, fields: {'ice_servers': auth.iceServers.length});
         iceServers = auth.iceServers;
       }
       if (_isCleanedUp || attempt != _linkAttemptGeneration) return;
 
+      beginStep('peer_create');
       final peer = await createPeerConnection({
         'iceServers': iceServers,
         'sdpSemantics': 'unified-plan',
       });
+      logStep('ready');
+      peer.onIceGatheringState = (state) => _logConnection(
+          'operator.ice.gathering',
+          fields: {'ice_state': state.name});
       attemptPeer = peer;
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
+        logStep('cancelled', fields: {'reason': 'stale_attempt'});
         await peer.close();
         return;
       }
@@ -1228,7 +1497,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       };
 
       peer.onIceConnectionState = (iceState) {
-        debugPrint('support_operator (link): ICE connection state: $iceState');
+        _logConnection('operator.ice.state',
+            fields: {'ice_state': iceState.name});
         if (!mounted ||
             _isCleanedUp ||
             attempt != _linkAttemptGeneration ||
@@ -1253,7 +1523,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       };
 
       peer.onConnectionState = (state) {
-        debugPrint('support_operator (link): connection state: $state');
+        _logConnection('operator.pc.state', fields: {'pc_state': state.name});
         if (!mounted ||
             _isCleanedUp ||
             attempt != _linkAttemptGeneration ||
@@ -1271,12 +1541,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          _onSessionTerminated('pc_failed');
+          _onSessionTerminated('pc_failed', origin: 'pc_state');
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           if (!_linkRemoteDescriptionSet) {
-            debugPrint(
-                'support_operator (link): ignoring failed state before remote description set');
             return;
           }
           setState(() {
@@ -1289,8 +1557,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
           if (!_linkRemoteDescriptionSet) {
-            debugPrint(
-                'support_operator (link): ignoring disconnected state before remote description set');
             return;
           }
           setState(() {
@@ -1304,8 +1570,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       };
 
       peer.onTrack = (RTCTrackEvent event) async {
-        debugPrint(
-            'support_operator (link): remote track: ${event.track.kind}, id=${event.track.id}, streams=${event.streams.length}');
+        _logConnection('operator.track.received', fields: {
+          'phase': event.track.kind == 'audio'
+              ? 'audio'
+              : event.track.kind == 'video'
+                  ? 'video'
+                  : 'unknown',
+          'count': event.streams.length,
+        });
         if (!mounted ||
             _isCleanedUp ||
             attempt != _linkAttemptGeneration ||
@@ -1314,7 +1586,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         }
         try {
           await Helper.ensureAudioSession();
-        } catch (_) {}
+        } catch (error) {
+          _logConnection('operator.exception',
+              error: error,
+              fields: {'phase': 'begin_step', 'result': 'failed'});
+        }
         if (!mounted ||
             _isCleanedUp ||
             attempt != _linkAttemptGeneration ||
@@ -1328,7 +1604,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           try {
             await Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, event.track);
           } catch (e) {
-            debugPrint('support_operator (link): setVolume error: $e');
+            _logConnection('operator.exception',
+                error: e, fields: {'phase': 'begin_step', 'result': 'failed'});
           }
           final currentStream = _remoteRenderer.srcObject;
           if (currentStream != null &&
@@ -1337,7 +1614,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   .any((t) => t.id == event.track.id)) {
             try {
               await currentStream.addTrack(event.track);
-            } catch (_) {}
+            } catch (error) {
+              _logConnection('operator.exception',
+                  error: error,
+                  fields: {'phase': 'begin_step', 'result': 'failed'});
+            }
           }
           if (mounted &&
               !_isCleanedUp &&
@@ -1355,7 +1636,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           try {
             stream = await createLocalMediaStream('remote_stream');
             await stream.addTrack(event.track);
-          } catch (_) {}
+          } catch (error) {
+            _logConnection('operator.exception',
+                error: error,
+                fields: {'phase': 'begin_step', 'result': 'failed'});
+          }
         }
 
         if (stream != null) {
@@ -1365,14 +1650,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   .any((t) => t.id == _remoteAudioTrack!.id)) {
             try {
               await stream.addTrack(_remoteAudioTrack!);
-            } catch (_) {}
+            } catch (error) {
+              _logConnection('operator.exception',
+                  error: error,
+                  fields: {'phase': 'begin_step', 'result': 'failed'});
+            }
           }
           for (final audio in stream.getAudioTracks()) {
             _remoteAudioTrack = audio;
             audio.enabled = !_isAudioMuted;
             try {
               unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
-            } catch (_) {}
+            } catch (error) {
+              _logConnection('operator.exception',
+                  error: error,
+                  fields: {'phase': 'begin_step', 'result': 'failed'});
+            }
           }
         }
 
@@ -1394,8 +1687,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       };
 
       peer.onDataChannel = (channel) {
-        debugPrint(
-            'support_operator (link): remote data channel: ${channel.label}');
         if (_isCleanedUp ||
             attempt != _linkAttemptGeneration ||
             _peerConnection != peer) {
@@ -1404,6 +1695,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _setupDataChannel(channel);
       };
 
+      beginStep('transceiver_create');
       await peer.addTransceiver(
         kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
         init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
@@ -1413,10 +1705,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
       );
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
+        logStep('cancelled', fields: {'reason': 'stale_attempt'});
         await peer.close();
         return;
       }
 
+      logStep('ready', fields: {'count': 2});
       // View sessions need monitor discovery/selection too. The host enforces
       // access mode and DLP for every input command, not channel presence.
       final rawMode = widget.linkAccessMode ??
@@ -1425,15 +1719,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final accessMode = (rawMode == 'full_control' || rawMode == 'control')
           ? 'control'
           : 'view';
+      beginStep('data_channel_create');
       final channel = await peer.createDataChannel(
         'link-control-v1',
         RTCDataChannelInit()..ordered = true,
       );
       _setupDataChannel(channel);
+      logStep('ready');
 
+      beginStep('offer_create');
       final offer = await peer.createOffer();
+      logStep('ready');
+      beginStep('set_local');
       await peer.setLocalDescription(offer);
+      logStep('ready');
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
+        logStep('cancelled', fields: {'reason': 'stale_attempt'});
         await peer.close();
         return;
       }
@@ -1445,7 +1746,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final effectiveKind = (passedKind != null && passedKind.isNotEmpty)
           ? passedKind
           : (widget.ownerMode ? 'console' : (widget.isLink ? 'link' : 'sos'));
-      final sosRequestId = widget.sessionData['sos_request_id']?.toString() ?? '';
+      final sosRequestId =
+          widget.sessionData['sos_request_id']?.toString() ?? '';
+      beginStep(sosRequestId.isNotEmpty ? 'request_sos' : 'request_link');
       final session = sosRequestId.isNotEmpty
           ? await api.startSOSSession(
               requestId: sosRequestId,
@@ -1465,12 +1768,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         throw StateError('Server did not return session_id');
       }
       if (_isCleanedUp || attempt != _linkAttemptGeneration) {
-        unawaited(api.closeLinkSession(id).catchError((_) => null));
+        logStep('cancelled', fields: {'reason': 'stale_attempt'});
+        unawaited(api.closeLinkSession(id).catchError((Object error) {
+          _logConnection('operator.async.error',
+              error: error, fields: {'operation': 'cleanup_or_lease'});
+          return null;
+        }));
         await peer.close();
         return;
       }
       attemptSessionId = id;
       _linkSessionId = id;
+      _emptySignalPollCount = 0;
+      _emptyPollLogWatch.reset();
+      logStep('accepted');
       if (session['access_mode'] != null) {
         _effectiveAccessMode = session['access_mode']?.toString();
       }
@@ -1490,8 +1801,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             mounted &&
             !_isCleanedUp &&
             attempt == _linkAttemptGeneration) {
+          _logConnection('operator.host.answer_timeout',
+              fields: {'origin': 'timeout', 'timeout_ms': 120000});
           _setStatus('pc_no_offer');
-          _onSessionTerminated('pc_failed');
+          _onSessionTerminated('pc_failed', origin: 'timeout');
         }
       });
 
@@ -1499,7 +1812,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           in List<Map<String, dynamic>>.from(_linkQueuedCandidates)) {
         await api
             .sendLinkSessionSignal(sessionId: id, signal: cand)
-            .catchError((_) => null);
+            .catchError((Object error) {
+          _logConnection('operator.async.error',
+              error: error, fields: {'operation': 'cleanup_or_lease'});
+          return null;
+        });
       }
       if (attempt == _linkAttemptGeneration) _linkQueuedCandidates.clear();
       if (_isCleanedUp || attempt != _linkAttemptGeneration) return;
@@ -1516,7 +1833,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       );
       _pollLinkSignals();
     } catch (e) {
-      debugPrint('support_operator (link): error starting session: $e');
+      _logConnection('operator.exception',
+          error: e, fields: {'phase': 'begin_step', 'result': 'failed'});
+      logStep('failed', error: e);
       final failedPeer = attemptPeer;
       if (identical(_peerConnection, failedPeer)) _peerConnection = null;
       if (failedPeer != null) {
@@ -1529,7 +1848,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
       final failedSessionId = attemptSessionId;
       if (failedSessionId != null) {
-        unawaited(api.closeLinkSession(failedSessionId).catchError((_) => null));
+        unawaited(
+            api.closeLinkSession(failedSessionId).catchError((Object error) {
+          _logConnection('operator.async.error',
+              error: error, fields: {'operation': 'cleanup_or_lease'});
+          return null;
+        }));
       }
       if (!mounted || _isCleanedUp || attempt != _linkAttemptGeneration) return;
       if (_linkSessionId == failedSessionId) _linkSessionId = null;
@@ -1559,6 +1883,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
+  final Stopwatch _emptyPollLogWatch = Stopwatch()..start();
+  int _emptySignalPollCount = 0;
+
   Future<void> _pollLinkSignals() async {
     final id = _linkSessionId;
     final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
@@ -1574,13 +1901,35 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _linkCursor = nextCursor;
       }
       final rawSignals = result['signals'];
+      if (rawSignals is List && rawSignals.isEmpty) {
+        _emptySignalPollCount++;
+        if (_emptyPollLogWatch.elapsedMilliseconds >= 5000) {
+          _logConnection('operator.signal.poll_summary', fields: {
+            'count': _emptySignalPollCount,
+            'cursor': _linkCursor,
+            'result': 'empty',
+            'operation': 'poll',
+            'duration_ms': _emptyPollLogWatch.elapsedMilliseconds,
+          });
+          _emptySignalPollCount = 0;
+          _emptyPollLogWatch.reset();
+        }
+      }
+      if (rawSignals is List && rawSignals.isNotEmpty) {
+        _logConnection('operator.signal.poll', fields: {
+          'count': rawSignals.length,
+          'cursor': _linkCursor,
+          'result': 'received',
+        });
+      }
       if (rawSignals is List) {
         for (final raw in rawSignals.whereType<Map>()) {
           await _handleLinkSignal(Map<String, dynamic>.from(raw));
         }
       }
     } catch (e) {
-      debugPrint('support_operator (link): polling signals failed: $e');
+      _logConnection('operator.exception',
+          error: e, fields: {'phase': 'poll_link_signals', 'result': 'failed'});
     } finally {
       _linkPolling = false;
     }
@@ -1593,13 +1942,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (payload is! Map) return;
     final message = Map<String, dynamic>.from(payload);
     final type = linkSignalType(event, message);
+    _logConnection('operator.signal.inbound', fields: {
+      'message_type': _debugMessageType(type),
+      'origin': 'host_signal',
+    });
 
     final isReconnecting =
         _pcGraceTimer != null || !_isConnected || _statusKey == 'disconnected';
     if (type == 'session_answer' &&
         (!_linkRemoteDescriptionSet || isReconnecting)) {
       if (message['stage'] == 'consent') {
-        debugPrint('support_operator (link): host waiting for consent');
+        _logConnection('operator.host.answer',
+            fields: {'phase': 'consent', 'result': 'waiting'});
+
         final code = message['confirmation_code']?.toString();
         if (mounted) {
           setState(() {
@@ -1612,11 +1967,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         return;
       }
       if (message['accepted'] != true) {
+        _logConnection('operator.host.answer',
+            fields: {'result': 'rejected', 'origin': 'host_answer'});
         _linkHostAnswerTimer?.cancel();
         _linkHostAnswerTimer = null;
         final reason = message['reason']?.toString();
-        debugPrint('support_operator (link): rejected by host: $reason');
-        _onSessionTerminated(reason ?? 'host_worker_failed');
+
+        _onSessionTerminated(reason ?? 'host_worker_failed',
+            origin: 'host_answer');
         return;
       }
       final sdp = message['sdp']?.toString();
@@ -1625,6 +1983,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           await peer.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
           if (_isCleanedUp || _peerConnection != peer) return;
           _linkRemoteDescriptionSet = true;
+          _logConnection('operator.host.answer',
+              fields: {'result': 'applied', 'phase': 'set_remote'});
           _linkHostAnswerTimer?.cancel();
           _linkHostAnswerTimer = null;
           if (_pcGraceTimer != null) {
@@ -1644,15 +2004,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               }
             });
           }
-          for (final cand
-              in List<Map<String, dynamic>>.from(_linkPendingRemoteCandidates)) {
+          for (final cand in List<Map<String, dynamic>>.from(
+              _linkPendingRemoteCandidates)) {
             await _addLinkRemoteCandidate(peer, cand);
           }
           if (_isCleanedUp || _peerConnection != peer) return;
           _linkPendingRemoteCandidates.clear();
         } catch (e) {
-          debugPrint(
-              'support_operator (link): setRemoteDescription answer error: $e');
+          _logConnection('operator.exception',
+              error: e,
+              fields: {'phase': 'handle_link_signal', 'result': 'failed'});
         }
       }
       return;
@@ -1666,6 +2027,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           await _addLinkRemoteCandidate(peer, cand);
         } else if (_linkPendingRemoteCandidates.length < 256) {
           _linkPendingRemoteCandidates.add(cand);
+          _logConnection('operator.candidate.remote', fields: {
+            'result': 'queued',
+            'candidates': _linkPendingRemoteCandidates.length
+          });
         }
       }
       return;
@@ -1675,7 +2040,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final reason = message['reason']?.toString() ??
           message['status']?.toString() ??
           'ended_by_server';
-      _onSessionTerminated(reason);
+      _onSessionTerminated(reason, origin: 'host_signal');
       return;
     }
 
@@ -1683,7 +2048,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final reason = message['reason']?.toString() ??
           message['status']?.toString() ??
           'session_ended';
-      _onSessionTerminated(reason);
+      _onSessionTerminated(reason, origin: 'host_signal');
     }
   }
 
@@ -1697,8 +2062,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             ? (candidate['sdpMLineIndex'] as num).toInt()
             : null,
       ));
+      _logConnection('operator.candidate.remote',
+          fields: {'result': 'applied', 'candidates': 1});
     } catch (e) {
-      debugPrint('support_operator (link): addCandidate failed: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'add_link_remote_candidate', 'result': 'failed'});
     }
   }
 
@@ -1709,19 +2078,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (id == null || api == null || _isCleanedUp) return;
     try {
       await api.heartbeatLinkSession(id);
+      _logConnection('operator.heartbeat',
+          fields: {'result': 'request_complete'});
     } catch (e) {
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'send_link_heartbeat', 'result': 'failed'});
       if (e is ApiException &&
           (e.statusCode == 409 ||
               e.statusCode == 404 ||
               e.statusCode == 410 ||
               e.statusCode == 403)) {
-        debugPrint(
-            'support_operator (link): heartbeat ended by server (${e.statusCode}): $e');
-        _onSessionTerminated('ended_by_server');
-      } else {
-        debugPrint(
-            'support_operator (link): transient heartbeat error (ignored): $e');
-      }
+        _onSessionTerminated('ended_by_server', origin: 'heartbeat');
+      } else {}
     }
   }
 
@@ -1765,6 +2134,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       );
 
       _wsChannel!.ready.then((_) {
+        _logConnection('operator.ws.ready', fields: {'result': 'ready'});
         _wsBackoff.reset();
         if (mounted) {
           setState(() {
@@ -1785,7 +2155,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _startFirstFrameStageTimer();
         }
       }).catchError((Object e) {
-        debugPrint('support_operator: WS handshake не удался: $e');
+        _logConnection('operator.async.error',
+            error: e, fields: {'operation': 'async_request'});
+
         final str = e.toString().toLowerCase();
         if (str.contains('409') ||
             str.contains('410') ||
@@ -1794,7 +2166,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             str.contains('session_ended') ||
             str.contains('not_found') ||
             str.contains('invalid_transition')) {
-          _onSessionTerminated('ended_by_server');
+          _onSessionTerminated('ended_by_server', origin: 'ws_state');
         } else {
           _scheduleWsReconnect();
         }
@@ -1805,6 +2177,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _handleWsMessage(message);
         },
         onDone: () {
+          _logConnection('operator.ws.done', fields: {'origin': 'ws_state'});
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
           if (_statusKey == 'ended_by_server' ||
@@ -1818,7 +2191,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             if (session == null ||
                 session['status'] == 'ended' ||
                 session['status'] == 'closed') {
-              _onSessionTerminated('ended_by_server');
+              _onSessionTerminated('ended_by_server', origin: 'ws_state');
             } else {
               setState(() {
                 _signalReady = false;
@@ -1829,7 +2202,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               });
               _scheduleWsReconnect();
             }
-          }).catchError((_) {
+          }).catchError((Object error) {
+            _logConnection('operator.async.error',
+                error: error, fields: {'operation': 'async_request'});
             if (mounted && !_isCleanedUp) {
               setState(() {
                 _signalReady = false;
@@ -1843,6 +2218,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         },
         onError: (err) {
+          _logConnection('operator.ws.error',
+              error: err, fields: {'origin': 'ws_state'});
           _wsChannel = null;
           if (!mounted || _isCleanedUp) return;
           final errStr = err.toString().toLowerCase();
@@ -1853,7 +2230,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               errStr.contains('session_ended') ||
               errStr.contains('not_found') ||
               errStr.contains('invalid_transition')) {
-            _onSessionTerminated('ended_by_server');
+            _onSessionTerminated('ended_by_server', origin: 'ws_state');
             return;
           }
           _cancelStageTimers();
@@ -1867,6 +2244,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         cancelOnError: true,
       );
     } catch (e) {
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'connect_web_socket', 'result': 'failed'});
       if (mounted) {
         final errStr = e.toString().toLowerCase();
         if (errStr.contains('409') ||
@@ -1876,7 +2256,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             errStr.contains('session_ended') ||
             errStr.contains('not_found') ||
             errStr.contains('invalid_transition')) {
-          _onSessionTerminated('ended_by_server');
+          _onSessionTerminated('ended_by_server', origin: 'ws_state');
         } else {
           _setStatus('conn_error', e.toString());
         }
@@ -1890,8 +2270,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (!mounted || _isCleanedUp) return;
     _wsReconnectTimer?.cancel();
     final delay = _wsBackoff.nextDelay();
-    debugPrint(
-        'support_operator: WS реконнект через ${delay.inMilliseconds}мс');
+    _logConnection('operator.ws.reconnect', fields: {
+      'attempt': _wsBackoff.attempt,
+      'timeout_ms': delay.inMilliseconds
+    });
+
     _wsReconnectTimer = Timer(delay, () {
       if (mounted && !_isCleanedUp) {
         _connectWebSocket();
@@ -1912,6 +2295,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         await _initRendererAndWebRTC();
       }
     } catch (e) {
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'request_screen_access', 'result': 'failed'});
       if (mounted) {
         _setStatus('req_error', e.toString());
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1934,7 +2320,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       'sdpSemantics': 'unified-plan',
     };
 
+    _logConnection('operator.peer.create',
+        fields: {'result': 'begin', 'ice_servers': auth.iceServers.length});
     _peerConnection = await createPeerConnection(config);
+    _logConnection('operator.peer.create', fields: {'result': 'ready'});
+    _peerConnection!.onIceGatheringState = (state) => _logConnection(
+        'operator.ice.gathering',
+        fields: {'ice_state': state.name});
 
     _peerConnection!.onIceCandidate = (candidate) {
       if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
@@ -1949,7 +2341,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
 
     _peerConnection!.onConnectionState = (state) {
-      debugPrint('support_operator: connection state: $state');
+      _logConnection('operator.pc.state', fields: {'pc_state': state.name});
       if (mounted && !_isCleanedUp) {
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           // Ш4: восстановление отменяет grace-завершение
@@ -1963,7 +2355,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-          _onSessionTerminated('pc_failed');
+          _onSessionTerminated('pc_failed', origin: 'pc_state');
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           setState(() {
@@ -1989,12 +2381,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
 
     _peerConnection!.onIceConnectionState = (state) {
-      debugPrint('support_operator: ice connection state: $state');
+      _logConnection('operator.ice.state', fields: {'ice_state': state.name});
       if (_isCleanedUp) return;
       if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
         _sendWsSignal({'type': 'request_offer', 'iceRestart': true});
       } else if (state == RTCIceConnectionState.RTCIceConnectionStateClosed) {
-        if (!_isCleanedUp) _onSessionTerminated('pc_failed');
+        if (!_isCleanedUp) {
+          _onSessionTerminated('pc_failed', origin: 'ice_state');
+        }
       } else if (state ==
           RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
         _schedulePcGraceTermination();
@@ -2002,12 +2396,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
 
     _peerConnection!.onTrack = (RTCTrackEvent event) async {
-      debugPrint(
-          'support_operator: remote track received: ${event.track.kind}, id=${event.track.id}, streams=${event.streams.length}');
+      _logConnection('operator.track.received', fields: {
+        'phase': event.track.kind == 'audio'
+            ? 'audio'
+            : event.track.kind == 'video'
+                ? 'video'
+                : 'unknown',
+        'count': event.streams.length,
+      });
       if (mounted) {
         try {
           await Helper.ensureAudioSession();
-        } catch (_) {}
+        } catch (error) {
+          _logConnection('operator.exception',
+              error: error,
+              fields: {'phase': 'setup_peer_connection', 'result': 'failed'});
+        }
 
         if (event.track.kind == 'audio') {
           _remoteAudioTrack = event.track;
@@ -2015,7 +2419,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           try {
             await Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, event.track);
           } catch (e) {
-            debugPrint('support_operator: setVolume error: $e');
+            _logConnection('operator.exception',
+                error: e,
+                fields: {'phase': 'setup_peer_connection', 'result': 'failed'});
           }
           final currentStream = _remoteRenderer.srcObject;
           if (currentStream != null &&
@@ -2024,7 +2430,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   .any((t) => t.id == event.track.id)) {
             try {
               await currentStream.addTrack(event.track);
-            } catch (_) {}
+            } catch (error) {
+              _logConnection('operator.exception', error: error, fields: {
+                'phase': 'setup_peer_connection',
+                'result': 'failed'
+              });
+            }
           }
           if (mounted) setState(() {});
           return;
@@ -2040,7 +2451,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             stream = await createLocalMediaStream('remote_stream');
             await stream.addTrack(event.track);
           } catch (e) {
-            debugPrint('support_operator: fallback media stream error: $e');
+            _logConnection('operator.exception',
+                error: e,
+                fields: {'phase': 'setup_peer_connection', 'result': 'failed'});
           }
         }
         if (stream != null) {
@@ -2050,14 +2463,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   .any((t) => t.id == _remoteAudioTrack!.id)) {
             try {
               await stream.addTrack(_remoteAudioTrack!);
-            } catch (_) {}
+            } catch (error) {
+              _logConnection('operator.exception', error: error, fields: {
+                'phase': 'setup_peer_connection',
+                'result': 'failed'
+              });
+            }
           }
           for (final audio in stream.getAudioTracks()) {
             _remoteAudioTrack = audio;
             audio.enabled = !_isAudioMuted;
             try {
               unawaited(Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, audio));
-            } catch (_) {}
+            } catch (error) {
+              _logConnection('operator.exception', error: error, fields: {
+                'phase': 'setup_peer_connection',
+                'result': 'failed'
+              });
+            }
           }
         }
         if (mounted && stream != null) {
@@ -2076,8 +2499,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     };
 
     _peerConnection!.onDataChannel = (channel) {
-      debugPrint(
-          'support_operator: received remote data channel: ${channel.label}');
       _setupDataChannel(channel);
     };
   }
@@ -2085,6 +2506,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   void _setupDataChannel(RTCDataChannel channel) {
     _dataChannel = channel;
     void handleState(RTCDataChannelState state) {
+      _logConnection('operator.dc.state', fields: {'dc_state': state.name});
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
         if (mounted) {
           setState(() {
@@ -2099,8 +2521,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         }
         _dataChannelPingTimer?.cancel();
-        _dataChannelPingTimer =
-            Timer.periodic(const Duration(seconds: 5), (_) {
+        _dataChannelPingTimer = Timer.periodic(const Duration(seconds: 5), (_) {
           if (_isCleanedUp ||
               _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
             _dataChannelPingTimer?.cancel();
@@ -2130,8 +2551,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (msg.isBinary) return;
       try {
         final data = jsonDecode(msg.text) as Map<String, dynamic>;
+        _logConnection('operator.data.inbound', fields: {
+          'message_type': _debugMessageType(data['type']),
+          'bytes': utf8.encode(msg.text).length,
+        });
         _handleDataChannelMessage(data);
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'handle_state', 'result': 'failed'});
+      }
     };
   }
 
@@ -2140,7 +2569,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final reason = data['reason']?.toString() ??
           data['status']?.toString() ??
           'session_ended';
-      _onSessionTerminated(reason);
+      _onSessionTerminated(reason, origin: 'data_channel');
       return;
     }
     final type = data['type']?.toString();
@@ -2242,10 +2671,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             'client_id': msg.clientId,
           });
         }
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception', error: error, fields: {
+          'phase': 'handle_data_channel_message',
+          'result': 'failed'
+        });
+      }
     } else if (type == 'chat_ack') {
       // Chat message ack received
     } else if (type == 'file_ack') {
+      _logConnection('operator.file.ack', fields: {
+        'message_type': 'file_ack',
+        'result': data['ok'] == true ? 'accepted' : 'rejected'
+      });
       final transferId = data['transfer_id']?.toString() ?? '';
       final ok = data['ok'] == true;
       if (_currentSendingTransfer?.id == transferId &&
@@ -2301,6 +2739,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final text =
           message is String ? message : utf8.decode(message as List<int>);
       final data = jsonDecode(text) as Map<String, dynamic>;
+      _logConnection('operator.ws.inbound', fields: {
+        'message_type': _debugMessageType(data['type']),
+        'bytes': message is String
+            ? utf8.encode(message).length
+            : message is List<int>
+                ? message.length
+                : 0
+      });
 
       final payload = (data['data'] is Map<String, dynamic>)
           ? data['data'] as Map<String, dynamic>
@@ -2317,7 +2763,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             final c = _pendingCandidates.removeAt(0);
             try {
               await _peerConnection!.addCandidate(c);
-            } catch (_) {}
+            } catch (error) {
+              _logConnection('operator.exception',
+                  error: error,
+                  fields: {'phase': 'handle_ws_message', 'result': 'failed'});
+            }
           }
 
           if (type == 'offer') {
@@ -2356,7 +2806,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             data['status']?.toString() ??
             payload['status']?.toString() ??
             'session_ended';
-        _onSessionTerminated(reason);
+        _onSessionTerminated(reason, origin: 'host_signal');
       } else {
         final innerType = payload['type'] ?? data['type'];
         if (innerType != null &&
@@ -2367,11 +2817,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         }
       }
     } catch (e) {
-      debugPrint('support_operator: ошибка обработки WS: $e');
+      _logConnection('operator.exception',
+          error: e, fields: {'phase': 'handle_ws_message', 'result': 'failed'});
     }
   }
 
   void _sendChatMessage(String text) {
+    _logConnection('operator.chat.action', fields: {
+      'message_type': 'chat_message',
+      'operation': 'send',
+      'bytes': utf8.encode(text).length
+    });
     if (text.trim().isEmpty) return;
     final auth = context.read<AuthState>();
     final operatorName = auth.displayName.isNotEmpty
@@ -2401,9 +2857,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _sendWsSignal(msg.toJson());
     }
 
-    final effectiveSessionId = (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty)
-        ? _linkSessionId!
-        : widget.sessionId;
+    final effectiveSessionId =
+        (widget.isLink && _linkSessionId != null && _linkSessionId!.isNotEmpty)
+            ? _linkSessionId!
+            : widget.sessionId;
 
     auth.api
         ?.sendSupportChatMessage(
@@ -2413,7 +2870,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       clientId: msg.clientId,
     )
         .catchError((e) {
-      debugPrint('support_operator: ошибка отправки сообщения через API: $e');
+      _logConnection('operator.async.error',
+          error: e, fields: {'operation': 'async_request'});
     });
   }
 
@@ -2690,24 +3148,56 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendWsSignal(Map<String, dynamic> signal) {
+    final sdp = signal['sdp'];
+    final type = supportDebugMessageType(signal['type'] ??
+        (signal.containsKey('candidate')
+            ? 'candidate'
+            : sdp is Map
+                ? sdp['type']
+                : signal.containsKey('sdp')
+                    ? 'sdp'
+                    : null));
+    final fields = <String, Object?>{
+      'message_type': type,
+      'operation': 'send',
+      'transport': widget.isLink ? 'http' : 'wss'
+    };
+    _logConnection('operator.signal.outbound',
+        fields: {...fields, 'result': 'begin'});
     if (widget.isLink) {
       final id = _linkSessionId;
       final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
       final api = auth?.api;
       if (id != null && api != null) {
-        api
-            .sendLinkSessionSignal(sessionId: id, signal: signal)
-            .catchError((e) {
-          debugPrint('support_operator (link): send signal error: $e');
+        api.sendLinkSessionSignal(sessionId: id, signal: signal).then((_) {
+          _logConnection('operator.signal.outbound',
+              fields: {...fields, 'result': 'request_complete'});
+        }).catchError((Object error) {
+          _logConnection('operator.signal.outbound',
+              error: error, fields: {...fields, 'result': 'failed'});
         });
       } else {
         _linkQueuedCandidates.add(signal);
+        _logConnection('operator.signal.outbound', fields: {
+          ...fields,
+          'result': 'queued',
+          'count': _linkQueuedCandidates.length,
+        });
       }
       return;
     }
     try {
-      _wsChannel?.sink.add(jsonEncode(signal));
-    } catch (_) {}
+      final text = jsonEncode(signal);
+      _wsChannel?.sink.add(text);
+      _logConnection('operator.signal.outbound', fields: {
+        ...fields,
+        'result': _wsChannel == null ? 'blocked' : 'queued',
+        'bytes': utf8.encode(text).length,
+      });
+    } catch (error) {
+      _logConnection('operator.signal.outbound',
+          error: error, fields: {...fields, 'result': 'failed'});
+    }
   }
 
   bool _sendDataMessage(Map<String, dynamic> msg) {
@@ -2716,11 +3206,26 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     // сигнальный WS-фолбэк для них отключён (приёмник их не исполнит).
     final inputOnly = !_signalingSafeTypes.contains(type);
     bool sent = false;
+    var loggedFailure = false;
+    var bytes = 0;
+    final debugType = _debugMessageType(type);
     if (_isDataChannelActive) {
       try {
-        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(msg)));
+        final text = jsonEncode(msg);
+        bytes = utf8.encode(text).length;
+        final send = _dataChannel!.send(RTCDataChannelMessage(text));
         sent = true;
-      } catch (_) {}
+        _logDataSend(debugType, 'requested', 'data_channel', bytes);
+        unawaited(send.then((_) {
+          _logDataSend(debugType, 'queued', 'data_channel', bytes);
+        }).catchError((Object error) {
+          _logDataSend(debugType, 'failed', 'data_channel', bytes,
+              error: error);
+        }));
+      } catch (error) {
+        loggedFailure = true;
+        _logDataSend(debugType, 'failed', 'data_channel', bytes, error: error);
+      }
     }
     if (!sent && !inputOnly) {
       // Фолбэк на сигнальный канал — только информационные типы
@@ -2729,8 +3234,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         if (_wsChannel != null) {
           _sendWsSignal({'type': 'input_control', 'data': msg});
           sent = true;
+          _logDataSend(debugType, 'fallback_requested', 'wss', bytes);
         }
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'send_data_message', 'result': 'failed'});
+      }
+    }
+    if (!sent && !loggedFailure) {
+      _logDataSend(debugType, 'blocked', 'data_channel', bytes);
     }
     if (sent) {
       if (_dataMessageErrorCount > 0) {
@@ -2746,8 +3259,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final now = DateTime.now();
       if (now.difference(_lastInputUnavailableLog).inSeconds >= 3) {
         _lastInputUnavailableLog = now;
-        debugPrint(
-            'support_operator: ввод недоступен — DataChannel не открыт, "$type" не отправлен');
       }
     } else {
       _dataMessageErrorCount++;
@@ -2806,6 +3317,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
     if (!_controlReady || !_frameReady) {
+      _logDataSend(
+          supportDebugMessageType('mouse_$action'), 'blocked', 'ui', 0);
       return;
     }
     final renderBox =
@@ -3028,7 +3541,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendSpecialKey(String key) {
-    if (!_controlReady) return;
+    _logConnection('operator.action', fields: {
+      'message_type': 'key_down',
+      'operation': 'user_action',
+      'result': 'requested'
+    });
+    if (!_controlReady) {
+      _logConnection('operator.action.blocked',
+          fields: {'reason': 'control_unavailable', 'result': 'blocked'});
+      return;
+    }
     final downSent = _sendDataMessage({'type': 'key_down', 'key': key});
     final upSent = _sendDataMessage({'type': 'key_up', 'key': key});
     if (!downSent || !upSent) return;
@@ -3042,8 +3564,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendTextToRemote(String text) {
+    _logConnection('operator.action', fields: {
+      'message_type': 'text_input',
+      'operation': 'user_action',
+      'result': 'requested'
+    });
     if (text.isEmpty) return;
-    if (!_controlReady) return;
+    if (!_controlReady) {
+      _logConnection('operator.action.blocked',
+          fields: {'reason': 'control_unavailable', 'result': 'blocked'});
+      return;
+    }
     if (text.length > 4096) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Maximum: 4096 UTF-16 characters')));
@@ -3062,14 +3593,32 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _toggleBlockInput() {
-    if (!_controlReady) return;
+    _logConnection('operator.action', fields: {
+      'message_type': 'block_input',
+      'operation': 'user_action',
+      'result': 'requested'
+    });
+    if (!_controlReady) {
+      _logConnection('operator.action.blocked',
+          fields: {'reason': 'control_unavailable', 'result': 'blocked'});
+      return;
+    }
     final next = !_isInputBlocked;
     if (!_sendDataMessage({'type': 'block_input', 'blocked': next})) return;
     setState(() => _isInputBlocked = next);
   }
 
   void _sendHotkey(String action) {
-    if (!_controlReady) return;
+    _logConnection('operator.action', fields: {
+      'message_type': 'hotkey',
+      'operation': 'user_action',
+      'result': 'requested'
+    });
+    if (!_controlReady) {
+      _logConnection('operator.action.blocked',
+          fields: {'reason': 'control_unavailable', 'result': 'blocked'});
+      return;
+    }
     if (!_sendDataMessage({'type': 'hotkey', 'action': action})) return;
     final isRu = context.stringsRead.isRu;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -3082,11 +3631,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _switchScreen(String screenId) {
+    _logConnection('operator.action', fields: {
+      'message_type': 'switch_screen',
+      'operation': 'user_action',
+      'result': 'requested'
+    });
     setState(() => _selectedScreenId = screenId);
     _sendDataMessage({'type': 'switch_screen', 'screen_id': screenId});
   }
 
   void _sendLocalClipboardToRemote() async {
+    _logConnection('operator.action', fields: {
+      'message_type': 'clipboard_set',
+      'operation': 'user_action',
+      'result': 'requested'
+    });
     final strings = context.stringsRead;
     final clip = await Clipboard.getData(Clipboard.kTextPlain);
     final text = clip?.text ?? '';
@@ -3107,6 +3666,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _requestRemoteClipboard() {
+    _logConnection('operator.action', fields: {
+      'message_type': 'clipboard_get',
+      'operation': 'user_action',
+      'result': 'requested'
+    });
     _sendDataMessage({'type': 'clipboard_get'});
   }
 
@@ -3147,6 +3711,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool _isCleanedUp = false;
 
   void _cleanupResources() {
+    _flushMouseLog();
     if (_isCleanedUp) return;
     _isCleanedUp = true;
     // Ш3/Ш4: единая отмена стадийных и grace-таймеров
@@ -3165,7 +3730,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHostAnswerTimer = null;
     if (widget.isLink && _linkSessionId != null) {
       final auth = _auth ?? (mounted ? context.read<AuthState>() : null);
-      auth?.api?.closeLinkSession(_linkSessionId!).catchError((_) => null);
+      auth?.api?.closeLinkSession(_linkSessionId!).catchError((Object error) {
+        _logConnection('operator.async.error',
+            error: error, fields: {'operation': 'cleanup_or_lease'});
+        return null;
+      });
     }
 
     // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
@@ -3179,7 +3748,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     try {
       _remoteRenderer.srcObject = null;
-    } catch (_) {}
+    } catch (error) {
+      _logConnection('operator.exception',
+          error: error,
+          fields: {'phase': 'cleanup_resources', 'result': 'failed'});
+    }
 
     final dc = _dataChannel;
     _dataChannel = null;
@@ -3187,7 +3760,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       try {
         dc.onMessage = null;
         dc.onDataChannelState = null;
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'cleanup_resources', 'result': 'failed'});
+      }
     }
 
     final pc = _peerConnection;
@@ -3199,13 +3776,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         pc.onIceConnectionState = null;
         pc.onTrack = null;
         pc.onDataChannel = null;
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'cleanup_resources', 'result': 'failed'});
+      }
     }
 
     try {
       _wsChannel?.sink.close();
       _wsChannel = null;
-    } catch (_) {}
+    } catch (error) {
+      _logConnection('operator.exception',
+          error: error,
+          fields: {'phase': 'cleanup_resources', 'result': 'failed'});
+    }
     _wsReconnectTimer?.cancel();
     _wsReconnectTimer = null;
 
@@ -3217,10 +3802,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     void disposeNative() {
       try {
         _remoteRenderer.dispose();
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'dispose_native', 'result': 'failed'});
+      }
       try {
         pc?.dispose();
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error,
+            fields: {'phase': 'dispose_native', 'result': 'failed'});
+      }
     }
 
     Future.delayed(const Duration(milliseconds: 500), disposeNative);
@@ -3282,10 +3875,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           _dataChannel!.send(
               RTCDataChannelMessage(jsonEncode({'type': 'session_ended'})));
         }
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error, fields: {'phase': 'end_session', 'result': 'failed'});
+      }
       try {
         _sendWsSignal({'type': 'session_ended'});
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error, fields: {'phase': 'end_session', 'result': 'failed'});
+      }
       try {
         // Оператор SOS бьёт в operator-маршрут (app-токен + роль инженера):
         // прежний /app/.../end для него всегда 403 — сессия не закрывалась.
@@ -3305,16 +3904,26 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               );
         }
       } catch (e) {
-        debugPrint('support_operator: endSupportSession error/timeout: $e');
+        _logConnection('operator.exception',
+            error: e, fields: {'phase': 'end_session', 'result': 'failed'});
       }
       if (mounted) {
-        _onSessionTerminated('session_ended');
+        _onSessionTerminated('session_ended', origin: 'user');
       }
     }
   }
 
   @override
   void dispose() {
+    if (!_sessionTerminatedHandled) {
+      _logConnection('operator.session.terminated', fields: {
+        'origin': 'dispose',
+        'reason': 'user_closed',
+        'state': DebugLogService.protocolLabel(_statusKey),
+        'result': 'stopping',
+      });
+    }
+    _flushMouseLog();
     _pendingMouseMoveTimer?.cancel();
     _pendingMouseMoveTimer = null;
     _releaseAllPressedInputs();
@@ -3323,7 +3932,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         windowManager.setFullScreen(false);
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error, fields: {'phase': 'dispose', 'result': 'failed'});
+      }
     }
     _chatMessagesNotifier.dispose();
     _keyboardFocus.dispose();
@@ -3333,7 +3945,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final auth = _auth;
     final sessId = widget.sessionId;
     // Принятая заявка SOS держит сессию с момента claim, даже если start не дошёл.
-    final linkCloseId = _linkSessionId ?? widget.sessionData['sos_session_id']?.toString();
+    final linkCloseId =
+        _linkSessionId ?? widget.sessionData['sos_session_id']?.toString();
     if (auth != null && auth.api != null) {
       final isOwner = widget.ownerMode ||
           widget.sessionData['owner'] == true ||
@@ -3343,19 +3956,34 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         // dispose() у оператора — тоже корректный конец сессии (окно
         // закрыли = сеанс завершён), иначе она висит active в очереди.
         if (widget.isLink && linkCloseId != null && linkCloseId.isNotEmpty) {
-          auth.api!.closeLinkSession(linkCloseId).catchError((_) => null);
+          auth.api!.closeLinkSession(linkCloseId).catchError((Object error) {
+            _logConnection('operator.async.error',
+                error: error, fields: {'operation': 'cleanup_or_lease'});
+            return null;
+          });
         } else if (sessId.isNotEmpty) {
           if (isOwner) {
             auth.api!
                 .endSupportSession(sessionId: sessId)
-                .catchError((_) => null);
+                .catchError((Object error) {
+              _logConnection('operator.async.error',
+                  error: error, fields: {'operation': 'cleanup_or_lease'});
+              return null;
+            });
           } else {
             auth.api!
                 .endSupportSessionAsOperator(sessionId: sessId)
-                .catchError((_) => null);
+                .catchError((Object error) {
+              _logConnection('operator.async.error',
+                  error: error, fields: {'operation': 'cleanup_or_lease'});
+              return null;
+            });
           }
         }
-      } catch (_) {}
+      } catch (error) {
+        _logConnection('operator.exception',
+            error: error, fields: {'phase': 'dispose', 'result': 'failed'});
+      }
     }
     super.dispose();
   }
@@ -3372,7 +4000,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       await windowManager.setFullScreen(next);
       if (mounted) setState(() => _isFullScreen = next);
     } catch (e) {
-      debugPrint('support_operator_screen: fullScreen error: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'toggle_full_screen', 'result': 'failed'});
     }
   }
 
@@ -3502,7 +4132,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         ));
       }
     } catch (e) {
-      debugPrint('support_operator_screen: screenshot error: $e');
+      _logConnection('operator.exception',
+          error: e, fields: {'phase': 'take_screenshot', 'result': 'failed'});
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('${strings.error}: $e'),
@@ -3519,7 +4151,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     try {
       reports = await pc.getStats();
     } catch (e) {
-      debugPrint('support_operator_screen: getStats error: $e');
+      _logConnection('operator.exception', error: e, fields: {
+        'phase': 'show_connection_stats_dialog',
+        'result': 'failed'
+      });
     }
 
     String rtt = '—';
@@ -3532,6 +4167,34 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     if (reports != null) {
       transportType = mediaTransportFromStats(reports, transportType);
+      final statsFields = <String, Object?>{
+        'transport': transportType.startsWith('TURN')
+            ? 'relay'
+            : transportType.startsWith('Direct')
+                ? 'p2p'
+                : 'unknown',
+        'width': _remoteRenderer.videoWidth,
+        'height': _remoteRenderer.videoHeight,
+      };
+      for (final report in reports) {
+        final values = report.values;
+        if (report.type == 'inbound-rtp' && values['kind'] == 'video') {
+          for (final key in ['framesDecoded', 'framesReceived']) {
+            final count = num.tryParse('${values[key]}');
+            if (count != null) statsFields['frames'] = count;
+          }
+          final bytes = num.tryParse('${values['bytesReceived']}');
+          if (bytes != null) statsFields['received_bytes'] = bytes;
+        }
+        if (report.type == 'candidate-pair' &&
+            values['state'] == 'succeeded' &&
+            (values['selected'] == true || values['nominated'] == true)) {
+          final seconds = num.tryParse(
+              '${values['currentRoundTripTime'] ?? values['roundTripTime']}');
+          if (seconds != null) statsFields['rtt_ms'] = seconds * 1000;
+        }
+      }
+      _logConnection('operator.stats.selected', fields: statsFields);
       for (final r in reports) {
         final values = r.values;
         if (r.type == 'inbound-rtp' && values['kind'] == 'video') {
@@ -3636,6 +4299,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<void> _pickAndSendFile() async {
+    _logConnection('operator.file.action',
+        fields: {'operation': 'pick_file', 'result': 'requested'});
     final strings = context.stringsRead;
     if (_isSendingFile) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -3658,6 +4323,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (!await file.exists()) return;
 
       final totalSize = await file.length();
+      _logConnection('operator.file.selected',
+          fields: {'bytes': totalSize, 'count': 1});
       if (totalSize > 50 * 1024 * 1024) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -3670,7 +4337,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       if (!mounted || _isCleanedUp) return;
       await _sendFileViaDataChannel(file);
     } catch (e) {
-      debugPrint('support_operator_screen: pick file error: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'pick_and_send_file', 'result': 'failed'});
     }
   }
 
@@ -3790,7 +4459,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         ));
       }
     } catch (e) {
-      debugPrint('support_operator_screen: send file error: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'send_file_via_data_channel', 'result': 'failed'});
+
       if (mounted) {
         setState(() {
           transferItem.status = 'error';
@@ -3886,7 +4558,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         });
       }
     } catch (e) {
-      debugPrint('support_operator_screen: chunk decode error: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'handle_incoming_file_chunk', 'result': 'failed'});
     }
   }
 
@@ -3971,7 +4645,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         ));
       }
     } catch (e) {
-      debugPrint('support_operator_screen: save incoming file error: $e');
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'handle_incoming_file_end', 'result': 'failed'});
+
       _sendDataMessage(
           {'type': 'file_ack', 'transfer_id': transferId, 'ok': false});
       if (mounted) {
@@ -4538,20 +5215,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
                   // Полноэкранный режим доступен только в desktop window_manager.
                   if (!kIsWeb &&
-                      (Platform.isWindows || Platform.isMacOS || Platform.isLinux))
+                      (Platform.isWindows ||
+                          Platform.isMacOS ||
+                          Platform.isLinux))
                     IconButton(
-                    icon: Icon(
-                      _isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
-                      color: _isFullScreen
-                          ? const Color(0xFF38BDF8)
-                          : Colors.white,
-                      size: 20,
+                      icon: Icon(
+                        _isFullScreen
+                            ? Icons.fullscreen_exit
+                            : Icons.fullscreen,
+                        color: _isFullScreen
+                            ? const Color(0xFF38BDF8)
+                            : Colors.white,
+                        size: 20,
+                      ),
+                      tooltip: _isFullScreen
+                          ? strings.consoleExitFullscreen
+                          : strings.consoleFullscreen,
+                      onPressed: _toggleFullScreen,
                     ),
-                    tooltip: _isFullScreen
-                        ? strings.consoleExitFullscreen
-                        : strings.consoleFullscreen,
-                    onPressed: _toggleFullScreen,
-                  ),
 
                   // Качество видео (B3.3)
                   PopupMenuButton<String>(
@@ -5079,9 +5760,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           ),
 
           // Карточка с контрольным числом (если сеанс ожидает подтверждения).
-          if (!_isConnected &&
-              !_isChatOnly &&
-              _currentNumberMatch != null)
+          if (!_isConnected && !_isChatOnly && _currentNumberMatch != null)
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
@@ -5154,7 +5833,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerMove: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerDown: (ev) {
-                  if (!_controlReady) return;
+                  if (!_controlReady) {
+                    _logConnection('operator.action.blocked', fields: {
+                      'reason': 'control_unavailable',
+                      'result': 'blocked'
+                    });
+                    return;
+                  }
                   _keyboardFocus.requestFocus();
                   // A4.3: проверка letterbox до записи кнопки в map
                   if (_isOutsideVideo(ev.position)) return;
@@ -5166,7 +5851,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 onPointerUp: (ev) {
                   // A4.1: сначала удаляем из map, чтобы не утекало при !_controlReady
                   final btn = _pointerDownButtons.remove(ev.pointer) ?? 0;
-                  if (!_controlReady) return;
+                  if (!_controlReady) {
+                    _logConnection('operator.action.blocked', fields: {
+                      'reason': 'control_unavailable',
+                      'result': 'blocked'
+                    });
+                    return;
+                  }
                   _sendPointerEvent('mouse_up', ev, btn);
                   if (_mouseClickMode == MouseClickMode.right) {
                     setState(() => _mouseClickMode = MouseClickMode.left);
@@ -5179,7 +5870,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   }
                 },
                 onPointerPanZoomUpdate: (ev) {
-                  if (!_controlReady) return;
+                  if (!_controlReady) {
+                    _logConnection('operator.action.blocked', fields: {
+                      'reason': 'control_unavailable',
+                      'result': 'blocked'
+                    });
+                    return;
+                  }
                   if (_zoomMode != OperatorZoomMode.zoomIn &&
                       ev.panDelta.dy != 0) {
                     _sendDataMessage(
@@ -5187,7 +5884,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   }
                 },
                 onPointerSignal: (signal) {
-                  if (!_controlReady) return;
+                  if (!_controlReady) {
+                    _logConnection('operator.action.blocked', fields: {
+                      'reason': 'control_unavailable',
+                      'result': 'blocked'
+                    });
+                    return;
+                  }
                   if (signal is PointerScrollEvent) {
                     _sendDataMessage(
                         {'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
@@ -5265,7 +5968,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         )
                       : _hasTerminationError
                           ? Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 24),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 24),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -5273,15 +5977,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                     width: 56,
                                     height: 56,
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFEF4444).withValues(alpha: 0.15),
+                                      color: const Color(0xFFEF4444)
+                                          .withValues(alpha: 0.15),
                                       shape: BoxShape.circle,
                                     ),
-                                    child: const Icon(Icons.error_outline_rounded,
-                                        size: 32, color: Color(0xFFEF4444)),
+                                    child: const Icon(
+                                        Icons.error_outline_rounded,
+                                        size: 32,
+                                        color: Color(0xFFEF4444)),
                                   ),
                                   const SizedBox(height: 16),
                                   Text(
-                                    strings.isRu ? 'Не удалось подключиться' : 'Connection failed',
+                                    strings.isRu
+                                        ? 'Не удалось подключиться'
+                                        : 'Connection failed',
                                     style: const TextStyle(
                                         color: Colors.white,
                                         fontSize: 16,
@@ -5289,7 +5998,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    _terminationNotice(strings, _terminationErrorReason ?? _statusKey),
+                                    _terminationNotice(strings,
+                                        _terminationErrorReason ?? _statusKey),
                                     style: const TextStyle(
                                         color: Color(0xFFCBD5E1), fontSize: 13),
                                     textAlign: TextAlign.center,
@@ -5300,27 +6010,34 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                     children: [
                                       ElevatedButton.icon(
                                         onPressed: _retryAfterTermination,
-                                        icon: const Icon(Icons.refresh_rounded, size: 16),
+                                        icon: const Icon(Icons.refresh_rounded,
+                                            size: 16),
                                         label: Text(strings.retry),
                                         style: ElevatedButton.styleFrom(
-                                          backgroundColor: const Color(0xFF0284C7),
+                                          backgroundColor:
+                                              const Color(0xFF0284C7),
                                           foregroundColor: Colors.white,
                                           padding: const EdgeInsets.symmetric(
                                               horizontal: 18, vertical: 12),
                                           shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(10)),
+                                              borderRadius:
+                                                  BorderRadius.circular(10)),
                                         ),
                                       ),
                                       const SizedBox(width: 12),
                                       OutlinedButton(
-                                        onPressed: () => Navigator.of(context).pop(),
+                                        onPressed: () =>
+                                            Navigator.of(context).pop(),
                                         style: OutlinedButton.styleFrom(
-                                          foregroundColor: const Color(0xFF94A3B8),
-                                          side: const BorderSide(color: Color(0xFF334155)),
+                                          foregroundColor:
+                                              const Color(0xFF94A3B8),
+                                          side: const BorderSide(
+                                              color: Color(0xFF334155)),
                                           padding: const EdgeInsets.symmetric(
                                               horizontal: 18, vertical: 12),
                                           shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(10)),
+                                              borderRadius:
+                                                  BorderRadius.circular(10)),
                                         ),
                                         child: Text(strings.close),
                                       ),
@@ -5329,42 +6046,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                 ],
                               ),
                             )
-                      : _remoteRenderer.srcObject == null
-                          ? Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const CircularProgressIndicator(
-                                    color: Color(0xFF38BDF8)),
-                                const SizedBox(height: 16),
-                                Text(
-                                  _getStatusText(strings),
-                                  style: const TextStyle(
-                                      color: Color(0xFF94A3B8), fontSize: 14),
-                                  textAlign: TextAlign.center,
-                                ),
-                                // Ш3: повтор зависшей стадии подключения
-                                if (_stageRetryActive) ...[
-                                  const SizedBox(height: 16),
-                                  ElevatedButton.icon(
-                                    onPressed: _retryConnectionStage,
-                                    icon: const Icon(Icons.refresh, size: 16),
-                                    label: Text(strings.retry),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF0284C7),
-                                      foregroundColor: Colors.white,
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            )
-                          : _statusKey == 'no_first_frame'
-                              // Ш3: трек есть, кадра нет — вместо чёрного экрана
-                              // понятная ошибка и повтор
+                          : _remoteRenderer.srcObject == null
                               ? Column(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Icon(Icons.videocam_off_outlined,
-                                        size: 48, color: Color(0xFFF59E0B)),
+                                    const CircularProgressIndicator(
+                                        color: Color(0xFF38BDF8)),
                                     const SizedBox(height: 16),
                                     Text(
                                       _getStatusText(strings),
@@ -5373,154 +6060,203 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                           fontSize: 14),
                                       textAlign: TextAlign.center,
                                     ),
-                                    const SizedBox(height: 16),
-                                    ElevatedButton.icon(
-                                      onPressed: _retryConnectionStage,
-                                      icon: const Icon(Icons.refresh, size: 16),
-                                      label: Text(strings.retry),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor:
-                                            const Color(0xFF0284C7),
-                                        foregroundColor: Colors.white,
+                                    // Ш3: повтор зависшей стадии подключения
+                                    if (_stageRetryActive) ...[
+                                      const SizedBox(height: 16),
+                                      ElevatedButton.icon(
+                                        onPressed: _retryConnectionStage,
+                                        icon:
+                                            const Icon(Icons.refresh, size: 16),
+                                        label: Text(strings.retry),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor:
+                                              const Color(0xFF0284C7),
+                                          foregroundColor: Colors.white,
+                                        ),
                                       ),
-                                    ),
+                                    ],
                                   ],
                                 )
-                              : Stack(
-                                  children: [
-                                    Positioned.fill(
-                                      child: InteractiveViewer(
-                                        transformationController:
-                                            _videoTransform,
-                                        panEnabled: _zoomMode ==
-                                            OperatorZoomMode.zoomIn,
-                                        scaleEnabled: _zoomMode ==
-                                            OperatorZoomMode.zoomIn,
-                                        minScale: 1.0,
-                                        maxScale: 8.0,
-                                        onInteractionEnd: (_) {
-                                          _zoomScale = _videoTransform.value
-                                              .getMaxScaleOnAxis();
-                                        },
-                                        child: MouseRegion(
-                                          cursor: SystemMouseCursors.basic,
-                                          child: RepaintBoundary(
-                                            key: _screenshotBoundaryKey,
-                                            child: Container(
-                                              key: _videoKey,
-                                              child: RTCVideoView(
-                                                _remoteRenderer,
-                                                objectFit: RTCVideoViewObjectFit
-                                                    .RTCVideoViewObjectFitContain,
+                              : _statusKey == 'no_first_frame'
+                                  // Ш3: трек есть, кадра нет — вместо чёрного экрана
+                                  // понятная ошибка и повтор
+                                  ? Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.videocam_off_outlined,
+                                            size: 48, color: Color(0xFFF59E0B)),
+                                        const SizedBox(height: 16),
+                                        Text(
+                                          _getStatusText(strings),
+                                          style: const TextStyle(
+                                              color: Color(0xFF94A3B8),
+                                              fontSize: 14),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                        const SizedBox(height: 16),
+                                        ElevatedButton.icon(
+                                          onPressed: _retryConnectionStage,
+                                          icon: const Icon(Icons.refresh,
+                                              size: 16),
+                                          label: Text(strings.retry),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor:
+                                                const Color(0xFF0284C7),
+                                            foregroundColor: Colors.white,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : Stack(
+                                      children: [
+                                        Positioned.fill(
+                                          child: InteractiveViewer(
+                                            transformationController:
+                                                _videoTransform,
+                                            panEnabled: _zoomMode ==
+                                                OperatorZoomMode.zoomIn,
+                                            scaleEnabled: _zoomMode ==
+                                                OperatorZoomMode.zoomIn,
+                                            minScale: 1.0,
+                                            maxScale: 8.0,
+                                            onInteractionEnd: (_) {
+                                              _zoomScale = _videoTransform.value
+                                                  .getMaxScaleOnAxis();
+                                            },
+                                            child: MouseRegion(
+                                              cursor: SystemMouseCursors.basic,
+                                              child: RepaintBoundary(
+                                                key: _screenshotBoundaryKey,
+                                                child: Container(
+                                                  key: _videoKey,
+                                                  child: RTCVideoView(
+                                                    _remoteRenderer,
+                                                    objectFit: RTCVideoViewObjectFit
+                                                        .RTCVideoViewObjectFitContain,
+                                                  ),
+                                                ),
                                               ),
                                             ),
                                           ),
                                         ),
-                                      ),
-                                    ),
-                                    // Бейдж «только просмотр» (A3.3)
-                                    if (_isViewOnlySession ||
-                                        !_isControlEnabled)
-                                      Positioned(
-                                        top: 10,
-                                        right: 10,
-                                        child: IgnorePointer(
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 10, vertical: 4),
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xCC0F172A),
-                                              borderRadius:
-                                                  BorderRadius.circular(6),
-                                              border: Border.all(
+                                        // Бейдж «только просмотр» (A3.3)
+                                        if (_isViewOnlySession ||
+                                            !_isControlEnabled)
+                                          Positioned(
+                                            top: 10,
+                                            right: 10,
+                                            child: IgnorePointer(
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 10,
+                                                        vertical: 4),
+                                                decoration: BoxDecoration(
                                                   color:
-                                                      const Color(0xFFF59E0B)),
-                                            ),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(Icons.visibility,
-                                                    size: 14,
-                                                    color: Color(0xFFF59E0B)),
-                                                const SizedBox(width: 6),
-                                                Text(
-                                                  strings.isRu
-                                                      ? 'Только просмотр'
-                                                      : 'View Only',
-                                                  style: const TextStyle(
-                                                    color: Color(0xFFF59E0B),
-                                                    fontSize: 11,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
+                                                      const Color(0xCC0F172A),
+                                                  borderRadius:
+                                                      BorderRadius.circular(6),
+                                                  border: Border.all(
+                                                      color: const Color(
+                                                          0xFFF59E0B)),
                                                 ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    // Баннер недоступности канала управления (A3.1)
-                                    if (_transportErrorBannerVisible)
-                                      Positioned(
-                                        top: 10,
-                                        left: 10,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 10, vertical: 6),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xEE7F1D1D),
-                                            borderRadius:
-                                                BorderRadius.circular(6),
-                                            border: Border.all(
-                                                color: const Color(0xFFEF4444)),
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              const Icon(
-                                                  Icons.warning_amber_rounded,
-                                                  size: 16,
-                                                  color: Colors.white),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                strings.isRu
-                                                    ? 'Канал управления не отвечает'
-                                                    : 'Control channel unreachable',
-                                                style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 11,
-                                                    fontWeight:
-                                                        FontWeight.bold),
-                                              ),
-                                              const SizedBox(width: 10),
-                                              GestureDetector(
-                                                onTap: () {
-                                                  setState(() {
-                                                    _dataMessageErrorCount = 0;
-                                                    _transportErrorBannerVisible =
-                                                        false;
-                                                  });
-                                                  _sendWsSignal(
-                                                      {'type': 'ping'});
-                                                },
-                                                child: Text(
-                                                  strings.isRu
-                                                      ? 'Повторить'
-                                                      : 'Retry',
-                                                  style: const TextStyle(
-                                                    color: Color(0xFFFDE047),
-                                                    fontSize: 11,
-                                                    fontWeight: FontWeight.bold,
-                                                    decoration: TextDecoration
-                                                        .underline,
-                                                  ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    const Icon(Icons.visibility,
+                                                        size: 14,
+                                                        color:
+                                                            Color(0xFFF59E0B)),
+                                                    const SizedBox(width: 6),
+                                                    Text(
+                                                      strings.isRu
+                                                          ? 'Только просмотр'
+                                                          : 'View Only',
+                                                      style: const TextStyle(
+                                                        color:
+                                                            Color(0xFFF59E0B),
+                                                        fontSize: 11,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ],
                                                 ),
                                               ),
-                                            ],
+                                            ),
                                           ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
+                                        // Баннер недоступности канала управления (A3.1)
+                                        if (_transportErrorBannerVisible)
+                                          Positioned(
+                                            top: 10,
+                                            left: 10,
+                                            child: Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 10,
+                                                      vertical: 6),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xEE7F1D1D),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                                border: Border.all(
+                                                    color: const Color(
+                                                        0xFFEF4444)),
+                                              ),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  const Icon(
+                                                      Icons
+                                                          .warning_amber_rounded,
+                                                      size: 16,
+                                                      color: Colors.white),
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    strings.isRu
+                                                        ? 'Канал управления не отвечает'
+                                                        : 'Control channel unreachable',
+                                                    style: const TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 11,
+                                                        fontWeight:
+                                                            FontWeight.bold),
+                                                  ),
+                                                  const SizedBox(width: 10),
+                                                  GestureDetector(
+                                                    onTap: () {
+                                                      setState(() {
+                                                        _dataMessageErrorCount =
+                                                            0;
+                                                        _transportErrorBannerVisible =
+                                                            false;
+                                                      });
+                                                      _sendWsSignal(
+                                                          {'type': 'ping'});
+                                                    },
+                                                    child: Text(
+                                                      strings.isRu
+                                                          ? 'Повторить'
+                                                          : 'Retry',
+                                                      style: const TextStyle(
+                                                        color:
+                                                            Color(0xFFFDE047),
+                                                        fontSize: 11,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        decoration:
+                                                            TextDecoration
+                                                                .underline,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
                 ),
               ),
             ),

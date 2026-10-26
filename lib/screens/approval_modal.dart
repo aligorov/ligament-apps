@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../services/telemetry_service.dart';
 import '../i18n/app_strings.dart';
 
@@ -114,6 +115,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
   @override
   void dispose() {
+    if (!_closing) {
+      DebugLogService.instance.record('ui.approval.dismiss.cancelled', fields: {'origin': 'dispose'});
+    }
     _totpController.dispose();
     _auth?.removeListener(_onAuthStateChanged);
     _timer?.cancel();
@@ -168,6 +172,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
   void _close() {
     if (_closing || !mounted) return;
     _closing = true;
+    DebugLogService.instance.record('ui.approval.close', fields: {'reason': _secondsLeft <= 1 ? 'expired' : 'resolved'});
     Navigator.of(context, rootNavigator: true).maybePop();
   }
 
@@ -194,6 +199,11 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
   Future<void> _handleDecision(bool approve,
       {bool passkey = false, String? code}) async {
+    final watch = Stopwatch()..start();
+    final operation = approve ? 'approve' : 'deny';
+    final phase = passkey ? 'passkey' : (code != null ? 'totp' : 'number_match');
+    DebugLogService.instance.record('ui.approval.decision.started',
+        fields: {'operation': operation, 'phase': phase});
     final expectedMatch = _prompt['number_match']?.toString();
     if (approve &&
         code == null &&
@@ -203,6 +213,9 @@ class _ApprovalModalState extends State<ApprovalModal> {
       // A-9: автовыбор правильного числа для десктопа/_isSameMachine убран —
       // без явного выбора числа пользователем решение не уходит.
       if (_selectedMatch == null || _selectedMatch != expectedMatch) {
+        DebugLogService.instance.record('ui.approval.decision.blocked', fields: {
+          'operation': operation, 'reason': 'number_match', 'duration_ms': watch.elapsedMilliseconds,
+        });
         setState(() => _error = context.stringsRead.errSelectMatch);
         return;
       }
@@ -224,8 +237,15 @@ class _ApprovalModalState extends State<ApprovalModal> {
         code: code,
         passkey: passkey,
       );
+      DebugLogService.instance.record('ui.approval.decision.completed', fields: {
+        'operation': operation, 'phase': phase, 'result': 'await_returned',
+        'duration_ms': watch.elapsedMilliseconds,
+      });
       _close();
     } catch (e) {
+      DebugLogService.instance.record('ui.approval.decision.failed', error: e, fields: {
+        'operation': operation, 'phase': phase, 'duration_ms': watch.elapsedMilliseconds,
+      });
       if (mounted) {
         setState(() {
           _error = _translateError(context, e);
@@ -328,6 +348,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(),
                           onPressed: () {
+                            DebugLogService.instance.record('ui.approval.dismiss.cancelled');
                             Navigator.of(context, rootNavigator: true)
                                 .maybePop();
                           },
@@ -482,7 +503,10 @@ class _ApprovalModalState extends State<ApprovalModal> {
                     children: _numberMatchOptions.map((opt) {
                       final isSelected = _selectedMatch == opt;
                       return InkWell(
-                        onTap: () => setState(() => _selectedMatch = opt),
+                        onTap: () {
+                          DebugLogService.instance.record('ui.approval.number_match.select');
+                          setState(() => _selectedMatch = opt);
+                        },
                         borderRadius: BorderRadius.circular(10),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
@@ -599,6 +623,10 @@ class _ApprovalModalState extends State<ApprovalModal> {
                                 onSubmitted: (v) {
                                   if (v.trim().isNotEmpty) {
                                     _handleDecision(true, code: v.trim());
+                                  } else {
+                                    DebugLogService.instance.record('ui.approval.decision.blocked', fields: {
+                                      'operation': 'approve', 'reason': 'missing_code',
+                                    });
                                   }
                                 },
                               ),
@@ -613,6 +641,10 @@ class _ApprovalModalState extends State<ApprovalModal> {
                                           .isNotEmpty) {
                                         _handleDecision(true,
                                             code: _totpController.text.trim());
+                                      } else {
+                                        DebugLogService.instance.record('ui.approval.decision.blocked', fields: {
+                                          'operation': 'approve', 'reason': 'missing_code',
+                                        });
                                       }
                                     },
                               style: ElevatedButton.styleFrom(
@@ -635,7 +667,10 @@ class _ApprovalModalState extends State<ApprovalModal> {
                   const SizedBox(height: 12),
                 ] else ...[
                   TextButton.icon(
-                    onPressed: () => setState(() => _showTotpInput = true),
+                    onPressed: () {
+                      DebugLogService.instance.record('ui.approval.totp.open');
+                      setState(() => _showTotpInput = true);
+                    },
                     icon: const Icon(Icons.pin_outlined,
                         size: 16, color: Color(0xFF94A3B8)),
                     label: Text(

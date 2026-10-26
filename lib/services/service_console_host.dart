@@ -2,11 +2,19 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../api/client.dart';
 import 'support_service.dart';
+import 'debug_log_service.dart';
+
+void _consoleLog(String event,
+        {Object? error, Map<String, Object?> fields = const {}}) =>
+    DebugLogService.instance.record(event, error: error, fields: {
+      ...fields,
+      if (fields.containsKey('reason'))
+        'reason': DebugLogService.protocolLabel(fields['reason']),
+    });
 
 const _serviceConsoleChannel = MethodChannel('ligament/service_console');
 
@@ -143,16 +151,26 @@ class ServiceConsoleController {
     this.serverUrl,
     this.hostToken,
     ServiceConsoleLease? lease,
+    DebugLogService? debugLog,
     Duration readyTimeout = const Duration(seconds: 15),
-  }) : lease = lease ?? ServiceConsoleLease() {
+  })  : lease = lease ?? ServiceConsoleLease(),
+        _debugLog = debugLog ?? DebugLogService.instance {
+    _controllerLog('console.controller.start', fields: {
+      'session_id': sessionId,
+      'timeout_ms': readyTimeout.inMilliseconds
+    });
     capture.setFailureHandler(() {
       unawaited(stop('capture_unavailable'));
     });
     _readyTimer = Timer(readyTimeout, () {
+      _controllerLog('console.timer.expired',
+          fields: {'phase': 'ready', 'reason': 'host_ready_timeout'});
       unawaited(stop('host_ready_timeout'));
     });
     _leaseTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       if (_ready && !this.lease.isLive) {
+        _controllerLog('console.timer.expired',
+            fields: {'phase': 'lease', 'reason': 'lease_expired'});
         unawaited(stop('lease_expired'));
       }
     });
@@ -166,12 +184,29 @@ class ServiceConsoleController {
   final Uri? serverUrl;
   final String? hostToken;
   final ServiceConsoleLease lease;
+  final DebugLogService _debugLog;
   Timer? _readyTimer;
   Timer? _leaseTimer;
   bool _ready = false;
   bool _stopped = false;
   Future<void>? _stopping;
   Future<void> _signals = Future<void>.value();
+
+  void _controllerLog(String event,
+      {Object? error, Map<String, Object?> fields = const {}}) {
+    _debugLog.record(event, error: error, fields: {
+      'session_id': sessionId,
+      'state': _stopped
+          ? 'stopped'
+          : _ready
+              ? 'ready'
+              : 'starting',
+      'timeout_ms': lease.remainingMilliseconds,
+      ...fields,
+      if (fields.containsKey('reason'))
+        'reason': DebugLogService.protocolLabel(fields['reason']),
+    });
+  }
 
   bool get isStopped => _stopped;
 
@@ -186,6 +221,10 @@ class ServiceConsoleController {
         throw const FormatException('Invalid service frame');
       }
       final type = decoded['type'];
+      _controllerLog('console.message.inbound', fields: {
+        'message_type': supportDebugMessageType(type),
+        'bytes': utf8.encode(frame).length
+      });
       // Lease/end frames must not wait behind media acquisition or SDP work.
       if (type == 'console_end') {
         unawaited(stop('server_ended', report: false));
@@ -203,6 +242,8 @@ class ServiceConsoleController {
         _updateLease(decoded['lease_remaining_ms']);
         final ice = parseIceServersConfig(decoded);
         _ready = true;
+        _controllerLog('console.ready',
+            fields: {'ice_servers': ice.length, 'result': 'validated'});
         _readyTimer?.cancel();
         final base = serverUrl != null
             ? serverUrl.toString().replaceAll(RegExp(r'/+$'), '')
@@ -227,7 +268,9 @@ class ServiceConsoleController {
       } else if (type != 'pong') {
         throw const FormatException('Unknown service frame');
       }
-    } catch (_) {
+    } catch (error) {
+      _controllerLog('console.exception',
+          error: error, fields: {'phase': 'receive', 'result': 'failed'});
       unawaited(stop('invalid_host_protocol'));
     }
   }
@@ -235,9 +278,14 @@ class ServiceConsoleController {
   void _updateLease(Object? raw) {
     if (raw is! int) throw const FormatException('Invalid service lease');
     lease.update(raw);
+    _controllerLog('console.lease.updated', fields: {
+      'timeout_ms': lease.remainingMilliseconds,
+      'result': 'validated'
+    });
     final update = onLease;
     if (update != null) {
-      unawaited(update(lease.remainingMilliseconds).catchError((Object _) {
+      unawaited(update(lease.remainingMilliseconds).catchError((Object error) {
+        _controllerLog('console.lease.input_failed', error: error);
         unawaited(stop('input_unavailable'));
       }));
     }
@@ -246,13 +294,18 @@ class ServiceConsoleController {
   void _enqueue(Future<void> Function() action) {
     _signals = _signals.then((_) async {
       if (!_stopped) await action();
-    }).catchError((Object _) {
+    }).catchError((Object error) {
+      _controllerLog('console.capture.failed', error: error);
       unawaited(stop('capture_unavailable'));
     });
   }
 
   void sendSignal(String targetSession, Map<String, dynamic> signal) {
     if (_stopped || !_ready || !lease.isLive || targetSession != sessionId) {
+      _controllerLog('console.signal.blocked', fields: {
+        'reason': 'session_not_live',
+        'message_type': supportDebugMessageType(signal['type'])
+      });
       throw StateError('service_session_not_live');
     }
     // The service token authorizes media signaling only, never files or chat.
@@ -261,21 +314,40 @@ class ServiceConsoleController {
         type.startsWith('clipboard_') ||
         type == 'chat_message' ||
         type == 'input_control') {
+      _controllerLog('console.signal.blocked', fields: {
+        'reason': 'signal_not_allowed',
+        'message_type': supportDebugMessageType(signal['type'])
+      });
       throw StateError('service_signal_not_allowed');
     }
+    _controllerLog('console.signal.outbound', fields: {
+      'message_type': supportDebugMessageType(signal['type']),
+      'result': 'begin'
+    });
     send({'type': 'signal', 'signal': signal});
+    _controllerLog('console.signal.outbound', fields: {
+      'message_type': supportDebugMessageType(signal['type']),
+      'result': 'queued'
+    });
   }
 
   Future<void> stop(String reason, {bool report = true}) {
     final stopping = _stopping;
     if (stopping != null) return stopping;
+    _controllerLog('console.stop',
+        fields: {'reason': reason, 'result': 'begin'});
     _stopped = true;
     _readyTimer?.cancel();
     _leaseTimer?.cancel();
     if (report) {
       try {
         send({'type': 'console_error', 'reason': reason});
-      } catch (_) {}
+        _controllerLog('console.message.outbound',
+            fields: {'message_type': 'console_error', 'result': 'queued'});
+      } catch (error) {
+        _controllerLog('console.exception',
+            error: error, fields: {'phase': 'stop', 'result': 'failed'});
+      }
     }
     return _stopping = _finishStop(reason);
   }
@@ -283,10 +355,21 @@ class ServiceConsoleController {
   Future<void> _finishStop(String reason) async {
     try {
       await _serviceConsoleChannel.invokeMethod<void>('releaseInput');
-    } catch (_) {}
+    } catch (error) {
+      _controllerLog('console.exception',
+          error: error, fields: {'phase': 'finish_stop', 'result': 'failed'});
+    }
     try {
       await capture.stop().timeout(const Duration(seconds: 2));
-    } catch (_) {}
+      _controllerLog('console.stop',
+          fields: {'reason': reason, 'result': 'capture_stopped'});
+    } catch (error) {
+      _controllerLog('console.stop', error: error, fields: {
+        'reason': reason,
+        'phase': 'capture_stop',
+        'result': error is TimeoutException ? 'timeout' : 'failed',
+      });
+    }
     await onStopped(reason);
   }
 }
@@ -383,43 +466,95 @@ class _WebRtcServiceCapture implements ServiceConsoleCapture {
 /// falls back to GUI login. A disconnected worker exits; the service owns its
 /// lifetime and requests a fresh, session-bound authorization for a new one.
 Future<void> runServiceConsoleHost(String pipe) async {
-  final raw = await _serviceConsoleChannel
-      .invokeMethod<Object?>('bootstrap', pipe)
-      .timeout(const Duration(seconds: 10));
-  final bootstrap = ServiceConsoleBootstrap.fromNative(raw);
-  final socket = await WebSocket.connect(
-    bootstrap.websocketUrl.toString(),
-    headers: {'Authorization': 'Bearer ${bootstrap.hostToken}'},
-  ).timeout(const Duration(seconds: 10));
-  socket.pingInterval = const Duration(seconds: 10);
-  final done = Completer<void>();
-  String stopReason = '';
-  final host = ServiceConsoleController(
-    sessionId: bootstrap.sessionId,
-    capture: _WebRtcServiceCapture(),
-    send: (frame) => socket.add(jsonEncode(frame)),
-    onLease: updateServiceConsoleInputLease,
-    serverUrl: bootstrap.serverUrl,
-    hostToken: bootstrap.hostToken,
-    onStopped: (reason) async {
-      stopReason = reason;
-      debugPrint('service_console: stopped ($reason)');
-      unawaited(socket.close());
-      if (!done.isCompleted) done.complete();
-    },
-  );
-  socket.listen(
-    host.receive,
-    onError: (Object _) {
-      unawaited(host.stop('signaling_lost', report: false));
-    },
-    onDone: () {
-      unawaited(host.stop('signaling_closed', report: false));
-    },
-    cancelOnError: true,
-  );
-  await done.future;
-  // If stopped cleanly by server command, exit 0 so service breaks from loop.
-  // If stopped abnormally (desktop switch, error, crash), exit 1 so service restarts worker.
-  exit(stopReason == 'server_ended' ? 0 : 1);
+  final watch = Stopwatch()..start();
+  var phase = 'bootstrap';
+  _consoleLog('console.bootstrap.begin',
+      fields: {'operation': 'bootstrap', 'timeout_ms': 10000});
+  try {
+    final raw = await _serviceConsoleChannel
+        .invokeMethod<Object?>('bootstrap', pipe)
+        .timeout(const Duration(seconds: 10));
+    _consoleLog('console.bootstrap.received', fields: {
+      'operation': 'bootstrap',
+      'bytes': raw is String ? utf8.encode(raw).length : 0,
+      'duration_ms': watch.elapsedMilliseconds
+    });
+    final bootstrap = ServiceConsoleBootstrap.fromNative(raw);
+    _consoleLog('console.bootstrap.validated', fields: {
+      'session_id': bootstrap.sessionId,
+      'server': bootstrap.serverUrl.host,
+      'result': 'validated'
+    });
+    phase = 'ws_connect';
+    watch.reset();
+    final socket = await WebSocket.connect(
+      bootstrap.websocketUrl.toString(),
+      headers: {'Authorization': 'Bearer ${bootstrap.hostToken}'},
+    ).timeout(const Duration(seconds: 10));
+    _consoleLog('console.ws.ready', fields: {
+      'session_id': bootstrap.sessionId,
+      'server': bootstrap.serverUrl.host,
+      'duration_ms': watch.elapsedMilliseconds
+    });
+    phase = 'session';
+    socket.pingInterval = const Duration(seconds: 10);
+    final done = Completer<void>();
+    String stopReason = '';
+    final host = ServiceConsoleController(
+      sessionId: bootstrap.sessionId,
+      capture: _WebRtcServiceCapture(),
+      send: (frame) {
+        final text = jsonEncode(frame);
+        try {
+          socket.add(text);
+          _consoleLog('console.ws.outbound', fields: {
+            'session_id': bootstrap.sessionId,
+            'message_type': supportDebugMessageType(frame['type']),
+            'bytes': utf8.encode(text).length,
+            'result': 'queued'
+          });
+        } catch (error) {
+          _consoleLog('console.ws.outbound', error: error, fields: {
+            'message_type': supportDebugMessageType(frame['type']),
+            'result': 'failed'
+          });
+          rethrow;
+        }
+      },
+      onLease: updateServiceConsoleInputLease,
+      serverUrl: bootstrap.serverUrl,
+      hostToken: bootstrap.hostToken,
+      onStopped: (reason) async {
+        stopReason = reason;
+        _consoleLog('console.worker.stopped',
+            fields: {'session_id': bootstrap.sessionId, 'reason': reason});
+
+        unawaited(socket.close());
+        if (!done.isCompleted) done.complete();
+      },
+    );
+    socket.listen(
+      host.receive,
+      onError: (Object error) {
+        _consoleLog('console.ws.error',
+            error: error, fields: {'origin': 'ws_state'});
+        unawaited(host.stop('signaling_lost', report: false));
+      },
+      onDone: () {
+        _consoleLog('console.ws.done',
+            fields: {'origin': 'ws_state', 'code': socket.closeCode});
+        unawaited(host.stop('signaling_closed', report: false));
+      },
+      cancelOnError: true,
+    );
+    await done.future;
+    // If stopped cleanly by server command, exit 0 so service breaks from loop.
+    // If stopped abnormally (desktop switch, error, crash), exit 1 so service restarts worker.
+    exit(stopReason == 'server_ended' ? 0 : 1);
+  } catch (error) {
+    _consoleLog('console.worker.failed',
+        error: error,
+        fields: {'phase': phase, 'duration_ms': watch.elapsedMilliseconds});
+    rethrow;
+  }
 }

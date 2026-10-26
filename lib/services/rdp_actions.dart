@@ -9,6 +9,7 @@ import '../i18n/app_strings.dart';
 import '../screens/rdp_connect_dialog.dart';
 import '../screens/support_operator_screen.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../services/rdp_service.dart';
 import '../services/telemetry_service.dart';
 import '../widgets/rdp_mfa_dialog.dart';
@@ -19,6 +20,19 @@ class RdpActions {
   static bool _ownerScreenBusy = false;
   static bool get isOwnerScreenBusy => _ownerScreenBusy;
 
+  static Future<T> _traceAwait<T>(String operation, Future<T> Function() action) async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.rdp.action.started', fields: {'operation': operation});
+    try {
+      final result = await action();
+      DebugLogService.instance.record('ui.rdp.action.completed', fields: {'operation': operation, 'result': 'await_returned', 'duration_ms': watch.elapsedMilliseconds});
+      return result;
+    } catch (error) {
+      DebugLogService.instance.record('ui.rdp.action.failed', error: error, fields: {'operation': operation, 'duration_ms': watch.elapsedMilliseconds});
+      rethrow;
+    }
+  }
+
   /// Запуск RDP-туннеля по целевому рабочему месту.
   static Future<void> connectRdp(
     BuildContext context,
@@ -28,10 +42,18 @@ class RdpActions {
     final api = auth.api;
     final baseUrl = auth.serverUrl;
     final id = target['id']?.toString() ?? '';
-    if (api == null || baseUrl == null || id.isEmpty) return;
-    if (auth.rdp.isBusy || auth.rdp.isActive) return;
+    DebugLogService.instance.record('ui.rdp.connect.intent');
+    if (api == null || baseUrl == null || id.isEmpty) {
+      DebugLogService.instance.record('ui.rdp.connect.blocked', fields: {'reason': 'incomplete_target'});
+      return;
+    }
+    if (auth.rdp.isBusy || auth.rdp.isActive) {
+      DebugLogService.instance.record('ui.rdp.connect.blocked', fields: {'reason': 'busy'});
+      return;
+    }
     final s = context.stringsRead;
     if (target['is_self'] == true) {
+      DebugLogService.instance.record('ui.rdp.connect.blocked', fields: {'reason': 'self_target'});
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(content: Text(s.rdpSelfProhibited)),
       );
@@ -70,7 +92,11 @@ class RdpActions {
     final api = auth.api;
     final targetId = target['id']?.toString() ?? '';
     final targetName = target['name']?.toString() ?? '';
-    if (api == null || targetId.isEmpty || _ownerScreenBusy) return;
+    DebugLogService.instance.record('ui.rdp.owner_screen.intent', fields: {'owner': true});
+    if (api == null || targetId.isEmpty || _ownerScreenBusy) {
+      DebugLogService.instance.record('ui.rdp.owner_screen.blocked', fields: {'reason': _ownerScreenBusy ? 'busy' : 'incomplete_target'});
+      return;
+    }
 
     _ownerScreenBusy = true;
     onBusyChanged?.call(true);
@@ -80,8 +106,8 @@ class RdpActions {
     try {
       String? beforeId;
       try {
-        beforeId = (await api.getCurrentSupportSession())?['id']?.toString();
-      } catch (_) {}
+        beforeId = (await _traceAwait('current_session', api.getCurrentSupportSession))?['id']?.toString();
+      } catch (error) { DebugLogService.instance.record('ui.rdp.best_effort.failed', error: error); }
 
       Map<String, dynamic>? grant;
       final localIps = await TelemetryService.getLocalIPs();
@@ -91,7 +117,7 @@ class RdpActions {
         bool? passkey;
         while (true) {
           try {
-            grant = await api.rdpGrant(
+            grant = await _traceAwait('owner_screen_grant', () => api.rdpGrant(
               targetId: targetId,
               mode: 'screen',
               code: code,
@@ -100,7 +126,7 @@ class RdpActions {
               actionId: actionId,
               sourceInstanceId: auth.instanceId,
               clientLocalIps: localIps,
-            );
+            ));
             break;
           } on ApiException catch (e) {
             if (e.statusCode != 428 && e.code != 'invalid_code' && e.code != 'mfa_required') rethrow;
@@ -112,7 +138,10 @@ class RdpActions {
               isRu: s.isRu,
               wrongCode: e.code == 'invalid_code',
             );
-            if (res == null) break;
+            if (res == null) {
+              DebugLogService.instance.record('ui.rdp.owner_screen.cancelled', fields: {'reason': 'mfa_dismissed'});
+              break;
+            }
             code = res.code;
             attemptId = res.attemptId;
             passkey = res.passkey ? true : null;
@@ -151,7 +180,9 @@ class RdpActions {
       if (session == null) {
         final grantId = grant['grant_id']?.toString() ?? '';
         if (grantId.isNotEmpty) {
-          unawaited(api.rdpClose(grantId).catchError((_) {}));
+          unawaited(api.rdpClose(grantId).catchError((Object error) {
+            DebugLogService.instance.record('ui.rdp.close_grant.failed', error: error);
+          }));
         }
         await _showOwnerScreenError(
           context,
@@ -186,9 +217,10 @@ class RdpActions {
           await Future.delayed(const Duration(milliseconds: 50));
           await windowManager.setSize(const Size(440, 720));
           WidgetsBinding.instance.scheduleFrame();
-        } catch (_) {}
+        } catch (error) { DebugLogService.instance.record('ui.rdp.best_effort.failed', error: error); }
       }
     } catch (e) {
+      DebugLogService.instance.record('ui.rdp.owner_screen.failed', error: e);
       if (!context.mounted) return;
       _popOwnerScreenProgress(context);
       await _showOwnerScreenError(
@@ -211,7 +243,7 @@ class RdpActions {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       try {
-        final sess = await api.getCurrentSupportSession();
+        final sess = await _traceAwait('poll_owner_session', api.getCurrentSupportSession);
         if (sess != null) {
           final id = sess['id']?.toString() ?? '';
           final isOwner = sess['owner'] == true || sess['mode']?.toString() == 'screen';
@@ -220,7 +252,7 @@ class RdpActions {
             return sess;
           }
         }
-      } catch (_) {}
+      } catch (error) { DebugLogService.instance.record('ui.rdp.best_effort.failed', error: error); }
       await Future<void>.delayed(const Duration(milliseconds: 1200));
     }
     return null;

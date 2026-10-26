@@ -4,19 +4,22 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
 import 'home_screen.dart';
 import 'connect_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   final Map<String, dynamic> serverConfig;
-  const LoginScreen({super.key, required this.serverConfig});
+  final DebugLogService? debugLogs;
+  const LoginScreen({super.key, required this.serverConfig, this.debugLogs});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  DebugLogService get _debugLogs => widget.debugLogs ?? DebugLogService.instance;
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   final _codeController = TextEditingController();
@@ -50,6 +53,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _resetSecondFactor() {
+    _debugLogs.record('ui.login.second_factor.cancelled');
     _cancelClaimPolling();
     _auth?.cancelLoginAttempts();
     setState(() {
@@ -75,6 +79,8 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    _debugLogs.record('ui.login.claim_poll.started');
+    var attempt = 0;
     _claimPollingTimer =
         Timer.periodic(const Duration(milliseconds: 1500), (timer) async {
       if (!mounted || generation != _claimGeneration) {
@@ -84,15 +90,31 @@ class _LoginScreenState extends State<LoginScreen> {
       // Медленный claim не накапливает параллельные HTTP-запросы на тиках.
       if (_claimPollInFlight) return;
       _claimPollInFlight = true;
+      final watch = Stopwatch()..start();
+      final pollAttempt = ++attempt;
+      _debugLogs.record('ui.login.claim.started', fields: {'attempt': pollAttempt});
       try {
         final res = await auth.loginClaim(
           challengeId: challengeId,
           claimToken: claimToken,
         );
 
-        if (!mounted || generation != _claimGeneration) return;
+        if (!mounted || generation != _claimGeneration) {
+          _debugLogs.record('ui.login.claim.cancelled', fields: {
+            'reason': 'superseded', 'attempt': pollAttempt, 'duration_ms': watch.elapsedMilliseconds,
+          });
+          return;
+        }
 
         final status = res['status']?.toString();
+        final authenticated = res['token'] != null && auth.isLoggedIn && auth.token == res['token'];
+        _debugLogs.record(
+            res['token'] != null && !authenticated ? 'ui.login.claim.cancelled' : 'ui.login.claim.completed',
+            fields: {
+          'attempt': pollAttempt, 'duration_ms': watch.elapsedMilliseconds,
+          'result': res['token'] != null ? (authenticated ? 'authenticated' : 'superseded') :
+              (status == 'denied' ? 'denied' : (status == 'expired' ? 'expired' : 'pending')),
+        });
         if (res['token'] != null) {
           timer.cancel();
           _claimPollingTimer = null;
@@ -115,6 +137,9 @@ class _LoginScreenState extends State<LoginScreen> {
           });
         }
       } on ApiException catch (e) {
+        _debugLogs.record('ui.login.claim.failed', error: e, fields: {
+          'attempt': pollAttempt, 'duration_ms': watch.elapsedMilliseconds,
+        });
         if (!mounted || generation != _claimGeneration) return;
         if (e.code == 'challenge_denied' || e.code == 'denied') {
           timer.cancel();
@@ -132,6 +157,9 @@ class _LoginScreenState extends State<LoginScreen> {
           });
         }
       } catch (e) {
+        _debugLogs.record('ui.login.claim.failed', error: e, fields: {
+          'attempt': pollAttempt, 'duration_ms': watch.elapsedMilliseconds,
+        });
         debugPrint('login push claim error: $e');
       } finally {
         if (generation == _claimGeneration) _claimPollInFlight = false;
@@ -152,7 +180,13 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _handleLogin() async {
-    if (_isLoading) return;
+    final watch = Stopwatch()..start();
+    final phase = _requiresSecondFactor ? 'second_factor' : 'password';
+    _debugLogs.record('ui.login.submit', fields: {'phase': phase});
+    if (_isLoading) {
+      _debugLogs.record('ui.login.blocked', fields: {'reason': 'busy'});
+      return;
+    }
     _cancelClaimPolling();
     final generation = _claimGeneration;
     _auth?.cancelLoginAttempts();
@@ -162,11 +196,13 @@ class _LoginScreenState extends State<LoginScreen> {
     final code = _codeController.text.trim();
 
     if (username.isEmpty || password.isEmpty) {
+      _debugLogs.record('ui.login.blocked', fields: {'reason': 'empty_credentials'});
       setState(() => _error = s.errFillUsernamePassword);
       return;
     }
 
     if (_requiresSecondFactor && code.isEmpty) {
+      _debugLogs.record('ui.login.blocked', fields: {'reason': 'missing_second_factor'});
       setState(() => _error = s.errEnterVerificationCode);
       return;
     }
@@ -179,12 +215,19 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final auth = _auth ?? context.read<AuthState>();
       await auth.login(username, password, _requiresSecondFactor ? code : null);
+      _debugLogs.record('ui.login.completed', fields: {
+        'phase': phase,
+        'result': auth.isLoggedIn && generation == _claimGeneration ? 'authenticated' : 'superseded',
+        'duration_ms': watch.elapsedMilliseconds,
+      });
       if (mounted && generation == _claimGeneration) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const HomeScreen()),
         );
       }
     } catch (e) {
+      _debugLogs.record('ui.login.failed', error: e,
+          fields: {'phase': phase, 'duration_ms': watch.elapsedMilliseconds});
       if (mounted && generation == _claimGeneration) {
         final msg = e.toString();
         setState(() {
@@ -252,6 +295,9 @@ class _LoginScreenState extends State<LoginScreen> {
     final canGoBack = !isGpoLocked || canPopRoute || _requiresSecondFactor;
 
     void handleBack() {
+      _debugLogs.record('ui.login.back', fields: {
+        'phase': _requiresSecondFactor ? 'second_factor' : 'password',
+      });
       if (_requiresSecondFactor) {
         _resetSecondFactor();
       } else if (canPopRoute) {
@@ -351,7 +397,10 @@ class _LoginScreenState extends State<LoginScreen> {
                               _obscurePassword ? Icons.visibility : Icons.visibility_off,
                               color: const Color(0xFF94A3B8),
                             ),
-                            onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                            onPressed: () {
+                              _debugLogs.record('ui.login.password_visibility', fields: {'state': _obscurePassword ? 'visible' : 'hidden'});
+                              setState(() => _obscurePassword = !_obscurePassword);
+                            },
                           ),
                           filled: true,
                           fillColor: const Color(0xFF0F172A),

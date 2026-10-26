@@ -13,6 +13,78 @@ import '../api/client.dart';
 import 'input_injector.dart';
 import 'telemetry_service.dart';
 import 'link_host_recorder.dart';
+import 'debug_log_service.dart';
+
+/// Fixed protocol labels only: never echo arbitrary wire values or contents.
+String supportDebugMessageType(Object? value) => const {
+      'candidate',
+      'signal',
+      'sdp',
+      'offer',
+      'answer',
+      'request_offer',
+      'renegotiate',
+      'ice_restart',
+      'session_offer',
+      'session_answer',
+      'session_terminate',
+      'session_close',
+      'session_revoke',
+      'consent_decision',
+      'session_ended',
+      'support_ended',
+      'console_end',
+      'console_ready',
+      'console_error',
+      'lease',
+      'input_control',
+      'screen_list',
+      'switch_screen',
+      'chat_message',
+      'chat_sync',
+      'chat_ack',
+      'ping',
+      'pong',
+      'mouse_move',
+      'mouse_down',
+      'mouse_up',
+      'mouse_click',
+      'click',
+      'wheel',
+      'mouse_wheel',
+      'key_down',
+      'key_up',
+      'block_input',
+      'block_input_ack',
+      'hotkey',
+      'text_input',
+      'clipboard_set',
+      'clipboard_get',
+      'clipboard_data',
+      'clipboard_error',
+      'input_error',
+      'reboot',
+      'video_quality',
+      'file_start',
+      'file_chunk',
+      'file_end',
+      'file_ack',
+      'file_reject',
+      'telemetry',
+      'screen_lock_state',
+      'challenge_prompt',
+      'push_prompt',
+      'browser_sso',
+      'support_prompt',
+      'support_signal',
+      'support_incoming_request',
+      'support_queue_update',
+      'notification',
+      'notify_delivered',
+      'support_incoming',
+    }.contains(value)
+        ? value as String
+        : 'unknown';
 
 class SupportChatMessage {
   final String id;
@@ -65,10 +137,14 @@ class SupportChatMessage {
       sender: json['sender']?.toString() ??
           (json['sender_role'] == 'operator' ? 'operator' : 'user'),
       senderName: json['sender_name']?.toString() ??
-          (json['sender'] == 'operator' || json['sender_role'] == 'operator' ? 'Инженер' : 'Пользователь'),
+          (json['sender'] == 'operator' || json['sender_role'] == 'operator'
+              ? 'Инженер'
+              : 'Пользователь'),
       text: json['text']?.toString() ?? json['body']?.toString() ?? '',
       timestamp: ts,
-      clientId: json['client_id']?.toString() ?? json['client_message_id']?.toString() ?? '',
+      clientId: json['client_id']?.toString() ??
+          json['client_message_id']?.toString() ??
+          '',
     );
   }
 }
@@ -390,6 +466,24 @@ class SupportService extends ChangeNotifier {
   String? get ownerInitiatorDevice => _ownerInitiatorDevice;
   String? get lastError => _lastError;
 
+  void _logSupport(String event,
+      {Object? error, Map<String, Object?> fields = const {}}) {
+    DebugLogService.instance.record(event, error: error, fields: {
+      'session_id': _activeSessionId,
+      'attempt': _captureEpoch,
+      'state': _state.name,
+      'owner': _ownerSession,
+      'connected': _p2pConnected,
+      'control_ready':
+          _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen,
+      'tracks': _localStream?.getTracks().length ?? 0,
+      'recorder_enabled': _recorder?.config.enabled ?? false,
+      ...fields,
+      if (fields.containsKey('reason'))
+        'reason': DebugLogService.protocolLabel(fields['reason']),
+    });
+  }
+
   /// Сброс ошибки последней сессии (кнопка «Закрыть» в баннере ошибки).
   void clearError() {
     if (_lastError != null || _state == SupportSessionState.ended) {
@@ -413,10 +507,7 @@ class SupportService extends ChangeNotifier {
   void _abortDownload(String transferId, String reason) {
     final dl = _activeDownloads.remove(transferId);
     dl?.stallTimer?.cancel();
-    if (dl != null) {
-      debugPrint(
-          'support_service: закачка "${dl.filename}" отменена ($reason)');
-    }
+    if (dl != null) {}
   }
 
   /// Отмена всех активных закачек с очисткой таймеров
@@ -469,7 +560,8 @@ class SupportService extends ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      debugPrint('support_service: loadChatHistory error: $e');
+      _logSupport('support.exception',
+          error: e, fields: {'phase': 'load_chat_history', 'result': 'failed'});
     }
   }
 
@@ -498,10 +590,58 @@ class SupportService extends ChangeNotifier {
         senderName: msg.senderName,
         clientId: msg.clientId,
       )
-          .catchError((e) {
-        debugPrint('support_service: ошибка отправки сообщения через API: $e');
+          .catchError((Object e) {
+        _logSupport('support.async.failed',
+            error: e, fields: {'operation': 'async_request'});
       });
     }
+  }
+
+  final Map<String, int> _mouseDiagnosticCounts = {};
+  Timer? _mouseDiagnosticTimer;
+  void _logMessage(Object? type, String phase, String result, {int? bytes}) {
+    final label = supportDebugMessageType(type);
+    if (label == 'mouse_move') {
+      final key = '$phase.$result';
+      _mouseDiagnosticCounts[key] = (_mouseDiagnosticCounts[key] ?? 0) + 1;
+      _mouseDiagnosticTimer ??=
+          Timer(const Duration(seconds: 1), _flushMouseDiagnostics);
+      return;
+    }
+    _logSupport('support.message', fields: {
+      'message_type': label,
+      'phase': phase,
+      'result': result,
+      if (bytes != null) 'bytes': bytes
+    });
+  }
+
+  void _flushMouseDiagnostics() {
+    _mouseDiagnosticTimer?.cancel();
+    _mouseDiagnosticTimer = null;
+    for (final entry in _mouseDiagnosticCounts.entries) {
+      final parts = entry.key.split('.');
+      _logSupport('support.mouse.summary', fields: {
+        'message_type': 'mouse_move',
+        'phase': parts[0],
+        'result': parts[1],
+        'count': entry.value
+      });
+    }
+    _mouseDiagnosticCounts.clear();
+  }
+
+  void _observeDataEnqueue(Future<void> send, Object? type, int bytes) {
+    _logMessage(type, 'outbound_dc', 'requested', bytes: bytes);
+    unawaited(send.then((_) {
+      _logMessage(type, 'outbound_dc', 'queued', bytes: bytes);
+    }).catchError((Object error) {
+      _logSupport('support.data.send_failed', error: error, fields: {
+        'message_type': supportDebugMessageType(type),
+        'bytes': bytes,
+        'result': 'failed'
+      });
+    }));
   }
 
   void _sendSignalOrData(Map<String, dynamic> data) {
@@ -509,10 +649,14 @@ class SupportService extends ChangeNotifier {
     if (_dataChannel != null &&
         _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
-        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(data)));
+        final text = jsonEncode(data);
+        _observeDataEnqueue(_dataChannel!.send(RTCDataChannelMessage(text)),
+            data['type'], utf8.encode(text).length);
         sent = true;
       } catch (e) {
-        debugPrint('support_service: ошибка отправки через DataChannel: $e');
+        _logSupport('support.exception',
+            error: e,
+            fields: {'phase': 'send_signal_or_data', 'result': 'failed'});
       }
     }
     if (!sent && _api != null && _activeSessionId != null) {
@@ -521,9 +665,11 @@ class SupportService extends ChangeNotifier {
       // сервера + отсутствие доставки по порядку.
       final type = data['type']?.toString() ?? '';
       if (type.startsWith('file_')) {
+        _logMessage(type, 'outbound_http', 'blocked');
         throw StateError(
             'Файловая передача требует открытый DataChannel ($type)');
       }
+      _logMessage(type, 'outbound_http', 'requested');
       _api!.sendSupportSignal(sessionId: _activeSessionId!, signal: data);
     }
   }
@@ -620,7 +766,9 @@ class SupportService extends ChangeNotifier {
       ));
       notifyListeners();
     } catch (e) {
-      debugPrint('support_service: передача файла прервана: $e');
+      _logSupport('support.exception',
+          error: e, fields: {'phase': 'function', 'result': 'failed'});
+
       _addSystemMessage(
           '⚠ Передача файла "$filename" прервана (нет соединения)');
       notifyListeners();
@@ -654,7 +802,9 @@ class SupportService extends ChangeNotifier {
           final zoneFile = File('$targetPath:Zone.Identifier');
           await zoneFile.writeAsString('[ZoneTransfer]\r\nZoneId=3\r\n');
         } catch (e) {
-          debugPrint('support_service: ошибка записи Zone.Identifier: $e');
+          _logSupport('support.exception',
+              error: e,
+              fields: {'phase': 'save_received_file', 'result': 'failed'});
         }
       }
 
@@ -682,14 +832,21 @@ class SupportService extends ChangeNotifier {
       // после file_end — без него успешная передача выглядит ошибкой.
       _sendFileAck(dl.id, ok: true);
     } catch (e) {
-      debugPrint('support_service: ошибка сохранения переданного файла: $e');
+      _logSupport('support.exception',
+          error: e,
+          fields: {'phase': 'save_received_file', 'result': 'failed'});
+
       if (targetPath != null) {
         try {
           final partFile = File('$targetPath.part');
           if (await partFile.exists()) {
             await partFile.delete();
           }
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'save_received_file', 'result': 'failed'});
+        }
       }
       _sendFileAck(dl.id, ok: false);
     }
@@ -704,7 +861,9 @@ class SupportService extends ChangeNotifier {
         'transfer_id': transferId,
         'ok': ok,
       });
-    } catch (_) {
+    } catch (error) {
+      _logSupport('support.exception',
+          error: error, fields: {'phase': 'send_file_ack', 'result': 'failed'});
       // Канал закрыт — отправитель узнает по таймауту
     }
   }
@@ -721,7 +880,9 @@ class SupportService extends ChangeNotifier {
           return '${dirs.first.path}${Platform.pathSeparator}LigamentSupport';
         }
       } catch (e) {
-        debugPrint('support_service: externalStorageDownloads недоступен: $e');
+        _logSupport('support.exception',
+            error: e,
+            fields: {'phase': 'resolve_downloads_dir', 'result': 'failed'});
       }
       // Фолбэк: документы приложения
       final appDir = await getApplicationDocumentsDirectory();
@@ -759,8 +920,9 @@ class SupportService extends ChangeNotifier {
             }
           }
         } catch (e) {
-          debugPrint(
-              'support_service: ошибка поиска папки Downloads пользователя: $e');
+          _logSupport('support.exception',
+              error: e,
+              fields: {'phase': 'resolve_downloads_dir', 'result': 'failed'});
         }
 
         // Надежный fallback для службы: Общие загрузки (Public Downloads)
@@ -858,7 +1020,10 @@ class SupportService extends ChangeNotifier {
         accessMode: accessMode,
       );
     });
-    _captureStartQueue = operation.catchError((_) {});
+    _captureStartQueue = operation.catchError((Object error) {
+      _logSupport('support.async.failed',
+          error: error, fields: {'operation': 'async_request'});
+    });
     return operation;
   }
 
@@ -871,6 +1036,9 @@ class SupportService extends ChangeNotifier {
     _activeSessionId = sessionId;
     _api = api;
     _accessMode = accessMode;
+    final watch = Stopwatch()..start();
+    var phase = 'ice';
+    _logSupport('support.capture.start', fields: {'result': 'begin'});
 
     try {
       // ICE-серверы берутся только с корпоративного сервера
@@ -884,7 +1052,11 @@ class SupportService extends ChangeNotifier {
             setIceServers(parsed);
           }
         } catch (e) {
-          debugPrint('support_service: ошибка получения ice-servers: $e');
+          _logSupport('support.capture.failed', error: e, fields: {
+            'phase': phase,
+            'duration_ms': watch.elapsedMilliseconds,
+            'result': 'failed'
+          });
         }
         if (_iceServersFromConfig == null || _iceServersFromConfig!.isEmpty) {
           try {
@@ -894,8 +1066,11 @@ class SupportService extends ChangeNotifier {
               setIceServers(parsed);
             }
           } catch (e) {
-            debugPrint(
-                'support_service: конфиг недоступен, ICE останется пустым (fail-closed): $e');
+            _logSupport('support.capture.failed', error: e, fields: {
+              'phase': phase,
+              'duration_ms': watch.elapsedMilliseconds,
+              'result': 'failed'
+            });
           }
         }
       }
@@ -905,12 +1080,39 @@ class SupportService extends ChangeNotifier {
       };
 
       _requireCaptureEpoch(epoch);
+      phase = 'peer_create';
+      _logSupport('support.capture.step', fields: {
+        'phase': phase,
+        'result': 'begin',
+        'ice_servers': effectiveIceServers.length
+      });
       _peerConnection = await createPeerConnection(rtcConfig);
+      _logSupport('support.capture.step', fields: {
+        'phase': phase,
+        'result': 'ready',
+        'elapsed_ms': watch.elapsedMilliseconds
+      });
+      _peerConnection!.onIceGatheringState = (state) => _logSupport(
+          'support.ice.gathering',
+          fields: {'ice_state': state.name});
+      _peerConnection!.onIceConnectionState = (state) =>
+          _logSupport('support.ice.state', fields: {'ice_state': state.name});
+      _peerConnection!.onTrack =
+          (event) => _logSupport('support.track.remote', fields: {
+                'phase': event.track.kind == 'audio'
+                    ? 'audio'
+                    : event.track.kind == 'video'
+                        ? 'video'
+                        : 'unknown',
+                'count': event.streams.length
+              });
       _requireCaptureEpoch(epoch);
 
       // ICE кандидаты отправляются через серверный сигнальный шлюз оператору
       _peerConnection!.onIceCandidate = (candidate) {
         if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
+          _logSupport('support.candidate.local',
+              fields: {'candidates': 1, 'result': 'generated'});
           _api?.sendSupportSignal(
             sessionId: _activeSessionId!,
             signal: {
@@ -920,14 +1122,16 @@ class SupportService extends ChangeNotifier {
                 'sdpMLineIndex': candidate.sdpMLineIndex,
               },
             },
-          ).catchError((err) {
-            debugPrint('support_service: ошибка отправки ICE: $err');
+          ).catchError((Object err) {
+            _logSupport('support.async.failed',
+                error: err, fields: {'operation': 'async_request'});
           });
         }
       };
 
       _peerConnection!.onConnectionState = (state) {
-        debugPrint('support_service: WebRTC connection state: $state');
+        _logSupport('support.pc.state', fields: {'pc_state': state.name});
+
         switch (state) {
           case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
             _onP2pConnected();
@@ -945,9 +1149,12 @@ class SupportService extends ChangeNotifier {
               _p2pConnected = false;
               if (_state == SupportSessionState.active ||
                   _state == SupportSessionState.connecting) {
-                _failSession(_ownerSession
-                    ? 'Соединение с вашим устройством закрыто'
-                    : 'Соединение с инженером закрыто');
+                _failSession(
+                    _ownerSession
+                        ? 'Соединение с вашим устройством закрыто'
+                        : 'Соединение с инженером закрыто',
+                    reason: 'pc_closed',
+                    origin: 'pc_state');
               }
             }
             break;
@@ -964,8 +1171,11 @@ class SupportService extends ChangeNotifier {
         _requireCaptureEpoch(epoch);
         _setupDataChannel(dc);
       } catch (e) {
-        debugPrint(
-            'support_service: ошибка предварительного создания DataChannel: $e');
+        _logSupport('support.capture.failed', error: e, fields: {
+          'phase': phase,
+          'duration_ms': watch.elapsedMilliseconds,
+          'result': 'failed'
+        });
       }
       _requireCaptureEpoch(epoch);
 
@@ -978,6 +1188,9 @@ class SupportService extends ChangeNotifier {
       // закрытия TCC-диалога на macOS) getDisplayMedia-фьючерс может не
       // резолвиться и не падать неограниченно долго — сеанс висел
       // «подключение» часами (инцидент 2026-10-10, SOS к Linux).
+      phase = 'capture_sources';
+      _logSupport('support.capture.step',
+          fields: {'phase': phase, 'result': 'begin'});
       MediaStream screenStream;
       if (!kIsWeb &&
           (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
@@ -986,9 +1199,16 @@ class SupportService extends ChangeNotifier {
           sources = await desktopCapturer.getSources(
               types: [SourceType.Screen]).timeout(const Duration(seconds: 45));
         } catch (e) {
-          debugPrint('support_service: desktopCapturer.getSources error: $e');
+          _logSupport('support.capture.failed', error: e, fields: {
+            'phase': phase,
+            'duration_ms': watch.elapsedMilliseconds,
+            'result': 'failed'
+          });
         }
         _requireCaptureEpoch(epoch);
+        _logSupport('support.capture.sources',
+            fields: {'count': sources.length});
+        phase = 'get_display_media';
         if (sources.isNotEmpty) {
           _screens =
               sources.map((s) => _screenEntryForSource(s.id, s.name)).toList();
@@ -996,8 +1216,6 @@ class SupportService extends ChangeNotifier {
           _currentScreenId = selectedSource.id;
           _applyActiveScreenRect(selectedSource.id);
 
-          debugPrint(
-              'support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
           const captureTimeout = Duration(seconds: 45);
           final wantLoopbackAudio =
               !kIsWeb && (Platform.isWindows || Platform.isLinux);
@@ -1010,7 +1228,10 @@ class SupportService extends ChangeNotifier {
                 'cursor': 'always',
               },
             }).timeout(captureTimeout);
-          } catch (_) {
+          } catch (error) {
+            _logSupport('support.exception',
+                error: error,
+                fields: {'phase': 'start_screen_sharing', 'result': 'failed'});
             try {
               screenStream = await navigator.mediaDevices
                   .getDisplayMedia(<String, dynamic>{
@@ -1020,7 +1241,11 @@ class SupportService extends ChangeNotifier {
                   'cursor': 'always',
                 },
               }).timeout(captureTimeout);
-            } catch (_) {
+            } catch (error) {
+              _logSupport('support.exception', error: error, fields: {
+                'phase': 'start_screen_sharing',
+                'result': 'failed'
+              });
               try {
                 screenStream = await navigator.mediaDevices
                     .getDisplayMedia(<String, dynamic>{
@@ -1030,7 +1255,11 @@ class SupportService extends ChangeNotifier {
                     'cursor': 'always',
                   },
                 }).timeout(captureTimeout);
-              } catch (_) {
+              } catch (error) {
+                _logSupport('support.exception', error: error, fields: {
+                  'phase': 'start_screen_sharing',
+                  'result': 'failed'
+                });
                 screenStream = await navigator.mediaDevices
                     .getDisplayMedia(<String, dynamic>{
                   'audio': false,
@@ -1040,8 +1269,6 @@ class SupportService extends ChangeNotifier {
             }
           }
         } else {
-          debugPrint(
-              'support_service: sources пуст, fallback на базовый getDisplayMedia');
           screenStream =
               await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
             'audio': false,
@@ -1059,14 +1286,27 @@ class SupportService extends ChangeNotifier {
       if (!kIsWeb && screenStream.getAudioTracks().isEmpty) {
         try {
           final micStream = await navigator.mediaDevices
-              .getUserMedia(<String, dynamic>{'audio': true, 'video': false})
-              .timeout(const Duration(seconds: 5));
+              .getUserMedia(<String, dynamic>{
+            'audio': true,
+            'video': false
+          }).timeout(const Duration(seconds: 5));
           for (final track in micStream.getAudioTracks()) {
             await screenStream.addTrack(track);
           }
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'start_screen_sharing', 'result': 'failed'});
+        }
       }
       _localStream = screenStream;
+      _logSupport('support.capture.ready', fields: {
+        'tracks': screenStream.getTracks().length,
+        'elapsed_ms': watch.elapsedMilliseconds,
+        'width': _currentScreenRect?.width,
+        'height': _currentScreenRect?.height
+      });
+      phase = 'add_tracks';
       _requireCaptureEpoch(epoch);
 
       for (final track in _localStream!.getVideoTracks()) {
@@ -1092,14 +1332,20 @@ class SupportService extends ChangeNotifier {
 
       // Создаем и отправляем SDP Offer (M-1: state=active только после
       // onConnectionState==connected)
+      phase = 'send_offer';
       await _sendOffer();
       _requireCaptureEpoch(epoch);
       _state = SupportSessionState.connecting;
       _armEstablishmentTimeouts();
       notifyListeners();
     } catch (e) {
-      debugPrint('support_service: ошибка инициализации захвата экрана: $e');
-      await stopScreenSharing();
+      _logSupport('support.capture.failed', error: e, fields: {
+        'phase': phase,
+        'duration_ms': watch.elapsedMilliseconds,
+        'result': 'failed'
+      });
+
+      await stopScreenSharing(reason: 'capture_failed', origin: 'capture');
       rethrow;
     }
   }
@@ -1124,11 +1370,13 @@ class SupportService extends ChangeNotifier {
         params.degradationPreference =
             RTCDegradationPreference.MAINTAIN_RESOLUTION;
         await sender.setParameters(params);
-        debugPrint('support_service: применен битрейт видео $bitrate bps');
+
         break;
       }
     } catch (e) {
-      debugPrint('support_service: tuning видео-сендера не применился: $e');
+      _logSupport('support.exception',
+          error: e,
+          fields: {'phase': 'apply_video_bitrate', 'result': 'failed'});
     }
   }
 
@@ -1143,6 +1391,9 @@ class SupportService extends ChangeNotifier {
   /// При [iceRestart] предварительно вызывается pc.restartIce(), чтобы
   /// libwebrtc сгенерировал новые ICE-учётные данные.
   Future<void> _sendOffer({bool iceRestart = false}) async {
+    final watch = Stopwatch()..start();
+    var phase = iceRestart ? 'ice_restart' : 'offer_create';
+    _logSupport('support.offer', fields: {'phase': phase, 'result': 'begin'});
     final pc = _peerConnection;
     if (pc == null || _activeSessionId == null) return;
     try {
@@ -1150,23 +1401,39 @@ class SupportService extends ChangeNotifier {
         try {
           await pc.restartIce();
         } catch (e) {
-          debugPrint('support_service: restartIce не поддержан: $e');
+          _logSupport('support.offer.failed', error: e, fields: {
+            'phase': phase,
+            'result': 'failed',
+            'duration_ms': watch.elapsedMilliseconds
+          });
         }
       }
       final offer = await pc.createOffer({
         'offerToReceiveVideo': 0,
         'offerToReceiveAudio': 0,
       });
+      phase = 'set_local';
       await pc.setLocalDescription(offer);
+      _logSupport('support.offer', fields: {
+        'phase': phase,
+        'result': 'ready',
+        'elapsed_ms': watch.elapsedMilliseconds
+      });
+      phase = 'send_offer';
       await _api?.sendSupportSignal(
         sessionId: _activeSessionId!,
         signal: {
           'sdp': offer.toMap(),
         },
       );
+      _logSupport('support.offer', fields: {
+        'phase': phase,
+        'result': _api == null ? 'blocked' : 'request_complete',
+        'duration_ms': watch.elapsedMilliseconds
+      });
     } catch (e) {
-      debugPrint(
-          'support_service: ошибка отправки offer (iceRestart=$iceRestart): $e');
+      _logSupport('support.exception',
+          error: e, fields: {'phase': 'send_offer', 'result': 'failed'});
     }
   }
 
@@ -1176,15 +1443,17 @@ class SupportService extends ChangeNotifier {
     _establishmentTimer?.cancel();
     _establishmentTimer = Timer(const Duration(seconds: 30), () {
       if (_p2pConnected || _peerConnection == null) return;
-      debugPrint(
-          'support_service: соединение не установилось за 30с — повторный offer');
+
       _attemptIceRestart();
     });
     _establishmentDeadlineTimer ??= Timer(const Duration(seconds: 60), () {
       if (_p2pConnected || _peerConnection == null) return;
-      _failSession(_ownerSession
-          ? 'Не удалось подключиться к вашему устройству (таймаут 60 с)'
-          : 'Не удалось установить соединение с инженером (таймаут 60 с)');
+      _failSession(
+          _ownerSession
+              ? 'Не удалось подключиться к вашему устройству (таймаут 60 с)'
+              : 'Не удалось установить соединение с инженером (таймаут 60 с)',
+          reason: 'establishment_timeout',
+          origin: 'timeout');
     });
   }
 
@@ -1225,33 +1494,41 @@ class SupportService extends ChangeNotifier {
 
       if (_localLeaseDeadline != null &&
           DateTime.now().isAfter(_localLeaseDeadline!)) {
-        debugPrint('support_service: local lease expired, stopping P2P (A-03)');
         _failSession(
-            'Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
+            'Связь с сервером Ligament потеряна, срок аренды сеанса истёк',
+            reason: 'lease_expired',
+            origin: 'lease');
         return;
       }
 
       try {
         final sess = await _api!.getCurrentSupportSession();
         if (sess == null) {
-          _failSession('Срок действия сеанса удаленного доступа истёк');
+          _failSession('Срок действия сеанса удаленного доступа истёк',
+              reason: 'session_missing', origin: 'lease');
           return;
         }
         final status = sess['status']?.toString();
         if (status == 'completed' ||
             status == 'cancelled' ||
             status == 'rejected') {
-          _failSession('Сеанс удаленной помощи завершен сервером');
+          _failSession('Сеанс удаленной помощи завершен сервером',
+              reason: 'server_ended', origin: 'lease');
           return;
         }
         // Подтверждение аренды успешно получено — продлеваем локальный дедлайн
         _localLeaseDeadline = DateTime.now().add(const Duration(seconds: 60));
       } catch (e) {
-        debugPrint('support_service: lease watchdog check error: $e');
+        _logSupport('support.exception',
+            error: e,
+            fields: {'phase': 'start_lease_watchdog', 'result': 'failed'});
+
         if (_localLeaseDeadline != null &&
             DateTime.now().isAfter(_localLeaseDeadline!)) {
           _failSession(
-              'Связь с сервером Ligament потеряна, срок аренды сеанса истёк');
+              'Связь с сервером Ligament потеряна, срок аренды сеанса истёк',
+              reason: 'lease_expired',
+              origin: 'lease');
         }
       }
     });
@@ -1306,8 +1583,8 @@ class SupportService extends ChangeNotifier {
         WakelockPlus.disable();
       }
     } catch (e) {
-      debugPrint(
-          'support_service: wakelock ${enabled ? 'enable' : 'disable'} ошибка: $e');
+      _logSupport('support.exception',
+          error: e, fields: {'phase': 'set_wakelock', 'result': 'failed'});
     }
   }
 
@@ -1323,7 +1600,7 @@ class SupportService extends ChangeNotifier {
     _disconnectedTimer?.cancel();
     _disconnectedTimer = Timer(const Duration(seconds: 10), () {
       if (_p2pConnected || _peerConnection == null || _isStopping) return;
-      debugPrint('support_service: disconnected длится >10с — ICE-рестарт');
+
       _attemptIceRestart();
     });
   }
@@ -1348,14 +1625,14 @@ class SupportService extends ChangeNotifier {
     if (force) {
       _iceRestartAttempts = 0;
       _lastIceRestartAt = DateTime.now();
-      debugPrint(
-          'support_service: форсированный re-offer по запросу оператора');
+
       _sendOffer(iceRestart: iceRestart);
       _armEstablishmentTimeouts();
       return;
     }
     if (_iceRestartAttempts >= 3) {
-      _failSession('Не удалось восстановить P2P-соединение после 3 попыток');
+      _failSession('Не удалось восстановить P2P-соединение после 3 попыток',
+          reason: 'restart_exhausted', origin: 'ice_state');
       return;
     }
     final now = DateTime.now();
@@ -1371,18 +1648,23 @@ class SupportService extends ChangeNotifier {
       return;
     }
     _iceRestartAttempts++;
+    _logSupport('support.ice.restart',
+        fields: {'attempt': _iceRestartAttempts, 'result': 'begin'});
     _lastIceRestartAt = now;
-    debugPrint('support_service: ICE-рестарт, попытка $_iceRestartAttempts/3');
+
     _sendOffer(iceRestart: iceRestart);
   }
 
   /// Терминальный отказ сессии: остановка трансляции + ошибка в UI/чат.
-  Future<void> _failSession(String userError) async {
+  Future<void> _failSession(String userError,
+      {String reason = 'unknown', String origin = 'unknown'}) async {
+    _logSupport('support.session.failed',
+        fields: {'reason': reason, 'origin': origin, 'result': 'stopping'});
     if (_isStopping) return;
-    debugPrint('support_service: $userError');
+
     _lastError = userError;
     _cancelResilienceTimers();
-    await stopScreenSharing();
+    await stopScreenSharing(reason: reason, origin: origin);
     _state = SupportSessionState.ended;
     _addSystemMessage('⚠ $userError');
     notifyListeners();
@@ -1457,9 +1739,18 @@ class SupportService extends ChangeNotifier {
       final payload = (signal['data'] is Map<String, dynamic>)
           ? signal['data'] as Map<String, dynamic>
           : signal;
+      _logMessage(
+          payload['type'] ??
+              (payload.containsKey('candidate')
+                  ? 'candidate'
+                  : payload.containsKey('sdp')
+                      ? 'sdp'
+                      : null),
+          'inbound_signal',
+          'received');
 
       if (payload['type'] == 'chat_message') {
-        handleRemoteInput(payload);
+        handleRemoteInput(payload, origin: 'host_signal');
         return;
       }
 
@@ -1472,17 +1763,16 @@ class SupportService extends ChangeNotifier {
             : payload;
         final subType = inputData['type']?.toString();
         if (subType != null && signalingAllowedTypes.contains(subType)) {
-          handleRemoteInput(inputData);
+          handleRemoteInput(inputData, origin: 'host_signal');
         } else {
-          debugPrint('support_service: input via signaling rejected '
-              '(input_control/$subType) — ввод разрешён только через DataChannel');
+          _logMessage(subType, 'signaling_gate', 'blocked');
         }
         return;
       }
 
       if (payload['type'] == 'screen_list' ||
           payload['type'] == 'switch_screen') {
-        handleRemoteInput(payload);
+        handleRemoteInput(payload, origin: 'host_signal');
         return;
       }
 
@@ -1490,15 +1780,15 @@ class SupportService extends ChangeNotifier {
       // маршрутизируем как раньше, они не дают управления.
       final directType = payload['type']?.toString();
       if (directType != null && signalingAllowedTypes.contains(directType)) {
-        handleRemoteInput(payload);
+        handleRemoteInput(payload, origin: 'host_signal');
         return;
       }
 
       // A-1: прямые команды управления через сигналинг — игнор + warn.
       // (мышка/клавиатура/буфер/файлы/reboot — только из DataChannel)
       if (directType != null && dataChannelOnlyTypes.contains(directType)) {
-        debugPrint('support_service: input via signaling rejected '
-            '($directType) — ввод разрешён только через DataChannel');
+        _logMessage(directType, 'signaling_gate', 'blocked');
+
         return;
       }
 
@@ -1506,8 +1796,6 @@ class SupportService extends ChangeNotifier {
 
       if (payload['type'] == 'request_offer' ||
           payload['type'] == 'renegotiate') {
-        debugPrint(
-            'support_service: получен запрос офера (request_offer) от оператора');
         if (_dataChannel == null ||
             _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) {
           try {
@@ -1516,8 +1804,9 @@ class SupportService extends ChangeNotifier {
                 await _peerConnection!.createDataChannel('control', dcInit);
             _setupDataChannel(dc);
           } catch (e) {
-            debugPrint(
-                'support_service: ошибка пересоздания DataChannel при request_offer: $e');
+            _logSupport('support.exception',
+                error: e,
+                fields: {'phase': 'handle_remote_signal', 'result': 'failed'});
           }
         }
         final iceRestart = payload['iceRestart'] == true;
@@ -1537,7 +1826,9 @@ class SupportService extends ChangeNotifier {
           try {
             await _peerConnection!.addCandidate(c);
           } catch (e) {
-            debugPrint('support_service: ошибка flush ICE: $e');
+            _logSupport('support.exception',
+                error: e,
+                fields: {'phase': 'handle_remote_signal', 'result': 'failed'});
           }
         }
       } else if (payload.containsKey('candidate')) {
@@ -1562,13 +1853,16 @@ class SupportService extends ChangeNotifier {
       // канал не является доверенным транспортом для инъекций ввода:
       // его компрометация не должна давать управление рабочей станцией.
     } catch (e) {
-      debugPrint('support_service: ошибка обработки входящего сигнала: $e');
+      _logSupport('support.exception',
+          error: e,
+          fields: {'phase': 'handle_remote_signal', 'result': 'failed'});
     }
   }
 
   void _setupDataChannel(RTCDataChannel channel) {
     _dataChannel = channel;
     void handleState(RTCDataChannelState st) {
+      _logSupport('support.dc.state', fields: {'dc_state': st.name});
       if (st == RTCDataChannelState.RTCDataChannelOpen) {
         _sendScreenList();
         _sendCurrentTelemetry();
@@ -1583,9 +1877,12 @@ class SupportService extends ChangeNotifier {
       if (msg.isBinary) return;
       try {
         final data = jsonDecode(msg.text) as Map<String, dynamic>;
-        handleRemoteInput(data);
+        _logMessage(data['type'], 'inbound_dc', 'received',
+            bytes: utf8.encode(msg.text).length);
+        handleRemoteInput(data, origin: 'data_channel');
       } catch (e) {
-        debugPrint('support_service: ошибка разбора команды ввода: $e');
+        _logSupport('support.exception',
+            error: e, fields: {'phase': 'handle_state', 'result': 'failed'});
       }
     };
   }
@@ -1604,7 +1901,10 @@ class SupportService extends ChangeNotifier {
   ScreenRect? _resolveScreenRect(String sourceId) {
     try {
       return InputInjector.instance.getMonitorRectForSource(sourceId);
-    } catch (_) {
+    } catch (error) {
+      _logSupport('support.exception',
+          error: error,
+          fields: {'phase': 'screen_entry_for_source', 'result': 'failed'});
       return null;
     }
   }
@@ -1616,7 +1916,6 @@ class SupportService extends ChangeNotifier {
     final rect = _resolveScreenRect(sourceId);
     _currentScreenRect = rect;
     InputInjector.instance.setActiveMonitorRect(rect);
-    debugPrint('support_service: активный экран $sourceId rect=$rect');
   }
 
   Future<void> _sendScreenList() async {
@@ -1630,12 +1929,11 @@ class SupportService extends ChangeNotifier {
             _screens = sources
                 .map((s) => _screenEntryForSource(s.id, s.name))
                 .toList();
-            debugPrint(
-                'support_service: обновлен список экранов (${_screens.length}): $_screens');
           }
         } catch (e) {
-          debugPrint(
-              'support_service: ошибка динамического обновления экранов: $e');
+          _logSupport('support.exception',
+              error: e,
+              fields: {'phase': 'send_screen_list', 'result': 'failed'});
         }
       }
       final payload = {
@@ -1651,17 +1949,27 @@ class SupportService extends ChangeNotifier {
       };
       if (_dataChannel != null &&
           _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
-        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
+        final text = jsonEncode(payload);
+        _observeDataEnqueue(_dataChannel!.send(RTCDataChannelMessage(text)),
+            payload['type'], utf8.encode(text).length);
       }
       if (_activeSessionId != null && _api != null) {
         _api!
             .sendSupportSignal(
-              sessionId: _activeSessionId!,
-              signal: payload,
-            )
-            .catchError((_) => null);
+          sessionId: _activeSessionId!,
+          signal: payload,
+        )
+            .catchError((Object error) {
+          _logSupport('support.async.failed',
+              error: error, fields: {'operation': 'send_signal'});
+          return null;
+        });
       }
-    } catch (_) {}
+    } catch (error) {
+      _logSupport('support.exception',
+          error: error,
+          fields: {'phase': 'send_screen_list', 'result': 'failed'});
+    }
   }
 
   /// Переключение транслируемого монитора на лету с сохранением аудио и защитой от падений
@@ -1682,7 +1990,10 @@ class SupportService extends ChangeNotifier {
                 'cursor': 'always',
               },
             }).timeout(const Duration(seconds: 4));
-          } catch (_) {
+          } catch (error) {
+            _logSupport('support.exception',
+                error: error,
+                fields: {'phase': 'switch_screen', 'result': 'failed'});
             newStream =
                 await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
               'audio': false,
@@ -1696,7 +2007,9 @@ class SupportService extends ChangeNotifier {
             break;
           }
         } catch (e) {
-          debugPrint('support_service: _openDisplayStream attempt $attempt failed: $e');
+          _logSupport('support.exception',
+              error: e, fields: {'phase': 'switch_screen', 'result': 'failed'});
+
           if (attempt < 5) {
             await Future<void>.delayed(
                 Duration(milliseconds: 200 * (attempt + 1)));
@@ -1705,8 +2018,6 @@ class SupportService extends ChangeNotifier {
       }
 
       if (newStream == null) {
-        debugPrint(
-            'support_service: failed to acquire stream during switch, scheduling recovery');
         _desktopRecoveryTimer?.cancel();
         _desktopRecoveryTimer = Timer(const Duration(milliseconds: 1500), () {
           if (_p2pConnected && _peerConnection != null && !_isStopping) {
@@ -1734,7 +2045,11 @@ class SupportService extends ChangeNotifier {
       oldStream?.getVideoTracks().forEach((t) {
         try {
           t.stop();
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'switch_screen', 'result': 'failed'});
+        }
       });
 
       // Сохраняем аудиотрек системы, не вызывая dispose() у потока с аудио
@@ -1743,7 +2058,11 @@ class SupportService extends ChangeNotifier {
       } else {
         try {
           oldStream?.dispose();
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'switch_screen', 'result': 'failed'});
+        }
       }
 
       _localStream = newStream;
@@ -1756,7 +2075,8 @@ class SupportService extends ChangeNotifier {
           (_audioStream != null && _audioStream!.getAudioTracks().isNotEmpty);
       if (!hasAudio && !kIsWeb && (Platform.isWindows || Platform.isLinux)) {
         try {
-          final loopback = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          final loopback =
+              await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
             'audio': true,
             'video': false,
           }).timeout(const Duration(seconds: 3));
@@ -1777,14 +2097,16 @@ class SupportService extends ChangeNotifier {
             _audioStream = loopback;
           }
         } catch (e) {
-          debugPrint('support_service: loopback audio re-acquisition skipped: $e');
+          _logSupport('support.exception',
+              error: e, fields: {'phase': 'switch_screen', 'result': 'failed'});
         }
       }
 
       await _sendScreenList();
       notifyListeners();
     } catch (e) {
-      debugPrint('support_service: ошибка переключения экрана: $e');
+      _logSupport('support.exception',
+          error: e, fields: {'phase': 'switch_screen', 'result': 'failed'});
     } finally {
       _switchingScreen = false;
     }
@@ -1811,8 +2133,14 @@ class SupportService extends ChangeNotifier {
         ...cpu,
         ...disk,
       };
-      _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
-    } catch (_) {}
+      final text = jsonEncode(payload);
+      _observeDataEnqueue(_dataChannel!.send(RTCDataChannelMessage(text)),
+          payload['type'], utf8.encode(text).length);
+    } catch (error) {
+      _logSupport('support.exception',
+          error: error,
+          fields: {'phase': 'send_current_telemetry', 'result': 'failed'});
+    }
   }
 
   void _startRecorder() {
@@ -1843,7 +2171,8 @@ class SupportService extends ChangeNotifier {
         (_) => unawaited(_captureRecorderSnapshot('periodic')),
       );
     } catch (e) {
-      debugPrint('support_service: recorder start failed: $e');
+      _logSupport('support.exception',
+          error: e, fields: {'phase': 'start_recorder', 'result': 'failed'});
     }
   }
 
@@ -1859,7 +2188,9 @@ class SupportService extends ChangeNotifier {
 
   Future<void> _captureRecorderSnapshot(String frameKind) async {
     final rec = _recorder;
-    if (rec == null || _capturingRecorderFrame || _state != SupportSessionState.active) {
+    if (rec == null ||
+        _capturingRecorderFrame ||
+        _state != SupportSessionState.active) {
       return;
     }
     _capturingRecorderFrame = true;
@@ -1877,8 +2208,14 @@ class SupportService extends ChangeNotifier {
         if (raw is Uint8List && raw.isNotEmpty) {
           bytes = raw;
         }
-      } catch (_) {}
-      if (bytes != null && bytes.isNotEmpty && _state == SupportSessionState.active) {
+      } catch (error) {
+        _logSupport('support.exception',
+            error: error,
+            fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
+      }
+      if (bytes != null &&
+          bytes.isNotEmpty &&
+          _state == SupportSessionState.active) {
         final frameInfo = await prepareRecordedFrame(bytes);
         if (frameInfo != null) {
           rec.enqueueFrame(
@@ -1891,7 +2228,10 @@ class SupportService extends ChangeNotifier {
           );
         }
       }
-    } catch (_) {
+    } catch (error) {
+      _logSupport('support.exception',
+          error: error,
+          fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
     } finally {
       _capturingRecorderFrame = false;
     }
@@ -1909,14 +2249,10 @@ class SupportService extends ChangeNotifier {
     final totalChunks = (input['total_chunks'] as num?)?.toInt() ?? 1;
 
     if (size < 0 || size > _maxFileTransferBytes) {
-      debugPrint(
-          'support_service: передача "$filename" отклонена: размер $size байт превышает лимит 50 МБ');
       return;
     }
     if (totalChunks <= 0) return;
     if (_activeDownloads.length >= _maxConcurrentDownloads) {
-      debugPrint(
-          'support_service: передача "$filename" отклонена: превышен лимит одновременных закачек ($_maxConcurrentDownloads)');
       return;
     }
 
@@ -1951,7 +2287,6 @@ class SupportService extends ChangeNotifier {
     try {
       final bytes = base64Decode(base64Data);
       if (chunkIndex < 0 || chunkIndex >= dl.totalChunks) {
-        debugPrint('support_service: чанк $chunkIndex вне диапазона — дропнут');
         return;
       }
       if (!dl.chunks.containsKey(chunkIndex)) {
@@ -1970,8 +2305,9 @@ class SupportService extends ChangeNotifier {
             'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
       });
     } catch (e) {
-      debugPrint(
-          'support_service: битый base64 в чанке $chunkIndex передачи "$transferId": $e');
+      _logSupport('support.exception',
+          error: e, fields: {'phase': 'handle_file_chunk', 'result': 'failed'});
+
       _abortDownload(transferId, 'поврежденные данные (чанк $chunkIndex)');
       _notifyFileRejected(
           transferId, dl.filename, 'поврежденные данные при передаче');
@@ -2007,8 +2343,6 @@ class SupportService extends ChangeNotifier {
       return;
     }
 
-    debugPrint(
-        'support_service: передача "${dl.filename}" отброшена: ${result.error}');
     String reason;
     switch (result.error) {
       case 'incomplete':
@@ -2040,7 +2374,10 @@ class SupportService extends ChangeNotifier {
         'filename': filename,
         'reason': reason,
       });
-    } catch (_) {
+    } catch (error) {
+      _logSupport('support.exception',
+          error: error,
+          fields: {'phase': 'notify_file_rejected', 'result': 'failed'});
       // DataChannel закрыт — уведомление не критично
     }
   }
@@ -2052,17 +2389,26 @@ class SupportService extends ChangeNotifier {
   /// handleRemoteSignal (signalingAllowedTypes). Публичное имя нужно
   /// только тестам транспортного гейта.
   @visibleForTesting
-  Future<void> handleRemoteInput(Map<String, dynamic> input) async {
+  Future<void> handleRemoteInput(Map<String, dynamic> input,
+      {String origin = 'unknown'}) async {
     final type = (input['type'] ?? input['action'])?.toString();
+    _logMessage(type, 'input_dispatch', 'received');
+    if (type != 'mouse_move') {
+      _logSupport('support.input.origin', fields: {
+        'origin': origin,
+        'message_type': supportDebugMessageType(type)
+      });
+    }
     if (type == null) return;
-    if (serviceHost && !serviceHostCommandAllowed(type)) return;
+    if (serviceHost && !serviceHostCommandAllowed(type)) {
+      _logMessage(type, 'service_gate', 'blocked');
+      return;
+    }
 
     if (type == 'session_ended' ||
         type == 'support_ended' ||
         type == 'console_end') {
-      debugPrint(
-          'support_service: remote session ended signal received ($type)');
-      await stopScreenSharing();
+      await stopScreenSharing(reason: 'remote_ended', origin: origin);
       return;
     }
 
@@ -2075,7 +2421,7 @@ class SupportService extends ChangeNotifier {
         type != 'screen_list' &&
         type != 'chat_message' &&
         type != 'switch_screen') {
-      debugPrint('support_service: команда "$type" отклонена (view_only)');
+      _logMessage(type, 'view_only_gate', 'blocked');
       return;
     }
 
@@ -2087,7 +2433,10 @@ class SupportService extends ChangeNotifier {
     if (serviceHost && (type == 'clipboard_set' || type == 'clipboard_get')) {
       try {
         await serviceInput?.call({'type': 'clipboard_probe'});
-      } catch (_) {
+      } catch (error) {
+        _logSupport('support.exception',
+            error: error,
+            fields: {'phase': 'handle_remote_input', 'result': 'failed'});
         _sendSignalOrData(
             {'type': 'clipboard_error', 'reason': 'secure_desktop'});
         return;
@@ -2118,7 +2467,9 @@ class SupportService extends ChangeNotifier {
           }
         }
       } catch (e) {
-        debugPrint('support_service: ошибка разбора чат-сообщения: $e');
+        _logSupport('support.exception',
+            error: e,
+            fields: {'phase': 'handle_remote_input', 'result': 'failed'});
       }
       return;
     } else if (type == 'switch_screen') {
@@ -2146,10 +2497,10 @@ class SupportService extends ChangeNotifier {
       final clip = await Clipboard.getData(Clipboard.kTextPlain);
       if (_dataChannel != null &&
           _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
-        _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
-          'type': 'clipboard_data',
-          'text': clip?.text ?? '',
-        })));
+        final encoded =
+            jsonEncode({'type': 'clipboard_data', 'text': clip?.text ?? ''});
+        _observeDataEnqueue(_dataChannel!.send(RTCDataChannelMessage(encoded)),
+            'clipboard_data', utf8.encode(encoded).length);
         final sysMsg = SupportChatMessage(
           id: 'sys_clip_${DateTime.now().millisecondsSinceEpoch}',
           sender: 'operator',
@@ -2222,7 +2573,10 @@ class SupportService extends ChangeNotifier {
           _sendSignalOrData(
               {'type': 'block_input_ack', 'blocked': input['blocked'] == true});
         }
-      } catch (_) {
+      } catch (error) {
+        _logSupport('support.exception',
+            error: error,
+            fields: {'phase': 'handle_remote_input', 'result': 'failed'});
         if (type == 'block_input') {
           _sendSignalOrData({
             'type': 'block_input_ack',
@@ -2245,7 +2599,6 @@ class SupportService extends ChangeNotifier {
     }
 
     try {
-      debugPrint('support_service: remote input command: $type');
       switch (type) {
         case 'text_input':
           final text = input['text'];
@@ -2326,7 +2679,10 @@ class SupportService extends ChangeNotifier {
           break;
       }
     } catch (e) {
-      debugPrint('support_service: ошибка выполнения ввода: $e');
+      _logSupport('support.exception',
+          error: e,
+          fields: {'phase': 'handle_remote_input', 'result': 'failed'});
+
       final now = DateTime.now();
       if (now.difference(_lastInputError).inSeconds >= 3) {
         _lastInputError = now;
@@ -2337,7 +2693,6 @@ class SupportService extends ChangeNotifier {
   }
 
   void _handleRemoteReboot() {
-    debugPrint('support_service: получен сигнал reboot от оператора');
     try {
       if (!kIsWeb && Platform.isWindows) {
         Process.run('shutdown', [
@@ -2349,21 +2704,32 @@ class SupportService extends ChangeNotifier {
           'Reboot requested by remote operator'
         ]);
       } else if (!kIsWeb && Platform.isLinux) {
-        Process.run('systemctl', ['reboot']).catchError((_) {
+        Process.run('systemctl', ['reboot']).catchError((Object error) {
+          _logSupport('support.async.failed',
+              error: error, fields: {'operation': 'async_request'});
           return Process.run('shutdown', ['-r', 'now']);
         });
       } else if (!kIsWeb && Platform.isMacOS) {
         Process.run('shutdown', ['-r', 'now']);
       }
     } catch (e) {
-      debugPrint('support_service: ошибка выполнения reboot: $e');
+      _logSupport('support.exception',
+          error: e,
+          fields: {'phase': 'handle_remote_reboot', 'result': 'failed'});
     }
   }
 
   bool _isStopping = false;
 
   /// Остановка трансляции экрана и освобождение ресурсов (асинхронно, с защитой от рекурсии)
-  Future<void> stopScreenSharing() async {
+  Future<void> stopScreenSharing(
+      {String reason = 'unknown', String origin = 'unknown'}) async {
+    _flushMouseDiagnostics();
+    _logSupport('support.capture.stop', fields: {
+      'reason': reason,
+      'origin': origin,
+      'result': _isStopping ? 'ignored' : 'begin'
+    });
     ++_captureEpoch;
     if (_isStopping) return;
     _isStopping = true;
@@ -2375,7 +2741,11 @@ class SupportService extends ChangeNotifier {
       if (serviceHost) {
         try {
           await serviceReleaseInput?.call();
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
       } else {
         InputInjector.instance.setInputBlocked(false);
         InputInjector.instance.releaseAllPressed();
@@ -2414,24 +2784,57 @@ class SupportService extends ChangeNotifier {
       if (dc != null) {
         try {
           if (dc.state == RTCDataChannelState.RTCDataChannelOpen) {
-            dc.send(
-                RTCDataChannelMessage(jsonEncode({'type': 'session_ended'})));
+            final text = jsonEncode({'type': 'session_ended'});
+            final send = dc.send(RTCDataChannelMessage(text));
+            final fields = <String, Object?>{
+              'session_id': endedSessionId,
+              'message_type': 'session_ended',
+              'bytes': utf8.encode(text).length
+            };
+            _logSupport('support.session.end_send',
+                fields: {...fields, 'result': 'requested'});
+            unawaited(send.then((_) {
+              _logSupport('support.session.end_send',
+                  fields: {...fields, 'result': 'queued'});
+            }).catchError((Object error) {
+              _logSupport('support.session.end_send',
+                  error: error, fields: {...fields, 'result': 'failed'});
+            }));
           }
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
         try {
           dc.onMessage = null;
           dc.onDataChannelState = null;
           await dc.close().timeout(const Duration(milliseconds: 300),
-              onTimeout: () => null);
-        } catch (_) {}
+              onTimeout: () {
+            _logSupport('support.cleanup.timeout',
+                fields: {'operation': 'cleanup', 'result': 'timeout'});
+            return null;
+          });
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
       }
       if (endedSessionId != null && api != null) {
         try {
           unawaited(api.sendSupportSignal(
             sessionId: endedSessionId,
             signal: const {'type': 'session_ended'},
-          ).catchError((_) {}));
-        } catch (_) {}
+          ).catchError((Object error) {
+            _logSupport('support.async.failed',
+                error: error, fields: {'operation': 'async_request'});
+          }));
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
       }
 
       // 3. Закрываем PeerConnection ПЕРЕД остановкой треков, чтобы остановить RTP sender threads в libwebrtc
@@ -2446,8 +2849,16 @@ class SupportService extends ChangeNotifier {
           pc.onIceConnectionState = null;
           pc.onRenegotiationNeeded = null;
           await pc.close().timeout(const Duration(milliseconds: 300),
-              onTimeout: () => null);
-        } catch (_) {}
+              onTimeout: () {
+            _logSupport('support.cleanup.timeout',
+                fields: {'operation': 'cleanup', 'result': 'timeout'});
+            return null;
+          });
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
       }
 
       // 4. Останавливаем все медиатреки захвата экрана и аудио
@@ -2463,10 +2874,22 @@ class SupportService extends ChangeNotifier {
           for (final track in stream.getTracks()) {
             try {
               await track.stop().timeout(const Duration(milliseconds: 300),
-                  onTimeout: () => null);
-            } catch (_) {}
+                  onTimeout: () {
+                _logSupport('support.cleanup.timeout',
+                    fields: {'operation': 'cleanup', 'result': 'timeout'});
+                return null;
+              });
+            } catch (error) {
+              _logSupport('support.exception',
+                  error: error,
+                  fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+            }
           }
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
       }
 
       final audioStr = _audioStream;
@@ -2476,33 +2899,69 @@ class SupportService extends ChangeNotifier {
           for (final track in audioStr.getTracks()) {
             try {
               await track.stop().timeout(const Duration(milliseconds: 300),
-                  onTimeout: () => null);
-            } catch (_) {}
+                  onTimeout: () {
+                _logSupport('support.cleanup.timeout',
+                    fields: {'operation': 'cleanup', 'result': 'timeout'});
+                return null;
+              });
+            } catch (error) {
+              _logSupport('support.exception',
+                  error: error,
+                  fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+            }
           }
           await audioStr.dispose().timeout(const Duration(milliseconds: 300),
-              onTimeout: () => null);
-        } catch (_) {}
+              onTimeout: () {
+            _logSupport('support.cleanup.timeout',
+                fields: {'operation': 'cleanup', 'result': 'timeout'});
+            return null;
+          });
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
       }
 
       // 5. Окончательное освобождение нативных дескрипторов
       try {
-        await stream
-            ?.dispose()
-            .timeout(const Duration(milliseconds: 300), onTimeout: () => null);
-      } catch (_) {}
+        await stream?.dispose().timeout(const Duration(milliseconds: 300),
+            onTimeout: () {
+          _logSupport('support.cleanup.timeout',
+              fields: {'operation': 'cleanup', 'result': 'timeout'});
+          return null;
+        });
+      } catch (error) {
+        _logSupport('support.exception',
+            error: error,
+            fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+      }
       try {
-        await pc
-            ?.dispose()
-            .timeout(const Duration(milliseconds: 300), onTimeout: () => null);
-      } catch (_) {}
+        await pc?.dispose().timeout(const Duration(milliseconds: 300),
+            onTimeout: () {
+          _logSupport('support.cleanup.timeout',
+              fields: {'operation': 'cleanup', 'result': 'timeout'});
+          return null;
+        });
+      } catch (error) {
+        _logSupport('support.exception',
+            error: error,
+            fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+      }
     } catch (e) {
-      debugPrint('support_service: ошибка при stopScreenSharing: $e');
+      _logSupport('support.exception',
+          error: e,
+          fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
     } finally {
       _isStopping = false;
       if (serviceHost) {
         try {
           serviceReleaseInput?.call();
-        } catch (_) {}
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'stop_screen_sharing', 'result': 'failed'});
+        }
       }
       InputInjector.instance.setInputBlocked(false);
       InputInjector.instance.releaseAllPressed();

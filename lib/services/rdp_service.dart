@@ -8,6 +8,7 @@ import 'package:web_socket_channel/io.dart';
 import '../api/client.dart';
 import '../widgets/rdp_mfa_dialog.dart';
 import 'telemetry_service.dart';
+import 'debug_log_service.dart';
 
 /// RDP-коннектор (этап 2.2 плана docs/rdp-client-stage2-plan.md §3):
 /// grant → локальный loopback-слушатель → WS-мост до ядра → mstsc.
@@ -39,6 +40,25 @@ class RdpConnectorService extends ChangeNotifier {
 
   _RdpTunnelSession? _session;
   int _connectGeneration = 0;
+  final Stopwatch _phaseWatch = Stopwatch();
+
+  static Future<T> _traceAwait<T>(String operation, Future<T> Function() action) async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('rdp.operation.started', fields: {'operation': operation});
+    try {
+      final result = await action();
+      DebugLogService.instance.record('rdp.operation.completed', fields: {
+        'operation': operation, 'duration_ms': watch.elapsedMilliseconds,
+        'result': 'await_returned',
+      });
+      return result;
+    } catch (error) {
+      DebugLogService.instance.record('rdp.operation.failed', error: error, fields: {
+        'operation': operation, 'duration_ms': watch.elapsedMilliseconds,
+      });
+      rethrow;
+    }
+  }
 
   bool get isBusy =>
       _phase == RdpTunnelPhase.grant ||
@@ -49,6 +69,12 @@ class RdpConnectorService extends ChangeNotifier {
   bool get isActive => _phase == RdpTunnelPhase.active;
 
   void _setPhase(RdpTunnelPhase p, {String? detail}) {
+    DebugLogService.instance.record('rdp.phase.transition', fields: {
+      'origin': _phase.name, 'phase': p.name,
+      'duration_ms': _phaseWatch.elapsedMilliseconds,
+      'connected': p == RdpTunnelPhase.active,
+    });
+    _phaseWatch..reset()..start();
     _phase = p;
     phaseDetail = detail;
     if (p != RdpTunnelPhase.failed) lastError = null;
@@ -72,8 +98,12 @@ class RdpConnectorService extends ChangeNotifier {
       } on ApiException catch (e) {
         if (mfaPrompt == null) rethrow;
         if (e.statusCode != 428 && e.code != 'invalid_code' && e.code != 'mfa_required') rethrow;
-        final res = await mfaPrompt(e.code == 'invalid_code');
-        if (res == null) return const {};
+        DebugLogService.instance.record('rdp.mfa.required', error: e);
+        final res = await _traceAwait('mfa_prompt', () => mfaPrompt(e.code == 'invalid_code'));
+        if (res == null) {
+          DebugLogService.instance.record('rdp.mfa.cancelled');
+          return const {};
+        }
         code = res.code;
         attemptId = res.attemptId;
         passkey = res.passkey ? true : null;
@@ -108,8 +138,13 @@ class RdpConnectorService extends ChangeNotifier {
     Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
     Future<String?> Function(bool wrongCode)? mfaCodePrompt,
   }) async {
-    if (isBusy || isActive) return;
+    DebugLogService.instance.record('rdp.connect.intent');
+    if (isBusy || isActive) {
+      DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'busy'});
+      return;
+    }
     if (!_canRunMstsc) {
+      DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'platform'});
       _fail(isRu
           ? 'RDP-подключение доступно только на Windows и macOS'
           : 'RDP connection is available on Windows and macOS only');
@@ -132,7 +167,7 @@ class RdpConnectorService extends ChangeNotifier {
             : null);
     final localIps = await TelemetryService.getLocalIPs();
     try {
-      grant = await _grantWithInlineMfa(
+      grant = await _traceAwait('grant_with_mfa', () => _grantWithInlineMfa(
         ({code, attemptId, passkey}) => api.rdpGrant(
           targetId: targetId,
           mode: 'rdp',
@@ -144,7 +179,7 @@ class RdpConnectorService extends ChangeNotifier {
           clientLocalIps: localIps,
         ),
         promptFn,
-      );
+      ));
     } on ApiException catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
@@ -152,8 +187,12 @@ class RdpConnectorService extends ChangeNotifier {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
-    if (_connectGeneration != generation) return;
+    if (_connectGeneration != generation) {
+      DebugLogService.instance.record('rdp.connect.cancelled', fields: {'reason': 'superseded'});
+      return;
+    }
     if (grant.isEmpty) {
+      DebugLogService.instance.record('rdp.connect.cancelled', fields: {'reason': 'mfa_dismissed'});
       // Пользователь отменил ввод кода — тихий отказ, без «ошибки».
       _setPhase(RdpTunnelPhase.idle);
       return;
@@ -163,6 +202,7 @@ class RdpConnectorService extends ChangeNotifier {
     final expiresIn = int.tryParse(grant['expires_in']?.toString() ?? '') ?? 60;
     final targetHost = grant['target_host']?.toString();
     if (grantId.isEmpty || token.isEmpty) {
+      DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'malformed_grant'});
       _fail(isRu ? 'Сервер вернул некорректный грант' : 'Server returned a malformed grant');
       return;
     }
@@ -176,13 +216,13 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.listener);
     ServerSocket listener;
     try {
-      listener = await _bindLoopback();
+      listener = await _traceAwait('bind_loopback', _bindLoopback);
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
     if (_connectGeneration != generation || _session != session) {
-      try { await listener.close(); } catch (_) {}
+      try { await listener.close(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       return;
     }
     session.listener = listener;
@@ -210,13 +250,14 @@ class RdpConnectorService extends ChangeNotifier {
         dPort = int.tryParse(parts[1]) ?? 3389;
       }
       try {
-        directSocket = await Socket.connect(dHost, dPort, timeout: const Duration(seconds: 3));
-      } catch (_) {
+        directSocket = await _traceAwait('direct_tcp', () => Socket.connect(dHost, dPort, timeout: const Duration(seconds: 3)));
+      } catch (error) {
+        DebugLogService.instance.record('rdp.direct.fallback', error: error, fields: {'transport': 'wss'});
         directSocket = null;
       }
     }
     if (_connectGeneration != generation || _session != session) {
-      try { directSocket?.destroy(); } catch (_) {}
+      try { directSocket?.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       await _quietTeardown(session, null);
       return;
     }
@@ -225,18 +266,18 @@ class RdpConnectorService extends ChangeNotifier {
     if (directSocket != null) {
       // Прямой маршрут в локальной сети успешен: клеймим сессию в Core
       try {
-        await api.rdpDirectClaim(grantId: grantId, token: token);
+        await _traceAwait('direct_claim', () => api.rdpDirectClaim(grantId: grantId, token: token));
       } catch (e) {
-        try { directSocket.destroy(); } catch (_) {}
+        try { directSocket.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
         await _teardownListener(session);
         if (_connectGeneration != generation || _session != session) return;
         _fail(rdpConnectErrorText(e, isRu: isRu));
         return;
       }
       if (_connectGeneration != generation || _session != session) {
-        try { directSocket.destroy(); } catch (_) {}
+        try { directSocket.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
         await _quietTeardown(session, null);
-        try { await api.rdpClose(grantId); } catch (_) {}
+        try { await api.rdpClose(grantId); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
         return;
       }
       session.remote = directSocket;
@@ -259,7 +300,7 @@ class RdpConnectorService extends ChangeNotifier {
           connectTimeout: const Duration(seconds: 10),
           pingInterval: const Duration(seconds: 20),
         );
-        await ws.ready;
+        await _traceAwait('websocket_ready', () => ws!.ready);
       } catch (e) {
         await _teardownListener(session);
         _fail(rdpConnectErrorText(e, isRu: isRu));
@@ -289,7 +330,7 @@ class RdpConnectorService extends ChangeNotifier {
     session.tempRdpFile = tempRdp;
     Process? mstsc;
     try {
-      mstsc = await _startRdpClient(host: host, port: port, tempRdpFile: tempRdp);
+      mstsc = await _traceAwait('launch_client', () => _startRdpClient(host: host, port: port, tempRdpFile: tempRdp));
     } catch (e) {
       if (_connectGeneration == generation && _session == session) {
         _fail(rdpConnectErrorText(e, isRu: isRu));
@@ -298,7 +339,7 @@ class RdpConnectorService extends ChangeNotifier {
       return;
     }
     if (_connectGeneration != generation || _session != session) {
-      try { mstsc?.kill(); } catch (_) {}
+      try { mstsc?.kill(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       await _quietTeardown(session, ws);
       return;
     }
@@ -332,10 +373,10 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.waitingClient, detail: '$host:$port');
     final Socket socket;
     try {
-      socket = await listener.first.timeout(
+      socket = await _traceAwait('accept_client', () => listener.first.timeout(
         const Duration(seconds: 45),
         onTimeout: () => throw TimeoutException('mstsc connect timeout'),
-      );
+      ));
     } catch (e) {
       if (_session != session || _connectGeneration != generation) return; // уже закрыто
       _fail(rdpConnectErrorText(e, isRu: isRu));
@@ -346,12 +387,12 @@ class RdpConnectorService extends ChangeNotifier {
       // Закрыли, пока ждали соединение.
       try {
         socket.destroy();
-      } catch (_) {}
+      } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       return;
     }
     final clientIp = socket.remoteAddress.address;
     if (clientIp != '127.0.0.1' && clientIp != '127.0.0.2' && !clientIp.startsWith('127.')) {
-      try { socket.destroy(); } catch (_) {}
+      try { socket.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       _fail(isRu ? 'Отвергнуто внешнее подключение к порту RDP' : 'Rejected non-loopback connection to RDP port');
       await _quietTeardown(session, ws);
       return;
@@ -364,30 +405,38 @@ class RdpConnectorService extends ChangeNotifier {
       unawaited(
         directSocket.addStream(socket).then(
               (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
-              onError: (Object e) =>
-                  _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+              onError: (Object e) {
+                DebugLogService.instance.record('rdp.transport.failed', error: e, fields: {'reason': 'socket_closed'});
+                return _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu);
+              },
             ),
       );
       unawaited(
         socket.addStream(directSocket).then(
               (_) => _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
-              onError: (Object e) =>
-                  _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
+              onError: (Object e) {
+                DebugLogService.instance.record('rdp.transport.failed', error: e, fields: {'reason': 'remote_closed'});
+                return _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu);
+              },
             ),
       );
     } else if (ws != null) {
       unawaited(
         ws.sink.addStream(socket.cast<Uint8List>()).then(
               (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
-              onError: (Object e) =>
-                  _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+              onError: (Object e) {
+                DebugLogService.instance.record('rdp.transport.failed', error: e, fields: {'reason': 'socket_closed'});
+                return _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu);
+              },
             ),
       );
       unawaited(
         socket.addStream(ws.stream.cast<List<int>>()).then(
               (_) => _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu),
-              onError: (Object e) =>
-                  _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu),
+              onError: (Object e) {
+                DebugLogService.instance.record('rdp.transport.failed', error: e, fields: {'reason': 'ws_closed'});
+                return _finish(session, reason: _TunnelEndReason.wsClosed, isRu: isRu);
+              },
             ),
       );
     }
@@ -419,14 +468,20 @@ class RdpConnectorService extends ChangeNotifier {
     String? name,
     bool isRu = true,
   }) async {
-    if (isBusy || isActive) return;
+    DebugLogService.instance.record('rdp.connect.intent');
+    if (isBusy || isActive) {
+      DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'busy'});
+      return;
+    }
     if (!_canRunMstsc) {
+      DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'platform'});
       _fail(isRu
           ? 'RDP-подключение доступно только на Windows и macOS'
           : 'RDP connection is available on Windows and macOS only');
       return;
     }
     if (grantId.isEmpty || token.isEmpty) {
+      DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'malformed_grant'});
       _fail(isRu
           ? 'Некорректный грант сессии'
           : 'Malformed session grant');
@@ -441,12 +496,15 @@ class RdpConnectorService extends ChangeNotifier {
     // 1. Адрес bridge-порта от сервера (токен — телом POST, не в query).
     final Map<String, dynamic> info;
     try {
-      info = await api.rdpBridgeInfo(grantId: grantId, token: token);
+      info = await _traceAwait('bridge_info', () => api.rdpBridgeInfo(grantId: grantId, token: token));
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
-    if (_connectGeneration != generation) return;
+    if (_connectGeneration != generation) {
+      DebugLogService.instance.record('rdp.connect.cancelled', fields: {'reason': 'superseded'});
+      return;
+    }
     final endpoint = rdpBridgeEndpoint(info);
     if (endpoint == null) {
       _fail(isRu
@@ -463,17 +521,17 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.tunnel);
     Socket bridge;
     try {
-      bridge = await Socket.connect(
+      bridge = await _traceAwait('bridge_tcp', () => Socket.connect(
         bridgeHost,
         bridgePort,
         timeout: const Duration(seconds: 10),
-      );
+      ));
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       return;
     }
     if (_connectGeneration != generation || _session != session) {
-      try { bridge.destroy(); } catch (_) {}
+      try { bridge.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       return;
     }
     session.remote = bridge;
@@ -487,11 +545,13 @@ class RdpConnectorService extends ChangeNotifier {
     bridge.add(utf8.encode('$token\n'));
     bool rejected;
     try {
-      rejected = await bridge.done.then((_) => true).timeout(
+      rejected = await _traceAwait('bridge_liveness_window', () => bridge.done.then((_) => true).timeout(
             rdpBridgeHandshakeWindow,
             onTimeout: () => false,
-          );
-    } catch (_) {
+          ));
+      DebugLogService.instance.record('rdp.bridge.liveness', fields: {'result': rejected ? 'eof' : 'no_eof', 'timeout_ms': rdpBridgeHandshakeWindow.inMilliseconds});
+    } catch (error) {
+      DebugLogService.instance.record('rdp.bridge.handshake.failed', error: error);
       rejected = true;
     }
     if (_session != session || _connectGeneration != generation) {
@@ -511,14 +571,14 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.listener);
     ServerSocket listener;
     try {
-      listener = await _bindLoopback();
+      listener = await _traceAwait('bind_loopback', _bindLoopback);
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardownBridge(session);
       return;
     }
     if (_session != session || _connectGeneration != generation) {
-      try { await listener.close(); } catch (_) {}
+      try { await listener.close(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       return;
     }
     session.listener = listener;
@@ -535,7 +595,7 @@ class RdpConnectorService extends ChangeNotifier {
     session.tempRdpFile = tempRdp;
     Process? mstsc;
     try {
-      mstsc = await _startRdpClient(host: host, port: port, tempRdpFile: tempRdp);
+      mstsc = await _traceAwait('launch_client', () => _startRdpClient(host: host, port: port, tempRdpFile: tempRdp));
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardownBridge(session);
@@ -569,10 +629,10 @@ class RdpConnectorService extends ChangeNotifier {
     _setPhase(RdpTunnelPhase.waitingClient, detail: '$host:$port');
     final Socket socket;
     try {
-      socket = await listener.first.timeout(
+      socket = await _traceAwait('accept_client', () => listener.first.timeout(
         const Duration(seconds: 45),
         onTimeout: () => throw TimeoutException('mstsc connect timeout'),
-      );
+      ));
     } catch (e) {
       if (_session != session || _connectGeneration != generation) return; // уже закрыто
       _fail(rdpConnectErrorText(e, isRu: isRu));
@@ -582,12 +642,12 @@ class RdpConnectorService extends ChangeNotifier {
     if (_session != session || _connectGeneration != generation) {
       try {
         socket.destroy();
-      } catch (_) {}
+      } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       return;
     }
     final clientIp = socket.remoteAddress.address;
     if (clientIp != '127.0.0.1' && clientIp != '127.0.0.2' && !clientIp.startsWith('127.')) {
-      try { socket.destroy(); } catch (_) {}
+      try { socket.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       _fail(isRu ? 'Отвергнуто внешнее подключение к порту RDP' : 'Rejected non-loopback connection to RDP port');
       await _quietTeardownBridge(session);
       return;
@@ -598,15 +658,19 @@ class RdpConnectorService extends ChangeNotifier {
     unawaited(
       socket.addStream(bridge).then(
             (_) => _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
-            onError: (Object e) =>
-                _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu),
+            onError: (Object e) {
+              DebugLogService.instance.record('rdp.transport.failed', error: e, fields: {'reason': 'socket_closed'});
+              return _finish(session, reason: _TunnelEndReason.socketClosed, isRu: isRu);
+            },
           ),
     );
     unawaited(
       bridge.addStream(socket).then(
             (_) => _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
-            onError: (Object e) =>
-                _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu),
+            onError: (Object e) {
+              DebugLogService.instance.record('rdp.transport.failed', error: e, fields: {'reason': 'remote_closed'});
+              return _finish(session, reason: _TunnelEndReason.remoteClosed, isRu: isRu);
+            },
           ),
     );
     _setPhase(RdpTunnelPhase.active, detail: '$host:$port');
@@ -614,6 +678,7 @@ class RdpConnectorService extends ChangeNotifier {
 
   /// Завершить сессию (кнопка «Завершить»/«Отменить», logout, dispose).
   Future<void> close({bool isRu = true}) async {
+    DebugLogService.instance.record('rdp.close.intent', fields: {'phase': _phase.name});
     _connectGeneration++;
     final s = _session;
     if (s == null) {
@@ -629,12 +694,13 @@ class RdpConnectorService extends ChangeNotifier {
         if (s.tempRdpFile!.existsSync()) {
           s.tempRdpFile!.deleteSync();
         }
-      } catch (_) {}
+      } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       s.tempRdpFile = null;
     }
   }
 
   void _fail(String text) {
+    DebugLogService.instance.record('rdp.connect.failed', fields: {'phase': _phase.name, 'duration_ms': _phaseWatch.elapsedMilliseconds});
     _connectGeneration++;
     final s = _session;
     if (s != null) {
@@ -649,6 +715,7 @@ class RdpConnectorService extends ChangeNotifier {
   Future<void> _finish(_RdpTunnelSession s,
       {required _TunnelEndReason reason, required bool isRu}) async {
     if (_session != s) return;
+    DebugLogService.instance.record('rdp.finish.started', fields: {'reason': reason.name, 'phase': _phase.name});
     _session = null;
     s.grantTtl?.cancel();
     _cleanupTempRdpFile(s);
@@ -657,18 +724,18 @@ class RdpConnectorService extends ChangeNotifier {
     if (reason != _TunnelEndReason.mstscExited) {
       try {
         s.mstsc?.kill();
-      } catch (_) {}
+      } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     }
     try {
       s.socket?.destroy();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     // Bridge-сокет (connectBridge): разрыв удалённой ноги гасит локальную.
     try {
       s.remote?.destroy();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     try {
       await s.ws?.sink.close();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     await _teardownListener(s);
     // Идемпотентное закрытие гранта: сервер уже закрыл его по разрыву
     // трубы — повторный close безвреден (§3.4).
@@ -700,8 +767,8 @@ class RdpConnectorService extends ChangeNotifier {
     final hook = closeGrantHandler;
     if (hook == null) return;
     try {
-      await hook(grantId).timeout(const Duration(seconds: 4));
-    } catch (_) {}
+      await _traceAwait('close_grant', () => hook(grantId).timeout(const Duration(seconds: 4)));
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
   }
 
   /// Хук закрытия гранта (api.rdpClose) — ставит AuthState при создании
@@ -711,7 +778,7 @@ class RdpConnectorService extends ChangeNotifier {
   Future<void> _teardownListener(_RdpTunnelSession s) async {
     try {
       await s.listener?.close();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     s.listener = null;
   }
 
@@ -720,10 +787,10 @@ class RdpConnectorService extends ChangeNotifier {
     _cleanupTempRdpFile(s);
     try {
       s.remote?.destroy();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     try {
       ws?.sink.close();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     await _teardownListener(s);
   }
 
@@ -734,10 +801,10 @@ class RdpConnectorService extends ChangeNotifier {
     _cleanupTempRdpFile(s);
     try {
       s.socket?.destroy();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     try {
       s.remote?.destroy();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     await _teardownListener(s);
   }
 
@@ -751,19 +818,19 @@ class RdpConnectorService extends ChangeNotifier {
     }
     try {
       s?.mstsc?.kill();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     try {
       s?.socket?.destroy();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     try {
       s?.remote?.destroy();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     try {
       s?.ws?.sink.close();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     try {
       s?.listener?.close();
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     super.dispose();
   }
 }
@@ -830,7 +897,8 @@ InternetAddress rdpLoopbackBindAddress() {
 Future<ServerSocket> _bindLoopback() async {
   try {
     return await ServerSocket.bind(rdpLoopbackBindAddress(), 0);
-  } on SocketException {
+  } on SocketException catch (error) {
+    DebugLogService.instance.record('rdp.listener.fallback', error: error, fields: {'transport': 'loopback'});
     // Экзотический стек без 127/8 — деградируем на стандартный loopback.
     return await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
   }
@@ -1019,6 +1087,7 @@ File? _createTempRdpFile({
     file.writeAsStringSync(buffer.toString(), flush: true);
     return file;
   } catch (e) {
+    DebugLogService.instance.record('rdp.client_config.failed', error: e);
     debugPrint('rdp: failed to create temporary .rdp file: $e');
     return null;
   }
@@ -1047,7 +1116,7 @@ Future<Process?> _startRdpClient({
         if (probe.exitCode == 0) {
           return await Process.start('true', []);
         }
-      } catch (_) {}
+      } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     }
     // Fallback на стандартную ассоциацию .rdp
     try {
@@ -1055,7 +1124,7 @@ Future<Process?> _startRdpClient({
       if (probeDefault.exitCode == 0) {
         return await Process.start('true', []);
       }
-    } catch (_) {}
+    } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
     return null;
   }
   if (tempRdpFile != null) {

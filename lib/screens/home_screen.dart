@@ -9,6 +9,7 @@ import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
 import '../app_version.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../services/deep_link_service.dart';
 import '../services/input_injector.dart';
 import '../services/rdp_actions.dart';
@@ -46,6 +47,25 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _rdpTargetsTimer;
   Map<String, dynamic>? _appUpdate;
 
+  Future<T> _traceAction<T>(String operation, Future<T> Function() action,
+      {String? sessionId}) async {
+    final watch = Stopwatch()..start();
+    final fields = <String, Object?>{'operation': operation,
+      'request_id': DebugLogService.instance.nextRequestId(), if (sessionId != null) 'session_id': sessionId};
+    DebugLogService.instance.record('ui.home.action.started', fields: fields);
+    try {
+      final result = await action();
+      DebugLogService.instance.record('ui.home.action.completed', fields: {
+        ...fields, 'result': 'await_returned', 'duration_ms': watch.elapsedMilliseconds,
+      });
+      return result;
+    } catch (error) {
+      DebugLogService.instance.record('ui.home.action.failed', error: error,
+          fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
+      rethrow;
+    }
+  }
+
   /// Сворачивание в трей имеет смысл только на десктопе (Windows/macOS/Linux):
   /// на мобильных платформах и в вебе системного трея нет.
   bool get _isDesktop =>
@@ -78,7 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _checkAppUpdate() async {
     final client = context.read<AuthState>().api;
     if (client == null) return;
-    final update = await client.getAppVersion();
+    final update = await _traceAction('check_update', client.getAppVersion);
     if (!mounted || update == null) return;
     final latest = update['latest']?.toString() ?? '';
     if (!isAppUpdateAvailable(appVersion, latest)) return;
@@ -130,13 +150,18 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Применение разобранной ссылки: ветвление по контракту (T6 target /
   /// легаси grant) + общий гейт занятости туннеля.
   Future<void> _applyRdpDeepLink(AuthState auth, LigamentDeepLink link) async {
-    if (!mounted) return;
+    DebugLogService.instance.record('ui.home.rdp_deep_link.intent', fields: {'phase': link.kind == LigamentDeepLinkKind.target ? 'target' : 'bridge'});
+    if (!mounted) {
+      DebugLogService.instance.record('ui.home.rdp_deep_link.cancelled', fields: {'reason': 'unmounted'});
+      return;
+    }
     final s = context.stringsRead;
     final api = auth.api;
     final baseUrl = auth.serverUrl;
 
     // Живая/занятая RDP-сессия не срывается ради ссылки.
     if (auth.rdp.isBusy || auth.rdp.isActive) {
+      DebugLogService.instance.record('ui.home.rdp_deep_link.blocked', fields: {'reason': 'busy'});
       debugPrint('deep_link: rdp занят — ссылка отброшена');
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(content: Text(s.rdpDeepLinkBusy)),
@@ -151,6 +176,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // (RdpActions.connectRdp) с MFA, валидацией цели и проверкой самоподключения.
     if (link.kind == LigamentDeepLinkKind.target) {
       if (api == null || baseUrl == null) {
+        DebugLogService.instance.record('ui.home.rdp_deep_link.blocked', fields: {'reason': 'no_auth'});
         // Сессии нет — грант нечем авторизовать: понятный диалог входа.
         await _showDeepLinkInfoDialog(
             s.rdpDeepLinkNeedLoginTitle, s.rdpDeepLinkNeedLoginBody, s.close);
@@ -162,6 +188,7 @@ class _HomeScreenState extends State<HomeScreen> {
         orElse: () => <String, dynamic>{'id': targetId, 'name': name},
       );
       if (targetObj['is_self'] == true) {
+        DebugLogService.instance.record('ui.home.rdp_deep_link.blocked', fields: {'reason': 'self_target'});
         await _showDeepLinkInfoDialog(
             s.rdpSelfBtn, s.rdpSelfProhibited, s.close);
         return;
@@ -173,6 +200,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // Легаси: <grant_id>?t=<token> — bridge-грант веб-кабинета.
     final token = link.grantToken;
     if (api == null || baseUrl == null || token == null || link.grantId == null) {
+      DebugLogService.instance.record('ui.home.rdp_deep_link.blocked', fields: {'reason': 'incomplete_grant'});
       // Без токена гранта bridge-подключение невозможно (дизайн §5 —
       // токен не в URL не значит, что его можно достать из воздуха:
       // grant создан web-сессией, у приложения секрета нет).
@@ -215,6 +243,7 @@ class _HomeScreenState extends State<HomeScreen> {
       required String token,
       required String name,
       required bool isRu}) {
+    DebugLogService.instance.record('ui.home.bridge_connect.dispatched');
     unawaited(
       auth.rdp.connectBridge(
         api: api,
@@ -252,6 +281,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ready: ready,
             onDecision: (approve) {
               Navigator.of(context, rootNavigator: true).pop();
+              DebugLogService.instance.record('ui.home.browser_sso.decision', fields: {'operation': approve ? 'approve' : 'deny', 'result': 'dispatched'});
               context.read<AuthState>().resolveBrowserSso(approve);
             },
           ),
@@ -268,6 +298,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (!_modalShown) {
       _modalShown = true;
       final prompt = auth.activePrompt!;
+      DebugLogService.instance.record('ui.home.approval.open', fields: {'origin': 'prompt'});
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
           _modalShown = false;
@@ -291,6 +322,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (!_supportModalShown) {
       _supportModalShown = true;
       final prompt = auth.activeSupportPrompt!;
+      DebugLogService.instance.record('ui.home.support_approval.open', fields: {'session_id': prompt['session_id'], 'origin': 'prompt'});
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
           _supportModalShown = false;
@@ -311,6 +343,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (!_notificationModalShown) {
       _notificationModalShown = true;
       final notif = auth.activeNotificationPrompt!;
+      DebugLogService.instance.record('ui.home.notification.open', fields: {'origin': 'prompt'});
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
           _notificationModalShown = false;
@@ -395,7 +428,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(width: 8),
           OutlinedButton(
-            onPressed: () => rdp.close(isRu: isRu),
+            onPressed: () => _traceAction('rdp_close', () => rdp.close(isRu: isRu)),
             style: OutlinedButton.styleFrom(
               foregroundColor: active ? const Color(0xFFEF4444) : const Color(0xFF94A3B8),
               side: BorderSide(color: active ? const Color(0xFFEF4444) : const Color(0xFF64748B)),
@@ -416,14 +449,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _connectAsOperator(AuthState auth, Map<String, dynamic> sess) async {
     final sessId = sess['id']?.toString();
-    if (sessId == null || _connectingToSession) return;
+    DebugLogService.instance.record('ui.home.operator_connect.intent', fields: {'session_id': sessId});
+    if (sessId == null || _connectingToSession) {
+      DebugLogService.instance.record('ui.home.operator_connect.blocked', fields: {'reason': _connectingToSession ? 'busy' : 'missing_session'});
+      return;
+    }
 
     setState(() => _connectingToSession = true);
     try {
       final Widget screen;
       if (sess['sos_v2'] == true) {
         // SOS через Link-агент: claim даёт сессию и цифры, экран стартует её через /start.
-        final claim = await auth.claimSOSRequest(sessId);
+        final claim = await _traceAction('claim_sos', () => auth.claimSOSRequest(sessId));
         final sessionId = claim['session_id']?.toString() ?? '';
         final agentId = claim['agent_id']?.toString() ?? '';
         if (sessionId.isEmpty || agentId.isEmpty) {
@@ -447,7 +484,7 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         );
       } else {
-        final res = await auth.connectToSupportSession(sessId);
+        final res = await _traceAction('connect_support', () => auth.connectToSupportSession(sessId), sessionId: sessId);
         screen = SupportOperatorScreen(
           sessionId: sessId,
           numberMatch: res['number_match']?.toString(),
@@ -468,10 +505,11 @@ class _HomeScreenState extends State<HomeScreen> {
             await Future.delayed(const Duration(milliseconds: 50));
             await windowManager.setSize(const Size(440, 720));
             WidgetsBinding.instance.scheduleFrame();
-          } catch (_) {}
+          } catch (error) { DebugLogService.instance.record('ui.home.window_restore.failed', error: error); }
         }
       }
     } catch (e) {
+      DebugLogService.instance.record('ui.home.operator_connect.failed', error: e, fields: {'session_id': sessId});
       if (mounted) {
         final errText = auth.isRu ? 'Ошибка подключения: $e' : 'Connection error: $e';
         ScaffoldMessenger.of(context).showSnackBar(
@@ -489,6 +527,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _showQueueChatModal(BuildContext context, AuthState auth, Map<String, dynamic> sess) async {
     final sessId = sess['id']?.toString();
     if (sessId == null) return;
+    DebugLogService.instance.record('ui.home.queue_chat.open', fields: {'session_id': sessId});
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SupportOperatorScreen(
@@ -504,7 +543,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await Future.delayed(const Duration(milliseconds: 50));
         await windowManager.setSize(const Size(440, 720));
         WidgetsBinding.instance.scheduleFrame();
-      } catch (_) {}
+      } catch (error) { DebugLogService.instance.record('ui.home.window_restore.failed', error: error); }
     }
   }
 
@@ -531,6 +570,7 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (idx) {
+          DebugLogService.instance.record('ui.home.tab.select', fields: {'code': idx});
           setState(() => _currentIndex = idx);
           if (idx == 2) {
             final auth = context.read<AuthState>();
@@ -702,15 +742,23 @@ class _HomeScreenState extends State<HomeScreen> {
               tooltip: s.notificationsTooltip,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              onPressed: () => setState(() => _currentIndex = 1),
+              onPressed: () {
+                DebugLogService.instance.record('ui.home.notifications.open');
+                setState(() => _currentIndex = 1);
+              },
             ),
             const SizedBox(width: 6),
             ElevatedButton.icon(
               onPressed: () {
-                showDialog(
+                DebugLogService.instance.record('ui.home.sos.open');
+                showDialog<bool>(
                   context: context,
                   builder: (_) => const SupportDialog(),
-                );
+                ).then((submitted) {
+                  DebugLogService.instance.record('ui.home.sos.closed', fields: {
+                    'result': submitted == true ? 'submitted' : 'cancelled',
+                  });
+                });
               },
               icon: const Icon(Icons.support_agent, size: 16),
               label: const Text('SOS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
@@ -734,7 +782,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 tooltip: s.trayMinimize,
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                onPressed: () => windowManager.hide(),
+                onPressed: () => _traceAction('minimize', windowManager.hide),
               ),
             ],
           ],
@@ -750,7 +798,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
       ),
       body: RefreshIndicator(
-        onRefresh: () => auth.refreshAll(),
+        onRefresh: () => _traceAction('manual_refresh', auth.refreshAll),
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -813,7 +861,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   IconButton(
                     icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF94A3B8)),
                     tooltip: isRu ? 'Обновить очередь' : 'Refresh queue',
-                    onPressed: () => auth.loadSupportQueue(),
+                    onPressed: () => _traceAction('refresh_queue_cycle', auth.loadSupportQueue),
                   ),
                 ],
               ),
@@ -1100,6 +1148,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         trailing: ElevatedButton(
           onPressed: () {
+            DebugLogService.instance.record('ui.home.approval.open', fields: {
+              'origin': 'manual', 'result': _modalShown ? 'blocked' : 'requested',
+            });
             if (_modalShown) return;
             _modalShown = true;
             final promptData = {
@@ -1121,6 +1172,9 @@ class _HomeScreenState extends State<HomeScreen> {
               barrierDismissible: true,
               builder: (_) => ApprovalModal(prompt: promptData),
             ).then((_) {
+              DebugLogService.instance.record('ui.home.approval.closed', fields: {
+                'origin': 'manual', 'result': 'dialog_returned',
+              });
               _modalShown = false;
               if (mounted) {
                 currentAuth.dismissPrompt(ch['id']?.toString());
@@ -1216,7 +1270,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(width: 8),
           OutlinedButton(
-            onPressed: () => auth.endSupport(),
+            onPressed: () => _traceAction('end_support_local_cleanup', auth.endSupport, sessionId: auth.support.activeSessionId),
             style: OutlinedButton.styleFrom(
               foregroundColor: const Color(0xFFEF4444),
               side: const BorderSide(color: Color(0xFFEF4444)),
@@ -1363,12 +1417,16 @@ class _HomeScreenState extends State<HomeScreen> {
           if (isAuthorizing && auth.activeSupportPrompt != null) ...[
             ElevatedButton.icon(
               onPressed: () {
+                DebugLogService.instance.record('ui.home.support_approval.open', fields: {'origin': 'manual'});
                 _supportModalShown = true;
                 showDialog(
                   context: context,
                   barrierDismissible: false,
                   builder: (_) => SupportApprovalModal(prompt: auth.activeSupportPrompt!),
                 ).whenComplete(() {
+                  DebugLogService.instance.record('ui.home.support_approval.closed', fields: {
+                    'origin': 'manual', 'result': 'dialog_returned',
+                  });
                   _supportModalShown = false;
                 });
               },
@@ -1422,7 +1480,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(width: 4),
           ],
           OutlinedButton(
-            onPressed: () => auth.endSupport(),
+            onPressed: () => _traceAction('end_support_local_cleanup', auth.endSupport, sessionId: auth.support.activeSessionId),
             style: OutlinedButton.styleFrom(
               foregroundColor: isActive ? const Color(0xFFEF4444) : const Color(0xFF94A3B8),
               side: BorderSide(
@@ -1444,6 +1502,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showInSessionChatModal(BuildContext context, AuthState auth) {
+    DebugLogService.instance.record('ui.home.chat.open', fields: {'session_id': auth.support.activeSessionId});
     auth.support.markChatAsRead();
     final textController = TextEditingController();
     final scrollController = ScrollController();
@@ -1640,6 +1699,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                             ),
                             onSubmitted: (val) {
+                              DebugLogService.instance.record('ui.home.chat.submit', fields: {'session_id': auth.support.activeSessionId, 'result': val.trim().isNotEmpty ? 'dispatched' : 'empty'});
                               if (val.trim().isNotEmpty) {
                                 auth.support.sendChatMessage(
                                   val.trim(),
@@ -1662,6 +1722,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           icon: const Icon(Icons.send, color: Color(0xFF38BDF8)),
                           onPressed: () {
                             final val = textController.text.trim();
+                            DebugLogService.instance.record('ui.home.chat.send', fields: {'session_id': auth.support.activeSessionId, 'result': val.isNotEmpty ? 'dispatched' : 'empty'});
                             if (val.isNotEmpty) {
                               auth.support.sendChatMessage(
                                 val,
@@ -1689,12 +1750,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// m-4: выбор файла и отправка инженеру через SupportService.sendFile.
   Future<void> _pickAndSendFile(BuildContext context, AuthState auth) async {
+    final watch = Stopwatch()..start();
+    var phase = 'pick';
+    final fields = <String, Object?>{'session_id': auth.support.activeSessionId};
+    DebugLogService.instance.record('ui.home.file_send.started', fields: fields);
     try {
       final result = await FilePicker.platform.pickFiles(allowMultiple: false);
       final path = result?.files.single.path;
-      if (path == null || path.isEmpty) return;
+      if (path == null || path.isEmpty) {
+        DebugLogService.instance.record('ui.home.file_send.cancelled', fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
+        return;
+      }
+      phase = 'send';
+      DebugLogService.instance.record('ui.home.file_send.selected', fields: {...fields, 'count': result!.files.length, 'bytes': result.files.single.size});
       await auth.support.sendFile(File(path));
+      DebugLogService.instance.record('ui.home.file_send.completed', fields: {...fields, 'result': 'send_future_returned', 'duration_ms': watch.elapsedMilliseconds});
     } catch (e) {
+      DebugLogService.instance.record('ui.home.file_send.failed', error: e, fields: {...fields, 'phase': phase, 'duration_ms': watch.elapsedMilliseconds});
       debugPrint('home_screen: ошибка выбора файла: $e');
     }
   }
@@ -1705,6 +1777,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () {
+          DebugLogService.instance.record('ui.home.chat.quick_reply', fields: {'session_id': auth.support.activeSessionId, 'result': 'dispatched'});
           auth.support.sendChatMessage(
             text,
             senderName: auth.displayName,
@@ -1727,6 +1800,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showReceivedFilesModal(BuildContext context, AuthState auth) {
+    DebugLogService.instance.record('ui.home.received_files.open', fields: {'session_id': auth.support.activeSessionId, 'count': auth.support.receivedFiles.length});
     final support = auth.support;
     final isRu = auth.isRu;
 
@@ -1868,14 +1942,33 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openFolder(String path) {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.home.folder_open.started');
+    // Observe the existing fire-and-forget launcher without awaiting it.
+    void observe(Future<ProcessResult> process) {
+      unawaited(process.then<void>((result) {
+        DebugLogService.instance.record('ui.home.folder_open.completed', fields: {
+          'code': result.exitCode, 'result': result.exitCode == 0 ? 'launcher_returned' : 'launcher_failed',
+          'duration_ms': watch.elapsedMilliseconds,
+        });
+      }, onError: (Object error) {
+        DebugLogService.instance.record('ui.home.folder_open.failed', error: error,
+            fields: {'duration_ms': watch.elapsedMilliseconds});
+      }));
+    }
     try {
       if (Platform.isWindows) {
-        Process.run('explorer.exe', [path]);
+        observe(Process.run('explorer.exe', [path]));
       } else if (Platform.isMacOS) {
-        Process.run('open', [path]);
+        observe(Process.run('open', [path]));
       } else if (Platform.isLinux) {
-        Process.run('xdg-open', [path]);
+        observe(Process.run('xdg-open', [path]));
+      } else {
+        DebugLogService.instance.record('ui.home.folder_open.blocked', fields: {'reason': 'platform'});
       }
-    } catch (_) {}
+    } catch (error) {
+      DebugLogService.instance.record('ui.home.folder_open.failed', error: error,
+          fields: {'duration_ms': watch.elapsedMilliseconds});
+    }
   }
 }

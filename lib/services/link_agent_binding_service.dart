@@ -5,6 +5,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
+import 'debug_log_service.dart';
+
 class LinkAgentBindingService {
   static const MethodChannel _channel = MethodChannel('ligament/link_agent');
 
@@ -12,33 +14,50 @@ class LinkAgentBindingService {
     required String serverUrl,
     required String enrollmentToken,
   }) async {
-    final uri = Uri.tryParse(serverUrl.trim());
-    if (uri == null ||
-        uri.scheme != 'https' ||
-        uri.host.isEmpty ||
-        uri.userInfo.isNotEmpty ||
-        uri.hasQuery ||
-        uri.hasFragment ||
-        serverUrl.length > 2048) {
-      throw const FormatException('Invalid Link server URL');
+    final watch = Stopwatch()..start();
+    var phase = 'validate_server';
+    DebugLogService.instance.record('link.binding.started');
+    try {
+      final uri = Uri.tryParse(serverUrl.trim());
+      if (uri == null ||
+          uri.scheme != 'https' ||
+          uri.host.isEmpty ||
+          uri.userInfo.isNotEmpty ||
+          uri.hasQuery ||
+          uri.hasFragment ||
+          serverUrl.length > 2048) {
+        throw const FormatException('Invalid Link server URL');
+      }
+      phase = 'validate_credential';
+      if (enrollmentToken.length != 64 ||
+          !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(enrollmentToken)) {
+        throw const FormatException('Invalid Link enrollment token');
+      }
+      phase = 'local_agent';
+      DebugLogService.instance.record('link.binding.agent.started', fields: {
+        'transport': Platform.isWindows ? 'named_pipe' : 'unix_socket',
+        'server': uri.host,
+      });
+      final fingerprint = Platform.isWindows
+          ? await _bindWindows(serverUrl.trim(), enrollmentToken)
+          : (Platform.isLinux || Platform.isMacOS)
+              ? await _bindUnix(serverUrl.trim(), enrollmentToken)
+              : throw UnsupportedError('Link host binding is not supported here');
+      phase = 'validate_response';
+      if (fingerprint == null ||
+          !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(fingerprint)) {
+        throw const FormatException('Link agent returned an invalid fingerprint');
+      }
+      DebugLogService.instance.record('link.binding.completed', fields: {
+        'duration_ms': watch.elapsedMilliseconds,
+      });
+      return fingerprint;
+    } catch (error) {
+      DebugLogService.instance.record('link.binding.failed', error: error, fields: {
+        'phase': phase, 'duration_ms': watch.elapsedMilliseconds,
+      });
+      rethrow;
     }
-    if (enrollmentToken.length != 64 ||
-        !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(enrollmentToken)) {
-      throw const FormatException('Invalid Link enrollment token');
-    }
-    final fingerprint = Platform.isWindows
-        ? await _bindWindows(
-            serverUrl.trim(),
-            enrollmentToken,
-          )
-        : (Platform.isLinux || Platform.isMacOS)
-            ? await _bindUnix(serverUrl.trim(), enrollmentToken)
-            : throw UnsupportedError('Link host binding is not supported here');
-    if (fingerprint == null ||
-        !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(fingerprint)) {
-      throw const FormatException('Link agent returned an invalid fingerprint');
-    }
-    return fingerprint;
   }
 
   Future<String?> _bindWindows(String serverUrl, String enrollmentToken) =>
@@ -51,11 +70,14 @@ class LinkAgentBindingService {
       );
 
   Future<String?> _bindUnix(String serverUrl, String enrollmentToken) async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('link.binding.ensure_agent.started');
     if (Platform.isMacOS) {
       await _channel.invokeMethod<void>('ensureMacAgentRunning');
     } else if (Platform.isLinux) {
       await _ensureLinuxAgentRunning();
     }
+    DebugLogService.instance.record('link.binding.ensure_agent.completed', fields: {'duration_ms': watch.elapsedMilliseconds});
     final uid = await _currentUnixUID();
     final socketPath = linkAgentBindingSocketPath(uid);
     final socket = await _connectUnixBindingSocket(socketPath);
@@ -74,11 +96,13 @@ class LinkAgentBindingService {
       frame.setRange(4, frame.length, payload);
       socket.add(frame);
       await socket.flush();
+      DebugLogService.instance.record('link.binding.request.flushed', fields: {'sent_bytes': frame.length, 'result': 'local_flush'});
 
       final reader = _UnixBindingFrameReader(socket);
       final responseBytes = await reader.readFrame().timeout(
             const Duration(seconds: 35),
           );
+      DebugLogService.instance.record('link.binding.response.received', fields: {'response_bytes': responseBytes.length, 'elapsed_ms': watch.elapsedMilliseconds});
       final decoded = jsonDecode(utf8.decode(responseBytes));
       if (decoded is! Map || decoded['ok'] != true) {
         throw StateError('Link agent rejected the local binding request');
@@ -119,7 +143,8 @@ class LinkAgentBindingService {
       try {
         return await Socket.connect(address, 0,
             timeout: const Duration(seconds: 1));
-      } on SocketException {
+      } on SocketException catch (error) {
+        DebugLogService.instance.record('link.binding.socket.retry', error: error, fields: {'phase': 'connect'});
         if (!DateTime.now().isBefore(deadline)) rethrow;
         await Future<void>.delayed(const Duration(milliseconds: 150));
       }

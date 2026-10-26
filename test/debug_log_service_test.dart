@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ligament_authenticator/api/client.dart';
 import 'package:ligament_authenticator/services/debug_log_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -64,11 +66,12 @@ void main() {
   test('logs only safe error fields and excludes exception messages', () async {
     final logs = localService();
     await logs.setEnabled(true);
-    logs.record('auth.storage.failed', error: PlatformException(
-      code: 'storage_unavailable',
-      message: 'Bearer secret-token password=secret typed-text',
-      details: {'token': 'secret-token'},
-    ));
+    logs.record('auth.storage.failed',
+        error: PlatformException(
+          code: 'storage_unavailable',
+          message: 'Bearer secret-token password=secret typed-text',
+          details: {'token': 'secret-token'},
+        ));
     logs.record('raw\npassword=secret');
     await logs.flush();
 
@@ -78,6 +81,128 @@ void main() {
     expect(content, isNot(contains('secret-token')));
     expect(content, isNot(contains('password=')));
     expect(content, isNot(contains('typed-text')));
+  });
+
+  test('context keeps diagnostic facts and rejects payloads and secrets',
+      () async {
+    final logs = localService();
+    await logs.setEnabled(true);
+    logs.record('http.response', fields: {
+      'request_id': 17,
+      'method': 'POST',
+      'route': '/api/v1/app/link/sessions/{id}/signal',
+      'server': '2fa.example.test',
+      'http_status': 403,
+      'duration_ms': 250,
+      'session_id': '10000000-0000-4000-8000-000000000001',
+      'reason': 'access_denied',
+      'connected': false,
+      'token': 'private-token',
+      'password': 'private-password',
+      'sdp': 'private-sdp',
+      'message': 'private-input',
+      'query': 'token=private-token',
+    });
+    await logs.flush();
+    final output = await File(logs.path!).readAsString();
+    expect(output, contains('request_id=17'));
+    expect(output, contains('http_status=403'));
+    expect(output, contains('duration_ms=250'));
+    expect(output, contains('reason=access_denied'));
+    expect(output, contains('connected=false'));
+    expect(output, contains('route=/api/v1/app/link/sessions/{id}/signal'));
+    for (final secret in [
+      'private-token',
+      'private-password',
+      'private-sdp',
+      'private-input'
+    ]) {
+      expect(output, isNot(contains(secret)));
+    }
+    expect(
+        DebugLogService.safeFields({
+          'reason': 'ab' * 32,
+          'route': '/api/v1/app/login?token=secret',
+          'server': 'user:secret@host',
+          'session_id': 'not-a-uuid',
+          'duration_ms': double.infinity,
+        }),
+        isEmpty);
+  });
+
+  test('native channel receives structured context without raw payloads',
+      () async {
+    final entries = <Map<String, dynamic>>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'getState') return {'enabled': true, 'path': 'log'};
+      if (call.method == 'write') {
+        entries.add(Map<String, dynamic>.from(call.arguments as Map));
+      }
+      return true;
+    });
+    final logs = DebugLogService(nativeWindows: true, channel: channel);
+    await logs.initialize();
+    logs.record('operator.terminated', fields: {
+      'attempt': 2,
+      'origin': 'host_answer',
+      'reason': 'host_media_failed',
+      'frame_ready': false,
+      'clipboard': 'secret',
+    });
+    await logs.flush();
+    expect(entries.single['context'],
+        'attempt=2 origin=host_answer reason=host_media_failed frame_ready=false');
+    expect(entries.single.toString(), isNot(contains('secret')));
+  });
+
+  test('remote error labels are fixed protocol values, not arbitrary text',
+      () async {
+    final logs = localService();
+    await logs.setEnabled(true);
+    logs.record('http.rejected',
+        error: ApiException(403, 'private-error-secret'));
+    logs.record('http.rejected', error: ApiException(403, 'access_denied'));
+    await logs.flush();
+    final text = await File(logs.path!).readAsString();
+    expect(text, contains('error_code=http_403.unknown'));
+    expect(text, contains('error_code=http_403.access_denied'));
+    expect(text, isNot(contains('private-error-secret')));
+    for (final value in [
+      null,
+      284917,
+      '284917',
+      'Bearer-private-token',
+      'private_error_secret'
+    ]) {
+      expect(DebugLogService.protocolLabel(value), 'unknown');
+    }
+  });
+
+  test('slow native writer has a bounded queue and reports overflow', () async {
+    final blocked = Completer<void>();
+    final entries = <Map<String, dynamic>>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'getState') return {'enabled': true, 'path': 'log'};
+      if (call.method == 'write') {
+        if (entries.isEmpty) await blocked.future;
+        entries.add(Map<String, dynamic>.from(call.arguments as Map));
+      }
+      return true;
+    });
+    final logs = DebugLogService(nativeWindows: true, channel: channel);
+    await logs.initialize();
+    for (var i = 0; i < DebugLogService.maxPendingEntries + 37; i++) {
+      logs.record('ui.action', fields: {'count': i});
+    }
+    blocked.complete();
+    await logs.flush();
+    expect(entries.where((entry) => entry['event'] == 'ui.action').length,
+        DebugLogService.maxPendingEntries);
+    final dropped =
+        entries.singleWhere((entry) => entry['event'] == 'debug.queue.dropped');
+    expect(dropped['context'], 'count=37');
   });
 
   test('rotates current file and keeps one backup', () async {
@@ -98,7 +223,8 @@ void main() {
     expect(await File('${file.path}.2').exists(), isFalse);
   });
 
-  test('native Windows toggle is authoritative and preserves failed state', () async {
+  test('native Windows toggle is authoritative and preserves failed state',
+      () async {
     var enabled = true;
     var rejectWrite = false;
     final events = <Map<String, dynamic>>[];
@@ -108,11 +234,15 @@ void main() {
         case 'getState':
           return {'enabled': enabled, 'path': 'app-debug.log'};
         case 'setEnabled':
-          if (rejectWrite) throw PlatformException(code: 'registry_write_failed');
+          if (rejectWrite) {
+            throw PlatformException(code: 'registry_write_failed');
+          }
           enabled = call.arguments as bool;
           return {'enabled': enabled, 'path': 'app-debug.log'};
         case 'write':
-          if (enabled) events.add(Map<String, dynamic>.from(call.arguments as Map));
+          if (enabled) {
+            events.add(Map<String, dynamic>.from(call.arguments as Map));
+          }
           return enabled;
       }
       return null;
@@ -120,8 +250,9 @@ void main() {
     final logs = DebugLogService(nativeWindows: true, channel: channel);
     await logs.initialize();
     expect(logs.enabled, isTrue);
-    logs.record('native.write', error: const SocketException('secret',
-        osError: OSError('private error', 5)));
+    logs.record('native.write',
+        error: const SocketException('secret',
+            osError: OSError('private error', 5)));
     await logs.flush();
     expect(events.single['os_error'], 5);
     expect(events.single.containsKey('message'), isFalse);
@@ -140,7 +271,9 @@ void main() {
     final events = <String>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
-      if (call.method == 'getState') return {'enabled': false, 'path': 'link-debug.log'};
+      if (call.method == 'getState') {
+        return {'enabled': false, 'path': 'link-debug.log'};
+      }
       if (call.method == 'write' && enabled) {
         events.add((call.arguments as Map)['event'] as String);
       }

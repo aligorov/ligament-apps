@@ -18,7 +18,8 @@ Value DiagnosticsState() {
 
 bool WriteDiagnostic(const Value* arguments) {
   const auto* fields = arguments ? std::get_if<Map>(arguments) : nullptr;
-  if (!fields || fields->empty() || fields->size() > 4) return false;
+  if (!fields || fields->empty() || fields->size() > 5) return false;
+  const std::string* context = nullptr;
   const std::string* event = nullptr;
   const std::string* error_type = nullptr;
   const std::string* error_code = nullptr;
@@ -40,10 +41,12 @@ bool WriteDiagnostic(const Value* arguments) {
       error_type = text;
     else if (*name == "error_code" && debug_log::ValidErrorCode(*text))
       error_code = text;
+    else if (*name == "context" && debug_log::ValidContext(*text)) context = text;
     else return false;
   }
   return event && debug_log::Write(*event, error_type ? *error_type : "",
-                                   error_code ? *error_code : "", os_error);
+                                   error_code ? *error_code : "", os_error,
+                                   context ? *context : "");
 }
 
 void HandleDiagnostics(const flutter::MethodCall<Value>& call,

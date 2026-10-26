@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n/app_strings.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../services/rdp_actions.dart';
 import '../widgets/rdp_target_tile.dart';
 import 'link_catalog_screen.dart';
@@ -37,17 +38,36 @@ class _AppsScreenState extends State<AppsScreen> {
   }
 
   Future<void> _refresh(AuthState auth) async {
-    await Future.wait([
-      auth.loadAllowedApps(),
-      if (auth.rdpFeatureAvailable) auth.loadRdpTargets(),
-      auth.loadLinkHosts(),
-    ]);
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.apps.refresh.started');
+    try {
+      await Future.wait([
+        auth.loadAllowedApps(),
+        if (auth.rdpFeatureAvailable) auth.loadRdpTargets(),
+        auth.loadLinkHosts(),
+      ]);
+      // Loaders handle their own errors; this is completion of the refresh cycle.
+      DebugLogService.instance.record('ui.apps.refresh.completed', fields: {
+        'result': 'cycle_returned',
+        'count': auth.allowedApps.length + auth.rdpTargets.length + auth.linkHosts.length,
+        'duration_ms': watch.elapsedMilliseconds,
+      });
+    } catch (error) {
+      DebugLogService.instance.record('ui.apps.refresh.failed', error: error,
+          fields: {'duration_ms': watch.elapsedMilliseconds});
+      rethrow;
+    }
   }
 
   Future<void> _launchApp(BuildContext context, String url) async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.apps.launch.started');
     final s = context.stringsRead;
     final uri = Uri.tryParse(url);
     if (uri == null || (!uri.isScheme('http') && !uri.isScheme('https'))) {
+      DebugLogService.instance.record('ui.apps.launch.blocked', fields: {
+        'reason': 'scheme', 'duration_ms': watch.elapsedMilliseconds,
+      });
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${s.appsSchemeBlocked}: $url')),
@@ -55,14 +75,27 @@ class _AppsScreenState extends State<AppsScreen> {
       }
       return;
     }
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${s.appsCantOpen}: $url')),
-        );
+    try {
+      if (await canLaunchUrl(uri)) {
+        final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+        DebugLogService.instance.record('ui.apps.launch.completed', fields: {
+          'result': launched ? 'launcher_accepted' : 'launcher_rejected',
+          'duration_ms': watch.elapsedMilliseconds,
+        });
+      } else {
+        DebugLogService.instance.record('ui.apps.launch.blocked', fields: {
+          'reason': 'launcher_unavailable', 'duration_ms': watch.elapsedMilliseconds,
+        });
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${s.appsCantOpen}: $url')),
+          );
+        }
       }
+    } catch (error) {
+      DebugLogService.instance.record('ui.apps.launch.failed', error: error,
+          fields: {'duration_ms': watch.elapsedMilliseconds});
+      rethrow;
     }
   }
 
@@ -131,11 +164,12 @@ class _AppsScreenState extends State<AppsScreen> {
               child: InkWell(
                 key: const ValueKey('apps-open-link-catalog'),
                 borderRadius: BorderRadius.circular(14),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const LinkCatalogScreen(),
-                  ),
-                ),
+                onTap: () {
+                  DebugLogService.instance.record('ui.apps.catalog.open');
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(builder: (_) => const LinkCatalogScreen()),
+                  );
+                },
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 12),
@@ -197,7 +231,10 @@ class _AppsScreenState extends State<AppsScreen> {
                   // Поле мгновенного поиска
                   TextField(
                     controller: _searchController,
-                    onChanged: (val) => setState(() => _query = val),
+                    onChanged: (val) {
+                      DebugLogService.instance.record('ui.apps.search.changed');
+                      setState(() => _query = val);
+                    },
                     style: const TextStyle(color: Colors.white, fontSize: 14),
                     decoration: InputDecoration(
                       hintText: isRu
@@ -212,6 +249,7 @@ class _AppsScreenState extends State<AppsScreen> {
                               icon: const Icon(Icons.clear_rounded,
                                   color: Color(0xFF94A3B8), size: 18),
                               onPressed: () {
+                                DebugLogService.instance.record('ui.apps.search.clear');
                                 _searchController.clear();
                                 setState(() => _query = '');
                               },
@@ -641,7 +679,10 @@ class _AppsScreenState extends State<AppsScreen> {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => setState(() => _selectedFilter = value),
+        onTap: () {
+          DebugLogService.instance.record('ui.apps.filter.select', fields: {'state': value});
+          setState(() => _selectedFilter = value);
+        },
         borderRadius: BorderRadius.circular(20),
         child: Ink(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -731,6 +772,7 @@ class _AppsScreenState extends State<AppsScreen> {
               const SizedBox(height: 16),
               ElevatedButton.icon(
                 onPressed: () {
+                  DebugLogService.instance.record('ui.apps.filters.reset');
                   _searchController.clear();
                   setState(() {
                     _query = '';

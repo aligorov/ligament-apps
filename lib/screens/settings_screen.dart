@@ -30,6 +30,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   DebugLogService get _debugLogs => widget.debugLogs ?? DebugLogService.instance;
 
+  Future<T> _traceAction<T>(String operation, Future<T> Function() action,
+      {String? state}) async {
+    final watch = Stopwatch()..start();
+    final fields = <String, Object?>{'operation': operation,
+      'request_id': _debugLogs.nextRequestId(), if (state != null) 'state': state};
+    _debugLogs.record('ui.settings.action.started', fields: fields);
+    try {
+      final result = await action();
+      _debugLogs.record('ui.settings.action.completed', fields: {
+        ...fields, 'result': 'future_returned', 'duration_ms': watch.elapsedMilliseconds,
+      });
+      return result;
+    } catch (error) {
+      _debugLogs.record('ui.settings.action.failed', error: error,
+          fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
+      rethrow;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -46,7 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _checkAppUpdate() async {
     final client = context.read<AuthState>().api;
     if (client == null) return;
-    final v = await client.getAppVersion();
+    final v = await _traceAction('check_update', client.getAppVersion);
     if (!mounted || v == null) return;
     final latest = v['latest']?.toString() ?? '';
     if (isAppUpdateAvailable(appVersion, latest)) {
@@ -174,7 +193,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     IconButton(
                       icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF38BDF8)),
-                      onPressed: () => auth.refreshProfile(),
+                      onPressed: () => _traceAction('refresh_profile', auth.refreshProfile),
                     ),
                   ],
                 ),
@@ -210,8 +229,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         final uri = Uri.tryParse('$base/me');
                         if (uri != null) {
                           try {
-                            await launchUrl(uri, mode: LaunchMode.externalApplication);
-                          } catch (_) {}
+                            final launched = await _traceAction('web_cabinet', () => launchUrl(uri, mode: LaunchMode.externalApplication));
+                            _debugLogs.record('ui.settings.web_cabinet.result', fields: {'result': launched ? 'launcher_accepted' : 'launcher_rejected'});
+                          } catch (error) {
+                            _debugLogs.record('ui.settings.web_cabinet.failed', error: error);
+                          }
                         }
                       },
                       icon: const Icon(Icons.open_in_new, size: 16),
@@ -259,13 +281,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: (val) async {
                     final curr = auth.notificationSettings;
                     try {
-                      await auth.updateNotificationSettings(
+                      await _traceAction('notify_login_success', () => auth.updateNotificationSettings(
                         loginSuccess: val,
                         loginDenied: curr['login_denied'] != false,
                         notifyTG: curr['notify_tg'] != false,
                         notifyEmail: curr['notify_email'] != false,
-                      );
-                    } catch (_) {
+                      ), state: val ? 'enabled' : 'disabled');
+                    } catch (error) {
+                      _debugLogs.record('ui.settings.notifications.failed', error: error);
                       if (context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
@@ -284,13 +307,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: (val) async {
                     final curr = auth.notificationSettings;
                     try {
-                      await auth.updateNotificationSettings(
+                      await _traceAction('notify_login_denied', () => auth.updateNotificationSettings(
                         loginSuccess: curr['login_success'] != false,
                         loginDenied: val,
                         notifyTG: curr['notify_tg'] != false,
                         notifyEmail: curr['notify_email'] != false,
-                      );
-                    } catch (_) {
+                      ), state: val ? 'enabled' : 'disabled');
+                    } catch (error) {
+                      _debugLogs.record('ui.settings.notifications.failed', error: error);
                       if (context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
@@ -312,13 +336,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: (val) async {
                     final curr = auth.notificationSettings;
                     try {
-                      await auth.updateNotificationSettings(
+                      await _traceAction('notify_telegram', () => auth.updateNotificationSettings(
                         loginSuccess: curr['login_success'] != false,
                         loginDenied: curr['login_denied'] != false,
                         notifyTG: val,
                         notifyEmail: curr['notify_email'] != false,
-                      );
-                    } catch (_) {
+                      ), state: val ? 'enabled' : 'disabled');
+                    } catch (error) {
+                      _debugLogs.record('ui.settings.notifications.failed', error: error);
                       if (context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
@@ -338,7 +363,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: s.browserSsoAutoTitle,
                   subtitle: s.browserSsoAutoSubtitle,
                   value: auth.browserSsoAutoApprove,
-                  onChanged: (val) => auth.setBrowserSsoAutoApprove(val),
+                  onChanged: (val) => _traceAction('browser_sso_auto', () => auth.setBrowserSsoAutoApprove(val), state: val ? 'enabled' : 'disabled'),
                 ),
                 _switchTile(
                   title: s.notifyViaEmail,
@@ -348,12 +373,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: auth.notificationSettings['notify_email'] != false,
                   onChanged: (val) {
                     final curr = auth.notificationSettings;
-                    auth.updateNotificationSettings(
+                    _traceAction('notify_email', () => auth.updateNotificationSettings(
                       loginSuccess: curr['login_success'] != false,
                       loginDenied: curr['login_denied'] != false,
                       notifyTG: curr['notify_tg'] != false,
                       notifyEmail: val,
-                    );
+                    ), state: val ? 'enabled' : 'disabled');
                   },
                 ),
                 const SizedBox(height: 12),
@@ -407,7 +432,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Expanded(
                       child: InkWell(
                         borderRadius: BorderRadius.circular(10),
-                        onTap: () => auth.setLocale('ru'),
+                        onTap: () => _traceAction('locale', () => auth.setLocale('ru'), state: 'ru'),
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                           decoration: BoxDecoration(
@@ -444,7 +469,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Expanded(
                       child: InkWell(
                         borderRadius: BorderRadius.circular(10),
-                        onTap: () => auth.setLocale('en'),
+                        onTap: () => _traceAction('locale', () => auth.setLocale('en'), state: 'en'),
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                           decoration: BoxDecoration(
@@ -550,7 +575,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     IconButton(
                       icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF38BDF8)),
-                      onPressed: () => auth.refreshRelays(),
+                      onPressed: () => _traceAction('refresh_relays', auth.refreshRelays),
                     ),
                   ],
                 ),
@@ -710,7 +735,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     IconButton(
                       icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF38BDF8)),
-                      onPressed: () => auth.checkPosture(),
+                      onPressed: () => _traceAction('check_posture', auth.checkPosture),
                     ),
                   ],
                 ),
@@ -812,7 +837,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // выход из аккаунта, поэтому GPO-политика AllowExit не ограничивает.
           if (isDesktop) ...[
             OutlinedButton.icon(
-              onPressed: () => windowManager.hide(),
+              onPressed: () => _traceAction('minimize', windowManager.hide),
               icon: const Icon(Icons.minimize),
               label: Text(s.trayMinimize),
               style: OutlinedButton.styleFrom(
@@ -918,8 +943,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _setDebugLogsEnabled(bool enabled) async {
     setState(() => _savingDebugLogs = true);
     try {
-      await _debugLogs.setEnabled(enabled);
-    } catch (_) {
+      await _traceAction('debug_logging', () => _debugLogs.setEnabled(enabled), state: enabled ? 'enabled' : 'disabled');
+    } catch (error) {
+      _debugLogs.record('ui.settings.debug_logging.failed', error: error);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(context.stringsRead.debugLogsSaveError)),
@@ -931,6 +957,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _handleLogout(AuthState auth, AppStrings s) async {
+    _debugLogs.record('ui.settings.logout.intent');
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -960,11 +987,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
 
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted) {
+      _debugLogs.record('ui.settings.logout.cancelled', fields: {'reason': !mounted ? 'unmounted' : 'dismissed'});
+      return;
+    }
 
     setState(() => _isLoggingOut = true);
     try {
-      await auth.logout();
+      await _traceAction('logout', auth.logout);
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const ConnectScreen()),
@@ -1001,7 +1031,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
 
     try {
-      final results = await auth.testNotificationDelivery();
+      final results = await _traceAction('test_delivery', auth.testNotificationDelivery);
+      _debugLogs.record('ui.settings.test_delivery.results', fields: {
+        'count': results.length,
+        'result': results.isEmpty ? 'no_deliveries' :
+            (results.every((r) => r['success'] == true) ? 'all_reported_success' : 'reported_failure'),
+      });
       if (context.mounted) {
         Navigator.of(context).pop(); // закрываем лоадер
         showDialog(

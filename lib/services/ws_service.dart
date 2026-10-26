@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
+import 'debug_log_service.dart';
+import 'support_service.dart' show supportDebugMessageType;
 
 typedef PushPromptCallback = void Function(Map<String, dynamic> prompt);
 typedef EndpointChangeCallback = void Function(String? endpoint, bool isRelay);
@@ -65,6 +67,7 @@ class WebSocketService {
       _channelFactory;
   WebSocketChannel? _channel;
   int _generation = 0;
+  int _connectionAttempt = 0;
   Timer? _reconnectTimer;
   Timer? _stableResetTimer;
   bool _disposed = false;
@@ -97,6 +100,16 @@ class WebSocketService {
   String? currentEndpoint;
   bool isUsingRelay = false;
 
+  void _wsLog(String event,
+      {Object? error, Map<String, Object?> fields = const {}}) {
+    DebugLogService.instance.record(event, error: error, fields: {
+      'attempt': _connectionAttempt,
+      'connected': _wasReady && _channel != null,
+      'transport': isUsingRelay ? 'relay' : 'wss',
+      ...fields,
+    });
+  }
+
   String? _primaryBaseUrl;
   String? _token;
   List<String> _fallbackUrls = [];
@@ -107,6 +120,17 @@ class WebSocketService {
     required String token,
     List<String> fallbackUrls = const [],
   }) {
+    final uri = Uri.tryParse(baseUrl);
+    _wsLog('ws.connect.request', fields: {
+      'server': uri == null
+          ? null
+          : uri.hasPort
+              ? '${uri.host}:${uri.port}'
+              : uri.host,
+      'method': 'GET',
+      'route': '/api/v1/app/ws',
+      'count': fallbackUrls.length
+    });
     _closeCurrentChannel();
     _disposed = false;
     _authFailed = false;
@@ -123,6 +147,7 @@ class WebSocketService {
     _generation++;
     final previous = _channel;
     _channel = null;
+    if (previous != null) _wsLog('ws.close', fields: {'result': 'requested'});
     previous?.sink.close();
     _stableResetTimer?.cancel();
   }
@@ -148,14 +173,30 @@ class WebSocketService {
 
     final targetUrl = candidates[_attemptIndex % candidates.length];
     final isRelay = (_attemptIndex % candidates.length) != 0;
+    _connectionAttempt++;
 
+    final watch = Stopwatch()..start();
+    final target = Uri.tryParse(targetUrl);
+    _wsLog('ws.connect.begin', fields: {
+      'server': target == null
+          ? null
+          : target.hasPort
+              ? '${target.host}:${target.port}'
+              : target.host,
+      'method': 'GET',
+      'route': isRelay ? '/api/v1/ws' : '/api/v1/app/ws',
+      'transport': isRelay ? 'relay' : 'wss',
+      'attempt': _connectionAttempt,
+      'timeout_ms': 4000
+    });
     var wsUrl = targetUrl.trim();
     if (wsUrl.startsWith('https://')) {
       wsUrl = 'wss://${wsUrl.substring(8)}';
     } else {
       // Открытый ws:// запрещён: заголовок Authorization с Bearer-токеном
       // не должен покидать устройство в открытом виде (в т.ч. на relay).
-      debugPrint('ws_service: кандидат "$targetUrl" пропущен: требуется https/wss');
+
+      _wsLog('ws.connect.blocked', fields: {'reason': 'insecure_scheme'});
       _scheduleReconnect(advanceCandidate: true);
       return;
     }
@@ -167,7 +208,6 @@ class WebSocketService {
     try {
       final uri = Uri.parse(wsUrl);
       if (uri.scheme != 'wss') {
-        debugPrint('ws_service: итоговый URL не wss — отказ');
         _scheduleReconnect(advanceCandidate: true);
         return;
       }
@@ -190,6 +230,13 @@ class WebSocketService {
       channel.ready.then((_) {
         if (!_isCurrent(generation, channel)) return;
         _wasReady = true;
+        _wsLog('ws.ready', fields: {
+          'duration_ms': watch.elapsedMilliseconds,
+          'server': uri.hasPort ? '${uri.host}:${uri.port}' : uri.host,
+          'method': 'GET',
+          'route': isRelay ? '/api/v1/ws' : '/api/v1/app/ws',
+          'transport': isRelay ? 'relay' : 'wss'
+        });
         _backoff.reset();
         _armStableReset(generation, channel);
         currentEndpoint = targetUrl;
@@ -198,7 +245,13 @@ class WebSocketService {
             isRelay ? _extractHost(targetUrl) : null, isRelay);
         onConnected?.call();
       }).catchError((Object e) {
-        debugPrint('ws_service: handshake с кандидатом не удался: $e');
+        _wsLog('ws.handshake.failed', error: e, fields: {
+          'duration_ms': watch.elapsedMilliseconds,
+          'server': uri.hasPort ? '${uri.host}:${uri.port}' : uri.host,
+          'method': 'GET',
+          'route': isRelay ? '/api/v1/ws' : '/api/v1/app/ws',
+        });
+
         if (!_isCurrent(generation, channel)) return;
         _channel = null;
         channel.sink.close();
@@ -217,6 +270,8 @@ class WebSocketService {
           if (_isCurrent(generation, channel)) _handleMessage(message);
         },
         onDone: () {
+          _wsLog('ws.done',
+              fields: {'code': channel.closeCode, 'origin': 'ws_state'});
           if (!_isCurrent(generation, channel)) return;
           _channel = null;
           _stableResetTimer?.cancel();
@@ -226,7 +281,8 @@ class WebSocketService {
           _scheduleReconnect(advanceCandidate: false);
         },
         onError: (err) {
-          debugPrint('ws_service: ошибка соединения: $err');
+          _wsLog('ws.error', error: err, fields: {'origin': 'ws_state'});
+
           if (!_isCurrent(generation, channel)) return;
           _channel = null;
           channel.sink.close();
@@ -241,7 +297,9 @@ class WebSocketService {
         cancelOnError: true,
       );
     } catch (e) {
-      debugPrint('ws_service: исключение при подключении: $e');
+      _wsLog('ws.exception',
+          error: e, fields: {'phase': 'connect_candidate', 'result': 'failed'});
+
       _scheduleReconnect(advanceCandidate: true);
     }
   }
@@ -253,11 +311,13 @@ class WebSocketService {
   bool _isUnauthorized(Object err) {
     final s = err.toString().toLowerCase();
     final is401 = RegExp(r'(^|[^0-9])401([^0-9]|$)').hasMatch(s);
-    return is401 || s.contains('unauthorized') || s.contains('connection denied');
+    return is401 ||
+        s.contains('unauthorized') ||
+        s.contains('connection denied');
   }
 
   void _handleUnauthorized() {
-    debugPrint('ws_service: 401 на WS — цикл реконнектов остановлен, выход в разлогин');
+    _wsLog('ws.auth.failed', fields: {'http_status': 401, 'result': 'stopped'});
     _authFailed = true;
     _channel = null;
     _reconnectTimer?.cancel();
@@ -273,7 +333,6 @@ class WebSocketService {
       if (_isCurrent(generation, channel)) {
         _backoff.reset();
         _attemptIndex = 0;
-        debugPrint('ws_service: ${_stableResetDelay.inSeconds}с стабильного соединения — backoff и индекс кандидатов сброшены');
       }
     });
   }
@@ -282,7 +341,9 @@ class WebSocketService {
     try {
       final u = Uri.parse(url);
       return u.host;
-    } catch (_) {
+    } catch (error) {
+      DebugLogService.instance.record('ws.exception',
+          error: error, fields: {'phase': 'extract_host', 'result': 'failed'});
       return url;
     }
   }
@@ -298,11 +359,14 @@ class WebSocketService {
       _attemptIndex++;
     }
     final delay = _backoff.nextDelay();
+    _wsLog('ws.reconnect.scheduled', fields: {
+      'timeout_ms': delay.inMilliseconds,
+      'operation': advanceCandidate ? 'advance_candidate' : 'same_candidate'
+    });
     // Считаем кандидатов без `!`: primary мог быть разобран disconnect'ом.
     final totalCandidates =
         (_primaryBaseUrl != null ? 1 : 0) + _fallbackUrls.length;
-    debugPrint('ws_service: повтор через ${delay.inMilliseconds}мс '
-        '(кандидат ${totalCandidates == 0 ? 0 : _attemptIndex % totalCandidates})');
+    _wsLog('ws.reconnect.candidates', fields: {'candidates': totalCandidates});
     _reconnectTimer = Timer(delay, () {
       if (!_disposed &&
           !_authFailed &&
@@ -315,8 +379,13 @@ class WebSocketService {
 
   void _handleMessage(dynamic message) {
     try {
-      final text = message is String ? message : utf8.decode(message as List<int>);
+      final text =
+          message is String ? message : utf8.decode(message as List<int>);
       final data = jsonDecode(text) as Map<String, dynamic>;
+      _wsLog('ws.message.inbound', fields: {
+        'message_type': supportDebugMessageType(data['type']),
+        'bytes': utf8.encode(text).length
+      });
 
       if (data['type'] == 'challenge_prompt' || data['type'] == 'push_prompt') {
         onPrompt?.call(data);
@@ -329,11 +398,13 @@ class WebSocketService {
         onBrowserSso?.call(payload);
       } else if (data['type'] == 'support_prompt') {
         onSupportPrompt?.call(data);
-      } else if (data['type'] == 'support_signal' || data['type'] == 'chat_message') {
+      } else if (data['type'] == 'support_signal' ||
+          data['type'] == 'chat_message') {
         onSupportSignal?.call(data);
       } else if (data['type'] == 'support_ended') {
         onSupportEnded?.call(data);
-      } else if (data['type'] == 'support_incoming_request' || data['type'] == 'support_queue_update') {
+      } else if (data['type'] == 'support_incoming_request' ||
+          data['type'] == 'support_queue_update') {
         onSupportIncoming?.call(data);
       } else if (data['type'] == 'notification') {
         if (data['id'] != null) {
@@ -342,19 +413,39 @@ class WebSocketService {
         onNotification?.call(data);
       }
     } catch (e) {
-      debugPrint('ws_service: ошибка парсинга сообщения: $e');
+      _wsLog('ws.exception', error: e, fields: {
+        'phase': 'handle_message',
+        'message_type': 'unknown',
+        'bytes': message is String
+            ? utf8.encode(message).length
+            : message is List<int>
+                ? message.length
+                : 0,
+        'result': 'failed'
+      });
     }
   }
 
   void sendJson(Map<String, dynamic> data) {
     try {
-      _channel?.sink.add(jsonEncode(data));
+      final text = jsonEncode(data);
+      _channel?.sink.add(text);
+      _wsLog('ws.message.outbound', fields: {
+        'message_type': supportDebugMessageType(data['type'] ?? data['action']),
+        'bytes': utf8.encode(text).length,
+        'result': _channel == null ? 'blocked' : 'queued'
+      });
     } catch (e) {
-      debugPrint('ws_service: ошибка отправки: $e');
+      _wsLog('ws.exception', error: e, fields: {
+        'phase': 'send_json',
+        'message_type': supportDebugMessageType(data['type'] ?? data['action']),
+        'result': 'failed'
+      });
     }
   }
 
   void disconnect() {
+    _wsLog('ws.disconnect', fields: {'origin': 'user'});
     _disposed = true;
     _reconnectTimer?.cancel();
     _closeCurrentChannel();

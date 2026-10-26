@@ -133,6 +133,29 @@ class AuthState extends ChangeNotifier {
   static const String _logoutMarkerKey = 'auth_logged_out';
   static const String _localeKey = 'app_locale';
 
+  // Named business/init awaits only; no payloads or credential identifiers.
+  Future<T> _traceAwait<T>(String operation, String phase,
+      Future<T> Function() action) async {
+    final watch = Stopwatch()..start();
+    final fields = <String, Object?>{'operation': operation, 'phase': phase,
+      'request_id': DebugLogService.instance.nextRequestId()};
+    DebugLogService.instance.record('auth.action.started', fields: fields);
+    try {
+      final result = await action();
+      DebugLogService.instance.record('auth.action.completed', fields: {
+        ...fields, 'duration_ms': watch.elapsedMilliseconds,
+        'result': 'await_returned',
+        if (result is List) 'count': result.length,
+        if (result is bool) 'state': result ? 'true' : 'false',
+      });
+      return result;
+    } catch (error) {
+      DebugLogService.instance.record('auth.action.failed', error: error,
+          fields: {...fields, 'duration_ms': watch.elapsedMilliseconds});
+      rethrow;
+    }
+  }
+
   String _localeCode = 'ru';
   String get localeCode => _localeCode;
   Locale get locale => Locale(_localeCode);
@@ -143,7 +166,7 @@ class AuthState extends ChangeNotifier {
     if (_localeCode == normalized) return;
     _localeCode = normalized;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_localeKey, normalized);
+    await _traceAwait('locale', normalized, () => prefs.setString(_localeKey, normalized));
     notifyListeners();
   }
 
@@ -174,7 +197,7 @@ class AuthState extends ChangeNotifier {
 
   Future<void> _writeLogoutMarker() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_logoutMarkerKey, true);
+    await _traceAwait('login_guard', 'write_tombstone', () => prefs.setBool(_logoutMarkerKey, true));
   }
 
   /// Отменяет финализацию всех незавершённых login/loginClaim. UI вызывает
@@ -429,15 +452,15 @@ class AuthState extends ChangeNotifier {
       final client = api;
       if (client == null) return null;
       try {
-        final (code, expiresAt) = await client.submitSsoTicket(ticket);
+        final (code, expiresAt) = await _traceAwait('sso_ticket', 'submit', () => client.submitSsoTicket(ticket));
         return SsoSubmitResponse(code, expiresAt: expiresAt);
       } catch (_) {
         return null; // транспорт — тихо
       }
     });
     try {
-      final ticket = await _ssoTicketReader.readTicket();
-      final outcome = await _ssoTicketFlow!.present(ticket?.value);
+      final ticket = await _traceAwait('sso_ticket', 'read', _ssoTicketReader.readTicket);
+      final outcome = await _traceAwait('sso_ticket', 'present', () => _ssoTicketFlow!.present(ticket?.value));
       if (outcome == SsoSubmitOutcome.ok) {
         notifyListeners();
       }
@@ -459,7 +482,7 @@ class AuthState extends ChangeNotifier {
   Future<void> setBrowserSsoAutoApprove(bool value) async {
     _browserSsoAutoApprove = value;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_browserSsoAutoKey, value);
+    await _traceAwait('browser_sso_auto', value ? 'enable' : 'disable', () => prefs.setBool(_browserSsoAutoKey, value));
     notifyListeners();
   }
 
@@ -538,11 +561,11 @@ class AuthState extends ChangeNotifier {
           'auth_state: browser_sso approve без живого билета — отправляем deny');
     }
     try {
-      await client.browserSsoDecision(
+      await _traceAwait('browser_sso', useApprove ? 'approve' : 'deny', () => client.browserSsoDecision(
         challengeId: id,
         approve: useApprove,
         ssoTicket: useApprove ? ticket : null,
-      );
+      ));
       if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
       // Только успешный API-ответ делает challenge resolved. Другой prompt,
       // появившийся за время запроса, не закрываем.
@@ -623,7 +646,7 @@ class AuthState extends ChangeNotifier {
 
   Future<void> init() async {
     DebugLogService.instance.record('auth.preferences.begin');
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _traceAwait('init', 'preferences', SharedPreferences.getInstance);
     DebugLogService.instance.record('auth.preferences.ready');
     final loggedOut = prefs.getBool(_logoutMarkerKey) ?? false;
 
@@ -716,9 +739,9 @@ class AuthState extends ChangeNotifier {
     if (legacyToken != null && legacyToken.isNotEmpty) {
       try {
         if (!loggedOut) {
-          final existing = await _secureStorage.read(key: _tokenKey);
+          final existing = await _traceAwait('init', 'legacy_storage_read', () => _secureStorage.read(key: _tokenKey));
           if (existing == null || existing.isEmpty) {
-            await _secureStorage.write(key: _tokenKey, value: legacyToken);
+            await _traceAwait('init', 'legacy_storage_write', () => _secureStorage.write(key: _tokenKey, value: legacyToken));
           }
         }
         await prefs.remove(_tokenKey);
@@ -730,12 +753,12 @@ class AuthState extends ChangeNotifier {
     String? savedToken;
     DebugLogService.instance.record('auth.secure_storage.begin');
     try {
-      savedToken = await _secureStorage.read(key: _tokenKey);
+      savedToken = await _traceAwait('init', 'secure_storage_read', () => _secureStorage.read(key: _tokenKey));
       if (loggedOut && savedToken != null) {
         // Logout уже подтверждён локальным tombstone. Если delete ранее
         // failed, повторяем его, но даже повторный сбой не восстановит вход.
         try {
-          await _secureStorage.delete(key: _tokenKey);
+          await _traceAwait('init', 'logged_out_storage_delete', () => _secureStorage.delete(key: _tokenKey));
         } catch (_) {}
         savedToken = null;
       }
@@ -751,7 +774,7 @@ class AuthState extends ChangeNotifier {
 
       try {
         DebugLogService.instance.record('auth.profile.begin');
-        currentUser = await api!.getProfile();
+        currentUser = await _traceAwait('init', 'restore_profile', () => api!.getProfile());
         DebugLogService.instance.record('auth.profile.ready');
         _updatePerimeter(currentUser);
         // Этап D «умный 2FA»: восстанавливаем локальный детект по device_id,
@@ -763,11 +786,11 @@ class AuthState extends ChangeNotifier {
           _ownDeviceId = savedDeviceId;
           unawaited(localDetect.start(savedDeviceId));
         }
-        await _loadBrowserSsoAutoApprove();
+        await _traceAwait('init', 'sso_preferences', _loadBrowserSsoAutoApprove);
         DebugLogService.instance.record('auth.services.begin');
         _setupServices();
         DebugLogService.instance.record('auth.refresh.begin');
-        await refreshAll();
+        await _traceAwait('init', 'refresh_cycle', refreshAll);
         DebugLogService.instance.record('auth.refresh.ready');
         // Фаза 2: предъявляем CP-билет при старте сессии (TTL ~5 мин с
         // входа в Windows) — тихо, любой сбой не влияет на работу.
@@ -1081,7 +1104,7 @@ class AuthState extends ChangeNotifier {
     cancelLoginAttempts();
     serverUrl = url.trim();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('server_url', serverUrl!);
+    await _traceAwait('set_server', 'preferences', () => prefs.setString('server_url', serverUrl!));
     api = ApiClient(baseUrl: serverUrl!);
     notifyListeners();
   }
@@ -1121,27 +1144,27 @@ class AuthState extends ChangeNotifier {
       try {
         if (Platform.isWindows) {
           platform = 'windows';
-          final wInfo = await deviceInfo.windowsInfo;
+          final wInfo = await _traceAwait('login_preflight', 'windows_device_info', () => deviceInfo.windowsInfo);
           deviceName = wInfo.computerName;
           osVersion = wInfo.displayVersion;
         } else if (Platform.isAndroid) {
           platform = 'android';
-          final aInfo = await deviceInfo.androidInfo;
+          final aInfo = await _traceAwait('login_preflight', 'android_device_info', () => deviceInfo.androidInfo);
           deviceName = '${aInfo.brand} ${aInfo.model}';
           osVersion = 'Android ${aInfo.version.release}';
         } else if (Platform.isIOS) {
           platform = 'ios';
-          final iInfo = await deviceInfo.iosInfo;
+          final iInfo = await _traceAwait('login_preflight', 'ios_device_info', () => deviceInfo.iosInfo);
           deviceName = iInfo.name;
           osVersion = '${iInfo.systemName} ${iInfo.systemVersion}';
         } else if (Platform.isMacOS) {
           platform = 'macos';
-          final mInfo = await deviceInfo.macOsInfo;
+          final mInfo = await _traceAwait('login_preflight', 'macos_device_info', () => deviceInfo.macOsInfo);
           deviceName = mInfo.computerName;
           osVersion = 'macOS ${mInfo.majorVersion}.${mInfo.minorVersion}';
         } else if (Platform.isLinux) {
           platform = 'linux';
-          final lInfo = await deviceInfo.linuxInfo;
+          final lInfo = await _traceAwait('login_preflight', 'linux_device_info', () => deviceInfo.linuxInfo);
           deviceName = lInfo.name;
           osVersion = 'Linux';
         }
@@ -1153,13 +1176,13 @@ class AuthState extends ChangeNotifier {
     // продолжаем вход с пустым posture, сервер досчитает дефолты сам.
     Map<String, dynamic> initialPosture = const {};
     try {
-      initialPosture = await telemetry.collectPosture();
+      initialPosture = await _traceAwait('login', 'collect_posture', telemetry.collectPosture);
     } catch (e) {
       debugPrint(
           'auth_state: телеметрия при входе не собрана, продолжаем без неё: $e');
     }
 
-    final resp = await client.login(
+    final resp = await _traceAwait('login', 'request', () => client.login(
       username: username,
       password: password,
       code: code,
@@ -1169,10 +1192,10 @@ class AuthState extends ChangeNotifier {
       appVersion: appVersion,
       securityPosture: initialPosture,
       windowsIdentity: WindowsIdentity.snapshot(),
-    );
+    ));
 
     if (attempt != _loginGeneration || !identical(api, client)) return;
-    await _finalizeLogin(resp, base, attempt: attempt, client: client);
+    await _traceAwait('login', 'finalize', () => _finalizeLogin(resp, base, attempt: attempt, client: client));
   }
 
   /// Обмен подтверждённого push-челленджа на Bearer-токен устройства (десктоп).
@@ -1210,27 +1233,27 @@ class AuthState extends ChangeNotifier {
       try {
         if (Platform.isWindows) {
           platform = 'windows';
-          final wInfo = await deviceInfo.windowsInfo;
+          final wInfo = await _traceAwait('login_preflight', 'windows_device_info', () => deviceInfo.windowsInfo);
           deviceName = wInfo.computerName;
           osVersion = wInfo.displayVersion;
         } else if (Platform.isAndroid) {
           platform = 'android';
-          final aInfo = await deviceInfo.androidInfo;
+          final aInfo = await _traceAwait('login_preflight', 'android_device_info', () => deviceInfo.androidInfo);
           deviceName = '${aInfo.brand} ${aInfo.model}';
           osVersion = 'Android ${aInfo.version.release}';
         } else if (Platform.isIOS) {
           platform = 'ios';
-          final iInfo = await deviceInfo.iosInfo;
+          final iInfo = await _traceAwait('login_preflight', 'ios_device_info', () => deviceInfo.iosInfo);
           deviceName = iInfo.name;
           osVersion = '${iInfo.systemName} ${iInfo.systemVersion}';
         } else if (Platform.isMacOS) {
           platform = 'macos';
-          final mInfo = await deviceInfo.macOsInfo;
+          final mInfo = await _traceAwait('login_preflight', 'macos_device_info', () => deviceInfo.macOsInfo);
           deviceName = mInfo.computerName;
           osVersion = 'macOS ${mInfo.majorVersion}.${mInfo.minorVersion}';
         } else if (Platform.isLinux) {
           platform = 'linux';
-          final lInfo = await deviceInfo.linuxInfo;
+          final lInfo = await _traceAwait('login_preflight', 'linux_device_info', () => deviceInfo.linuxInfo);
           deviceName = lInfo.name;
           osVersion = 'Linux';
         }
@@ -1239,13 +1262,13 @@ class AuthState extends ChangeNotifier {
 
     Map<String, dynamic> initialPosture = const {};
     try {
-      initialPosture = await telemetry.collectPosture();
+      initialPosture = await _traceAwait('login_claim', 'collect_posture', telemetry.collectPosture);
     } catch (e) {
       debugPrint(
           'auth_state: телеметрия при claim не собрана, продолжаем без неё: $e');
     }
 
-    final resp = await client.loginClaim(
+    final resp = await _traceAwait('login_claim', 'request', () => client.loginClaim(
       challengeId: challengeId,
       claimToken: claimToken,
       deviceName: deviceName,
@@ -1257,7 +1280,7 @@ class AuthState extends ChangeNotifier {
       // Пока claim не прошёл generation-check, старый ответ не должен даже
       // менять token внутри переиспользуемого ApiClient.
       updateToken: false,
-    );
+    ));
 
     if (attempt != _loginGeneration || !identical(api, client)) {
       return resp;
@@ -1266,7 +1289,7 @@ class AuthState extends ChangeNotifier {
       return resp;
     }
 
-    await _finalizeLogin(resp, base, attempt: attempt, client: client);
+    await _traceAwait('login_claim', 'finalize', () => _finalizeLogin(resp, base, attempt: attempt, client: client));
     return resp;
   }
 
@@ -1291,7 +1314,7 @@ class AuthState extends ChangeNotifier {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    await _secureStorage.write(key: _tokenKey, value: respToken);
+    await _traceAwait('login', 'secure_storage_write', () => _secureStorage.write(key: _tokenKey, value: respToken));
     await prefs.setString('server_url', base);
     if (!isCurrent()) return; // tombstone остаётся до успешного нового входа
     await prefs.remove(_logoutMarkerKey);
@@ -1329,14 +1352,14 @@ class AuthState extends ChangeNotifier {
     _setupServices();
     // Слушатель localhost:8757 поднимаем только после успешного логина.
     if (deviceId != null && deviceId.isNotEmpty) {
-      await localDetect.start(deviceId);
+      await _traceAwait('login', 'local_detect_start', () => localDetect.start(deviceId));
     }
     if (!isCurrent()) {
       await _rollbackCancelledLogin(attempt, respToken, client);
       return;
     }
-    await refreshProfile();
-    await refreshAll();
+    await _traceAwait('login', 'refresh_profile', refreshProfile);
+    await _traceAwait('login', 'refresh_cycle', refreshAll);
     if (!isCurrent()) {
       await _rollbackCancelledLogin(attempt, respToken, client);
       return;
@@ -1379,14 +1402,18 @@ class AuthState extends ChangeNotifier {
     _machineRetryTimer?.cancel();
     _machineRetryTimer = null;
     try {
-      await api?.logout().timeout(const Duration(seconds: 3));
-    } catch (_) {}
+      await _traceAwait('logout', 'server_logout', () async => await api?.logout().timeout(const Duration(seconds: 3)));
+    } catch (error) {
+      DebugLogService.instance.record('auth.logout.server.failed', error: error);
+    }
 
     // Этап D: сессия устройства завершена — локальный детект больше не
     // должен отвечать device_id этого входа.
     try {
-      await localDetect.stop().timeout(const Duration(seconds: 2));
-    } catch (_) {}
+      await _traceAwait('logout', 'local_detect_stop', () => localDetect.stop().timeout(const Duration(seconds: 2)));
+    } catch (error) {
+      DebugLogService.instance.record('auth.logout.local_detect.failed', error: error);
+    }
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();
@@ -1448,7 +1475,7 @@ class AuthState extends ChangeNotifier {
     _autoshareSessionId = null;
     _autoshareStarted = false;
     try {
-      await _secureStorage.delete(key: _tokenKey);
+      await _traceAwait('logout', 'secure_storage_delete', () => _secureStorage.delete(key: _tokenKey));
     } catch (e) {
       debugPrint('auth_state: ошибка удаления токена из secure storage: $e');
     }
@@ -1489,7 +1516,7 @@ class AuthState extends ChangeNotifier {
     final expectedToken = token;
     if (client == null || expectedToken == null) return;
     try {
-      final targets = await client.getRdpTargets(instanceId: instanceId);
+      final targets = await _traceAwait('refresh_rdp', 'request', () => client.getRdpTargets(instanceId: instanceId));
       if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
       rdpTargets = targets;
       rdpFeatureAvailable = true;
@@ -1522,7 +1549,7 @@ class AuthState extends ChangeNotifier {
     linkHostsError = null;
     notifyListeners();
     try {
-      final hosts = await api!.getLinkHosts();
+      final hosts = await _traceAwait('refresh_link', 'request', () => api!.getLinkHosts());
       if (_authEpoch == expectedEpoch && isLoggedIn) {
         linkHosts = hosts;
         _linkHostsUpdatedAt = DateTime.now();
@@ -1945,7 +1972,7 @@ class AuthState extends ChangeNotifier {
     final expectedToken = token;
     if (client == null || expectedToken == null || !isLoggedIn) return;
     try {
-      final list = await client.getNotifications();
+      final list = await _traceAwait('notifications', 'load', client.getNotifications);
       if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
       notifications = list;
       unreadNotificationsCount = list
@@ -1960,7 +1987,7 @@ class AuthState extends ChangeNotifier {
   Future<void> markNotificationRead(String id) async {
     if (api == null) return;
     try {
-      await api!.markNotificationRead(id);
+      await _traceAwait('notifications', 'mark_read', () => api!.markNotificationRead(id));
       for (var i = 0; i < notifications.length; i++) {
         if (notifications[i]['id'] == id) {
           notifications[i] = Map<String, dynamic>.from(notifications[i])
@@ -1981,7 +2008,7 @@ class AuthState extends ChangeNotifier {
   Future<void> markAllNotificationsRead() async {
     if (api == null) return;
     try {
-      await api!.markAllNotificationsRead();
+      await _traceAwait('notifications', 'mark_all_read', () => api!.markAllNotificationsRead());
       for (var i = 0; i < notifications.length; i++) {
         notifications[i] = Map<String, dynamic>.from(notifications[i])
           ..['is_read'] = true
@@ -2038,13 +2065,13 @@ class AuthState extends ChangeNotifier {
         bool passkeyVerified = passkey ?? false;
         // 1. Если передана явная просьба passkey, или включена GPO политика Windows Hello
         if (passkey == true || gpo.requireWindowsHello) {
-          final didAuth = await localAuth.authenticate(
+          final didAuth = await _traceAwait('challenge_decision', 'passkey_authenticate', () => localAuth.authenticate(
             localizedReason: isRu
                 ? 'Подтвердите вход в корпоративную систему с помощью Passkey / биометрии'
                 : 'Confirm sign-in with Passkey / biometrics',
             options: const AuthenticationOptions(
                 biometricOnly: false, stickyAuth: true),
-          );
+          ));
           if (!didAuth) {
             throw Exception(isRu
                 ? 'Подтверждение Passkey отклонено'
@@ -2056,19 +2083,20 @@ class AuthState extends ChangeNotifier {
           var mobileBiometricsEnrolled = false;
           try {
             mobileBiometricsEnrolled =
-                (await localAuth.getAvailableBiometrics()).isNotEmpty;
-          } catch (_) {
+                (await _traceAwait('challenge_decision', 'available_biometrics', localAuth.getAvailableBiometrics)).isNotEmpty;
+          } catch (error) {
+            DebugLogService.instance.record('auth.biometrics.unavailable', error: error);
             // Плагин local_auth недоступен (стенд/эмулятор без биометрии) —
             // не ломаем approve, пропускаем гейт
           }
           if (mobileBiometricsEnrolled) {
-            final didAuth = await localAuth.authenticate(
+            final didAuth = await _traceAwait('challenge_decision', 'mobile_authenticate', () => localAuth.authenticate(
               localizedReason: isRu
                   ? 'Подтвердите вход в корпоративную систему с помощью биометрии'
                   : 'Confirm login with biometrics',
               options: const AuthenticationOptions(
                   biometricOnly: false, stickyAuth: true),
-            );
+            ));
             if (!didAuth) {
               throw Exception(isRu
                   ? 'Биометрическое подтверждение отклонено'
@@ -2082,15 +2110,15 @@ class AuthState extends ChangeNotifier {
           // Десктоп-аутентификация при подтверждении без TOTP-кода:
           // пробуем вызвать системный Passkey (Touch ID / Windows Hello)
           try {
-            final isSupported = await localAuth.isDeviceSupported();
+            final isSupported = await _traceAwait('challenge_decision', 'biometrics_supported', localAuth.isDeviceSupported);
             if (isSupported) {
-              final didAuth = await localAuth.authenticate(
+              final didAuth = await _traceAwait('challenge_decision', 'desktop_authenticate', () => localAuth.authenticate(
                 localizedReason: isRu
                     ? 'Подтвердите вход в корпоративную систему (Touch ID / Windows Hello)'
                     : 'Confirm sign-in with Touch ID / Windows Hello',
                 options: const AuthenticationOptions(
                     biometricOnly: false, stickyAuth: true),
-              );
+              ));
               if (didAuth) {
                 passkeyVerified = true;
               }
@@ -2099,18 +2127,18 @@ class AuthState extends ChangeNotifier {
         }
 
         // 2. Отправка подтверждения
-        await client.challengeDecision(
+        await _traceAwait('challenge_decision', 'approve', () => client.challengeDecision(
           challengeId: challengeId,
           decision: 'approve',
           numberMatch: selectedNumberMatch,
           code: code,
           passkey: passkeyVerified,
-        );
+        ));
       } else {
-        await client.challengeDecision(
+        await _traceAwait('challenge_decision', 'deny', () => client.challengeDecision(
           challengeId: challengeId,
           decision: 'deny',
-        );
+        ));
       }
 
       if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
@@ -2189,7 +2217,7 @@ class AuthState extends ChangeNotifier {
     final userId = currentUser?['id']?.toString() ?? '';
     if (userId.isEmpty) return null;
     try {
-      final hosts = await api!.getLinkHosts();
+      final hosts = await _traceAwait('refresh_link', 'request', () => api!.getLinkHosts());
       return sosLocalAgentId(hosts,
           userId: userId, hostname: Platform.localHostname);
     } catch (e) {
@@ -2356,13 +2384,13 @@ class AuthState extends ChangeNotifier {
     // 1. Биометрия / Windows Hello при политике GPO (desktop) либо
     // зарегистрированная системная биометрия на мобильном устройстве
     if (gpo.requireWindowsHello) {
-      final didAuth = await localAuth.authenticate(
+      final didAuth = await _traceAwait('support_decision', 'desktop_authenticate', () => localAuth.authenticate(
         localizedReason: isRu
             ? 'Подтвердите разрешение удаленного доступа к экрану'
             : 'Authorize remote screen sharing access',
         options:
             const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
-      );
+      ));
       if (!didAuth) {
         throw Exception(isRu
             ? 'Биометрическая авторизация отклонена'
@@ -2373,19 +2401,20 @@ class AuthState extends ChangeNotifier {
       var mobileBiometricsEnrolled = false;
       try {
         mobileBiometricsEnrolled =
-            (await localAuth.getAvailableBiometrics()).isNotEmpty;
-      } catch (_) {
+            (await _traceAwait('support_decision', 'available_biometrics', localAuth.getAvailableBiometrics)).isNotEmpty;
+      } catch (error) {
+        DebugLogService.instance.record('auth.biometrics.unavailable', error: error);
         // Плагин local_auth недоступен (стенд/эмулятор без биометрии) —
         // не ломаем approve, пропускаем гейт
       }
       if (mobileBiometricsEnrolled) {
-        final didAuth = await localAuth.authenticate(
+        final didAuth = await _traceAwait('support_decision', 'mobile_authenticate', () => localAuth.authenticate(
           localizedReason: isRu
               ? 'Подтвердите разрешение удаленного доступа к экрану'
               : 'Authorize remote screen sharing access',
           options: const AuthenticationOptions(
               biometricOnly: false, stickyAuth: true),
-        );
+        ));
         if (!didAuth) {
           throw Exception(isRu
               ? 'Биометрическая авторизация отклонена'
@@ -2395,11 +2424,11 @@ class AuthState extends ChangeNotifier {
     }
 
     // 2. Одобрение на сервере (SOS через Link-агент сюда не попадает: цифры вводят в окне агента)
-    await api!.supportDecision(
+    await _traceAwait('support_decision', 'approve', () => api!.supportDecision(
       sessionId: sessionId,
       decision: 'approve',
       numberMatch: numberMatch,
-    );
+    ));
 
     // 3. Запуск трансляции экрана WebRTC
     await support.startScreenSharing(
@@ -2419,11 +2448,13 @@ class AuthState extends ChangeNotifier {
     await alert.resetWindowPriority();
 
     try {
-      await api!.supportDecision(
+      await _traceAwait('support_decision', 'deny', () => api!.supportDecision(
         sessionId: sessionId,
         decision: 'deny',
-      );
-    } catch (_) {}
+      ));
+    } catch (error) {
+      DebugLogService.instance.record('auth.support_decision.failed', error: error, fields: {'session_id': sessionId, 'operation': 'deny'});
+    }
     await support.stopScreenSharing();
     notifyListeners();
   }
@@ -2636,12 +2667,12 @@ class AuthState extends ChangeNotifier {
     required bool notifyEmail,
   }) async {
     if (api == null) return;
-    final res = await api!.updateNotificationSettings(
+    final res = await _traceAwait('notifications', 'update_settings', () => api!.updateNotificationSettings(
       loginSuccess: loginSuccess,
       loginDenied: loginDenied,
       notifyTG: notifyTG,
       notifyEmail: notifyEmail,
-    );
+    ));
     if (currentUser != null && res['notification_settings'] != null) {
       currentUser!['notification_settings'] = res['notification_settings'];
       notifyListeners();
@@ -2650,7 +2681,7 @@ class AuthState extends ChangeNotifier {
 
   Future<List<Map<String, dynamic>>> testNotificationDelivery() async {
     if (api == null) return [];
-    return await api!.testNotificationDelivery();
+    return await _traceAwait('notifications', 'test_delivery', () => api!.testNotificationDelivery());
   }
 
   @override

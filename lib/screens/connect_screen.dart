@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
+import '../services/debug_log_service.dart';
 import '../services/server_url_validator.dart';
 import '../i18n/app_strings.dart';
 import 'login_screen.dart';
@@ -52,11 +53,16 @@ class _ConnectScreenState extends State<ConnectScreen> {
   }
 
   Future<void> _handleConnect() async {
+    final watch = Stopwatch()..start();
+    DebugLogService.instance.record('ui.connect.submit');
     final auth = context.read<AuthState>();
     final s = context.stringsRead;
     final url = _urlController.text.trim();
     final validationError = _validateServerUrl(url, s);
     if (validationError != null) {
+      DebugLogService.instance.record('ui.connect.blocked', fields: {
+        'reason': 'invalid_server', 'duration_ms': watch.elapsedMilliseconds,
+      });
       setState(() => _error = validationError);
       return;
     }
@@ -69,12 +75,17 @@ class _ConnectScreenState extends State<ConnectScreen> {
     try {
       await auth.setServerUrl(url);
       final cfg = await auth.api!.getConfig();
+      DebugLogService.instance.record('ui.connect.completed', fields: {
+        'duration_ms': watch.elapsedMilliseconds,
+      });
       if (mounted) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => LoginScreen(serverConfig: cfg)),
         );
       }
     } catch (e) {
+      DebugLogService.instance.record('ui.connect.failed', error: e,
+          fields: {'duration_ms': watch.elapsedMilliseconds});
       if (mounted) {
         setState(() {
           _error = '${s.errFailedToConnect}: $e';
@@ -103,7 +114,10 @@ class _ConnectScreenState extends State<ConnectScreen> {
               label: Text(auth.isRu ? 'RU' : 'EN', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
               backgroundColor: const Color(0xFF1E293B),
               side: const BorderSide(color: Color(0xFF334155)),
-              onPressed: () => auth.setLocale(auth.isRu ? 'en' : 'ru'),
+              onPressed: () {
+                DebugLogService.instance.record('ui.connect.locale', fields: {'state': auth.isRu ? 'en' : 'ru'});
+                auth.setLocale(auth.isRu ? 'en' : 'ru');
+              },
             ),
           ),
         ],

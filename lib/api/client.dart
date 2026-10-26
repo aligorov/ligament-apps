@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 
 import '../app_version.dart';
 import '../models/link_enrollment_credential.dart';
+import '../services/debug_log_service.dart';
 
 class ApiException implements Exception {
   final int statusCode;
@@ -42,31 +43,172 @@ class ApiClient {
   String baseUrl;
   String? token;
 
-  ApiClient({required this.baseUrl, this.token});
+  ApiClient({required this.baseUrl, this.token, DebugLogService? debugLogs})
+      : _debugLogs = debugLogs ?? DebugLogService.instance;
+
+  final DebugLogService _debugLogs;
+
+  static const _routeParts = {
+    'api',
+    'v1',
+    'app',
+    'me',
+    'config',
+    'version',
+    'login',
+    'login-claim',
+    'logout',
+    'profile',
+    'apps',
+    'history',
+    'challenges',
+    'pending',
+    'decision',
+    'notifications',
+    'read',
+    'read-all',
+    'test',
+    'settings',
+    'support',
+    'request',
+    'current',
+    'signal',
+    'signals',
+    'connect',
+    'end',
+    'chat',
+    'messages',
+    'queue',
+    'categories',
+    'link',
+    'hosts',
+    'agents',
+    'enroll',
+    'enrollment-token',
+    'sessions',
+    'participants',
+    'heartbeat',
+    'close',
+    'archive',
+    'restore',
+    'groups',
+    'access',
+    'unattended',
+    'bind',
+    'unbind',
+    'sos',
+    'requests',
+    'claim',
+    'start',
+    'cancel',
+    'ice-servers',
+    'step-up',
+    'verify',
+    'rdp',
+    'targets',
+    'grant',
+    'direct-claim',
+    'bridge-info',
+    'machines',
+    'instances',
+    'register',
+    'mfa',
+    'passkey-start',
+    'passkey-finish',
+    'browser-sso',
+    'sso-ticket',
+    'windows-identity',
+    'notification-settings',
+    'test-delivery',
+    'my-ip',
+    'device',
+    'push-token',
+    'telemetry',
+    'delivered',
+    'group-access',
+    'stepup',
+    'passkey-begin',
+    'activate-screen',
+    'lease',
+    'status',
+  };
+
+  static String debugRoute(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return '/unknown';
+    return '/${uri.pathSegments.map((part) => _routeParts.contains(part) ? part : '{id}').join('/')}';
+  }
+
+  Future<http.Response> _request(
+      String method, String url, Future<http.Response> Function() send,
+      {String? body, Duration timeout = _requestTimeout}) async {
+    final id = _debugLogs.nextRequestId();
+    final timer = Stopwatch()..start();
+    final uri = Uri.tryParse(url);
+    final fields = <String, Object?>{
+      'request_id': id,
+      'method': method,
+      'route': debugRoute(url),
+      'server': uri == null
+          ? null
+          : uri.hasPort
+              ? '${uri.host}:${uri.port}'
+              : uri.host,
+      'transport': uri?.scheme,
+      'sent_bytes': body == null ? 0 : utf8.encode(body).length,
+    };
+    _debugLogs.record('http.request', fields: fields);
+    try {
+      final response = await send().timeout(timeout);
+      timer.stop();
+      final error =
+          response.statusCode >= 400 && response.bodyBytes.length <= 64 * 1024
+              ? _decodeJsonMap(response.bodyBytes)['error']
+              : null;
+      _debugLogs.record('http.response', fields: {
+        ...fields,
+        'http_status': response.statusCode,
+        'duration_ms': timer.elapsedMilliseconds,
+        'response_bytes': response.bodyBytes.length,
+        'result': response.statusCode < 400 ? 'received' : 'http_error',
+        if (error is String) 'reason': DebugLogService.protocolLabel(error),
+      });
+      return response;
+    } catch (error) {
+      timer.stop();
+      _debugLogs.record('http.failed', error: error, fields: {
+        ...fields,
+        'duration_ms': timer.elapsedMilliseconds,
+        'result': 'transport_error',
+      });
+      rethrow;
+    }
+  }
 
   Future<http.Response> _get(String url, {Map<String, String>? headers}) {
-    return http.get(Uri.parse(url), headers: headers).timeout(_requestTimeout);
+    return _request(
+        'GET', url, () => http.get(Uri.parse(url), headers: headers));
   }
 
   Future<http.Response> _post(String url,
       {Map<String, String>? headers, String? body}) {
-    return http
-        .post(Uri.parse(url), headers: headers, body: body)
-        .timeout(_requestTimeout);
+    return _request('POST', url,
+        () => http.post(Uri.parse(url), headers: headers, body: body),
+        body: body);
   }
 
   Future<http.Response> _put(String url,
       {Map<String, String>? headers, String? body}) {
-    return http
-        .put(Uri.parse(url), headers: headers, body: body)
-        .timeout(_requestTimeout);
+    return _request('PUT', url,
+        () => http.put(Uri.parse(url), headers: headers, body: body),
+        body: body);
   }
 
   Future<http.Response> _patch(String url,
       {Map<String, String>? headers, String? body}) {
-    return http
-        .patch(Uri.parse(url), headers: headers, body: body)
-        .timeout(_requestTimeout);
+    return _request('PATCH', url,
+        () => http.patch(Uri.parse(url), headers: headers, body: body),
+        body: body);
   }
 
   String _cleanUrl(String path) {
@@ -144,10 +286,12 @@ class ApiClient {
   /// HTTP статус-ответ может подменить активный MITM)
   static Future<Map<String, dynamic>?> probeRelay(String ip,
       {int port = 8082}) async {
+    final client = ApiClient(baseUrl: 'https://$ip:$port');
+    final url = client._cleanUrl('/api/v1/status');
     try {
-      final res = await http
-          .get(Uri.parse('https://$ip:$port/api/v1/status'))
-          .timeout(const Duration(milliseconds: 1500));
+      final res = await client._request(
+          'GET', url, () => http.get(Uri.parse(url)),
+          timeout: const Duration(milliseconds: 1500));
       if (res.statusCode == 200) {
         return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       }
@@ -530,9 +674,7 @@ class ApiClient {
         // Legacy fallback нужен только если v2 endpoint действительно
         // отсутствует. Ошибки auth/таймауты/5xx нельзя маскировать вторым
         // запросом, который может создать другой тип обращения.
-        if (e.statusCode != 404 &&
-            e.statusCode != 405 &&
-            e.statusCode != 501) {
+        if (e.statusCode != 404 && e.statusCode != 405 && e.statusCode != 501) {
           rethrow;
         }
       }
@@ -629,7 +771,8 @@ class ApiClient {
   /// Получение истории сообщений чата сессии поддержки
   Future<List<Map<String, dynamic>>> getSupportMessages(
       String sessionId) async {
-    final cleanId = sessionId.startsWith('link_') ? sessionId.substring(5) : sessionId;
+    final cleanId =
+        sessionId.startsWith('link_') ? sessionId.substring(5) : sessionId;
     http.Response res;
     try {
       res = await _get(
@@ -676,10 +819,12 @@ class ApiClient {
     String? senderName,
     String? clientId,
   }) async {
-    final cleanId = sessionId.startsWith('link_') ? sessionId.substring(5) : sessionId;
+    final cleanId =
+        sessionId.startsWith('link_') ? sessionId.substring(5) : sessionId;
     final linkBody = jsonEncode({
       'body': text,
-      if (clientId != null && clientId.isNotEmpty) 'client_message_id': clientId,
+      if (clientId != null && clientId.isNotEmpty)
+        'client_message_id': clientId,
     });
     final body = jsonEncode({
       'text': text,
@@ -759,7 +904,8 @@ class ApiClient {
   }
 
   /// Получение очереди необработанных заявок SOS для инженера
-  Future<List<Map<String, dynamic>>> getPendingSOSRequests({String? category}) async {
+  Future<List<Map<String, dynamic>>> getPendingSOSRequests(
+      {String? category}) async {
     final uri = Uri.parse(_cleanUrl('/api/v1/app/link/sos/requests')).replace(
       queryParameters: {
         if (category != null && category.isNotEmpty) 'category': category,
@@ -775,7 +921,9 @@ class ApiClient {
     }
     final data = jsonDecode(utf8.decode(res.bodyBytes));
     if (data is Map<String, dynamic> && data['requests'] is List) {
-      return (data['requests'] as List).whereType<Map<String, dynamic>>().toList();
+      return (data['requests'] as List)
+          .whereType<Map<String, dynamic>>()
+          .toList();
     }
     return [];
   }
@@ -854,7 +1002,8 @@ class ApiClient {
   }
 
   /// Получение списка участников сессии LINK (операторы, пользователи, наблюдатели)
-  Future<List<Map<String, dynamic>>> getLinkSessionParticipants(String sessionId) async {
+  Future<List<Map<String, dynamic>>> getLinkSessionParticipants(
+      String sessionId) async {
     final res = await _get(
       _cleanUrl('/api/v1/app/link/sessions/$sessionId/participants'),
       headers: _headers(),
@@ -864,7 +1013,9 @@ class ApiClient {
     }
     final data = jsonDecode(utf8.decode(res.bodyBytes));
     if (data is Map<String, dynamic> && data['participants'] is List) {
-      return (data['participants'] as List).whereType<Map<String, dynamic>>().toList();
+      return (data['participants'] as List)
+          .whereType<Map<String, dynamic>>()
+          .toList();
     }
     return [];
   }
