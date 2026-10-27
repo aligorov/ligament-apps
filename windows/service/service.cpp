@@ -180,12 +180,28 @@ void WorkerLoop() {
     while (WaitForSingleObject(g_hStop, kCheckIntervalMs) == WAIT_TIMEOUT) {
         if (PolicyAllowExit()) continue; // выход разрешён — не навязываем
 
-        // Если идёт установка обновления (lock-файл активен), не вмешиваемся
+        // Если идёт установка обновления (lock-файл активен), не вмешиваемся.
+        // Защита от зависшего lock-файла (краш/выключение): если файл старше 15 мин, снимаем его.
         wchar_t lockPath[MAX_PATH] = {0};
         if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, lockPath))) {
             wcscat_s(lockPath, L"\\Ligament\\upgrading.lock");
-            if (GetFileAttributesW(lockPath) != INVALID_FILE_ATTRIBUTES) {
-                continue;
+            WIN32_FILE_ATTRIBUTE_DATA fad = {};
+            if (GetFileAttributesExW(lockPath, GetFileExInfoStandard, &fad)) {
+                FILETIME ftNow;
+                GetSystemTimeAsFileTime(&ftNow);
+                ULARGE_INTEGER uNow, uWrite;
+                uNow.LowPart = ftNow.dwLowDateTime;
+                uNow.HighPart = ftNow.dwHighDateTime;
+                uWrite.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+                uWrite.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+                // 15 минут = 900 сек * 10 000 000 (100-нс интервалов)
+                const ULONGLONG kMaxLockAge100ns = 9000000000ULL;
+                if (uNow.QuadPart > uWrite.QuadPart && (uNow.QuadPart - uWrite.QuadPart) > kMaxLockAge100ns) {
+                    Log(L"upgrading.lock устарел (>15 мин), снят сторожем");
+                    DeleteFileW(lockPath);
+                } else {
+                    continue;
+                }
             }
         }
 

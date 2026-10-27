@@ -146,6 +146,7 @@ func runUnixAgent(ctx context.Context) error {
 	}
 
 	broker := linkagent.NewSessionWorkerBroker(linkagent.NewNativeSessionWorkerLauncher())
+	broker.SetServerURL(config.ServerURL)
 	config.OnConnected = broker.RebindSender
 	return linkagent.RunStoredAgent(
 		ctx,
