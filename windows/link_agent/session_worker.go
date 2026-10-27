@@ -153,16 +153,26 @@ func (s *workerSession) sendFrame(msg any) error {
 // SessionWorkerBroker routes WSS session offers/signals to per-session
 // interactive workers and returns only session-scoped worker responses.
 type SessionWorkerBroker struct {
-	launcher SessionWorkerLauncher
-	mu       sync.Mutex
-	sessions map[string]*workerSession
+	launcher  SessionWorkerLauncher
+	updater   *UpdateManager
+	serverURL string
+	mu        sync.Mutex
+	sessions  map[string]*workerSession
 }
 
 func NewSessionWorkerBroker(launcher SessionWorkerLauncher) *SessionWorkerBroker {
 	return &SessionWorkerBroker{
 		launcher: launcher,
+		updater:  NewUpdateManager(""),
 		sessions: make(map[string]*workerSession),
 	}
+}
+
+// SetServerURL sets the base server URL used to resolve relative update download paths.
+func (b *SessionWorkerBroker) SetServerURL(serverURL string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.serverURL = serverURL
 }
 
 // RebindSender updates the outbound WSS sender for all active worker sessions
@@ -202,6 +212,46 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 		if validUUID(envelope.SessionID) {
 			b.stop(envelope.SessionID)
 		}
+		return nil
+	case "update_stage":
+		if b.updater == nil {
+			b.updater = NewUpdateManager("")
+		}
+		var cmd struct {
+			Version     string `json:"version"`
+			DownloadURL string `json:"download_url"`
+			SHA256      string `json:"sha256"`
+		}
+		_ = json.Unmarshal(envelope.Payload, &cmd)
+		if cmd.Version == "" {
+			_ = json.Unmarshal(message, &cmd)
+		}
+		b.mu.Lock()
+		srvURL := b.serverURL
+		b.mu.Unlock()
+		go func() {
+			_ = b.updater.StageUpdate(context.Background(), srvURL, cmd.DownloadURL, cmd.Version, cmd.SHA256, send)
+		}()
+		return nil
+	case "update_apply":
+		if b.updater == nil {
+			b.updater = NewUpdateManager("")
+		}
+		var cmd struct {
+			Version     string `json:"version"`
+			DownloadURL string `json:"download_url"`
+			DeadlineSec int    `json:"deadline_sec"`
+		}
+		_ = json.Unmarshal(envelope.Payload, &cmd)
+		if cmd.Version == "" {
+			_ = json.Unmarshal(message, &cmd)
+		}
+		b.mu.Lock()
+		srvURL := b.serverURL
+		b.mu.Unlock()
+		go func() {
+			_ = b.updater.ApplyUpdate(context.Background(), srvURL, cmd.DownloadURL, cmd.Version, cmd.DeadlineSec, send)
+		}()
 		return nil
 	default:
 		// Heartbeats and other service-level frames remain owned by RunAgent.

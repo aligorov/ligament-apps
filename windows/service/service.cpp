@@ -180,6 +180,15 @@ void WorkerLoop() {
     while (WaitForSingleObject(g_hStop, kCheckIntervalMs) == WAIT_TIMEOUT) {
         if (PolicyAllowExit()) continue; // выход разрешён — не навязываем
 
+        // Если идёт установка обновления (lock-файл активен), не вмешиваемся
+        wchar_t lockPath[MAX_PATH] = {0};
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, lockPath))) {
+            wcscat_s(lockPath, L"\\Ligament\\upgrading.lock");
+            if (GetFileAttributesW(lockPath) != INVALID_FILE_ATTRIBUTES) {
+                continue;
+            }
+        }
+
         PWTS_SESSION_INFOW sessions = nullptr;
         DWORD count = 0;
         if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count)) continue;
