@@ -383,7 +383,20 @@ class LinkHostRecorder {
     final host = uri.host.toLowerCase();
     if (host == 'localhost') return true;
     final address = InternetAddress.tryParse(host);
-    return address != null && address.isLoopback;
+    if (address == null) return false;
+    if (address.isLoopback) return true;
+    if (address.type == InternetAddressType.IPv4) {
+      final raw = address.rawAddress;
+      if (raw[0] == 10) return true;
+      if (raw[0] == 172 && raw[1] >= 16 && raw[1] <= 31) return true;
+      if (raw[0] == 192 && raw[1] == 168) return true;
+      if (raw[0] == 169 && raw[1] == 254) return true;
+    } else if (address.type == InternetAddressType.IPv6) {
+      if (address.isLinkLocal) return true;
+      final raw = address.rawAddress;
+      if ((raw[0] & 0xFE) == 0xFC) return true;
+    }
+    return false;
   }
 
   static const Duration _httpTimeout = Duration(seconds: 10);
@@ -1542,7 +1555,8 @@ class LinkHostRecorder {
         (reason == 'recorder_queue_overflow' ||
             reason == 'recorder_lease_expired' ||
             reason == 'recorder_ack_lag_exceeded' ||
-            reason == 'recorder_first_frame_unavailable')) {
+            reason == 'recorder_first_frame_unavailable' ||
+            reason == 'recorder_insecure_ingest')) {
       _snapshot('recorder.resilient.degraded', fields: {'reason': reason});
       unawaited(_spillToSpool());
       return;

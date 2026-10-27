@@ -112,7 +112,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final isWin = !kIsWeb && Platform.isWindows;
     final isLin = !kIsWeb && Platform.isLinux;
     final isDesktop = isMac || isWin || isLin;
-    final effectiveUpdate = auth.hasAppUpdate ? auth.appUpdate : _appUpdate;
+    bool hasUpdate = false;
+    Map<String, dynamic>? authUpdate;
+    try {
+      hasUpdate = auth.hasAppUpdate;
+      authUpdate = auth.appUpdate;
+    } catch (_) {
+      hasUpdate = false;
+      authUpdate = null;
+    }
+    final effectiveUpdate = hasUpdate ? authUpdate : _appUpdate;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),

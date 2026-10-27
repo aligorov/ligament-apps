@@ -1110,9 +1110,9 @@ Future<void> _runConnectedLinkHostWorker(
     DebugLogService.instance.record('link.shutdown.begin');
     final isTailFlushed = await recorder?.stop(reason: 'session_ended') ?? true;
     DebugLogService.instance.record(
-        isTailFlushed ? 'link.recorder.tail_saved' : 'link.recorder.tail_lost');
-    if (!isTailFlushed) {
-      await session.reject('tail_lost');
+        isTailFlushed ? 'link.recorder.tail_saved' : 'link.recorder.tail_spooled');
+    if (!isTailFlushed && (recorder?.config.isStrict ?? false)) {
+      await session.reject('recorder_tail_lost');
     }
     await session.close();
     if (unixTransport != null) {

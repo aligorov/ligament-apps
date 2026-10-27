@@ -1247,9 +1247,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             ? 'Медиаканал с целевым ПК потерян. Проверьте сеть, ICE/TURN и журнал Link worker.'
             : 'The media connection to the target PC was lost. Check the network, ICE/TURN and Link worker log.';
       case 'tail_lost':
+      case 'recorder_tail_lost':
         return strings.isRu
-            ? 'Сессия остановлена: хост не подтвердил сохранение конца записи.'
-            : 'The session stopped because the host could not confirm the recording tail.';
+            ? 'Буферизация завершения: хвост записи сохранён в локальный spool-буфер хоста (Код: REC_SPOOL_PENDING / tail_lost).'
+            : 'Session ending: recording tail spooled locally on host (Code: REC_SPOOL_PENDING / tail_lost).';
       case 'number_matching_failed':
       case 'number_matching_required':
         return strings.isRu
@@ -1257,21 +1258,30 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             : 'Number confirmation on the target PC was not completed.';
       case 'recorder_insecure_ingest':
         return strings.isRu
-            ? 'Аудит записи отклонен: небезопасный адрес сервера аудита.'
-            : 'Session audit rejected: insecure audit server URL.';
+            ? 'Запись отклонена политикой безопасности: незащищённый адрес Recorder вне локальной сети (Код: REC_INSECURE_INGEST). Настройте HTTPS или включите режим Resilient.'
+            : 'Session audit rejected: insecure HTTP ingest URL outside local network (Code: REC_INSECURE_INGEST).';
       case 'recorder_queue_overflow':
         return strings.isRu
-            ? 'Сеанс остановлен: переполнена очередь обязательной записи Recorder.'
-            : 'The session stopped because the mandatory Recorder queue overflowed.';
+            ? 'Переполнение очереди обязательной записи Recorder (Код: REC_QUEUE_OVERFLOW). Проверьте пропускную способность канала к серверу.'
+            : 'Mandatory recording queue overflowed (Code: REC_QUEUE_OVERFLOW).';
       case 'recorder_first_frame_unavailable':
       case 'recorder_first_frame_unacked':
+        return strings.isRu
+            ? 'Таймаут подтверждения первого кадра записи (Код: REC_FIRST_FRAME_TIMEOUT). Сервер Recorder не подтвердил приём видео.'
+            : 'First frame confirmation timeout (Code: REC_FIRST_FRAME_TIMEOUT).';
       case 'recorder_ack_lag':
       case 'recorder_ack_lag_exceeded':
-      case 'recorder_lease_expired':
-      case 'recorder_tail_lost':
         return strings.isRu
-            ? 'Сервер аудита сессии не подтвердил сохранение записи.'
-            : 'Session audit server failed to acknowledge recording.';
+            ? 'Задержка подтверждений от сервера записи превысила допустимый лимит (Код: REC_ACK_LAG_EXCEEDED).'
+            : 'Recorder acknowledgment lag exceeded limit (Code: REC_ACK_LAG_EXCEEDED).';
+      case 'recorder_lease_expired':
+        return strings.isRu
+            ? 'Истёк срок аренды сессии записи (Код: REC_LEASE_EXPIRED).'
+            : 'Recording session lease expired (Code: REC_LEASE_EXPIRED).';
+      case 'recorder_spool_quota_exceeded':
+        return strings.isRu
+            ? 'Локальный дисковый кэш записи хоста переполнен (Код: REC_SPOOL_FULL). Освободите место на диске.'
+            : 'Host local recording spool quota exceeded (Code: REC_SPOOL_FULL).';
       case 'session_ended':
         return strings.sessionEndedByUser;
       case 'pc_failed':

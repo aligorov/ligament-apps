@@ -24,8 +24,18 @@ class AppUpdateBanner extends StatelessWidget implements PreferredSizeWidget {
     AuthState auth, [
     Map<String, dynamic>? localUpdate,
   ]) {
-    final update = auth.hasAppUpdate
-        ? auth.appUpdate
+    bool hasUpdate = false;
+    Map<String, dynamic>? authUpdate;
+    try {
+      hasUpdate = auth.hasAppUpdate;
+      authUpdate = auth.appUpdate;
+    } catch (_) {
+      hasUpdate = false;
+      authUpdate = null;
+    }
+
+    final update = hasUpdate
+        ? authUpdate
         : (localUpdate != null &&
                 isAppUpdateAvailable(
                     appVersion, localUpdate['latest']?.toString() ?? '')
