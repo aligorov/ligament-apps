@@ -50,15 +50,16 @@ class _NeuralMeshBackgroundState extends State<NeuralMeshBackground>
     if (size == _lastSize || size.isEmpty) return;
     _lastSize = size;
     _particles.clear();
-    for (int i = 0; i < widget.particleCount; i++) {
+    final count = math.max(45, (size.width * size.height / 11000).round());
+    for (int i = 0; i < count; i++) {
       _particles.add(
         _MeshParticle(
           x: _rng.nextDouble() * size.width,
           y: _rng.nextDouble() * size.height,
-          vx: (_rng.nextDouble() - 0.5) * 0.45,
-          vy: (_rng.nextDouble() - 0.5) * 0.45,
-          radius: _rng.nextDouble() * 1.5 + 0.8,
-          alpha: _rng.nextDouble() * 0.35 + 0.18,
+          vx: (_rng.nextDouble() - 0.5) * 0.5,
+          vy: (_rng.nextDouble() - 0.5) * 0.5,
+          radius: _rng.nextDouble() * 2.0 + 1.6,
+          alpha: _rng.nextDouble() * 0.35 + 0.6,
           isCyan: _rng.nextBool(),
         ),
       );
@@ -153,14 +154,14 @@ class _MeshPainter extends CustomPainter {
   static final Paint _cyanNodePaint = Paint()..style = PaintingStyle.fill;
   static final Paint _indigoNodePaint = Paint()..style = PaintingStyle.fill;
   static final Paint _linePaint = Paint()
-    ..strokeWidth = 0.8
+    ..strokeWidth = 1.1
     ..style = PaintingStyle.stroke;
 
   _MeshPainter({required this.particles, required this.size});
 
   @override
   void paint(Canvas canvas, Size canvasSize) {
-    const maxDist = 110.0;
+    const maxDist = 165.0;
     const maxDistSq = maxDist * maxDist;
 
     // 1. Соединительные лазерные линии между близкими узлами
@@ -174,7 +175,7 @@ class _MeshPainter extends CustomPainter {
 
         if (distSq < maxDistSq) {
           final dist = math.sqrt(distSq);
-          final opacity = (1.0 - dist / maxDist) * 0.16;
+          final opacity = (1.0 - dist / maxDist) * 0.42;
           _linePaint.color = const Color(0xFF22D3EE).withValues(alpha: opacity);
           canvas.drawLine(Offset(p1.x, p1.y), Offset(p2.x, p2.y), _linePaint);
         }
