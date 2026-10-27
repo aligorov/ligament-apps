@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 
@@ -275,6 +276,7 @@ class LigamentApp extends StatefulWidget {
 class _LigamentAppState extends State<LigamentApp>
     with TrayListener, WindowListener {
   String? _lastTrayLocale;
+  String? _lastTrayUpdateVersion;
   bool? _wasLoggedIn;
   final _debugNavigation = DebugNavigationObserver();
 
@@ -304,6 +306,9 @@ class _LigamentAppState extends State<LigamentApp>
       final auth = context.read<AuthState>();
       final allowExit = auth.gpo.allowExit;
       final isRu = auth.isRu;
+      final update = auth.appUpdate;
+      final latest = update?['latest']?.toString() ?? '';
+      final hasUpdate = isAppUpdateAvailable(appVersion, latest);
 
       await trayManager.setIcon(
         Platform.isWindows
@@ -311,27 +316,48 @@ class _LigamentAppState extends State<LigamentApp>
             : 'assets/icons/app_icon.png',
       );
 
-      final menu = Menu(
-        items: [
+      final menuItems = <MenuItem>[
+        MenuItem(
+            key: 'show',
+            label: isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA'),
+      ];
+
+      if (hasUpdate) {
+        menuItems.add(MenuItem.separator());
+        menuItems.add(
           MenuItem(
-              key: 'show',
-              label: isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA'),
-          MenuItem.separator(),
-          MenuItem(
-            key: 'exit',
-            label: isRu ? 'Выход' : 'Exit',
-            disabled: !allowExit, // GPO политика PreventExit
+            key: 'update',
+            label: isRu
+                ? '⭐ Доступно обновление: ${formatAppVersion(latest)}'
+                : '⭐ Update Available: ${formatAppVersion(latest)}',
           ),
-        ],
-      );
+        );
+      }
+
+      menuItems.addAll([
+        MenuItem.separator(),
+        MenuItem(
+          key: 'exit',
+          label: isRu ? 'Выход' : 'Exit',
+          disabled: !allowExit, // GPO политика PreventExit
+        ),
+      ]);
+
+      final menu = Menu(items: menuItems);
       await trayManager.setContextMenu(menu);
-      await trayManager.setToolTip('Ligament 2FA Authenticator');
+      final tooltip = hasUpdate
+          ? 'Ligament 2FA - ${isRu ? 'Доступно обновление' : 'Update available'} ${formatAppVersion(latest)}'
+          : 'Ligament 2FA Authenticator';
+      await trayManager.setToolTip(tooltip);
     } catch (_) {}
   }
 
   void _updateTrayIfNeeded(AuthState auth) {
-    if (_lastTrayLocale != auth.localeCode) {
+    final updateVer = auth.appUpdate?['latest']?.toString();
+    if (_lastTrayLocale != auth.localeCode ||
+        _lastTrayUpdateVersion != updateVer) {
       _lastTrayLocale = auth.localeCode;
+      _lastTrayUpdateVersion = updateVer;
       _initTray();
     }
   }
@@ -387,6 +413,17 @@ class _LigamentAppState extends State<LigamentApp>
         fields: {'operation': menuItem.key});
     if (menuItem.key == 'show') {
       _restoreWindowFromTray();
+    } else if (menuItem.key == 'update') {
+      final auth = context.read<AuthState>();
+      final releaseUrl = auth.appUpdate?['release_url']?.toString();
+      if (releaseUrl != null && releaseUrl.isNotEmpty) {
+        final uri = Uri.tryParse(releaseUrl);
+        if (uri != null) {
+          launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      } else {
+        _restoreWindowFromTray();
+      }
     } else if (menuItem.key == 'exit') {
       final auth = context.read<AuthState>();
       if (auth.gpo.allowExit) {

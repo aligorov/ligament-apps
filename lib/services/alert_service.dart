@@ -178,6 +178,49 @@ class AlertService {
     }
   }
 
+  /// Оповещение о доступном обновлении приложения Ligament 2FA
+  Future<void> triggerUpdateNotification({
+    required String latestVersion,
+    required String releaseUrl,
+  }) async {
+    await init();
+
+    const title = 'Обновление Ligament 2FA';
+    final body = 'Доступна новая версия $latestVersion. Нажмите для загрузки.';
+
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      if (Platform.isMacOS) {
+        await _showDarwinNotification(title, body, releaseUrl);
+      } else if (Platform.isWindows) {
+        try {
+          if (await windowManager.isMinimized()) {
+            await windowManager.setProgressBar(1.0);
+          }
+        } catch (_) {}
+      }
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      const androidDetails = AndroidNotificationDetails(
+        'app_updates_channel',
+        'Обновления приложения',
+        channelDescription: 'Уведомления о выходе новых версий Ligament 2FA',
+        importance: Importance.high,
+        priority: Priority.high,
+      );
+      const iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      );
+      await _localNotifications.show(
+        2001,
+        title,
+        body,
+        const NotificationDetails(android: androidDetails, iOS: iosDetails),
+        payload: releaseUrl,
+      );
+    }
+  }
+
   /// Сброс AlwaysOnTop и индикатора на таскбаре после завершения обработки запроса
   Future<void> resetWindowPriority() async {
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {

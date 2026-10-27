@@ -1,5 +1,8 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/app_version.dart';
+import 'package:ligament_authenticator/widgets/app_update_dialog.dart';
 
 void main() {
   test('formatAppVersion hides build metadata and keeps one v prefix', () {
@@ -23,5 +26,44 @@ void main() {
       isAppUpdateAvailable('999999999999999999999999.1.1', 'v1.1.130'),
       isFalse,
     );
+  });
+
+  test('kAppVersion fallback is set to current release', () {
+    expect(kAppVersion, '1.1.144+170');
+  });
+
+  testWidgets('AppUpdateDialog renders versions and launches download url',
+      (WidgetTester tester) async {
+    const channel = MethodChannel('plugins.flutter.io/url_launcher');
+    final calls = <MethodCall>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return true;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: AppUpdateDialog(
+            latestVersion: '1.1.145+171',
+            releaseUrl: 'https://github.com/aligorov/ligament-apps/releases/latest',
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Доступно обновление Ligament 2FA'), findsOneWidget);
+    expect(find.text('v1.1.145'), findsOneWidget);
+    expect(find.text('Скачать обновление'), findsOneWidget);
+
+    await tester.tap(find.text('Скачать обновление'));
+    await tester.pumpAndSettle();
+
+    expect(calls, isNotEmpty);
+    expect(calls.single.method, 'launch');
   });
 }

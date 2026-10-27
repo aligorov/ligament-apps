@@ -9,8 +9,12 @@ class AppStrings {
   bool get isRu => languageCode.startsWith('ru');
 
   static AppStrings of(BuildContext context, {bool listen = true}) {
-    final auth = Provider.of<AuthState>(context, listen: listen);
-    return AppStrings(auth.localeCode);
+    try {
+      final auth = Provider.of<AuthState>(context, listen: listen);
+      return AppStrings(auth.localeCode);
+    } catch (_) {
+      return AppStrings('ru');
+    }
   }
 
   // --- Common ---
@@ -377,6 +381,17 @@ class AppStrings {
   // Обновление приложения (v1.1.49+): /api/v1/app/version.
   String get updateAvailablePrefix => isRu ? 'Доступна новая версия' : 'New version available';
   String get updateOpen => isRu ? 'Обновить' : 'Update';
+  String get updateDialogTitle => isRu ? 'Доступно обновление Ligament 2FA' : 'Ligament 2FA Update Available';
+  String get updateDialogCurrent => isRu ? 'Текущая версия' : 'Current version';
+  String get updateDialogLatest => isRu ? 'Новая версия' : 'New version';
+  String get updateDialogDescription => isRu
+      ? 'Доступна новая версия Ligament 2FA. Рекомендуется установить обновление для стабильной работы и новых функций.'
+      : 'A new version of Ligament 2FA is available. Installing the update is recommended for stability and new features.';
+  String get updateDownload => isRu ? 'Скачать обновление' : 'Download Update';
+  String get updateRemindLater => isRu ? 'Напомнить позже' : 'Remind Later';
+  String get updateCheckButton => isRu ? 'Проверить обновления' : 'Check for Updates';
+  String get updateChecking => isRu ? 'Проверка обновлений...' : 'Checking for updates...';
+  String get updateLatestInstalled => isRu ? 'У вас установлена последняя версия' : 'You are on the latest version';
   String get userFallback => isRu ? 'Пользователь' : 'User';
   String userRole(String r) => isRu ? 'Роль: $r' : 'Role: $r';
   String serverUrl(String u) => isRu ? 'Сервер: $u' : 'Server: $u';

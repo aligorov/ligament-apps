@@ -230,6 +230,9 @@ class ApiClient {
     if (token != null && token!.isNotEmpty) {
       h['Authorization'] = 'Bearer $token';
     }
+    if (appVersion.isNotEmpty) {
+      h['X-App-Version'] = appVersion;
+    }
     if (clientInternalIP != null && clientInternalIP!.isNotEmpty) {
       h['X-Ligament-Internal-IP'] = clientInternalIP!;
     }
@@ -240,14 +243,44 @@ class ApiClient {
   }
 
   /// Версии приложений (сервер v0.8.175+): текущая устройства против
-  /// последнего релиза GitHub + ссылка обновления. null — сервер старый
-  /// или сети нет: подсветка обновления просто не появляется.
+  /// последнего релиза GitHub + ссылка обновления. При недоступности
+  /// сервера или пустом ответе обращается напрямую к GitHub Releases API.
   Future<Map<String, dynamic>?> getAppVersion() async {
     try {
       final res =
           await _get(_cleanUrl('/api/v1/app/version'), headers: _headers());
       if (res.statusCode == 200) {
-        return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        final data =
+            jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        final latest = data['latest']?.toString() ?? '';
+        if (latest.isNotEmpty) {
+          return data;
+        }
+      }
+    } catch (_) {}
+
+    // Fallback: прямой запрос к GitHub Releases API при отсутствии данных от сервера
+    try {
+      final uri = Uri.parse(
+          'https://api.github.com/repos/aligorov/ligament-apps/releases/latest');
+      final res = await http.get(uri, headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Ligament-2FA/$appVersion',
+      }).timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) {
+        final data =
+            jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        final tagName = data['tag_name']?.toString() ?? '';
+        final htmlUrl = data['html_url']?.toString() ??
+            'https://github.com/aligorov/ligament-apps/releases/latest';
+        if (tagName.isNotEmpty) {
+          return {
+            'current': appVersion,
+            'latest': tagName,
+            'update_available': isAppUpdateAvailable(appVersion, tagName),
+            'release_url': htmlUrl,
+          };
+        }
       }
     } catch (_) {}
     return null;

@@ -9,6 +9,7 @@ import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
+import '../widgets/app_update_dialog.dart';
 import '../app_version.dart';
 import 'connect_screen.dart';
 
@@ -24,6 +25,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // Обновление приложения (v1.1.49+): latest с сервера, когда есть.
   Map<String, dynamic>? _appUpdate;
+  bool _isCheckingUpdate = false;
   bool _isLoggingOut = false;
   bool _savingDebugLogs = false;
 
@@ -61,14 +63,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  Future<void> _checkAppUpdate() async {
-    final client = context.read<AuthState>().api;
-    if (client == null) return;
-    final v = await _traceAction('check_update', client.getAppVersion);
-    if (!mounted || v == null) return;
-    final latest = v['latest']?.toString() ?? '';
-    if (isAppUpdateAvailable(appVersion, latest)) {
-      setState(() => _appUpdate = v);
+  Future<void> _checkAppUpdate({bool manual = false}) async {
+    final auth = context.read<AuthState>();
+    if (manual) setState(() => _isCheckingUpdate = true);
+    try {
+      final v = await _traceAction('check_update', () => auth.checkAppUpdate(manual: manual));
+      if (!mounted) return;
+      if (v != null) {
+        final latest = v['latest']?.toString() ?? '';
+        final releaseUrl = v['release_url']?.toString() ?? '';
+        if (isAppUpdateAvailable(appVersion, latest)) {
+          setState(() => _appUpdate = v);
+          if (manual) {
+            await AppUpdateDialog.show(
+              context,
+              latestVersion: latest,
+              releaseUrl: releaseUrl,
+            );
+          }
+          return;
+        }
+      }
+      if (manual && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(context.stringsRead.updateLatestInstalled),
+            duration: const Duration(seconds: 3),
+            backgroundColor: const Color(0xFF0284C7),
+          ),
+        );
+      }
+    } finally {
+      if (manual && mounted) {
+        setState(() => _isCheckingUpdate = false);
+      }
     }
   }
 
@@ -881,6 +909,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   s.platformCorporate(isMac ? "macOS" : (isWin ? "Windows" : (isLin ? "Linux" : "Mobile"))),
                   style: const TextStyle(color: Color(0xFF475569), fontSize: 11),
                 ),
+                const SizedBox(height: 12),
+                if (_appUpdate != null && isAppUpdateAvailable(appVersion, _appUpdate!['latest']?.toString() ?? '')) ...[
+                  OutlinedButton.icon(
+                    onPressed: () => AppUpdateDialog.show(
+                      context,
+                      latestVersion: _appUpdate!['latest']?.toString() ?? '',
+                      releaseUrl: _appUpdate!['release_url']?.toString() ?? '',
+                    ),
+                    icon: const Icon(Icons.system_update_alt_rounded, size: 16, color: Color(0xFF38BDF8)),
+                    label: Text(
+                      '${s.updateAvailablePrefix}: ${formatAppVersion(_appUpdate!['latest']?.toString() ?? '')}',
+                      style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF0284C7)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    ),
+                  ),
+                ] else ...[
+                  TextButton.icon(
+                    onPressed: _isCheckingUpdate ? null : () => _checkAppUpdate(manual: true),
+                    icon: _isCheckingUpdate
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF94A3B8)),
+                          )
+                        : const Icon(Icons.refresh_rounded, size: 14, color: Color(0xFF94A3B8)),
+                    label: Text(
+                      _isCheckingUpdate ? s.updateChecking : s.updateCheckButton,
+                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

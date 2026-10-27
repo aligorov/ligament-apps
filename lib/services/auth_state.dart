@@ -408,7 +408,13 @@ class AuthState extends ChangeNotifier {
   Map<String, dynamic>? activePrompt;
   Map<String, dynamic>? activeSupportPrompt;
   Map<String, dynamic>? activeNotificationPrompt;
+  Map<String, dynamic>? appUpdate;
+  bool get hasAppUpdate {
+    final latest = appUpdate?['latest']?.toString() ?? '';
+    return isAppUpdateAvailable(appVersion, latest);
+  }
   Timer? _pollingTimer;
+  Timer? _appUpdateTimer;
   bool _isPollingInFlight = false;
   final Set<String> _resolvedChallengeIds = {};
   // Челленджи, по которым уже сработал alert (звук + вывод окна/нотификация):
@@ -1098,6 +1104,13 @@ class AuthState extends ChangeNotifier {
         _isPollingInFlight = false;
       }
     });
+
+    // 4. Периодическая проверка наличия обновлений приложения (раз в 1 час)
+    _appUpdateTimer?.cancel();
+    _appUpdateTimer = Timer.periodic(const Duration(hours: 1), (_) {
+      if (!isLoggedIn) return;
+      unawaited(checkAppUpdate());
+    });
   }
 
   Future<void> setServerUrl(String url) async {
@@ -1380,6 +1393,8 @@ class AuthState extends ChangeNotifier {
     }
     _pollingTimer?.cancel();
     _pollingTimer = null;
+    _appUpdateTimer?.cancel();
+    _appUpdateTimer = null;
     ws.disconnect();
     telemetry.stopReporting();
     await localDetect.stop();
@@ -1398,6 +1413,8 @@ class AuthState extends ChangeNotifier {
     await _writeLogoutMarker();
     _pollingTimer?.cancel();
     _pollingTimer = null;
+    _appUpdateTimer?.cancel();
+    _appUpdateTimer = null;
     // Д8: ретрай регистрации машины не переживает разлогин.
     _machineRetryTimer?.cancel();
     _machineRetryTimer = null;
@@ -1496,6 +1513,7 @@ class AuthState extends ChangeNotifier {
       loadRdpTargets(),
       loadLinkHosts(),
       registerRdpMachineAndInstance(),
+      checkAppUpdate(),
     ];
     if (isEngineer) {
       tasks.add(loadSupportQueue());
@@ -1964,6 +1982,41 @@ class AuthState extends ChangeNotifier {
     } catch (e) {
       debugPrint('auth_state: ошибка загрузки истории: $e');
     }
+  }
+
+  /// Проверка наличия новой версии приложения (через API сервера и fallback на GitHub Releases).
+  Future<Map<String, dynamic>?> checkAppUpdate({bool manual = false}) async {
+    final client = api;
+    if (client == null) return null;
+    try {
+      final update = await client.getAppVersion();
+      if (update != null) {
+        final latest = update['latest']?.toString() ?? '';
+        if (isAppUpdateAvailable(appVersion, latest)) {
+          appUpdate = update;
+          notifyListeners();
+
+          final prefs = await SharedPreferences.getInstance();
+          final lastNotified = prefs.getString('last_notified_app_update');
+          if (manual || lastNotified != latest) {
+            await prefs.setString('last_notified_app_update', latest);
+            await alert.triggerUpdateNotification(
+              latestVersion: latest,
+              releaseUrl: update['release_url']?.toString() ?? '',
+            );
+          }
+          return update;
+        } else {
+          if (appUpdate != null) {
+            appUpdate = null;
+            notifyListeners();
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('auth_state: ошибка проверки обновлений: $e');
+    }
+    return null;
   }
 
   Future<void> loadNotifications() async {
@@ -2688,6 +2741,7 @@ class AuthState extends ChangeNotifier {
   void dispose() {
     _loginGeneration++;
     _pollingTimer?.cancel();
+    _appUpdateTimer?.cancel();
     _machineRetryTimer?.cancel();
     unawaited(localDetect.stop());
     ws.disconnect();

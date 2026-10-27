@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
 import '../app_version.dart';
@@ -16,6 +17,7 @@ import '../services/rdp_actions.dart';
 import '../services/support_service.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
+import '../widgets/app_update_dialog.dart';
 import 'approval_modal.dart';
 import 'browser_sso_dialog.dart';
 import 'identity_mismatch_banner.dart';
@@ -95,14 +97,32 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Future<void> _checkAppUpdate() async {
-    final client = context.read<AuthState>().api;
-    if (client == null) return;
-    final update = await _traceAction('check_update', client.getAppVersion);
+  Future<void> _checkAppUpdate({bool manual = false}) async {
+    final auth = context.read<AuthState>();
+    final update = await _traceAction(
+      'check_update',
+      () => auth.checkAppUpdate(manual: manual),
+    );
     if (!mounted || update == null) return;
     final latest = update['latest']?.toString() ?? '';
+    final releaseUrl = update['release_url']?.toString() ?? '';
     if (!isAppUpdateAvailable(appVersion, latest)) return;
     setState(() => _appUpdate = update);
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastPrompted = prefs.getString('last_prompted_app_update');
+      if (manual || lastPrompted != latest) {
+        await prefs.setString('last_prompted_app_update', latest);
+        if (mounted) {
+          await AppUpdateDialog.show(
+            context,
+            latestVersion: latest,
+            releaseUrl: releaseUrl,
+          );
+        }
+      }
+    } catch (_) {}
   }
 
   @override
