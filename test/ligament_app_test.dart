@@ -6,6 +6,9 @@ import 'package:ligament_authenticator/main.dart';
 import 'package:ligament_authenticator/services/auth_state.dart';
 import 'package:ligament_authenticator/screens/login_screen.dart';
 import 'package:ligament_authenticator/screens/settings_screen.dart';
+import 'package:ligament_authenticator/screens/notifications_screen.dart';
+import 'package:ligament_authenticator/screens/apps_screen.dart';
+import 'package:ligament_authenticator/screens/history_screen.dart';
 import 'package:ligament_authenticator/widgets/app_update_banner.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -115,5 +118,49 @@ void main() {
     expect(calls.single.method, 'launch');
     final arguments = calls.single.arguments as Map<dynamic, dynamic>;
     expect(arguments['url'], 'https://apps.example.corp/app.msi');
+  });
+
+  testWidgets('AppUpdateBanner.maybeFromAuth returns banner when update available',
+      (WidgetTester tester) async {
+    final authState = AuthState();
+    expect(AppUpdateBanner.maybeFromAuth(authState), isNull);
+
+    authState.appUpdate = {
+      'latest': '9.9.9',
+      'release_url': 'https://apps.example.corp/app.msi',
+    };
+    final banner = AppUpdateBanner.maybeFromAuth(authState);
+    expect(banner, isNotNull);
+    expect((banner as AppUpdateBanner).latestVersion, '9.9.9');
+    expect(banner.releaseUrl, 'https://apps.example.corp/app.msi');
+  });
+
+  testWidgets('All tabs show AppUpdateBanner in header when update is available',
+      (WidgetTester tester) async {
+    final authState = AuthState();
+    authState.appUpdate = {
+      'latest': '9.9.9',
+      'release_url': 'https://apps.example.corp/app.msi',
+    };
+
+    // NotificationsScreen
+    await tester.pumpWidget(createTestApp(const NotificationsScreen(), authState));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppUpdateBanner), findsOneWidget);
+
+    // AppsScreen
+    await tester.pumpWidget(createTestApp(const AppsScreen(), authState));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppUpdateBanner), findsOneWidget);
+
+    // HistoryScreen
+    await tester.pumpWidget(createTestApp(const HistoryScreen(), authState));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppUpdateBanner), findsOneWidget);
+
+    // SettingsScreen
+    await tester.pumpWidget(createTestApp(const SettingsScreen(), authState));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppUpdateBanner), findsOneWidget);
   });
 }

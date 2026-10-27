@@ -9,6 +9,7 @@ import 'support_operator_screen.dart';
 import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../services/link_agent_binding_service.dart';
+import '../widgets/app_update_banner.dart';
 
 /// Lowercase search corpus built once per inventory snapshot. Filtering then
 /// scans only the cached strings, rather than allocating/joining every host's
@@ -336,6 +337,7 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             icon: const Icon(Icons.refresh_rounded),
           ),
         ],
+        bottom: AppUpdateBanner.maybeFromAuth(auth),
       ),
       body: Column(
         children: [

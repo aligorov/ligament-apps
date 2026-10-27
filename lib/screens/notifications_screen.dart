@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
+import '../widgets/app_update_banner.dart';
 import 'notification_popup_dialog.dart';
 
 /// Полноэкранный раздел «Сообщения и уведомления» (Inbox)
@@ -139,6 +140,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             onPressed: () => auth.loadNotifications(),
           ),
         ],
+        bottom: AppUpdateBanner.maybeFromAuth(auth),
       ),
       body: RefreshIndicator(
         onRefresh: () => auth.loadNotifications(),

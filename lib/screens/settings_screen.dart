@@ -112,21 +112,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final isWin = !kIsWeb && Platform.isWindows;
     final isLin = !kIsWeb && Platform.isLinux;
     final isDesktop = isMac || isWin || isLin;
+    final effectiveUpdate = auth.hasAppUpdate ? auth.appUpdate : _appUpdate;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         title: Text(s.settingsTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
-        bottom: _appUpdate == null
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(36),
-                child: AppUpdateBanner(
-                  latestVersion: _appUpdate!['latest']?.toString() ?? '',
-                  releaseUrl: _appUpdate!['release_url']?.toString() ?? '',
-                ),
-              ),
+        bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -910,16 +903,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(color: Color(0xFF475569), fontSize: 11),
                 ),
                 const SizedBox(height: 12),
-                if (_appUpdate != null && isAppUpdateAvailable(appVersion, _appUpdate!['latest']?.toString() ?? '')) ...[
+                if (effectiveUpdate != null && isAppUpdateAvailable(appVersion, effectiveUpdate['latest']?.toString() ?? '')) ...[
                   OutlinedButton.icon(
                     onPressed: () => AppUpdateDialog.show(
                       context,
-                      latestVersion: _appUpdate!['latest']?.toString() ?? '',
-                      releaseUrl: _appUpdate!['release_url']?.toString() ?? '',
+                      latestVersion: effectiveUpdate['latest']?.toString() ?? '',
+                      releaseUrl: effectiveUpdate['release_url']?.toString() ?? '',
                     ),
                     icon: const Icon(Icons.system_update_alt_rounded, size: 16, color: Color(0xFF38BDF8)),
                     label: Text(
-                      '${s.updateAvailablePrefix}: ${formatAppVersion(_appUpdate!['latest']?.toString() ?? '')}',
+                      '${s.updateAvailablePrefix}: ${formatAppVersion(effectiveUpdate['latest']?.toString() ?? '')}',
                       style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                     style: OutlinedButton.styleFrom(

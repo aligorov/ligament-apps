@@ -6,6 +6,7 @@ import '../i18n/app_strings.dart';
 import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../services/rdp_actions.dart';
+import '../widgets/app_update_banner.dart';
 import '../widgets/rdp_target_tile.dart';
 import 'link_catalog_screen.dart';
 
@@ -153,6 +154,7 @@ class _AppsScreenState extends State<AppsScreen> {
             tooltip: s.appsRefresh,
           ),
         ],
+        bottom: AppUpdateBanner.maybeFromAuth(auth),
       ),
       body: Column(
         children: [

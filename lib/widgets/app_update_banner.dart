@@ -3,8 +3,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app_version.dart';
 import '../i18n/app_strings.dart';
+import '../services/auth_state.dart';
 
-class AppUpdateBanner extends StatelessWidget {
+class AppUpdateBanner extends StatelessWidget implements PreferredSizeWidget {
   const AppUpdateBanner({
     super.key,
     required this.latestVersion,
@@ -13,6 +14,32 @@ class AppUpdateBanner extends StatelessWidget {
 
   final String latestVersion;
   final String releaseUrl;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(36);
+
+  /// Создает баннер обновления на основе [AuthState] (или опционального [localUpdate]),
+  /// если доступна новая версия приложения. В противном случае возвращает `null`.
+  static PreferredSizeWidget? maybeFromAuth(
+    AuthState auth, [
+    Map<String, dynamic>? localUpdate,
+  ]) {
+    final update = auth.hasAppUpdate
+        ? auth.appUpdate
+        : (localUpdate != null &&
+                isAppUpdateAvailable(
+                    appVersion, localUpdate['latest']?.toString() ?? '')
+            ? localUpdate
+            : null);
+    if (update == null) return null;
+    final latest = update['latest']?.toString() ?? '';
+    final releaseUrl = update['release_url']?.toString() ?? '';
+    if (!isAppUpdateAvailable(appVersion, latest)) return null;
+    return AppUpdateBanner(
+      latestVersion: latest,
+      releaseUrl: releaseUrl,
+    );
+  }
 
   Future<void> _openRelease() async {
     final url = Uri.tryParse(releaseUrl);

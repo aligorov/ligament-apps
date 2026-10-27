@@ -807,15 +807,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ],
         ),
-        bottom: _appUpdate == null
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(36),
-                child: AppUpdateBanner(
-                  latestVersion: _appUpdate!['latest']?.toString() ?? '',
-                  releaseUrl: _appUpdate!['release_url']?.toString() ?? '',
-                ),
-              ),
+        bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
       ),
       body: RefreshIndicator(
         onRefresh: () => _traceAction('manual_refresh', auth.refreshAll),
