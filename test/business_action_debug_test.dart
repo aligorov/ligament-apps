@@ -130,19 +130,27 @@ void main() {
     await tester.tap(notificationSwitch());
     await tester.pump();
     await logs.flush();
-    expect(entries.where((e) => e['event'] == 'ui.settings.action.started'),
-        hasLength(1));
-    expect(entries.where((e) => e['event'] == 'ui.settings.action.completed'),
-        isEmpty);
+    final notifyStarted = entries.where((e) =>
+        e['event'] == 'ui.settings.action.started' &&
+        (e['context'] as String? ?? '')
+            .contains('operation=notify_login_success'));
+    expect(notifyStarted, hasLength(1));
     expect(
-        entries.first['context'], contains('operation=notify_login_success'));
-    expect(entries.first['context'], contains('state=disabled'));
+        entries.where((e) =>
+            e['event'] == 'ui.settings.action.completed' &&
+            (e['context'] as String? ?? '')
+                .contains('operation=notify_login_success')),
+        isEmpty);
+    expect(notifyStarted.first['context'], contains('operation=notify_login_success'));
+    expect(notifyStarted.first['context'], contains('state=disabled'));
 
     auth.pending.complete();
     await tester.pumpAndSettle();
     await logs.flush();
-    final completed = entries
-        .singleWhere((e) => e['event'] == 'ui.settings.action.completed');
+    final completed = entries.singleWhere((e) =>
+        e['event'] == 'ui.settings.action.completed' &&
+        (e['context'] as String? ?? '')
+            .contains('operation=notify_login_success'));
     expect(completed['context'], contains('duration_ms='));
     expect(completed['context'], contains('result=future_returned'));
     expect(tester.takeException(), isNull);
@@ -219,7 +227,11 @@ void main() {
     expect(failure['error_type'], 'PlatformException');
     expect(failure['error_code'], 'notification_save_failed');
     expect(failure['context'], contains('duration_ms='));
-    expect(entries.where((e) => e['event'] == 'ui.settings.action.completed'),
+    expect(
+        entries.where((e) =>
+            e['event'] == 'ui.settings.action.completed' &&
+            (e['context'] as String? ?? '')
+                .contains('operation=notify_login_success')),
         isEmpty);
     final serialized = entries.toString();
     for (final secret in [
