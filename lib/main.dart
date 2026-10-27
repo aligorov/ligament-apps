@@ -492,7 +492,7 @@ class _LigamentAppState extends State<LigamentApp>
       builder: (context, child) => DebugActionScope(
         child: child ?? const SizedBox.shrink(),
       ),
-      title: 'Ligament 2FA',
+      title: 'Ligament 2FA Authenticator',
       locale: auth.locale,
       supportedLocales: const [
         Locale('ru'),

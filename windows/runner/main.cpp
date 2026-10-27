@@ -1,10 +1,92 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <tlhelp32.h>
 #include <windows.h>
 
 #include "debug_log.h"
 #include "flutter_window.h"
 #include "utils.h"
+
+namespace {
+
+HWND FindExistingAppWindow() {
+  HWND wnd = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Ligament 2FA Authenticator");
+  if (wnd != nullptr) return wnd;
+  wnd = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Ligament 2FA");
+  if (wnd != nullptr) return wnd;
+
+  HWND found = nullptr;
+  ::EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+    wchar_t class_name[256] = {0};
+    if (::GetClassNameW(hwnd, class_name, _countof(class_name)) > 0) {
+      if (wcscmp(class_name, L"FLUTTER_RUNNER_WIN32_WINDOW") == 0) {
+        wchar_t title[256] = {0};
+        ::GetWindowTextW(hwnd, title, _countof(title));
+        if (wcsstr(title, L"Ligament") != nullptr) {
+          *reinterpret_cast<HWND*>(lparam) = hwnd;
+          return FALSE;
+        }
+      }
+    }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&found));
+  return found;
+}
+
+void ActivateExistingWindow(HWND wnd) {
+  if (wnd == nullptr) return;
+  if (::IsIconic(wnd)) {
+    ::ShowWindow(wnd, SW_RESTORE);
+  } else {
+    ::ShowWindow(wnd, SW_SHOW);
+  }
+  HWND foreground_window = ::GetForegroundWindow();
+  DWORD foreground_thread_id = ::GetWindowThreadProcessId(foreground_window, nullptr);
+  DWORD current_thread_id = ::GetCurrentThreadId();
+  if (foreground_thread_id != 0 && foreground_thread_id != current_thread_id) {
+    ::AttachThreadInput(current_thread_id, foreground_thread_id, TRUE);
+    ::SetWindowPos(wnd, HWND_TOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    ::SetForegroundWindow(wnd);
+    ::BringWindowToTop(wnd);
+    ::SetWindowPos(wnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    ::AttachThreadInput(current_thread_id, foreground_thread_id, FALSE);
+  } else {
+    ::SetWindowPos(wnd, HWND_TOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    ::SetForegroundWindow(wnd);
+    ::BringWindowToTop(wnd);
+    ::SetWindowPos(wnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  }
+}
+
+void TerminateOrphanedInstances() {
+  const DWORD current_pid = ::GetCurrentProcessId();
+  HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return;
+
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (::Process32FirstW(snapshot, &entry)) {
+    do {
+      if (_wcsicmp(entry.szExeFile, L"ligament_authenticator.exe") == 0 &&
+          entry.th32ProcessID != current_pid) {
+        HANDLE hProcess = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, entry.th32ProcessID);
+        if (hProcess != nullptr) {
+          debug_log::Write("startup.orphaned_process.terminate", {}, {}, entry.th32ProcessID);
+          ::TerminateProcess(hProcess, 1);
+          ::WaitForSingleObject(hProcess, 1000);
+          ::CloseHandle(hProcess);
+        }
+      }
+    } while (::Process32NextW(snapshot, &entry));
+  }
+  ::CloseHandle(snapshot);
+}
+
+}  // namespace
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
@@ -62,25 +144,47 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   HANDLE single_instance_mutex = nullptr;
   if (!link_host_worker && !autoshare) {
     single_instance_mutex = ::CreateMutexW(nullptr, TRUE, L"Local\\Ligament2FA_App_SingleInstance");
-    const DWORD mutex_error = ::GetLastError();
+    DWORD mutex_error = ::GetLastError();
+    if (single_instance_mutex != nullptr && mutex_error == ERROR_ALREADY_EXISTS) {
+      debug_log::Write("startup.mutex.existing", {}, {}, mutex_error);
+      HWND existing_wnd = FindExistingAppWindow();
+      debug_log::Write(existing_wnd ? "startup.window.found" : "startup.window.missing");
+
+      bool is_responsive = false;
+      if (existing_wnd != nullptr) {
+        DWORD_PTR result = 0;
+        if (::SendMessageTimeoutW(existing_wnd, WM_NULL, 0, 0,
+                                  SMTO_ABORTIFHUNG | SMTO_BLOCK, 1500,
+                                  &result) != 0) {
+          is_responsive = true;
+        }
+      }
+
+      if (existing_wnd != nullptr && is_responsive) {
+        if (!start_minimized) {
+          ActivateExistingWindow(existing_wnd);
+        }
+        ::CloseHandle(single_instance_mutex);
+        debug_log::Write("startup.single_instance.exit");
+        if (SUCCEEDED(com_result)) ::CoUninitialize();
+        return EXIT_SUCCESS;
+      }
+
+      // Окно не найдено либо зависло: старый процесс оставляет зомби-мьютекс
+      // (например, после обновления или сбоя). Завершаем осиротевший экземпляр
+      // и освобождаем мьютекс, чтобы пользователь не сталкивался с отказом запуска.
+      debug_log::Write("startup.stale_instance.cleanup");
+      ::CloseHandle(single_instance_mutex);
+      single_instance_mutex = nullptr;
+      TerminateOrphanedInstances();
+      ::Sleep(300);
+
+      single_instance_mutex = ::CreateMutexW(nullptr, TRUE, L"Local\\Ligament2FA_App_SingleInstance");
+      mutex_error = ::GetLastError();
+    }
+
     if (single_instance_mutex == nullptr) {
       debug_log::Write("startup.mutex.failed", {}, {}, mutex_error);
-    } else if (mutex_error == ERROR_ALREADY_EXISTS) {
-      debug_log::Write("startup.mutex.existing", {}, {}, mutex_error);
-      ::CloseHandle(single_instance_mutex);
-      HWND existing_wnd = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Ligament 2FA Authenticator");
-      debug_log::Write(existing_wnd ? "startup.window.found" : "startup.window.missing");
-      if (!start_minimized && existing_wnd != nullptr) {
-        if (::IsIconic(existing_wnd)) {
-          ::ShowWindow(existing_wnd, SW_RESTORE);
-        } else {
-          ::ShowWindow(existing_wnd, SW_SHOW);
-        }
-        ::SetForegroundWindow(existing_wnd);
-      }
-      debug_log::Write("startup.single_instance.exit");
-      if (SUCCEEDED(com_result)) ::CoUninitialize();
-      return EXIT_SUCCESS;
     } else {
       debug_log::Write("startup.mutex.created");
     }

@@ -151,8 +151,8 @@ try {
     Write-Host " Версия MSI: $msiVersion" -ForegroundColor Cyan
 
     Write-Host "`n[5/5] Компиляция WiX XML (Candle) и линковка MSI (Light)..." -ForegroundColor Yellow
-    & $candleCmd -arch x64 -dSourceDir="$BuildReleaseDir" -dProductVersion="$msiVersion" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
-    & $lightCmd -sval -ext WixUIExtension "$TempDir\Product.wixobj" "$TempDir\Files.wixobj" -o "$OutputMsi"
+    & $candleCmd -arch x64 -ext WixUtilExtension -dSourceDir="$BuildReleaseDir" -dProductVersion="$msiVersion" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
+    & $lightCmd -sval -ext WixUIExtension -ext WixUtilExtension "$TempDir\Product.wixobj" "$TempDir\Files.wixobj" -o "$OutputMsi"
 
     Write-Host "`n========================================================" -ForegroundColor Green
     Write-Host " УСПЕШНО СОБРАН WINDOWS MSI ДИСТРИБУТИВ (APP + RDP 2FA):" -ForegroundColor Green

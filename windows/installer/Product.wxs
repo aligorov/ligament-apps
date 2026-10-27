@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <!-- Версию передаёт build_msi.ps1 из pubspec.yaml (-dProductVersion):
        зашитая константа приводила к тому, что каждая сборка (Product Id="*")
        ставилась ОТДЕЛЬНОЙ записью в «Программы и компоненты» — MajorUpgrade
@@ -100,6 +101,25 @@
       <RegistrySearch Id="ExistingBypassAccounts" Root="HKLM" Key="SOFTWARE\Ligament\2FA"
                       Name="BypassAccounts" Type="raw" />
     </Property>
+
+    <!-- Завершение работающего GUI-клиента перед установкой/обновлением/удалением,
+         чтобы установочник не блокировал файлы и не оставлял старый GUI-процесс в фоне -->
+    <Property Id="KillRunningApp" Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM ligament_authenticator.exe /T" />
+    <Property Id="WixQuietExec64CmdLine" Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM ligament_authenticator.exe /T" />
+    <Property Id="QtExec64CmdLine" Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM ligament_authenticator.exe /T" />
+    <CustomAction Id="KillRunningApp" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="immediate" Return="ignore" />
+
+    <util:CloseApplication Id="CloseLigamentAuthenticator"
+                           Target="ligament_authenticator.exe"
+                           CloseMessage="yes"
+                           Timeout="5"
+                           TerminateProcess="0"
+                           RebootPrompt="no"
+                           PromptToContinue="no" />
+
+    <InstallExecuteSequence>
+      <Custom Action="KillRunningApp" Before="InstallValidate" />
+    </InstallExecuteSequence>
   </Product>
 
   <Fragment>
