@@ -9,6 +9,7 @@ import 'support_operator_screen.dart';
 import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../services/link_agent_binding_service.dart';
+import '../widgets/neural_mesh_background.dart';
 
 /// Lowercase search corpus built once per inventory snapshot. Filtering then
 /// scans only the cached strings, rather than allocating/joining every host's
@@ -312,9 +313,13 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0F19),
+      backgroundColor: const Color(0xFF090D1A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0B0F19),
+        elevation: 0,
+        shape: const Border(
+          bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
+        ),
         title: Text(isRu ? 'Ligament Link' : 'Ligament Link'),
         actions: [
           if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
@@ -337,106 +342,108 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Live Perimeter Awareness (внутренний / внешний периметр)
-          if (clientIp != null || isExternal)
-            Container(
-              margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: isExternal
-                    ? const Color(0xFF451A03)
-                    : const Color(0xFF064E3B),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
+      body: NeuralMeshBackground(
+        child: Column(
+          children: [
+            // Live Perimeter Awareness (внутренний / внешний периметр)
+            if (clientIp != null || isExternal)
+              Container(
+                margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
                   color: isExternal
-                      ? const Color(0xFFD97706)
-                      : const Color(0xFF059669),
-                  width: 1,
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    isExternal
-                        ? Icons.cloud_outlined
-                        : Icons.verified_user_outlined,
-                    size: 18,
+                      ? const Color(0xFF451A03)
+                      : const Color(0xFF064E3B),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
                     color: isExternal
-                        ? const Color(0xFFF59E0B)
-                        : const Color(0xFF34D399),
+                        ? const Color(0xFFD97706)
+                        : const Color(0xFF059669),
+                    width: 1,
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
+                ),
+                child: Row(
+                  children: [
+                    Icon(
                       isExternal
-                          ? (isRu
-                              ? 'Внешний периметр (${clientIp ?? "внешний IP"}) · Подключение требует Step-Up 2FA'
-                              : 'External perimeter (${clientIp ?? "public IP"}) · Step-Up 2FA required')
-                          : (isRu
-                              ? 'Корпоративная сеть (${clientIp ?? "внутренний IP"}) · Доверенный периметр'
-                              : 'Corporate network (${clientIp ?? "internal IP"}) · Trusted perimeter'),
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: isExternal
-                            ? const Color(0xFFFDE68A)
-                            : const Color(0xFFA7F3D0),
+                          ? Icons.cloud_outlined
+                          : Icons.verified_user_outlined,
+                      size: 18,
+                      color: isExternal
+                          ? const Color(0xFFF59E0B)
+                          : const Color(0xFF34D399),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        isExternal
+                            ? (isRu
+                                ? 'Внешний периметр (${clientIp ?? "внешний IP"}) · Подключение требует Step-Up 2FA'
+                                : 'External perimeter (${clientIp ?? "public IP"}) · Step-Up 2FA required')
+                            : (isRu
+                                ? 'Корпоративная сеть (${clientIp ?? "внутренний IP"}) · Доверенный периметр'
+                                : 'Corporate network (${clientIp ?? "internal IP"}) · Trusted perimeter'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: isExternal
+                              ? const Color(0xFFFDE68A)
+                              : const Color(0xFFA7F3D0),
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: TextField(
-              controller: _search,
-              onChanged: (value) {
-                DebugLogService.instance.record('ui.catalog.search.changed');
-                setState(() => _query = value);
-              },
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                hintText: isRu
-                    ? 'Имя, пользователь, OU, ОС или тег'
-                    : 'Name, user, OU, OS or tag',
-                prefixIcon: const Icon(Icons.search, color: Color(0xFF38BDF8)),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: isRu ? 'Очистить' : 'Clear',
-                        onPressed: () {
-                          DebugLogService.instance.record('ui.catalog.search.clear');
-                          _search.clear();
-                          setState(() => _query = '');
-                        },
-                        icon: const Icon(Icons.close),
-                      ),
-                filled: true,
-                fillColor: const Color(0xFF131B2B),
-                border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ),
-          if (auth.linkHostsLoading)
-            const LinearProgressIndicator(minHeight: 2),
-          if (auth.linkHostsError != null && auth.linkHosts.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                isRu
-                    ? 'Не удалось обновить каталог. Доступность ПК неизвестна.'
-                    : 'Inventory refresh failed. PC availability is unknown.',
-                style: const TextStyle(color: Colors.amber),
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: TextField(
+                controller: _search,
+                onChanged: (value) {
+                  DebugLogService.instance.record('ui.catalog.search.changed');
+                  setState(() => _query = value);
+                },
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: isRu
+                      ? 'Имя, пользователь, OU, ОС или тег'
+                      : 'Name, user, OU, OS or tag',
+                  prefixIcon: const Icon(Icons.search, color: Color(0xFF38BDF8)),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: isRu ? 'Очистить' : 'Clear',
+                          onPressed: () {
+                            DebugLogService.instance.record('ui.catalog.search.clear');
+                            _search.clear();
+                            setState(() => _query = '');
+                          },
+                          icon: const Icon(Icons.close),
+                        ),
+                  filled: true,
+                  fillColor: const Color(0xFF131B2B).withValues(alpha: 0.85),
+                  border:
+                      OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
               ),
             ),
-          Expanded(
-              child: _buildBody(
-                  auth, ouNames, folders, ouRawTargets, hosts, isRu)),
-        ],
+            if (auth.linkHostsLoading)
+              const LinearProgressIndicator(minHeight: 2),
+            if (auth.linkHostsError != null && auth.linkHosts.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  isRu
+                      ? 'Не удалось обновить каталог. Доступность ПК неизвестна.'
+                      : 'Inventory refresh failed. PC availability is unknown.',
+                  style: const TextStyle(color: Colors.amber),
+                ),
+              ),
+            Expanded(
+                child: _buildBody(
+                    auth, ouNames, folders, ouRawTargets, hosts, isRu)),
+          ],
+        ),
       ),
     );
   }
@@ -591,8 +598,18 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     bool isRu = true,
   }) {
     return Card(
-      color: isOU ? const Color(0xFF131B2B) : const Color(0xFF0F1725),
-      margin: EdgeInsets.only(left: isOU ? 0 : 16, top: 2, bottom: 2),
+      color: isOU
+          ? const Color(0xFF131B2B).withValues(alpha: 0.88)
+          : const Color(0xFF0F1725).withValues(alpha: 0.82),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: isOU ? const Color(0x2238BDF8) : const Color(0x14FFFFFF),
+          width: 1,
+        ),
+      ),
+      margin: EdgeInsets.only(left: isOU ? 0 : 16, top: 3, bottom: 3),
       child: ListTile(
         dense: !isOU,
         minTileHeight: isOU ? 64 : 46,
@@ -703,10 +720,10 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
       margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(8),
+        color: const Color(0xFF0F172A).withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: const Color(0xFF334155).withValues(alpha: 0.4),
+          color: const Color(0xFF334155).withValues(alpha: 0.5),
         ),
       ),
       child: Row(
