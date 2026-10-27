@@ -1326,11 +1326,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         final targetSize = (_previousWindowSize != null &&
-                _previousWindowSize!.width <= 600 &&
-                _previousWindowSize!.height <= 850)
+                _previousWindowSize!.width >= 580 &&
+                _previousWindowSize!.height >= 720)
             ? _previousWindowSize!
-            : const Size(440, 720);
-        await windowManager.setMinimumSize(const Size(380, 600));
+            : const Size(620, 820);
+        await windowManager.setMinimumSize(const Size(580, 720));
         await Future.delayed(const Duration(milliseconds: 50));
         await windowManager.setSize(targetSize);
         WidgetsBinding.instance.scheduleFrame();

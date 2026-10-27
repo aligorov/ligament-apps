@@ -213,9 +213,9 @@ class RdpActions {
       );
       if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
         try {
-          await windowManager.setMinimumSize(const Size(380, 600));
+          await windowManager.setMinimumSize(const Size(580, 720));
           await Future.delayed(const Duration(milliseconds: 50));
-          await windowManager.setSize(const Size(440, 720));
+          await windowManager.setSize(const Size(620, 820));
           WidgetsBinding.instance.scheduleFrame();
         } catch (error) { DebugLogService.instance.record('ui.rdp.best_effort.failed', error: error); }
       }

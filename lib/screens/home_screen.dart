@@ -80,6 +80,19 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_checkAppUpdate());
     });
+    if (_isDesktop) {
+      unawaited(() async {
+        try {
+          await windowManager.setMinimumSize(const Size(580, 720));
+          final sz = await windowManager.getSize();
+          if (sz.width < 580 || sz.height < 720) {
+            final w = sz.width < 580 ? 580.0 : sz.width;
+            final h = sz.height < 720 ? 720.0 : sz.height;
+            await windowManager.setSize(Size(w, h));
+          }
+        } catch (_) {}
+      }());
+    }
     // План §2.2: online-статус RDP-целей тухнет без обновления (сервер
     // переводит endpoint в offline только по факту disconnect/timeout) —
     // дергаем список раз в 30 с, пока видимы главная вкладка (0) или вкладка сервисов (2).
@@ -522,9 +535,9 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
           try {
-            await windowManager.setMinimumSize(const Size(380, 600));
+            await windowManager.setMinimumSize(const Size(580, 720));
             await Future.delayed(const Duration(milliseconds: 50));
-            await windowManager.setSize(const Size(440, 720));
+            await windowManager.setSize(const Size(620, 820));
             WidgetsBinding.instance.scheduleFrame();
           } catch (error) { DebugLogService.instance.record('ui.home.window_restore.failed', error: error); }
         }
@@ -560,9 +573,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
-        await windowManager.setMinimumSize(const Size(380, 600));
+        await windowManager.setMinimumSize(const Size(580, 720));
         await Future.delayed(const Duration(milliseconds: 50));
-        await windowManager.setSize(const Size(440, 720));
+        await windowManager.setSize(const Size(620, 820));
         WidgetsBinding.instance.scheduleFrame();
       } catch (error) { DebugLogService.instance.record('ui.home.window_restore.failed', error: error); }
     }
@@ -653,38 +666,167 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: Colors.transparent,
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
-        toolbarHeight: 74,
+        toolbarHeight: 88,
+        titleSpacing: 16,
+        automaticallyImplyLeading: false,
         title: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
+              // Верхний ряд: ФИО полностью + @username слева, блок кнопок справа
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Flexible(
                           child: Text(
                             auth.displayName.isNotEmpty ? auth.displayName : 'Ligament 2FA',
-                            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: -0.2,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         if (auth.username.isNotEmpty && auth.displayName != auth.username) ...[
-                          const SizedBox(width: 6),
+                          const SizedBox(width: 8),
                           Text(
                             '(@${auth.username})',
-                            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                            style: const TextStyle(
+                              color: Color(0xFF94A3B8),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ],
                       ],
                     ),
-                    const SizedBox(height: 4),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  // Кнопки управления: Статус, Уведомления, SOS, Свернуть
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Статус Online / Relay
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: auth.isOnline
+                              ? (auth.isUsingRelay
+                                  ? const Color(0xFF0284C7).withValues(alpha: 0.2)
+                                  : const Color(0xFF10B981).withValues(alpha: 0.16))
+                              : const Color(0xFFEF4444).withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: auth.isOnline
+                                ? (auth.isUsingRelay
+                                    ? const Color(0xFF38BDF8).withValues(alpha: 0.35)
+                                    : const Color(0xFF10B981).withValues(alpha: 0.35))
+                                : const Color(0xFFEF4444).withValues(alpha: 0.35),
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 7,
+                              height: 7,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: auth.isOnline
+                                    ? (auth.isUsingRelay ? const Color(0xFF38BDF8) : const Color(0xFF10B981))
+                                    : const Color(0xFFEF4444),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              auth.isOnline
+                                  ? (auth.isUsingRelay ? 'Relay: ${auth.activeRelayName ?? "LAN"}' : 'Online')
+                                  : 'Offline',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: auth.isOnline
+                                    ? (auth.isUsingRelay ? const Color(0xFF38BDF8) : const Color(0xFF10B981))
+                                    : const Color(0xFFEF4444),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      // Колокольчик уведомлений
+                      IconButton(
+                        icon: Badge(
+                          isLabelVisible: auth.unreadNotificationsCount > 0,
+                          label: Text('${auth.unreadNotificationsCount}'),
+                          backgroundColor: const Color(0xFF0284C7),
+                          child: const Icon(Icons.notifications_outlined, color: Colors.white, size: 21),
+                        ),
+                        tooltip: s.notificationsTooltip,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                        onPressed: () {
+                          DebugLogService.instance.record('ui.home.notifications.open');
+                          setState(() => _currentIndex = 1);
+                        },
+                      ),
+                      const SizedBox(width: 6),
+                      // Кнопка экстренной помощи SOS
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          DebugLogService.instance.record('ui.home.sos.open');
+                          showDialog<bool>(
+                            context: context,
+                            builder: (_) => const SupportDialog(),
+                          ).then((submitted) {
+                            DebugLogService.instance.record('ui.home.sos.closed', fields: {
+                              'result': submitted == true ? 'submitted' : 'cancelled',
+                            });
+                          });
+                        },
+                        icon: const Icon(Icons.support_agent, size: 16),
+                        label: const Text('SOS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFEF4444),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      // Сворачивание в трей (десктоп)
+                      if (_isDesktop) ...[
+                        const SizedBox(width: 6),
+                        IconButton(
+                          icon: const Icon(Icons.minimize, color: Colors.white, size: 21),
+                          tooltip: s.trayMinimize,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                          onPressed: () => _traceAction('minimize', windowManager.hide),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              // Нижний ряд: Должность / Роль + Имя ПК
+              Row(
+                children: [
+                  // Должность / Роль
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                       color: auth.isAdmin
                           ? const Color(0xFF8B5CF6).withValues(alpha: 0.25)
@@ -693,7 +835,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               : (auth.isITEngineer
                                   ? const Color(0xFF0284C7).withValues(alpha: 0.25)
                                   : const Color(0xFF64748B).withValues(alpha: 0.25))),
-                      borderRadius: BorderRadius.circular(4),
+                      borderRadius: BorderRadius.circular(5),
                       border: Border.all(
                         color: auth.isAdmin
                             ? const Color(0xFF8B5CF6)
@@ -708,7 +850,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Text(
                       badge ?? (isRu ? '👤 Пользователь' : '👤 User'),
                       style: TextStyle(
-                        fontSize: 10,
+                        fontSize: 11,
                         fontWeight: FontWeight.bold,
                         color: auth.isAdmin
                             ? const Color(0xFFA78BFA)
@@ -720,101 +862,60 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: auth.isOnline
-                    ? (auth.isUsingRelay ? const Color(0xFF0284C7).withValues(alpha: 0.2) : const Color(0xFF10B981).withValues(alpha: 0.15))
-                    : const Color(0xFFEF4444).withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: auth.isOnline
-                          ? (auth.isUsingRelay ? const Color(0xFF38BDF8) : const Color(0xFF10B981))
-                          : const Color(0xFFEF4444),
+                  if (auth.customTitle != null) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0284C7).withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(5),
+                        border: Border.all(color: const Color(0xFF0284C7).withValues(alpha: 0.4), width: 1),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.badge_outlined, size: 12, color: Color(0xFF38BDF8)),
+                          const SizedBox(width: 4),
+                          Text(
+                            auth.customTitle!,
+                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF38BDF8)),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
+                  ],
                   const SizedBox(width: 6),
-                  Text(
-                    auth.isOnline ? (auth.isUsingRelay ? 'Relay: ${auth.activeRelayName ?? "LAN"}' : 'Online') : 'Offline',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: auth.isOnline
-                          ? (auth.isUsingRelay ? const Color(0xFF38BDF8) : const Color(0xFF10B981))
-                          : const Color(0xFFEF4444),
+                  // Имя ПК (компьютер / хостнейм)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF334155).withValues(alpha: 0.4),
+                      borderRadius: BorderRadius.circular(5),
+                      border: Border.all(color: const Color(0xFF475569), width: 1),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.desktop_windows_outlined, size: 12, color: Color(0xFF94A3B8)),
+                        const SizedBox(width: 4),
+                        Text(
+                          auth.computerName,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFFCBD5E1),
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton(
-              icon: Badge(
-                isLabelVisible: auth.unreadNotificationsCount > 0,
-                label: Text('${auth.unreadNotificationsCount}'),
-                backgroundColor: const Color(0xFF0284C7),
-                child: const Icon(Icons.notifications_outlined, color: Colors.white, size: 22),
-              ),
-              tooltip: s.notificationsTooltip,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              onPressed: () {
-                DebugLogService.instance.record('ui.home.notifications.open');
-                setState(() => _currentIndex = 1);
-              },
-            ),
-            const SizedBox(width: 6),
-            ElevatedButton.icon(
-              onPressed: () {
-                DebugLogService.instance.record('ui.home.sos.open');
-                showDialog<bool>(
-                  context: context,
-                  builder: (_) => const SupportDialog(),
-                ).then((submitted) {
-                  DebugLogService.instance.record('ui.home.sos.closed', fields: {
-                    'result': submitted == true ? 'submitted' : 'cancelled',
-                  });
-                });
-              },
-              icon: const Icon(Icons.support_agent, size: 16),
-              label: const Text('SOS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFEF4444),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-            ),
-            // Сворачивание окна в системный трей (только десктоп): окно
-            // прячется, процесс остается жить — 2FA-push и SOS продолжают
-            // приходить, окно возвращается из меню трея. Это не выход,
-            // поэтому GPO-политика AllowExit кнопку не ограничивает.
-            if (_isDesktop) ...[
-              const SizedBox(width: 6),
-              IconButton(
-                icon: const Icon(Icons.minimize, color: Colors.white, size: 22),
-                tooltip: s.trayMinimize,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                onPressed: () => _traceAction('minimize', windowManager.hide),
               ),
             ],
-          ],
+          ),
         ),
-      ),
-      bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
+        bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
       ),
       body: RefreshIndicator(
         onRefresh: () => _traceAction('manual_refresh', auth.refreshAll),

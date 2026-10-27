@@ -208,8 +208,8 @@ void main(List<String> args) async {
     await windowManager.ensureInitialized();
 
     const windowOptions = WindowOptions(
-      size: Size(440, 720),
-      minimumSize: Size(380, 600),
+      size: Size(620, 820),
+      minimumSize: Size(580, 720),
       center: true,
       backgroundColor: Color(0xFF0F172A),
       skipTaskbar: false,
@@ -217,6 +217,7 @@ void main(List<String> args) async {
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.setMinimumSize(const Size(580, 720));
       if (startMinimized) {
         // Остаемся скрытыми в трее; окно открывается из трея или по push-алерту
         // (AlertService.triggerAlert сам вызывает windowManager.show()).

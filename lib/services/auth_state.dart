@@ -632,6 +632,22 @@ class AuthState extends ChangeNotifier {
     return null;
   }
 
+  /// Должность пользователя из LDAP/Active Directory (если настроена)
+  String? get customTitle {
+    final t = currentUser?['title']?.toString().trim();
+    return (t != null && t.isNotEmpty) ? t : null;
+  }
+
+  /// Имя ПК / рабочей станции (hostname)
+  String get computerName {
+    if (kIsWeb) return 'Web';
+    try {
+      final h = Platform.localHostname;
+      if (h.isNotEmpty) return h;
+    } catch (_) {}
+    return 'PC';
+  }
+
   void dismissPrompt([String? challengeId]) {
     if (challengeId != null && challengeId.isNotEmpty) {
       _resolvedChallengeIds.add(challengeId);
