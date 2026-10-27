@@ -600,11 +600,9 @@ class AuthState extends ChangeNotifier {
   }
 
   bool get isAdmin => currentUser?['role'] == 'admin';
-  bool get isLinkAdmin => isAdmin || currentUser?['link_admin'] == true;
+  bool get isLinkAdmin => currentUser?['link_admin'] == true;
   bool get isLinkOperator =>
-      isLinkAdmin ||
-      currentUser?['role'] == 'operator' ||
-      currentUser?['link_operator'] == true;
+      isLinkAdmin || currentUser?['link_operator'] == true;
 
   List<String> get supportRoles {
     final raw = currentUser?['support_roles'];
