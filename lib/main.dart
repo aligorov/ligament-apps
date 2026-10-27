@@ -20,6 +20,7 @@ import 'services/link_spool_storage.dart';
 import 'screens/link_host_overlay.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/splash_screen.dart';
 import 'app_version.dart';
 import 'widgets/debug_action_scope.dart';
 
@@ -255,7 +256,7 @@ void main(List<String> args) async {
   runApp(
     ChangeNotifierProvider.value(
       value: authState,
-      child: const LigamentApp(),
+      child: LigamentApp(showSplash: !startMinimized),
     ),
   );
   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -264,7 +265,9 @@ void main(List<String> args) async {
 }
 
 class LigamentApp extends StatefulWidget {
-  const LigamentApp({super.key});
+  final bool showSplash;
+
+  const LigamentApp({super.key, this.showSplash = true});
 
   static final GlobalKey<NavigatorState> navigatorKey =
       GlobalKey<NavigatorState>();
@@ -278,6 +281,7 @@ class _LigamentAppState extends State<LigamentApp>
   String? _lastTrayLocale;
   String? _lastTrayUpdateVersion;
   bool? _wasLoggedIn;
+  late bool _showSplash = widget.showSplash;
   final _debugNavigation = DebugNavigationObserver();
 
   @override
@@ -551,7 +555,23 @@ class _LigamentAppState extends State<LigamentApp>
         scaffoldBackgroundColor: const Color(0xFF0F172A),
         useMaterial3: true,
       ),
-      home: auth.isLoggedIn ? const HomeScreen() : const ConnectScreen(),
+      home: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 350),
+        switchInCurve: Curves.easeOut,
+        switchOutCurve: Curves.easeIn,
+        child: _showSplash
+            ? SplashScreen(
+                key: const ValueKey('splash_screen'),
+                onFinish: () {
+                  if (mounted) {
+                    setState(() => _showSplash = false);
+                  }
+                },
+              )
+            : (auth.isLoggedIn
+                ? const HomeScreen(key: ValueKey('home_screen'))
+                : const ConnectScreen(key: ValueKey('connect_screen'))),
+      ),
     );
   }
 }

@@ -417,6 +417,7 @@ class AuthState extends ChangeNotifier {
   Timer? _appUpdateTimer;
   bool _isPollingInFlight = false;
   final Set<String> _resolvedChallengeIds = {};
+  bool isChallengeResolved(String id) => _resolvedChallengeIds.contains(id);
   // Челленджи, по которым уже сработал alert (звук + вывод окна/нотификация):
   // WS и polling оба могут доставить один и тот же prompt — алерт
   // срабатывает один раз на челлендж, без повторов каждые 4 секунды.
@@ -641,6 +642,72 @@ class AuthState extends ChangeNotifier {
     activePrompt = null;
     alert.resetWindowPriority();
     notifyListeners();
+  }
+
+  /// Мгновенная синхронизация решений по челленджам между способами доставки
+  /// (Telegram / другое устройство / веб / таймаут): снимает активную модалку
+  /// подтверждения без ожидания истечения 300с TTL.
+  void handleChallengeResolved(String? challengeId, String status, [String? attemptId]) {
+    DebugLogService.instance.record('auth.challenge.resolved', fields: {
+      'challenge_id': challengeId,
+      'status': status,
+      'attempt_id': attemptId,
+    });
+    if (challengeId != null && challengeId.isNotEmpty) {
+      _resolvedChallengeIds.add(challengeId);
+    }
+
+    bool shouldDismiss = false;
+    if (activePrompt != null) {
+      final activeCid = activePrompt!['challenge_id']?.toString();
+      final meta = activePrompt!['metadata'] is Map
+          ? activePrompt!['metadata'] as Map
+          : null;
+      final activeAttempt = meta?['attempt_id']?.toString() ??
+          activePrompt!['attempt_id']?.toString();
+      if ((activeCid != null && activeCid == challengeId) ||
+          (attemptId != null &&
+              attemptId.isNotEmpty &&
+              activeAttempt == attemptId)) {
+        shouldDismiss = true;
+      }
+    }
+
+    if (activeBrowserSsoPrompt != null) {
+      final ssoCid = activeBrowserSsoPrompt!['challenge_id']?.toString() ??
+          activeBrowserSsoPrompt!['id']?.toString();
+      final meta = activeBrowserSsoPrompt!['metadata'] is Map
+          ? activeBrowserSsoPrompt!['metadata'] as Map
+          : null;
+      final ssoAttempt = meta?['attempt_id']?.toString() ??
+          activeBrowserSsoPrompt!['attempt_id']?.toString();
+      if ((ssoCid != null && ssoCid == challengeId) ||
+          (attemptId != null &&
+              attemptId.isNotEmpty &&
+              ssoAttempt == attemptId)) {
+        activeBrowserSsoPrompt = null;
+        shouldDismiss = true;
+      }
+    }
+
+    if (shouldDismiss) {
+      activePrompt = null;
+      alert.resetWindowPriority();
+    }
+
+    if (challengeId != null && challengeId.isNotEmpty) {
+      pendingChallenges.removeWhere((c) => c['id']?.toString() == challengeId);
+    }
+    if (attemptId != null && attemptId.isNotEmpty) {
+      pendingChallenges.removeWhere((c) {
+        final m = c['metadata'] is Map ? c['metadata'] as Map : null;
+        return m?['attempt_id']?.toString() == attemptId ||
+            c['attempt_id']?.toString() == attemptId;
+      });
+    }
+
+    notifyListeners();
+    unawaited(loadPendingChallenges());
   }
 
   void dismissNotificationPrompt() {
@@ -875,6 +942,14 @@ class AuthState extends ChangeNotifier {
     ws.onPrompt = (prompt) {
       _surfacePrompt(prompt);
       loadPendingChallenges();
+    };
+
+    // Мгновенная синхронизация решений по челленджам между каналами (Telegram / Web / др. устройства)
+    ws.onChallengeResolved = (data) {
+      final cid = data['challenge_id']?.toString();
+      final status = data['status']?.toString() ?? 'resolved';
+      final attemptId = data['attempt_id']?.toString();
+      handleChallengeResolved(cid, status, attemptId);
     };
 
     // Фаза 2b: SSO-мост — browser_sso-челлендж из WS-канала
@@ -1921,8 +1996,11 @@ class AuthState extends ChangeNotifier {
         }
       } else {
         // Активного prompt нет, либо он исчез из pending (закрыт в другом
-        // канале) — выводим свежейший из очереди. Это и есть показ
-        // RADIUS-push из polling-фолбэка (WS был offline/в трее).
+        // канале — например Telegram) — гасим старый и выводим свежейший из очереди.
+        if (activePrompt != null) {
+          activePrompt = null;
+          alert.resetWindowPriority();
+        }
         final first = freshChallenges.first;
         final meta = first['metadata'] as Map<String, dynamic>? ?? {};
         final clientIp = meta['client_ip']?.toString();

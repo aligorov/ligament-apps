@@ -650,35 +650,38 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
-        title: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Flexible(
-                        child: Text(
-                          auth.displayName.isNotEmpty ? auth.displayName : 'Ligament 2FA',
-                          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                          overflow: TextOverflow.ellipsis,
+        toolbarHeight: 74,
+        title: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            auth.displayName.isNotEmpty ? auth.displayName : 'Ligament 2FA',
+                            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
-                      if (auth.username.isNotEmpty && auth.displayName != auth.username) ...[
-                        const SizedBox(width: 6),
-                        Text(
-                          '(@${auth.username})',
-                          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
-                        ),
+                        if (auth.username.isNotEmpty && auth.displayName != auth.username) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            '(@${auth.username})',
+                            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                          ),
+                        ],
                       ],
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    ),
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: auth.isAdmin
                           ? const Color(0xFF8B5CF6).withValues(alpha: 0.25)
@@ -807,7 +810,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ],
         ),
-        bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
+      ),
+      bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
       ),
       body: RefreshIndicator(
         onRefresh: () => _traceAction('manual_refresh', auth.refreshAll),
@@ -1179,6 +1183,8 @@ class _HomeScreenState extends State<HomeScreen> {
               'expires_in_seconds': ch['expires_in_seconds'],
             };
             final currentAuth = context.read<AuthState>();
+            currentAuth.activePrompt = promptData;
+            _modalShown = true;
             showDialog(
               context: context,
               barrierDismissible: true,

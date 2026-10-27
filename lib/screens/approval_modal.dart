@@ -126,6 +126,12 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
   void _onAuthStateChanged() {
     if (!mounted || _closing) return;
+    final curId = _prompt['challenge_id']?.toString();
+    if (curId != null && (_auth?.isChallengeResolved(curId) ?? false)) {
+      // Челлендж помечен как завершённый (через WS или API) — закрываем окно.
+      _close();
+      return;
+    }
     final live = _auth?.activePrompt;
     if (live == null) {
       // Челлендж закрыт в другом канале (Telegram / истёк / подтверждён) —
@@ -134,7 +140,6 @@ class _ApprovalModalState extends State<ApprovalModal> {
       return;
     }
     final liveId = live['challenge_id']?.toString();
-    final curId = _prompt['challenge_id']?.toString();
     if (liveId != null && liveId != curId) {
       // Новый челлендж пришёл, пока окно открыто: полная реинициализация
       // этого же окна (prompt/опции числа/таймер/ошибка/processing)
