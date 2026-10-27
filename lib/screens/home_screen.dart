@@ -18,6 +18,7 @@ import '../services/support_service.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/app_update_dialog.dart';
+import '../widgets/neural_mesh_background.dart';
 import 'approval_modal.dart';
 import 'browser_sso_dialog.dart';
 import 'identity_mismatch_banner.dart';
@@ -586,7 +587,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF090D1A),
-      body: pages[_currentIndex],
+      body: NeuralMeshBackground(
+        child: pages[_currentIndex],
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (idx) {
@@ -647,7 +650,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final badge = auth.engineerBadge;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF090D1A),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         toolbarHeight: 74,

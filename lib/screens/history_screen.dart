@@ -227,7 +227,7 @@ class HistoryScreen extends StatelessWidget {
     final df = DateFormat('dd.MM.yyyy HH:mm:ss');
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         title: Text(s.historyTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),

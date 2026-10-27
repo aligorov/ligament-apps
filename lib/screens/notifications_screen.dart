@@ -80,7 +80,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }).toList();
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         title: Row(

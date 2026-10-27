@@ -4,6 +4,7 @@ import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../services/server_url_validator.dart';
 import '../i18n/app_strings.dart';
+import '../widgets/neural_mesh_background.dart';
 import 'login_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
@@ -102,7 +103,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final isGpoLocked = auth.gpo.enforcedServerUrl != null;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -122,7 +123,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
           ),
         ],
       ),
-      body: Center(
+      body: NeuralMeshBackground(
+        child: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
@@ -219,6 +221,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 }

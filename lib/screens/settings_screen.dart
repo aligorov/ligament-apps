@@ -124,7 +124,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final effectiveUpdate = hasUpdate ? authUpdate : _appUpdate;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         title: Text(s.settingsTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),

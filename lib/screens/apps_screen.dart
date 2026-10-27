@@ -135,7 +135,7 @@ class _AppsScreenState extends State<AppsScreen> {
     final isEmpty = !showWorkstations && !showApps;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0F19),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         backgroundColor: const Color(0xFF0B0F19),
         elevation: 0,

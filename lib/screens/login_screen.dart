@@ -6,6 +6,7 @@ import '../api/client.dart';
 import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
+import '../widgets/neural_mesh_background.dart';
 import 'home_screen.dart';
 import 'connect_screen.dart';
 
@@ -318,7 +319,7 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF0F172A),
+        backgroundColor: Colors.transparent,
         appBar: AppBar(
           backgroundColor: Colors.transparent,
           elevation: 0,
@@ -334,7 +335,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 )
               : null,
         ),
-      body: Center(
+      body: NeuralMeshBackground(
+        child: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
@@ -577,6 +579,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
     ),
-  );
+  ),
+);
 }
 }
