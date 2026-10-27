@@ -585,7 +585,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final badgeCount = auth.pendingChallenges.length + (auth.isEngineer ? auth.supportQueue.length : 0);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFF090D1A),
       body: pages[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
@@ -647,7 +647,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final badge = auth.engineerBadge;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFF090D1A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         toolbarHeight: 74,

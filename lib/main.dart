@@ -552,7 +552,7 @@ class _LigamentAppState extends State<LigamentApp>
           secondary: Color(0xFF0284C7),
           surface: Color(0xFF1E293B),
         ),
-        scaffoldBackgroundColor: const Color(0xFF0F172A),
+        scaffoldBackgroundColor: const Color(0xFF090D1A),
         useMaterial3: true,
       ),
       home: AnimatedSwitcher(
