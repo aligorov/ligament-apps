@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -22,6 +23,7 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
     with WindowListener, TrayListener {
   Size? _currentWindowSize;
   bool _chatOpen = false;
+  bool _trayInitialized = false;
   Future<void> _windowUpdates = Future<void>.value();
   Timer? _windowRetry;
   int _windowFailures = 0;
@@ -38,7 +40,6 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
     if (!kIsWeb &&
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       trayManager.addListener(this);
-      _initTray();
     }
     widget.state.addListener(_syncWindow);
     unawaited(windowManager.setPreventClose(true).catchError((Object error) {
@@ -46,6 +47,21 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
       if (mounted) widget.state.markConsentUiUnavailable();
     }));
     _syncWindow();
+  }
+
+  void _syncTray(LinkHostWorkerPhase phase) {
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return;
+    }
+    final shouldHaveTray = phase == LinkHostWorkerPhase.active;
+    if (shouldHaveTray && !_trayInitialized) {
+      _trayInitialized = true;
+      unawaited(_initTray());
+    } else if (!shouldHaveTray && _trayInitialized) {
+      _trayInitialized = false;
+      unawaited(trayManager.destroy().catchError((_) {}));
+    }
   }
 
   Future<void> _initTray() async {
@@ -81,6 +97,7 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
     _windowRetry?.cancel();
     _windowRetry = null;
     final phase = widget.state.phase;
+    _syncTray(phase);
     final requestChanged = _windowSessionId != widget.state.sessionId ||
         (_windowPhase == LinkHostWorkerPhase.awaitingConsent) !=
             (phase == LinkHostWorkerPhase.awaitingConsent);
@@ -96,21 +113,29 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
     }
     final expanded = phase == LinkHostWorkerPhase.awaitingConsent;
     final targetSize = expanded
-        ? const Size(560, 760)
-        : (_chatOpen ? const Size(560, 480) : const Size(560, 84));
+        ? const Size(580, 780)
+        : (_chatOpen ? const Size(740, 520) : const Size(740, 104));
     if (_currentWindowSize == targetSize && !requestChanged) return;
     _currentWindowSize = targetSize;
     final revision = ++_windowRevision;
     bool isCurrent() => mounted && revision == _windowRevision;
     _windowUpdates = _windowUpdates.then((_) async {
       if (!isCurrent()) return;
-      await windowManager.setMinimumSize(const Size(400, 72));
+      await windowManager.setMinimumSize(const Size(440, 88));
       if (!isCurrent()) return;
       await windowManager.setSize(targetSize);
       if (!isCurrent()) return;
       if (expanded) {
+        await windowManager.setAlwaysOnTop(true);
+        if (!isCurrent()) return;
         await windowManager.center();
         if (!isCurrent()) return;
+        if (!kIsWeb && Platform.isWindows) {
+          try {
+            await const MethodChannel('ligament/link_host')
+                .invokeMethod('bringToFront');
+          } catch (_) {}
+        }
         await windowManager.show();
         if (!isCurrent()) return;
         await windowManager.focus();
@@ -171,7 +196,10 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         trayManager.removeListener(this);
-        trayManager.destroy();
+        if (_trayInitialized) {
+          _trayInitialized = false;
+          trayManager.destroy();
+        }
       } catch (_) {}
     }
     widget.state.removeListener(_syncWindow);
@@ -272,7 +300,7 @@ class _LinkHostOverlayState extends State<LinkHostOverlay>
                 children: [
                   Padding(
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: Row(children: [
                       const Icon(Icons.screen_share, color: Color(0xFF4ADE80)),
                       const SizedBox(width: 12),

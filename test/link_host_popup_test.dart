@@ -19,7 +19,7 @@ class _NativeWindow {
   final calls = <MethodCall>[];
   Future<Object?> Function(MethodCall)? intercept;
   bool minimized = false;
-  Size size = const Size(560, 760);
+  Size size = const Size(580, 780);
 
   void install() {
     final messenger =
@@ -85,7 +85,7 @@ void main() {
     final state = LinkHostWorkerState()..showSession(_id, 'view', 'Оператор');
     final decision = state.awaitConsent();
     await _mount(tester, state);
-    expect(native.size, const Size(560, 760));
+    expect(native.size, const Size(580, 780));
     expect(native.methods, containsAllInOrder([
       'setPreventClose', 'setMinimumSize', 'setBounds', 'getBounds',
       'setBounds', 'isMinimized', 'restore', 'show', 'focus',
@@ -151,7 +151,7 @@ void main() {
       gate.complete(null);
       await tester.pump();
       if (end == 'approval') {
-        expect(native.size, const Size(560, 84));
+        expect(native.size, const Size(740, 104));
         expect(native.methods, isNot(contains('focus')));
         expect(native.methods.where((method) => method == 'show'), hasLength(1));
       } else {

@@ -140,7 +140,8 @@ bool FlutterWindow::OnCreate() {
   }
   if (link_host_worker_) {
     debug_log::Write("link.host_bridge.init.begin");
-    link_host_bridge_ = std::make_unique<LinkHostBridge>(flutter_controller_->engine()->messenger());
+    link_host_bridge_ = std::make_unique<LinkHostBridge>(
+        flutter_controller_->engine()->messenger(), GetHandle());
     debug_log::Write("link.host_bridge.init.ready");
   }
   SetChildContent(flutter_controller_->view()->GetNativeWindow());

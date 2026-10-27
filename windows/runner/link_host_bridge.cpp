@@ -90,12 +90,40 @@ bool ReadFrame(HANDLE pipe, std::string* output) {
 }
 }  // namespace
 
-LinkHostBridge::LinkHostBridge(flutter::BinaryMessenger* messenger)
-    : channel_(std::make_unique<flutter::MethodChannel<EncodableValue>>(
+LinkHostBridge::LinkHostBridge(flutter::BinaryMessenger* messenger, HWND window_handle)
+    : window_handle_(window_handle),
+      channel_(std::make_unique<flutter::MethodChannel<EncodableValue>>(
           messenger, "ligament/link_host",
           &flutter::StandardMethodCodec::GetInstance())) {
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (call.method_name() == "bringToFront") {
+      if (window_handle_ != nullptr) {
+        if (::IsIconic(window_handle_)) {
+          ::ShowWindow(window_handle_, SW_RESTORE);
+        } else {
+          ::ShowWindow(window_handle_, SW_SHOW);
+        }
+        HWND foreground_window = ::GetForegroundWindow();
+        DWORD foreground_thread_id = ::GetWindowThreadProcessId(foreground_window, nullptr);
+        DWORD current_thread_id = ::GetCurrentThreadId();
+        if (foreground_thread_id != 0 && foreground_thread_id != current_thread_id) {
+          ::AttachThreadInput(current_thread_id, foreground_thread_id, TRUE);
+          ::SetWindowPos(window_handle_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+          ::SetForegroundWindow(window_handle_);
+          ::BringWindowToTop(window_handle_);
+          ::AttachThreadInput(current_thread_id, foreground_thread_id, FALSE);
+        } else {
+          ::SetWindowPos(window_handle_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+          ::SetForegroundWindow(window_handle_);
+          ::BringWindowToTop(window_handle_);
+        }
+      }
+      result->Success();
+      return;
+    }
     if (call.method_name() == "bootstrap") {
       const auto* value = call.arguments()
           ? std::get_if<std::string>(call.arguments()) : nullptr;

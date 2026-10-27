@@ -81,8 +81,8 @@ void main(List<String> args) async {
         runApp(DebugActionScope(child: LinkHostOverlay(state: workerState)));
         await windowManager.waitUntilReadyToShow(
           const WindowOptions(
-            size: Size(560, 760),
-            minimumSize: Size(400, 72),
+            size: Size(580, 780),
+            minimumSize: Size(440, 88),
             center: true,
             backgroundColor: Color(0xFF10251D),
             skipTaskbar: true,

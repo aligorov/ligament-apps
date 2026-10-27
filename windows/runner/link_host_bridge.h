@@ -13,7 +13,7 @@
 // bounded JSON frames; authentication, WSS and identity remain in the service.
 class LinkHostBridge {
  public:
-  explicit LinkHostBridge(flutter::BinaryMessenger* messenger);
+  explicit LinkHostBridge(flutter::BinaryMessenger* messenger, HWND window_handle = nullptr);
   ~LinkHostBridge();
   LinkHostBridge(const LinkHostBridge&) = delete;
   LinkHostBridge& operator=(const LinkHostBridge&) = delete;
@@ -21,6 +21,7 @@ class LinkHostBridge {
  private:
   void ClosePipe();
 
+  HWND window_handle_ = nullptr;
   std::mutex mutex_;
   HANDLE pipe_ = INVALID_HANDLE_VALUE;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;

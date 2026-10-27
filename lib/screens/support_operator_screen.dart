@@ -5566,7 +5566,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   ),
 
                   // Чат с пользователем (скрыт только для владельца консоли ПК без SOS)
-                  if (!isOwner || widget.sessionData['session_kind'] == 'sos')
+                  if (!isOwner || widget.sessionData['session_kind'] == 'sos' || widget.isLink)
                     IconButton(
                       icon: Badge(
                         isLabelVisible: _unreadChatCount > 0,
@@ -6445,7 +6445,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           style: const TextStyle(
                               fontSize: 12, color: Colors.white)),
                     ),
-                    if (!isOwner && !widget.isLink)
+                    if (!isOwner || widget.sessionData['session_kind'] == 'sos' || widget.isLink)
                       TextButton.icon(
                         onPressed: _showOperatorChatModal,
                         icon: Badge(
