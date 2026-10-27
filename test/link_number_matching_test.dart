@@ -119,14 +119,18 @@ void main() {
 
   testWidgets('host enters code before explicit consent', (tester) async {
     const channel = MethodChannel('window_manager');
+    const tray = MethodChannel('tray_manager');
+    const linkHost = MethodChannel('ligament/link_host');
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(tray, (_) async => null);
+    messenger.setMockMethodCallHandler(linkHost, (_) async => null);
     final calls = <String>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call.method);
       if (call.method == 'isMinimized') return false;
       if (call.method == 'getBounds') {
-        return {'x': 0.0, 'y': 0.0, 'width': 560.0, 'height': 760.0};
+        return {'x': 0.0, 'y': 0.0, 'width': 580.0, 'height': 780.0};
       }
       return null;
     });
@@ -148,11 +152,14 @@ void main() {
     addTearDown(() {
       messenger.setMockMethodCallHandler(channel, null);
       messenger.setMockMethodCallHandler(screen, null);
+      messenger.setMockMethodCallHandler(tray, null);
+      messenger.setMockMethodCallHandler(linkHost, null);
     });
     final state = LinkHostWorkerState()..showSession(_id, 'view', 'Оператор');
     final consent = state.awaitConsent();
     await tester.pumpWidget(LinkHostOverlay(state: state));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
     expect(calls, containsAllInOrder(['show', 'focus']));
     expect(state.consentUiAvailable, true);
     expect(find.byType(SupportApprovalModal), findsOneWidget);

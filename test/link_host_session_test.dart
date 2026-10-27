@@ -549,13 +549,17 @@ void main() {
       (tester) async {
     const windowChannel = MethodChannel('window_manager');
     const screenChannel = MethodChannel('screen_retriever');
+    const trayChannel = MethodChannel('tray_manager');
+    const linkHostChannel = MethodChannel('ligament/link_host');
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(trayChannel, (_) async => null);
+    messenger.setMockMethodCallHandler(linkHostChannel, (_) async => null);
     var showAttempts = 0;
     messenger.setMockMethodCallHandler(windowChannel, (call) async {
       if (call.method == 'isMinimized') return false;
       if (call.method == 'getBounds') {
-        return {'x': 0.0, 'y': 0.0, 'width': 560.0, 'height': 760.0};
+        return {'x': 0.0, 'y': 0.0, 'width': 580.0, 'height': 780.0};
       }
       if (call.method == 'show') {
         showAttempts++;
@@ -586,6 +590,8 @@ void main() {
     addTearDown(() {
       messenger.setMockMethodCallHandler(windowChannel, null);
       messenger.setMockMethodCallHandler(screenChannel, null);
+      messenger.setMockMethodCallHandler(trayChannel, null);
+      messenger.setMockMethodCallHandler(linkHostChannel, null);
     });
 
     final state = LinkHostWorkerState()
