@@ -102,38 +102,54 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final s = context.strings;
     final isGpoLocked = auth.gpo.enforcedServerUrl != null;
 
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      appBar: AppBar(
+    return NeuralMeshBackground(
+      child: Scaffold(
         backgroundColor: Colors.transparent,
-        elevation: 0,
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: ActionChip(
-              avatar: Text(auth.isRu ? '🇷🇺' : '🇬🇧', style: const TextStyle(fontSize: 14)),
-              label: Text(auth.isRu ? 'RU' : 'EN', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
-              backgroundColor: const Color(0xFF1E293B),
-              side: const BorderSide(color: Color(0xFF334155)),
-              onPressed: () {
-                DebugLogService.instance.record('ui.connect.locale', fields: {'state': auth.isRu ? 'en' : 'ru'});
-                auth.setLocale(auth.isRu ? 'en' : 'ru');
-              },
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: ActionChip(
+                avatar: Text(auth.isRu ? '🇷🇺' : '🇬🇧', style: const TextStyle(fontSize: 14)),
+                label: Text(auth.isRu ? 'RU' : 'EN', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
+                backgroundColor: const Color(0xFF1E293B).withValues(alpha: 0.8),
+                side: const BorderSide(color: Color(0xFF334155)),
+                onPressed: () {
+                  DebugLogService.instance.record('ui.connect.locale', fields: {'state': auth.isRu ? 'en' : 'ru'});
+                  auth.setLocale(auth.isRu ? 'en' : 'ru');
+                },
+              ),
             ),
-          ),
-        ],
-      ),
-      body: NeuralMeshBackground(
-        child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: Card(
-              color: const Color(0xFF1E293B),
-              elevation: 8,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              child: Padding(
+          ],
+        ),
+        body: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F172A).withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: const Color(0xFF22D3EE).withValues(alpha: 0.22),
+                    width: 1.2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.45),
+                      blurRadius: 28,
+                      offset: const Offset(0, 8),
+                    ),
+                    BoxShadow(
+                      color: const Color(0xFF22D3EE).withValues(alpha: 0.08),
+                      blurRadius: 20,
+                    ),
+                  ],
+                ),
+                child: Padding(
                 padding: const EdgeInsets.all(32),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,

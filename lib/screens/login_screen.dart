@@ -318,34 +318,50 @@ class _LoginScreenState extends State<LoginScreen> {
           handleBack();
         }
       },
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        appBar: AppBar(
+      child: NeuralMeshBackground(
+        child: Scaffold(
           backgroundColor: Colors.transparent,
-          elevation: 0,
-          leading: canGoBack
-              ? IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.white),
-                  tooltip: _requiresSecondFactor
-                      ? s.btnBackToPassword
-                      : (canPopRoute
-                          ? (auth.isRu ? 'Назад' : 'Back')
-                          : s.changeServer),
-                  onPressed: handleBack,
-                )
-              : null,
-        ),
-      body: NeuralMeshBackground(
-        child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: Card(
-              color: const Color(0xFF1E293B),
-              elevation: 8,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              child: Padding(
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            leading: canGoBack
+                ? IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    tooltip: _requiresSecondFactor
+                        ? s.btnBackToPassword
+                        : (canPopRoute
+                            ? (auth.isRu ? 'Назад' : 'Back')
+                            : s.changeServer),
+                    onPressed: handleBack,
+                  )
+                : null,
+          ),
+          body: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F172A).withValues(alpha: 0.85),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: const Color(0xFF22D3EE).withValues(alpha: 0.22),
+                      width: 1.2,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        blurRadius: 28,
+                        offset: const Offset(0, 8),
+                      ),
+                      BoxShadow(
+                        color: const Color(0xFF22D3EE).withValues(alpha: 0.08),
+                        blurRadius: 20,
+                      ),
+                    ],
+                  ),
+                  child: Padding(
                 padding: const EdgeInsets.all(32),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,

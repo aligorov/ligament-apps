@@ -603,52 +603,71 @@ class _HomeScreenState extends State<HomeScreen> {
       body: NeuralMeshBackground(
         child: pages[_currentIndex],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (idx) {
-          DebugLogService.instance.record('ui.home.tab.select', fields: {'code': idx});
-          setState(() => _currentIndex = idx);
-          if (idx == 2) {
-            final auth = context.read<AuthState>();
-            if (auth.rdpFeatureAvailable) {
-              unawaited(auth.loadRdpTargets());
-            }
-          }
-        },
-        backgroundColor: const Color(0xFF1E293B),
-        selectedItemColor: const Color(0xFF38BDF8),
-        unselectedItemColor: const Color(0xFF64748B),
-        type: BottomNavigationBarType.fixed,
-        items: [
-          BottomNavigationBarItem(
-            icon: Badge(
-              isLabelVisible: badgeCount > 0,
-              label: Text('$badgeCount'),
-              child: const Icon(Icons.shield_outlined),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xEB0B0F19),
+          border: const Border(
+            top: BorderSide(color: Color(0x1AFFFFFF), width: 1),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 16,
+              offset: const Offset(0, -4),
             ),
-            label: isRu ? 'Запросы' : 'Requests',
+          ],
+        ),
+        child: SafeArea(
+          top: false,
+          child: BottomNavigationBar(
+            currentIndex: _currentIndex,
+            onTap: (idx) {
+              DebugLogService.instance.record('ui.home.tab.select', fields: {'code': idx});
+              setState(() => _currentIndex = idx);
+              if (idx == 2) {
+                final auth = context.read<AuthState>();
+                if (auth.rdpFeatureAvailable) {
+                  unawaited(auth.loadRdpTargets());
+                }
+              }
+            },
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            selectedItemColor: const Color(0xFF38BDF8),
+            unselectedItemColor: const Color(0xFF64748B),
+            type: BottomNavigationBarType.fixed,
+            items: [
+              BottomNavigationBarItem(
+                icon: Badge(
+                  isLabelVisible: badgeCount > 0,
+                  label: Text('$badgeCount'),
+                  child: const Icon(Icons.shield_outlined),
+                ),
+                label: isRu ? 'Запросы' : 'Requests',
+              ),
+              BottomNavigationBarItem(
+                icon: Badge(
+                  isLabelVisible: auth.unreadNotificationsCount > 0,
+                  label: Text('${auth.unreadNotificationsCount}'),
+                  child: const Icon(Icons.mark_email_unread_outlined),
+                ),
+                label: isRu ? 'Сообщения' : 'Inbox',
+              ),
+              BottomNavigationBarItem(
+                icon: const Icon(Icons.apps_outlined),
+                label: isRu ? 'Сервисы' : 'Services',
+              ),
+              BottomNavigationBarItem(
+                icon: const Icon(Icons.history_outlined),
+                label: s.navHistory,
+              ),
+              BottomNavigationBarItem(
+                icon: const Icon(Icons.tune_outlined),
+                label: s.navSettings,
+              ),
+            ],
           ),
-          BottomNavigationBarItem(
-            icon: Badge(
-              isLabelVisible: auth.unreadNotificationsCount > 0,
-              label: Text('${auth.unreadNotificationsCount}'),
-              child: const Icon(Icons.mark_email_unread_outlined),
-            ),
-            label: isRu ? 'Сообщения' : 'Inbox',
-          ),
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.apps_outlined),
-            label: isRu ? 'Сервисы' : 'Services',
-          ),
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.history_outlined),
-            label: s.navHistory,
-          ),
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.tune_outlined),
-            label: s.navSettings,
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -888,32 +907,34 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ],
-                  const SizedBox(width: 6),
-                  // Имя ПК (компьютер / хостнейм)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF334155).withValues(alpha: 0.4),
-                      borderRadius: BorderRadius.circular(5),
-                      border: Border.all(color: const Color(0xFF475569), width: 1),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.desktop_windows_outlined, size: 12, color: Color(0xFF94A3B8)),
-                        const SizedBox(width: 4),
-                        Text(
-                          auth.computerName,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFFCBD5E1),
-                            fontFamily: 'monospace',
+                  // Имя ПК (компьютер / хостнейм) — только для десктопа
+                  if (_isDesktop) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF334155).withValues(alpha: 0.4),
+                        borderRadius: BorderRadius.circular(5),
+                        border: Border.all(color: const Color(0xFF475569), width: 1),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.desktop_windows_outlined, size: 12, color: Color(0xFF94A3B8)),
+                          const SizedBox(width: 4),
+                          Text(
+                            auth.computerName,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFFCBD5E1),
+                              fontFamily: 'monospace',
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ],
