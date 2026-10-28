@@ -137,7 +137,7 @@ class _AppsScreenState extends State<AppsScreen> {
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0B0F19),
+        backgroundColor: Colors.transparent,
         elevation: 0,
         shape: const Border(
           bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
@@ -161,8 +161,14 @@ class _AppsScreenState extends State<AppsScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: Material(
-              color: const Color(0xFF131B2B),
-              borderRadius: BorderRadius.circular(14),
+              color: const Color(0xFF131B2B).withValues(alpha: 0.85),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  width: 1,
+                ),
+              ),
               child: InkWell(
                 key: const ValueKey('apps-open-link-catalog'),
                 borderRadius: BorderRadius.circular(14),
@@ -227,7 +233,7 @@ class _AppsScreenState extends State<AppsScreen> {
           if (allTargets.isNotEmpty || allApps.isNotEmpty || q.isNotEmpty)
             Container(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              color: const Color(0xFF0B0F19),
+              color: Colors.transparent,
               child: Column(
                 children: [
                   // Поле мгновенного поиска
@@ -258,7 +264,7 @@ class _AppsScreenState extends State<AppsScreen> {
                             )
                           : null,
                       filled: true,
-                      fillColor: const Color(0xFF131B2B),
+                      fillColor: const Color(0xFF131B2B).withValues(alpha: 0.85),
                       isDense: true,
                       contentPadding: const EdgeInsets.symmetric(
                           horizontal: 14, vertical: 11),
@@ -696,7 +702,7 @@ class _AppsScreenState extends State<AppsScreen> {
                     end: Alignment.bottomRight,
                   )
                 : null,
-            color: selected ? null : const Color(0xFF131B2B),
+            color: selected ? null : const Color(0xFF131B2B).withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
               color: selected

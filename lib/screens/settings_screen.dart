@@ -126,7 +126,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        shape: const Border(
+          bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
+        ),
         title: Text(s.settingsTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
         bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
       ),

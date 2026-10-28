@@ -312,38 +312,38 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final ouNames = folders.keys.toList()
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF090D1A),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0B0F19),
-        elevation: 0,
-        shape: const Border(
-          bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
-        ),
-        title: Text(isRu ? 'Ligament Link' : 'Ligament Link'),
-        actions: [
-          if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
-            FilledButton.tonalIcon(
-              onPressed: _bindingThisHost || !auth.linkFeatureAvailable
-                  ? null
-                  : () => _bindThisHost(auth, isRu),
-              label: Text(isRu ? 'Добавить ПК' : 'Add computer'),
-              icon: _bindingThisHost
-                  ? const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.add_to_queue_rounded),
-            ),
-          IconButton(
-            tooltip: isRu ? 'Обновить каталог' : 'Refresh catalog',
-            onPressed: auth.linkHostsLoading ? null : () => _traceAction('refresh_cycle', auth.loadLinkHosts),
-            icon: const Icon(Icons.refresh_rounded),
+    return NeuralMeshBackground(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          shape: const Border(
+            bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
           ),
-        ],
-      ),
-      body: NeuralMeshBackground(
-        child: Column(
+          title: Text(isRu ? 'Ligament Link' : 'Ligament Link'),
+          actions: [
+            if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
+              FilledButton.tonalIcon(
+                onPressed: _bindingThisHost || !auth.linkFeatureAvailable
+                    ? null
+                    : () => _bindThisHost(auth, isRu),
+                label: Text(isRu ? 'Добавить ПК' : 'Add computer'),
+                icon: _bindingThisHost
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add_to_queue_rounded),
+              ),
+            IconButton(
+              tooltip: isRu ? 'Обновить каталог' : 'Refresh catalog',
+              onPressed: auth.linkHostsLoading ? null : () => _traceAction('refresh_cycle', auth.loadLinkHosts),
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          ],
+        ),
+        body: Column(
           children: [
             // Live Perimeter Awareness (внутренний / внешний периметр)
             if (clientIp != null || isExternal)

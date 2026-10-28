@@ -82,7 +82,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        shape: const Border(
+          bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
+        ),
         title: Row(
           children: [
             const Icon(Icons.mark_email_unread_outlined, color: Color(0xFF38BDF8), size: 22),
