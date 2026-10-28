@@ -97,6 +97,29 @@ func TestResolveInteractiveSession(t *testing.T) {
 			t.Fatalf("unattended: got sess=%v, desktop=%q, err=%v, want SessionID=2 (bob), winsta0\\default", sess, desktop, err)
 		}
 	})
+
+	t.Run("unattended with single rdp user targets physical console session", func(t *testing.T) {
+		enumerateInteractiveSessions = func() ([]InteractiveSession, error) {
+			return []InteractiveSession{
+				{SessionID: 1, Username: "alice_rdp"},
+			}, nil
+		}
+		origConsole := getActiveConsoleSessionID
+		defer func() { getActiveConsoleSessionID = origConsole }()
+		getActiveConsoleSessionID = func() uint32 { return 5 }
+
+		// Attended attaches to the single interactive user (Session 1)
+		sess, _, err := ResolveTargetSession(false)
+		if err != nil || sess == nil || sess.SessionID != 1 {
+			t.Fatalf("attended: got sess=%v, err=%v, want SessionID=1", sess, err)
+		}
+
+		// Unattended MUST attach to physical console session (Session 5), NOT the RDP session
+		sess, desktop, err := ResolveTargetSession(true)
+		if err != nil || sess == nil || sess.SessionID != 5 || desktop != `winsta0\default` {
+			t.Fatalf("unattended: got sess=%v, desktop=%q, err=%v, want SessionID=5, winsta0\\default", sess, desktop, err)
+		}
+	})
 }
 
 func TestDecodeWTSClientProtocolTypeUsesUSHORTLength(t *testing.T) {

@@ -1546,6 +1546,9 @@ class SupportService extends ChangeNotifier {
       _startRecorder();
       _setWakelock(true);
       if (!kIsWeb && Platform.isWindows) {
+        if (serviceHost) {
+          InputInjector.instance.setDesktopScope('system_console');
+        }
         _startDesktopSwitchWatchdog();
       }
       notifyListeners();
@@ -1554,15 +1557,16 @@ class SupportService extends ChangeNotifier {
 
   void _startDesktopSwitchWatchdog() {
     _desktopSwitchTimer?.cancel();
-    _desktopSwitchTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+    _desktopSwitchTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (_p2pConnected &&
           _peerConnection != null &&
           !_isStopping &&
           !_switchingScreen) {
         if (InputInjector.instance.consumeDesktopChanged()) {
+          _recorder?.notifyDesktopChanged();
           final screenId = _currentScreenId ?? '0';
           _desktopRecoveryTimer?.cancel();
-          _desktopRecoveryTimer = Timer(const Duration(milliseconds: 600), () {
+          _desktopRecoveryTimer = Timer(const Duration(milliseconds: 300), () {
             if (_p2pConnected && _peerConnection != null && !_isStopping) {
               unawaited(switchScreen(_currentScreenId ?? screenId));
             }

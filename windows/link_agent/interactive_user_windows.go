@@ -69,10 +69,27 @@ func defaultEnumerateInteractiveSessions() ([]InteractiveSession, error) {
 }
 
 // ResolveTargetSession determines the session and desktop to attach to.
-// If unattended is true and no user is logged in, it targets the active console session ID
-// (logon screen / lock screen) with desktop winsta0\default. Launching on winsta0\default
-// ensures the worker process is not terminated by Windows when the user logs in / unlocks.
+// If unattended is true, it targets the active physical console session ID
+// (logon screen / lock screen / logged in console) with desktop winsta0\default.
+// Launching on winsta0\default ensures the worker process is not terminated by Windows
+// when the user logs in / unlocks.
 func ResolveTargetSession(unattended bool) (*InteractiveSession, string, error) {
+	if unattended {
+		consoleID := getActiveConsoleSessionID()
+		if consoleID != 0xFFFFFFFF && consoleID != 0 {
+			active, _ := enumerateInteractiveSessions()
+			for _, s := range active {
+				if s.SessionID == consoleID {
+					return &s, `winsta0\default`, nil
+				}
+			}
+			return &InteractiveSession{
+				SessionID: consoleID,
+				Username:  "",
+			}, `winsta0\default`, nil
+		}
+	}
+
 	active, err := enumerateInteractiveSessions()
 	if err != nil {
 		return nil, "", err
@@ -81,32 +98,9 @@ func ResolveTargetSession(unattended bool) (*InteractiveSession, string, error) 
 		return &active[0], `winsta0\default`, nil
 	}
 	if len(active) > 1 {
-		if unattended {
-			consoleID := getActiveConsoleSessionID()
-			if consoleID != 0xFFFFFFFF && consoleID != 0 {
-				for _, s := range active {
-					if s.SessionID == consoleID {
-						return &s, `winsta0\default`, nil
-					}
-				}
-				return &InteractiveSession{
-					SessionID: consoleID,
-					Username:  "",
-				}, `winsta0\default`, nil
-			}
-		}
 		return nil, "", ErrAmbiguousInteractiveSession
 	}
 	// len(active) == 0: no interactive user logged in
-	if unattended {
-		consoleID := getActiveConsoleSessionID()
-		if consoleID != 0xFFFFFFFF && consoleID != 0 {
-			return &InteractiveSession{
-				SessionID: consoleID,
-				Username:  "",
-			}, `winsta0\default`, nil
-		}
-	}
 	return nil, "", ErrNoActiveInteractiveUser
 }
 
