@@ -1003,6 +1003,45 @@ void main() {
   });
 
   test(
+      'proxy returning ack_high_watermark_seq: 0 does not decrease ackedSeq and retains unconfirmed data in memory',
+      () async {
+    var currentNow = DateTime.utc(2026, 10, 24, 12, 0, 0);
+    var serverSeq = 5;
+
+    final recorder = LinkHostRecorder(
+      sessionId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+      config: const LinkRecordingConfig(enabled: true),
+      clock: () => currentNow,
+      sendBatch: (_) async => LinkRecorderBatchAck(
+        ackHighWatermarkSeq: serverSeq,
+        firstFrameAcked: true,
+        leaseTtlMs: 60000,
+        leaseExpiresAt: currentNow.add(const Duration(seconds: 60)),
+      ),
+    );
+
+    recorder.observeControlInput({'type': 'hotkey', 'action': 'initial'});
+    await recorder.flushAndVerifyHealth();
+    expect(recorder.ackedSeq, 5);
+    expect(recorder.queuedBytes, 0);
+
+    // Proxy returns 0 because recorder is unreachable/buffering
+    serverSeq = 0;
+    recorder.observeControlInput({'type': 'hotkey', 'action': 'pending_proxy'});
+    final ok = await recorder.flushAndVerifyHealth();
+    expect(ok, isTrue);
+    expect(recorder.ackedSeq, 5); // Did not decrease or reset to 0
+    expect(recorder.queuedBytes, greaterThan(0)); // Unconfirmed event preserved in queue!
+
+    // Recorder recovers and commits seq=6
+    serverSeq = 6;
+    final recoveredOk = await recorder.flushAndVerifyHealth();
+    expect(recoveredOk, isTrue);
+    expect(recorder.ackedSeq, 6);
+    expect(recorder.queuedBytes, 0); // Now safely purged
+  });
+
+  test(
       '2.2: stop(reason) records session_ended or mandatory_violation, gap_marker on lost tail',
       () async {
     var currentNow = DateTime.utc(2026, 10, 24, 12, 0, 0);

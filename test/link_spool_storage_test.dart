@@ -110,4 +110,61 @@ void main() {
       }
     }
   });
+
+  test('session key persists in directory and survives host crash/restart', () async {
+    const originalText = 'RECOVERED_AFTER_CRASH_OR_REBOOT';
+    await spool.writeBatch(1, {'message': originalText});
+
+    final keyFile = File('${tempDir.path}/.session.key');
+    expect(keyFile.existsSync(), isTrue);
+    expect(keyFile.lengthSync(), 32);
+
+    // Simulate process termination and new instance launching against existing spool dir
+    final restartedSpool = LinkSpoolStorage(
+      sessionId: 'test-session-123',
+      storageDir: tempDir,
+      maxSpoolBytes: 10 * 1024,
+    );
+
+    // Key was reloaded from file, not newly generated
+    expect(restartedSpool.sessionKey, spool.sessionKey);
+
+    final pending = await restartedSpool.getPendingBatches();
+    expect(pending.length, 1);
+
+    final decrypted = await restartedSpool.readBatch(pending.first);
+    expect(decrypted?['message'], originalText);
+  });
+
+  test('disk safety floor prevents spool writes when free disk space is low', () async {
+    final floorDir = Directory('${tempDir.path}/floor');
+    final floorSpool = LinkSpoolStorage(
+      sessionId: 'floor-session',
+      storageDir: floorDir,
+      minFreeDiskBytes: 500 * 1024 * 1024, // 500 MB required
+      freeBytesChecker: () => 100 * 1024 * 1024, // Only 100 MB available
+    );
+
+    await expectLater(
+      floorSpool.writeBatch(1, {'data': 'test'}),
+      throwsA(
+        isA<LinkSpoolQuotaExceededException>().having(
+          (e) => e.message,
+          'message',
+          contains('Disk safety floor reached'),
+        ),
+      ),
+    );
+
+    final okDir = Directory('${tempDir.path}/ok');
+    final okSpool = LinkSpoolStorage(
+      sessionId: 'floor-session-ok',
+      storageDir: okDir,
+      minFreeDiskBytes: 500 * 1024 * 1024,
+      freeBytesChecker: () => 10 * 1024 * 1024 * 1024, // 10 GB available
+    );
+
+    await okSpool.writeBatch(1, {'data': 'safe_payload'});
+    expect(await okSpool.hasPending(), isTrue);
+  });
 }

@@ -33,14 +33,18 @@ func executeInstallerDetached(msiPath string, waitSeconds int) error {
 	// 1. Создаем lock-файл для сторожа
 	_ = os.WriteFile(lockFile, []byte("upgrading"), 0644)
 
-	// 2. Формируем надёжный bat-скрипт (ping вместо timeout, т.к. в Session 0 timeout.exe падает)
+	// 2. Формируем надёжный bat-скрипт:
+	// - ping вместо timeout, т.к. в Session 0 timeout.exe падает
+	// - taskkill завершает работающий GUI-процесс в сессиях пользователей, предотвращая блокировку файлов
+	// - MSIRESTARTMANAGERCONTROL=Disable предотвращает зависание Restart Manager в Session 0 при Files-in-Use
 	if waitSeconds <= 0 {
 		waitSeconds = 5
 	}
 	scriptContent := fmt.Sprintf(
 		"@echo off\r\n"+
 			"ping 127.0.0.1 -n %d >nul\r\n"+
-			"msiexec.exe /i \"%s\" /qn /norestart /l*v \"%s\"\r\n"+
+			"taskkill /f /im ligament_authenticator.exe >nul 2>&1\r\n"+
+			"msiexec.exe /i \"%s\" /qn /norestart MSIRESTARTMANAGERCONTROL=Disable /l*v \"%s\"\r\n"+
 			"del /f /q \"%s\"\r\n",
 		waitSeconds+1, msiPath, logFile, lockFile,
 	)

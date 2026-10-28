@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:ffi/ffi.dart';
 import 'debug_log_service.dart';
 
 /// Ошибка превышения дисковой квоты спулинга записей.
@@ -38,21 +41,29 @@ class LinkSpoolStorage {
     required this.sessionId,
     Directory? storageDir,
     this.maxSpoolBytes = 1024 * 1024 * 1024, // 1 GB по умолчанию
+    this.minFreeDiskBytes = 500 * 1024 * 1024, // 500 MB Safety Floor
     Uint8List? sessionKey,
+    this.freeBytesChecker,
     DebugLogService? debugLog,
   })  : _debugLog = debugLog ?? DebugLogService.instance,
         storageDir = storageDir ?? _resolveDefaultDirectory(sessionId),
-        _sessionKey = sessionKey ?? _generateSessionKey();
+        _sessionKey = sessionKey ??
+            _resolveInitialKey(
+                storageDir ?? _resolveDefaultDirectory(sessionId), sessionKey);
 
   final String sessionId;
   final Directory storageDir;
   final int maxSpoolBytes;
+  final int minFreeDiskBytes;
+  final FutureOr<int?> Function()? freeBytesChecker;
   final Uint8List _sessionKey;
   final DebugLogService _debugLog;
 
   int _currentSpoolBytes = 0;
   int _pendingCount = 0;
   bool _initialized = false;
+  DateTime? _lastDiskCheck;
+  int? _cachedFreeBytes;
 
   int get currentSpoolBytes => _currentSpoolBytes;
   bool get hasPendingChunks => _pendingCount > 0;
@@ -61,6 +72,21 @@ class LinkSpoolStorage {
   static Uint8List _generateSessionKey() {
     final rng = Random.secure();
     return Uint8List.fromList(List<int>.generate(32, (_) => rng.nextInt(256)));
+  }
+
+  static Uint8List _resolveInitialKey(Directory dir, Uint8List? explicitKey) {
+    if (explicitKey != null) return explicitKey;
+    try {
+      final keyFile =
+          File('${dir.path}${Platform.pathSeparator}.session.key');
+      if (keyFile.existsSync()) {
+        final bytes = keyFile.readAsBytesSync();
+        if (bytes.length == 32) {
+          return Uint8List.fromList(bytes);
+        }
+      }
+    } catch (_) {}
+    return _generateSessionKey();
   }
 
   static Directory _resolveDefaultDirectory(String sessionId) {
@@ -115,6 +141,17 @@ class LinkSpoolStorage {
     if (!await storageDir.exists()) {
       await storageDir.create(recursive: true);
       await _hardenDirectoryPermissions(storageDir);
+    }
+    final keyFile =
+        File('${storageDir.path}${Platform.pathSeparator}.session.key');
+    if (!await keyFile.exists()) {
+      try {
+        await keyFile.writeAsBytes(_sessionKey, flush: true);
+        if (Platform.isLinux || Platform.isMacOS) {
+          await Process.run('chmod', ['0600', keyFile.path])
+              .timeout(const Duration(seconds: 2));
+        }
+      } catch (_) {}
     }
     await _recalculateBytes();
     _initialized = true;
@@ -235,11 +272,86 @@ class LinkSpoolStorage {
     return out;
   }
 
+  static int? _getWindowsFreeBytes(String path) {
+    if (!Platform.isWindows) return null;
+    try {
+      final lib = ffi.DynamicLibrary.open('kernel32.dll');
+      final fn = lib.lookupFunction<
+          ffi.Int32 Function(ffi.Pointer<Utf16>, ffi.Pointer<ffi.Uint64>,
+              ffi.Pointer<ffi.Uint64>, ffi.Pointer<ffi.Uint64>),
+          int Function(ffi.Pointer<Utf16>, ffi.Pointer<ffi.Uint64>,
+              ffi.Pointer<ffi.Uint64>, ffi.Pointer<ffi.Uint64>)>('GetDiskFreeSpaceExW');
+      final dirPtr = path.toNativeUtf16();
+      final freeCallerPtr = calloc<ffi.Uint64>();
+      final totalBytesPtr = calloc<ffi.Uint64>();
+      final totalFreeBytesPtr = calloc<ffi.Uint64>();
+      try {
+        final ok = fn(dirPtr, freeCallerPtr, totalBytesPtr, totalFreeBytesPtr);
+        if (ok != 0) {
+          return freeCallerPtr.value;
+        }
+      } finally {
+        calloc.free(dirPtr);
+        calloc.free(freeCallerPtr);
+        calloc.free(totalBytesPtr);
+        calloc.free(totalFreeBytesPtr);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<int?> _checkFreeDiskSpace() async {
+    if (freeBytesChecker != null) {
+      return await freeBytesChecker!();
+    }
+    final now = DateTime.now();
+    if (_lastDiskCheck != null &&
+        now.difference(_lastDiskCheck!) < const Duration(seconds: 3)) {
+      return _cachedFreeBytes;
+    }
+    _lastDiskCheck = now;
+    int? free;
+    if (Platform.isWindows) {
+      free = _getWindowsFreeBytes(storageDir.path);
+    } else if (Platform.isLinux || Platform.isMacOS) {
+      try {
+        final res = await Process.run('df', ['-k', storageDir.path])
+            .timeout(const Duration(seconds: 1));
+        if (res.exitCode == 0) {
+          final lines = res.stdout.toString().trim().split('\n');
+          if (lines.length >= 2) {
+            final parts = lines[1].split(RegExp(r'\s+'));
+            if (parts.length >= 4) {
+              final freeKb = int.tryParse(parts[3]);
+              if (freeKb != null) free = freeKb * 1024;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    _cachedFreeBytes = free;
+    return free;
+  }
+
   Future<void> writeBatch(int batchIndex, Map<String, dynamic> batchData) async {
     await _ensureInitialized();
     final jsonStr = jsonEncode(batchData);
     final rawBytes = utf8.encode(jsonStr);
     final encryptedBytes = _seal(Uint8List.fromList(rawBytes));
+
+    final availableFree = await _checkFreeDiskSpace();
+    if (availableFree != null && availableFree < minFreeDiskBytes) {
+      _debugLog.record('recorder.spool.disk_floor_reached', fields: {
+        'session_id': sessionId,
+        'available_bytes': availableFree,
+        'min_floor_bytes': minFreeDiskBytes,
+      });
+      throw LinkSpoolQuotaExceededException(
+        message: 'Disk safety floor reached: available disk space is low ($availableFree bytes < $minFreeDiskBytes bytes)',
+        currentBytes: _currentSpoolBytes,
+        maxBytes: maxSpoolBytes,
+      );
+    }
 
     if (_currentSpoolBytes + encryptedBytes.length > maxSpoolBytes) {
       _debugLog.record('recorder.spool.quota_exceeded', fields: {

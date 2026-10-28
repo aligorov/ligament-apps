@@ -1312,8 +1312,12 @@ class LinkHostRecorder {
         if (spooledBatch != null) {
           try {
             final ack = await sendBatch(spooledBatch);
-            await spool!.removeBatch(file);
-            _snapshot('recorder.spool.drained', fields: {'file': file.path});
+            if (ack.ackHighWatermarkSeq > 0) {
+              await spool!.removeBatch(file);
+              _snapshot('recorder.spool.drained', fields: {'file': file.path});
+            } else {
+              _snapshot('recorder.spool.unconfirmed', fields: {'file': file.path});
+            }
 
             // Обновляем Lease и ACK состояние на основе ответа на батч спула
             final ackNow = _clock().toUtc();
@@ -1425,12 +1429,14 @@ class LinkHostRecorder {
         'result': 'received'
       });
 
-      if (ack.ackHighWatermarkSeq < _ackedSeq) {
+      if (ack.ackHighWatermarkSeq > 0 && ack.ackHighWatermarkSeq < _ackedSeq) {
         throw FormatException(
           'Recorder ACK high watermark sequence cannot decrease (was $_ackedSeq, got ${ack.ackHighWatermarkSeq})',
         );
       }
-      _ackedSeq = ack.ackHighWatermarkSeq;
+      if (ack.ackHighWatermarkSeq > _ackedSeq) {
+        _ackedSeq = ack.ackHighWatermarkSeq;
+      }
       if (ack.firstFrameAcked) {
         _firstFrameAcked = true;
       }
@@ -1468,12 +1474,16 @@ class LinkHostRecorder {
       // Удаляем только подтверждённые сервером элементы, которые реально отправлялись
       // в текущем пакете (seq <= ackHighWatermarkSeq && in inFlightFrameSeqs),
       // чтобы не потерять кадры и события, упавшие в очередь во время HTTP-запроса (LR-03, ULR-02).
-      _pendingFrames.removeWhere((f) =>
-          inFlightFrameSeqs.contains(f['seq'] as int) &&
-          (f['seq'] as int) <= _ackedSeq);
-      _pendingEvents.removeWhere((e) =>
-          inFlightEventSeqs.contains(e['seq'] as int) &&
-          (e['seq'] as int) <= _ackedSeq);
+      // Если ackHighWatermarkSeq == 0 (proxy-буферизация или нет подтверждения от рекордера),
+      // данные в памяти сохраняются для повторной отправки.
+      if (ack.ackHighWatermarkSeq > 0) {
+        _pendingFrames.removeWhere((f) =>
+            inFlightFrameSeqs.contains(f['seq'] as int) &&
+            (f['seq'] as int) <= _ackedSeq);
+        _pendingEvents.removeWhere((e) =>
+            inFlightEventSeqs.contains(e['seq'] as int) &&
+            (e['seq'] as int) <= _ackedSeq);
+      }
 
       if (_gapMarker != null && !_pendingEvents.contains(_gapMarker)) {
         _gapMarker = null;

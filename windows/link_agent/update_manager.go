@@ -160,11 +160,16 @@ func (m *UpdateManager) ApplyUpdate(ctx context.Context, rawServerURL, rawDownlo
 
 	m.notify(send, "applying", version, 100, "")
 
-	if deadlineSec <= 0 {
-		deadlineSec = 15
+	// Задержка перед стартом отвязанного установщика — 5 секунд (или меньше для тестов),
+	// чтобы успеть отправить уведомление "applying" через сокет и освободить ресурсы.
+	// deadlineSec (например, 900 сек) является общим таймаутом операции на сервере,
+	// и не должен использоваться в качестве паузы перед установкой.
+	startupDelaySec := 5
+	if deadlineSec > 0 && deadlineSec < 5 {
+		startupDelaySec = deadlineSec
 	}
 
-	return executeInstallerDetached(targetPath, deadlineSec)
+	return executeInstallerDetached(targetPath, startupDelaySec)
 }
 
 func (m *UpdateManager) notify(send func(any) error, status, version string, progress int, errStr string) {

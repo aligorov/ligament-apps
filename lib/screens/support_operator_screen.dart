@@ -194,6 +194,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   Timer? _linkSignalTimer;
   Timer? _linkHeartbeatTimer;
   Timer? _linkHostAnswerTimer;
+  Timer? _linkConnectWatchdogTimer;
   int? _linkPollingAttempt;
   bool _linkRestarting = false;
   int _linkAttemptGeneration = 0;
@@ -802,6 +803,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHeartbeatTimer = null;
     _linkHostAnswerTimer?.cancel();
     _linkHostAnswerTimer = null;
+    _linkConnectWatchdogTimer?.cancel();
+    _linkConnectWatchdogTimer = null;
     _linkRemoteDescriptionSet = false;
     _linkQueuedCandidates.clear();
     _linkPendingRemoteCandidates.clear();
@@ -1161,6 +1164,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHeartbeatTimer = null;
     _linkHostAnswerTimer?.cancel();
     _linkHostAnswerTimer = null;
+    _linkConnectWatchdogTimer?.cancel();
+    _linkConnectWatchdogTimer = null;
     if (widget.isLink) unawaited(_closeLinkSessionOnce(_linkCloseId));
     _setStatus(reasonKey);
     _isControlEnabled = false;
@@ -1574,6 +1579,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           _pcGraceTimer?.cancel();
           _pcGraceTimer = null;
+          _linkConnectWatchdogTimer?.cancel();
+          _linkConnectWatchdogTimer = null;
           setState(() {
             _isConnected = true;
             _currentNumberMatch = null;
@@ -1874,6 +1881,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _linkHeartbeatTimer = null;
       _linkHostAnswerTimer?.cancel();
       _linkHostAnswerTimer = null;
+      _linkConnectWatchdogTimer?.cancel();
+      _linkConnectWatchdogTimer = null;
       if (e is ApiException &&
           e.statusCode == 403 &&
           (e.code == 'external_perimeter_stepup_required' ||
@@ -2103,6 +2112,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               fields: {'result': 'applied', 'phase': 'set_remote'});
           _linkHostAnswerTimer?.cancel();
           _linkHostAnswerTimer = null;
+          _linkConnectWatchdogTimer?.cancel();
+          _linkConnectWatchdogTimer =
+              Timer(const Duration(milliseconds: 3500), () {
+            if (!mounted || _isCleanedUp || _isConnected || !_canRestartIce) {
+              return;
+            }
+            _logConnection('operator.ice.p2p_slow_fallback',
+                fields: {'reason': 'accelerated_relay_fallback'});
+            _triggerIceRestart();
+          });
           if (_pcGraceTimer != null) {
             _pcGraceTimer?.cancel();
             _pcGraceTimer = null;
@@ -3864,6 +3883,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHeartbeatTimer = null;
     _linkHostAnswerTimer?.cancel();
     _linkHostAnswerTimer = null;
+    _linkConnectWatchdogTimer?.cancel();
+    _linkConnectWatchdogTimer = null;
     if (widget.isLink) unawaited(_closeLinkSessionOnce(_linkCloseId));
 
     // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
