@@ -146,6 +146,49 @@ void main() {
     }
   });
 
+  test('ApiClient loads authenticated Link inventory with active_session', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final requestHandled = Completer<void>();
+    server.listen((request) async {
+      try {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({
+            'hosts': [
+              {
+                'id': 'agent-1',
+                'hostname': 'BUH-001',
+                'is_online': true,
+                'active_session': {
+                  'status': 'active',
+                  'operator_username': 'ligorov.k',
+                  'operator_display_name': 'Лигоров Кирилл',
+                },
+              },
+            ],
+          }));
+        await request.response.close();
+        requestHandled.complete();
+      } catch (error, stackTrace) {
+        requestHandled.completeError(error, stackTrace);
+      }
+    });
+
+    try {
+      final hosts = await ApiClient(
+        baseUrl: 'http://${server.address.address}:${server.port}',
+        token: 'test-token',
+      ).getLinkHosts();
+      await requestHandled.future;
+      expect(hosts, hasLength(1));
+      expect(hosts.first['active_session']['status'], 'active');
+      expect(hosts.first['active_session']['operator_username'], 'ligorov.k');
+    } finally {
+      await server.close(force: true);
+    }
+  });
+
   test('ApiClient requests one-time host binding credential', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final requestHandled = Completer<void>();

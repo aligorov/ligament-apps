@@ -695,6 +695,72 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final ownerPosition = (host['owner_position'] ?? '').toString().trim();
     final interactiveUser = (host['interactive_username'] ?? '').toString().trim();
 
+    final activeSession = host['active_session'] is Map
+        ? Map<String, dynamic>.from(host['active_session'] as Map)
+        : null;
+    final activeSessionStatus = activeSession?['status']?.toString();
+    final hasActiveSession = online &&
+        activeSessionStatus != null &&
+        (activeSessionStatus == 'active' ||
+            activeSessionStatus == 'connecting' ||
+            activeSessionStatus == 'requested');
+    final activeOperator = (activeSession?['operator_display_name'] ??
+            activeSession?['operator_username'] ??
+            '')
+        .toString()
+        .trim();
+
+    final String statusLabel;
+    final Color statusColor;
+    final Color indicatorColor;
+    final String statusTooltip;
+
+    if (unknown) {
+      statusLabel = isRu ? 'Неизвестно' : 'Unknown';
+      statusColor = const Color(0xFF94A3B8);
+      indicatorColor = const Color(0xFF64748B);
+      statusTooltip = statusLabel;
+    } else if (status == 'revoked') {
+      statusLabel = isRu ? 'Отозван' : 'Revoked';
+      statusColor = const Color(0xFFEF4444);
+      indicatorColor = const Color(0xFFEF4444);
+      statusTooltip = statusLabel;
+    } else if (status == 'suspended') {
+      statusLabel = isRu ? 'Приостановлен' : 'Suspended';
+      statusColor = const Color(0xFFF59E0B);
+      indicatorColor = const Color(0xFFF59E0B);
+      statusTooltip = statusLabel;
+    } else if (hasActiveSession) {
+      if (activeSessionStatus == 'active') {
+        statusLabel = activeOperator.isNotEmpty
+            ? (isRu ? 'В сеансе: $activeOperator' : 'In session: $activeOperator')
+            : (isRu ? 'В сеансе' : 'In session');
+        statusColor = const Color(0xFFA5B4FC);
+        indicatorColor = const Color(0xFF818CF8);
+        statusTooltip = statusLabel;
+      } else if (activeSessionStatus == 'connecting') {
+        statusLabel = isRu ? 'Подключение...' : 'Connecting...';
+        statusColor = const Color(0xFFFBBF24);
+        indicatorColor = const Color(0xFFF59E0B);
+        statusTooltip = isRu ? 'Идёт согласование подключения...' : 'Connecting in progress...';
+      } else {
+        statusLabel = isRu ? 'Запрос...' : 'Requesting...';
+        statusColor = const Color(0xFFFBBF24);
+        indicatorColor = const Color(0xFFF59E0B);
+        statusTooltip = isRu ? 'Ожидание согласия пользователя...' : 'Waiting for user consent...';
+      }
+    } else if (online) {
+      statusLabel = isRu ? 'В сети' : 'Online';
+      statusColor = const Color(0xFF4ADE80);
+      indicatorColor = const Color(0xFF22C55E);
+      statusTooltip = statusLabel;
+    } else {
+      statusLabel = isRu ? 'Не в сети' : 'Offline';
+      statusColor = const Color(0xFF94A3B8);
+      indicatorColor = const Color(0xFF64748B);
+      statusTooltip = statusLabel;
+    }
+
     final effectiveName = ownerDisplayName.isNotEmpty
         ? ownerDisplayName
         : (ownerUsername.isNotEmpty
@@ -749,20 +815,12 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                   ),
                 ),
                 Tooltip(
-                  message: unknown
-                      ? (isRu ? 'Неизвестно' : 'Unknown')
-                      : status == 'revoked'
-                          ? (isRu ? 'Отозван' : 'Revoked')
-                          : status == 'suspended'
-                              ? (isRu ? 'Приостановлен' : 'Suspended')
-                              : online
-                                  ? (isRu ? 'В сети' : 'Online')
-                                  : (isRu ? 'Не в сети' : 'Offline'),
+                  message: statusTooltip,
                   child: Container(
                     width: 9,
                     height: 9,
                     decoration: BoxDecoration(
-                      color: online ? const Color(0xFF22C55E) : const Color(0xFF64748B),
+                      color: indicatorColor,
                       shape: BoxShape.circle,
                       border: Border.all(color: const Color(0xFF0F172A), width: 1.5),
                     ),
@@ -885,19 +943,11 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Статус В сети / Не в сети
+                // Статус В сети / Не в сети / В сеансе / Подключение
                 Text(
-                  unknown
-                      ? (isRu ? 'Неизвестно' : 'Unknown')
-                      : status == 'revoked'
-                          ? (isRu ? 'Отозван' : 'Revoked')
-                          : status == 'suspended'
-                              ? (isRu ? 'Приостановлен' : 'Suspended')
-                              : online
-                                  ? (isRu ? 'В сети' : 'Online')
-                                  : (isRu ? 'Не в сети' : 'Offline'),
+                  statusLabel,
                   style: TextStyle(
-                    color: online ? const Color(0xFF4ADE80) : const Color(0xFF94A3B8),
+                    color: statusColor,
                     fontSize: 11,
                     fontWeight: FontWeight.w500,
                   ),
@@ -907,17 +957,26 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                 const SizedBox(width: 10),
                 OutlinedButton.icon(
                   onPressed: online ? () => _startLinkSession(host, isRu) : null,
-                  icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                  icon: Icon(
+                    hasActiveSession && activeSessionStatus == 'active'
+                        ? Icons.people_outline_rounded
+                        : Icons.play_arrow_rounded,
+                    size: 16,
+                  ),
                   label: Text(
                     isRu ? 'Подключить' : 'Connect',
                     style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
                   ),
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: online ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
+                    foregroundColor: hasActiveSession && activeSessionStatus == 'active'
+                        ? const Color(0xFFA5B4FC)
+                        : (online ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8)),
                     side: BorderSide(
-                      color: online
-                          ? const Color(0xFF0284C7).withValues(alpha: 0.6)
-                          : const Color(0xFF334155),
+                      color: hasActiveSession && activeSessionStatus == 'active'
+                          ? const Color(0xFF6366F1).withValues(alpha: 0.6)
+                          : (online
+                              ? const Color(0xFF0284C7).withValues(alpha: 0.6)
+                              : const Color(0xFF334155)),
                     ),
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                     minimumSize: const Size(0, 32),
@@ -1120,6 +1179,63 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final online = host['is_online'] == true;
     final unknown = host['is_online'] == null;
     final status = host['status']?.toString() ?? 'enrolled';
+    final activeSession = host['active_session'] is Map
+        ? Map<String, dynamic>.from(host['active_session'] as Map)
+        : null;
+    final activeSessionStatus = activeSession?['status']?.toString();
+    final hasActiveSession = online &&
+        activeSessionStatus != null &&
+        (activeSessionStatus == 'active' ||
+            activeSessionStatus == 'connecting' ||
+            activeSessionStatus == 'requested');
+    final activeOperator = (activeSession?['operator_display_name'] ??
+            activeSession?['operator_username'] ??
+            '')
+        .toString()
+        .trim();
+
+    final String detailsStatusLabel;
+    final Color detailsStatusColor;
+    final Color detailsIndicatorColor;
+
+    if (unknown) {
+      detailsStatusLabel = isRu ? 'Неизвестно' : 'Unknown';
+      detailsStatusColor = const Color(0xFF94A3B8);
+      detailsIndicatorColor = const Color(0xFF64748B);
+    } else if (status == 'revoked') {
+      detailsStatusLabel = isRu ? 'Отозван' : 'Revoked';
+      detailsStatusColor = const Color(0xFFEF4444);
+      detailsIndicatorColor = const Color(0xFFEF4444);
+    } else if (status == 'suspended') {
+      detailsStatusLabel = isRu ? 'Приостановлен' : 'Suspended';
+      detailsStatusColor = const Color(0xFFF59E0B);
+      detailsIndicatorColor = const Color(0xFFF59E0B);
+    } else if (hasActiveSession) {
+      if (activeSessionStatus == 'active') {
+        detailsStatusLabel = activeOperator.isNotEmpty
+            ? (isRu ? 'В сеансе: $activeOperator' : 'In session: $activeOperator')
+            : (isRu ? 'В сеансе' : 'In session');
+        detailsStatusColor = const Color(0xFFA5B4FC);
+        detailsIndicatorColor = const Color(0xFF818CF8);
+      } else if (activeSessionStatus == 'connecting') {
+        detailsStatusLabel = isRu ? 'Подключение...' : 'Connecting...';
+        detailsStatusColor = const Color(0xFFFBBF24);
+        detailsIndicatorColor = const Color(0xFFF59E0B);
+      } else {
+        detailsStatusLabel = isRu ? 'Запрос...' : 'Requesting...';
+        detailsStatusColor = const Color(0xFFFBBF24);
+        detailsIndicatorColor = const Color(0xFFF59E0B);
+      }
+    } else if (online) {
+      detailsStatusLabel = isRu ? 'В сети' : 'Online';
+      detailsStatusColor = const Color(0xFF4ADE80);
+      detailsIndicatorColor = const Color(0xFF22C55E);
+    } else {
+      detailsStatusLabel = isRu ? 'Не в сети' : 'Offline';
+      detailsStatusColor = const Color(0xFF94A3B8);
+      detailsIndicatorColor = const Color(0xFF64748B);
+    }
+
     final os = formatOS(host['os_family'], host['os_version']);
     final isMac = os.toLowerCase().contains('mac') || os.toLowerCase().contains('darwin');
     final isLinux = os.toLowerCase().contains('linux');
@@ -1300,23 +1416,15 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                     width: 8,
                     height: 8,
                     decoration: BoxDecoration(
-                      color: online ? const Color(0xFF22C55E) : const Color(0xFF64748B),
+                      color: detailsIndicatorColor,
                       shape: BoxShape.circle,
                     ),
                   ),
                   const SizedBox(width: 5),
                   Text(
-                    unknown
-                        ? (isRu ? 'Неизвестно' : 'Unknown')
-                        : status == 'revoked'
-                            ? (isRu ? 'Отозван' : 'Revoked')
-                            : status == 'suspended'
-                                ? (isRu ? 'Приостановлен' : 'Suspended')
-                                : online
-                                    ? (isRu ? 'В сети' : 'Online')
-                                    : (isRu ? 'Не в сети' : 'Offline'),
+                    detailsStatusLabel,
                     style: TextStyle(
-                      color: online ? const Color(0xFF4ADE80) : const Color(0xFF94A3B8),
+                      color: detailsStatusColor,
                       fontSize: 11,
                       fontWeight: FontWeight.w500,
                     ),
@@ -1396,6 +1504,13 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
                       detailItem(isRu ? 'Группа' : 'Group', (host['group_name'] != null && host['group_name'].toString().isNotEmpty) ? host['group_name'].toString() : notDetected),
                       detailItem(isRu ? 'Источник группы' : 'Group source', groupSourceText),
                       detailItem(isRu ? 'Неконтролируемый доступ' : 'Unattended access', unattendedText),
+                      if (hasActiveSession)
+                        detailItem(
+                          isRu ? 'Активный сеанс' : 'Active session',
+                          activeOperator.isNotEmpty
+                              ? (isRu ? 'В сеансе ($activeOperator)' : 'In session ($activeOperator)')
+                              : (isRu ? 'В сеансе' : 'In session'),
+                        ),
                     ],
                   ),
                   detailSection(
@@ -1441,6 +1556,49 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
     final isConsoleAllowed = host['console_allowed'] == true;
     final consoleProfile = host['console_profile']?.toString() ?? 'work';
     final interactiveUser = (host['interactive_username'] ?? '').toString().trim();
+
+    final activeSession = host['active_session'] is Map
+        ? Map<String, dynamic>.from(host['active_session'] as Map)
+        : null;
+    final activeSessionStatus = activeSession?['status']?.toString();
+    if (activeSessionStatus == 'active') {
+      final activeOperator = (activeSession?['operator_display_name'] ??
+              activeSession?['operator_username'] ??
+              '')
+          .toString()
+          .trim();
+      final opInfo = activeOperator.isNotEmpty ? ' ($activeOperator)' : '';
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (dialogCtx) => AlertDialog(
+          backgroundColor: const Color(0xFF131B2B),
+          title: Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B)),
+              const SizedBox(width: 8),
+              Text(isRu ? 'ПК уже занят' : 'PC is busy'),
+            ],
+          ),
+          content: Text(isRu
+              ? 'К этому компьютеру сейчас уже подключен оператор$opInfo.\nВы уверены, что хотите подключиться параллельно?'
+              : 'An operator$opInfo is already connected to this PC.\nAre you sure you want to connect concurrently?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx, false),
+              child: Text(isRu ? 'Отмена' : 'Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogCtx, true),
+              child: Text(isRu ? 'Подключиться' : 'Connect anyway'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) {
+        DebugLogService.instance.record('ui.catalog.connect.cancelled_busy', fields: {'agent_id': agentId});
+        return;
+      }
+    }
 
     String? mode = 'control';
     String sessionKind = 'link';
