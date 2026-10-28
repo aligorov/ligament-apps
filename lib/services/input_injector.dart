@@ -2,6 +2,7 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
+import 'debug_log_service.dart';
 
 // CoreGraphics struct for macOS
 final class _CGPoint extends ffi.Struct {
@@ -557,9 +558,11 @@ class InputInjector {
       if (rc == 0 && outLen.value > 54 && outLen.value <= maxBuf) {
         return Uint8List.fromList(buf.asTypedList(outLen.value));
       }
+      DebugLogService.instance.record('link.capture.gdi_failed', fields: {'rc': rc, 'out_len': outLen.value});
       return null;
     } catch (e) {
       debugPrint('input_injector: captureDesktopBmp failed: $e');
+      DebugLogService.instance.record('link.capture.gdi_exception', error: e);
       return null;
     } finally {
       calloc.free(buf);

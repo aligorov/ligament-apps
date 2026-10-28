@@ -1308,78 +1308,52 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       Uint8List? bytes;
       String currentMonitorId = _selectedScreenId ?? '0';
 
-      // 1. Если ID монитора неизвестен или '0', инициализируем sources в C++ плагине
-      if (_selectedScreenId == null || _selectedScreenId == '0') {
-        try {
-          final sources = await desktopCapturer.getSources(
-              types: [SourceType.Screen]).timeout(const Duration(seconds: 3));
-          if (sources.isNotEmpty) {
-            _selectedScreenId = sources.first.id;
-            currentMonitorId = sources.first.id;
-          }
-        } catch (error) {
-          _peerLog('link.exception', error: error, fields: {
-            'phase': 'capture_recorder_snapshot',
-            'result': 'failed'
-          });
-        }
-      }
-
-      // 2. Штатный запрос миниатюры через WebRTC
-      try {
-        final raw = await WebRTC.invokeMethod(
-          'getDesktopSourceThumbnail',
-          <String, dynamic>{
-            'sourceId': currentMonitorId,
-            'thumbnailSize': {'width': 1280, 'height': 720},
-          },
-        ).timeout(const Duration(seconds: 2));
-        if (raw is Uint8List && raw.isNotEmpty) {
-          bytes = raw;
-        }
-      } catch (error) {
-        _peerLog('link.exception',
-            error: error,
-            fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
-      }
-
-      // 3. Если sources_ в WebRTC оказались пустыми или устарели, обновляем и повторяем
-      if (bytes == null && !_closed) {
-        try {
-          final sources = await desktopCapturer.getSources(
-              types: [SourceType.Screen]).timeout(const Duration(seconds: 3));
-          if (sources.isNotEmpty) {
-            currentMonitorId = sources.first.id;
-            _selectedScreenId = currentMonitorId;
-            final retryRaw = await WebRTC.invokeMethod(
-              'getDesktopSourceThumbnail',
-              <String, dynamic>{
-                'sourceId': currentMonitorId,
-                'thumbnailSize': {'width': 1280, 'height': 720},
-              },
-            ).timeout(const Duration(seconds: 2));
-            if (retryRaw is Uint8List && retryRaw.isNotEmpty) {
-              bytes = retryRaw;
-            }
-          }
-        } catch (error) {
-          _peerLog('link.exception', error: error, fields: {
-            'phase': 'capture_recorder_snapshot',
-            'result': 'failed'
-          });
-        }
-      }
-
-      // 4. Резервный канал на Windows: прямой захват активного экрана через Win32 GDI
-      if (bytes == null && !_closed && !kIsWeb && Platform.isWindows) {
+      // 1. Приоритетный захват на Windows через Win32 GDI (не конфликтует с DXGI exclusive duplication)
+      if (!kIsWeb && Platform.isWindows) {
         try {
           bytes = InputInjector.instance
               .captureDesktopBmp(maxWidth: 1280, maxHeight: 720);
         } catch (error) {
           _peerLog('link.exception', error: error, fields: {
-            'phase': 'capture_recorder_snapshot',
+            'phase': 'capture_recorder_snapshot_gdi',
             'result': 'failed'
           });
+        }
+      }
+
+      // 2. Штатный запрос миниатюры через WebRTC (macOS/Linux или фоллбэк)
+      if (bytes == null && !_closed) {
+        if (_selectedScreenId == null || _selectedScreenId == '0') {
+          try {
+            final sources = await desktopCapturer.getSources(
+                types: [SourceType.Screen]).timeout(const Duration(seconds: 3));
+            if (sources.isNotEmpty) {
+              _selectedScreenId = sources.first.id;
+              currentMonitorId = sources.first.id;
+            }
+          } catch (error) {
+            _peerLog('link.exception', error: error, fields: {
+              'phase': 'capture_recorder_snapshot',
+              'result': 'failed'
+            });
+          }
+        }
+
+        try {
+          final raw = await WebRTC.invokeMethod(
+            'getDesktopSourceThumbnail',
+            <String, dynamic>{
+              'sourceId': currentMonitorId,
+              'thumbnailSize': {'width': 1280, 'height': 720},
+            },
+          ).timeout(const Duration(seconds: 2));
+          if (raw is Uint8List && raw.isNotEmpty) {
+            bytes = raw;
+          }
+        } catch (error) {
+          _peerLog('link.exception',
+              error: error,
+              fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
         }
       }
 

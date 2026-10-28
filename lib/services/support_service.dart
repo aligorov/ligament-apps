@@ -2197,21 +2197,37 @@ class SupportService extends ChangeNotifier {
     try {
       final srcId = _currentScreenId ?? '0';
       Uint8List? bytes;
-      try {
-        final raw = await WebRTC.invokeMethod(
-          'getDesktopSourceThumbnail',
-          <String, dynamic>{
-            'sourceId': srcId,
-            'thumbnailSize': {'width': 1280, 'height': 720},
-          },
-        ).timeout(const Duration(seconds: 2));
-        if (raw is Uint8List && raw.isNotEmpty) {
-          bytes = raw;
+
+      // 1. Приоритетный захват на Windows через Win32 GDI (не конфликтует с DXGI)
+      if (!kIsWeb && Platform.isWindows) {
+        try {
+          bytes = InputInjector.instance
+              .captureDesktopBmp(maxWidth: 1280, maxHeight: 720);
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'capture_recorder_snapshot_gdi', 'result': 'failed'});
         }
-      } catch (error) {
-        _logSupport('support.exception',
-            error: error,
-            fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
+      }
+
+      // 2. Штатный запрос миниатюры через WebRTC (macOS/Linux или фоллбэк)
+      if (bytes == null) {
+        try {
+          final raw = await WebRTC.invokeMethod(
+            'getDesktopSourceThumbnail',
+            <String, dynamic>{
+              'sourceId': srcId,
+              'thumbnailSize': {'width': 1280, 'height': 720},
+            },
+          ).timeout(const Duration(seconds: 2));
+          if (raw is Uint8List && raw.isNotEmpty) {
+            bytes = raw;
+          }
+        } catch (error) {
+          _logSupport('support.exception',
+              error: error,
+              fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
+        }
       }
       if (bytes != null &&
           bytes.isNotEmpty &&

@@ -1401,7 +1401,7 @@ class LinkHostRecorder {
     if (batchFrames.isEmpty && batchEvents.isEmpty) {
       final needsLeaseKeepalive = _lastAckAt != null
           ? now.difference(_lastAckAt!) >= const Duration(seconds: 10)
-          : (!config.requireFirstFrame &&
+          : (!config.mandatory &&
               now.difference(_startedAt) >= const Duration(seconds: 10));
       if (!needsLeaseKeepalive) {
         return _checkLeaseAndLag(now);

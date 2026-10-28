@@ -330,6 +330,11 @@ int DoWorkerCaptureDesktopBmp(CaptureRequest* req) {
   BOOL bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
                           hScreenDC, 0, 0, screen_w, screen_h,
                           SRCCOPY | CAPTUREBLT);
+  if (!bltOk) {
+    bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
+                       hScreenDC, 0, 0, screen_w, screen_h,
+                       SRCCOPY);
+  }
 
   if (!bltOk) {
     SelectObject(hMemDC, hOld);
@@ -703,7 +708,7 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
   }
 
   std::unique_lock<std::mutex> cap_lock(g_capture_mutex);
-  if (!g_capture_cv.wait_for(cap_lock, std::chrono::milliseconds(1200), [&req] { return req->done; })) {
+  if (!g_capture_cv.wait_for(cap_lock, std::chrono::milliseconds(2500), [&req] { return req->done; })) {
     std::lock_guard<std::mutex> lock(g_input_mutex);
     if (g_active_capture_request == req) {
       g_active_capture_request.reset();

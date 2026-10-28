@@ -80,6 +80,7 @@ bool ReadRegistry(HKEY root, const std::wstring& key) {
 
 bool ReadEnabled() {
   if (!initialized) return false;
+  if (ReadRegistry(HKEY_LOCAL_MACHINE, kSettingsKey)) return true;
   if (!Worker()) return ReadRegistry(HKEY_CURRENT_USER, kSettingsKey);
   DWORD session = 0;
   HANDLE raw_token = nullptr;
