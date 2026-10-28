@@ -474,6 +474,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   int _diskFreeGb = 0;
   bool _diskWarning = false;
 
+  // Мобильная адаптация экрана (Android/Link):
+  bool _isMobileToolbarVisible = true;
+  bool _isMobileLandscapeLocked = false;
+  Timer? _touchLongPressTimer;
+  Offset? _touchDownPosition;
+  int? _touchDownPointer;
+
   OperatorZoomMode _zoomMode = OperatorZoomMode.fit;
   double _zoomScale = 1.0;
   final TransformationController _videoTransform = TransformationController();
@@ -1417,6 +1424,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
     }
     _loadChatHistory();
+    if (!kIsWeb && Platform.isAndroid) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
     if (_isChatOnly && !widget.isLink) {
       _statusKey = 'chat';
       _connectWebSocket();
@@ -4065,6 +4075,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _flushMouseLog();
     _pendingMouseMoveTimer?.cancel();
     _pendingMouseMoveTimer = null;
+    _touchLongPressTimer?.cancel();
+    _touchLongPressTimer = null;
+    if (!kIsWeb && Platform.isAndroid) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    }
     _releaseAllPressedInputs();
     if (_isFullScreen &&
         !kIsWeb &&
@@ -4138,6 +4154,31 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           error: e,
           fields: {'phase': 'toggle_full_screen', 'result': 'failed'});
     }
+  }
+
+  void _toggleMobileOrientationLock() {
+    if (kIsWeb || !Platform.isAndroid) return;
+    final next = !_isMobileLandscapeLocked;
+    setState(() => _isMobileLandscapeLocked = next);
+    if (next) {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    }
+    final isRu = context.stringsRead.isRu;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(next
+            ? (isRu
+                ? 'Альбомная ориентация зафиксирована'
+                : 'Landscape orientation locked')
+            : (isRu ? 'Автоповорот включен' : 'Auto-rotation enabled')),
+        duration: const Duration(milliseconds: 900),
+      ),
+    );
   }
 
   void _setVideoQuality(String quality) {
@@ -5063,6 +5104,436 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     );
   }
 
+  Widget _buildMobileTopBar(
+    BuildContext context,
+    AppStrings strings,
+    bool isLink,
+    bool isOwner,
+    String pcName,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1E293B),
+        border: Border(bottom: BorderSide(color: Color(0xFF334155))),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: SizedBox(
+          height: 38,
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white, size: 18),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                tooltip: strings.backTooltip,
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              if (isLink)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0284C7),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'LINK',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10,
+                    ),
+                  ),
+                )
+              else if (isOwner)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF8B5CF6),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'CONSOLE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        pcName,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: _isConnected
+                            ? const Color(0xFF10B981)
+                            : const Color(0xFFF59E0B),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: Icon(
+                  _isMobileLandscapeLocked
+                      ? Icons.screen_lock_landscape
+                      : Icons.screen_rotation,
+                  color: _isMobileLandscapeLocked
+                      ? const Color(0xFF38BDF8)
+                      : const Color(0xFF94A3B8),
+                  size: 18,
+                ),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                tooltip: _isMobileLandscapeLocked
+                    ? (strings.isRu
+                        ? 'Разблокировать поворот'
+                        : 'Unlock orientation')
+                    : (strings.isRu
+                        ? 'Зафиксировать альбомную'
+                        : 'Lock landscape'),
+                onPressed: _toggleMobileOrientationLock,
+              ),
+              IconButton(
+                icon: Icon(
+                  _zoomMode == OperatorZoomMode.fit
+                      ? Icons.fit_screen
+                      : (_zoomMode == OperatorZoomMode.original
+                          ? Icons.aspect_ratio
+                          : Icons.zoom_in),
+                  color: const Color(0xFF38BDF8),
+                  size: 18,
+                ),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                tooltip: _zoomMode == OperatorZoomMode.fit
+                    ? strings.zoomFitTooltip
+                    : strings.zoom1to1Tooltip,
+                onPressed: () {
+                  setState(() {
+                    if (_zoomMode == OperatorZoomMode.fit) {
+                      _zoomMode = OperatorZoomMode.zoomIn;
+                    } else if (_zoomMode == OperatorZoomMode.zoomIn) {
+                      _zoomMode = OperatorZoomMode.original;
+                    } else {
+                      _zoomMode = OperatorZoomMode.fit;
+                      _videoTransform.value = Matrix4.identity();
+                    }
+                  });
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.visibility_off_outlined,
+                    color: Color(0xFF94A3B8), size: 18),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                tooltip: strings.isRu ? 'Во весь экран' : 'Full screen',
+                onPressed: () =>
+                    setState(() => _isMobileToolbarVisible = false),
+              ),
+              PopupMenuButton<String>(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                icon: const Icon(Icons.more_vert,
+                    color: Color(0xFF38BDF8), size: 20),
+                color: const Color(0xFF1E293B),
+                itemBuilder: (ctx) => [
+                  PopupMenuItem(
+                    value: 'quality_balanced',
+                    child: Text(
+                      strings.isRu
+                          ? 'Качество: Баланс'
+                          : 'Quality: Balanced',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'quality_best',
+                    child: Text(
+                      strings.isRu ? 'Качество: Высокое' : 'Quality: Best',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'quality_economy',
+                    child: Text(
+                      strings.isRu
+                          ? 'Качество: Экономия'
+                          : 'Quality: Economy',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'screenshot',
+                    child: Text(
+                      strings.consoleScreenshotTooltip,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'stats',
+                    child: Text(
+                      strings.connectionStats,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  if (_controlReady && !_isViewOnlySession)
+                    PopupMenuItem(
+                      value: 'reboot',
+                      child: Text(
+                        strings.consoleRebootTooltip,
+                        style: const TextStyle(
+                            color: Color(0xFFF59E0B), fontSize: 13),
+                      ),
+                    ),
+                  PopupMenuItem(
+                    value: 'files',
+                    child: Text(
+                      strings.consoleFilesTooltip,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                ],
+                onSelected: (val) {
+                  switch (val) {
+                    case 'quality_balanced':
+                      _setVideoQuality('balanced');
+                      break;
+                    case 'quality_best':
+                      _setVideoQuality('best');
+                      break;
+                    case 'quality_economy':
+                      _setVideoQuality('economy');
+                      break;
+                    case 'screenshot':
+                      if (_frameReady) _takeScreenshot();
+                      break;
+                    case 'stats':
+                      if (_isConnected) _showConnectionStatsDialog();
+                      break;
+                    case 'reboot':
+                      _confirmReboot();
+                      break;
+                    case 'files':
+                      _scaffoldKey.currentState?.openEndDrawer();
+                      break;
+                  }
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.call_end,
+                    color: Color(0xFFEF4444), size: 18),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                tooltip: strings.endSession,
+                onPressed: _endSession,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileBottomBar(
+    BuildContext context,
+    AppStrings strings,
+    bool isOwner,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1E293B),
+        border: Border(top: BorderSide(color: Color(0xFF334155))),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 38,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                onPressed: () {
+                  setState(() {
+                    _mouseClickMode = _mouseClickMode == MouseClickMode.left
+                        ? MouseClickMode.right
+                        : MouseClickMode.left;
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(_mouseClickMode == MouseClickMode.right
+                          ? strings.rightClickNotice
+                          : strings.leftClickNotice),
+                      duration: const Duration(milliseconds: 700),
+                    ),
+                  );
+                },
+                icon: Icon(
+                  _mouseClickMode == MouseClickMode.right
+                      ? Icons.mouse
+                      : Icons.touch_app,
+                  size: 18,
+                  color: _mouseClickMode == MouseClickMode.right
+                      ? const Color(0xFFF59E0B)
+                      : const Color(0xFF38BDF8),
+                ),
+                tooltip: _mouseClickMode == MouseClickMode.right
+                    ? strings.rightClickModeShort
+                    : strings.leftClickModeShort,
+              ),
+              PopupMenuButton<String>(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                enabled: _controlReady,
+                icon: const Icon(Icons.keyboard_command_key,
+                    size: 18, color: Color(0xFF38BDF8)),
+                tooltip: strings.hotkeysTooltip,
+                color: const Color(0xFF1E293B),
+                itemBuilder: (ctx) => [
+                  PopupMenuItem(
+                    value: 'win_space',
+                    child: Text(
+                      strings.isRu
+                          ? 'Переключить язык (Win+Space)'
+                          : 'Switch language (Win+Space)',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'tab',
+                    child: Text(
+                      'Tab (Следующее поле)',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'esc',
+                    child: Text(
+                      'Escape (Отмена)',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'alt_tab',
+                    child: Text(
+                      'Alt+Tab (Сменить окно)',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'win_key',
+                    child: Text(
+                      'Клавиша Windows (Пуск)',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'win_d',
+                    child: Text(
+                      'Win+D (Свернуть все окна)',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'ctrl_alt_del',
+                    child: Text(
+                      'Ctrl+Alt+Del',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'task_mgr',
+                    child: Text(
+                      'Диспетчер задач',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'alt_f4',
+                    child: Text(
+                      'Alt+F4 (Закрыть окно)',
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                ],
+                onSelected: (val) {
+                  if (val == 'tab') {
+                    _sendSpecialKey('Tab');
+                  } else {
+                    _sendHotkey(val);
+                  }
+                },
+              ),
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                onPressed: _controlReady ? _showTextInputDialog : null,
+                icon: const Icon(Icons.keyboard_alt_outlined,
+                    size: 18, color: Color(0xFF38BDF8)),
+                tooltip: strings.enterTextBtn,
+              ),
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                onPressed: () =>
+                    _sendDataMessage({'type': 'wheel', 'deltaY': -200}),
+                icon: const Icon(Icons.arrow_upward,
+                    size: 18, color: Color(0xFF38BDF8)),
+                tooltip: strings.scrollUp,
+              ),
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                onPressed: () =>
+                    _sendDataMessage({'type': 'wheel', 'deltaY': 200}),
+                icon: const Icon(Icons.arrow_downward,
+                    size: 18, color: Color(0xFF38BDF8)),
+                tooltip: strings.scrollDown,
+              ),
+              if (!isOwner ||
+                  widget.sessionData['session_kind'] == 'sos' ||
+                  widget.isLink)
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  onPressed: _showOperatorChatModal,
+                  icon: Badge(
+                    isLabelVisible: _unreadChatCount > 0,
+                    label: Text('$_unreadChatCount'),
+                    child: const Icon(Icons.chat_bubble_outline,
+                        size: 18, color: Color(0xFF38BDF8)),
+                  ),
+                  tooltip: strings.chatTitle,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
@@ -5111,12 +5582,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       body: Column(
         children: [
           // Верхняя панель управления (Toolbar)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: const BoxDecoration(
-              color: Color(0xFF1E293B),
-              border: Border(bottom: BorderSide(color: Color(0xFF334155))),
-            ),
+          if (!kIsWeb && Platform.isAndroid)
+            if (_isMobileToolbarVisible)
+              _buildMobileTopBar(context, strings, isLink, isOwner, pcName)
+            else
+              const SizedBox.shrink()
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1E293B),
+                border: Border(bottom: BorderSide(color: Color(0xFF334155))),
+              ),
             child: SafeArea(
               bottom: false,
               child: Wrap(
@@ -5965,7 +6442,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               child: Listener(
                 behavior: HitTestBehavior.opaque,
                 onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
-                onPointerMove: (ev) => _sendPointerEvent('move', ev, 0),
+                onPointerMove: (ev) {
+                  if (!kIsWeb &&
+                      Platform.isAndroid &&
+                      ev.kind == ui.PointerDeviceKind.touch) {
+                    if (_touchDownPosition != null) {
+                      final dist = (ev.position - _touchDownPosition!).distance;
+                      if (dist > 15) {
+                        _touchLongPressTimer?.cancel();
+                        _touchLongPressTimer = null;
+                      }
+                    }
+                  }
+                  _sendPointerEvent('move', ev, 0);
+                },
                 onPointerDown: (ev) {
                   if (!_controlReady) {
                     _logConnection('operator.action.blocked', fields: {
@@ -5981,8 +6471,29 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ev.buttons, _mouseClickMode == MouseClickMode.right);
                   _pointerDownButtons[ev.pointer] = btn;
                   _sendPointerEvent('mouse_down', ev, btn);
+
+                  if (!kIsWeb &&
+                      Platform.isAndroid &&
+                      ev.kind == ui.PointerDeviceKind.touch) {
+                    _touchDownPosition = ev.position;
+                    _touchDownPointer = ev.pointer;
+                    _touchLongPressTimer?.cancel();
+                    _touchLongPressTimer =
+                        Timer(const Duration(milliseconds: 500), () {
+                      if (!mounted || !_controlReady) return;
+                      HapticFeedback.selectionClick();
+                      final p = _touchDownPointer;
+                      if (p != null && _pointerDownButtons.containsKey(p)) {
+                        _sendPointerEvent('mouse_up', ev, 0);
+                        _pointerDownButtons[p] = 2;
+                        _sendPointerEvent('mouse_down', ev, 2);
+                      }
+                    });
+                  }
                 },
                 onPointerUp: (ev) {
+                  _touchLongPressTimer?.cancel();
+                  _touchLongPressTimer = null;
                   // A4.1: сначала удаляем из map, чтобы не утекало при !_controlReady
                   final btn = _pointerDownButtons.remove(ev.pointer) ?? 0;
                   if (!_controlReady) {
@@ -5998,6 +6509,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   }
                 },
                 onPointerCancel: (ev) {
+                  _touchLongPressTimer?.cancel();
+                  _touchLongPressTimer = null;
                   final btn = _pointerDownButtons.remove(ev.pointer);
                   if (btn != null && _controlReady) {
                     _sendPointerEvent('mouse_up', ev, btn);
@@ -6273,6 +6786,59 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                             ),
                                           ),
                                         ),
+                                        // Кнопка вызова скрытой панели управления на Android
+                                        if (!kIsWeb &&
+                                            Platform.isAndroid &&
+                                            !_isMobileToolbarVisible)
+                                          Positioned(
+                                            top: 10,
+                                            right: (_isViewOnlySession ||
+                                                    !_isControlEnabled)
+                                                ? 140
+                                                : 10,
+                                            child: Material(
+                                              color: Colors.transparent,
+                                              child: InkWell(
+                                                onTap: () => setState(() =>
+                                                    _isMobileToolbarVisible =
+                                                        true),
+                                                borderRadius:
+                                                    BorderRadius.circular(20),
+                                                child: Container(
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
+                                                      horizontal: 10,
+                                                      vertical: 6),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(
+                                                        0xCC0F172A),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            20),
+                                                    border: Border.all(
+                                                        color: const Color(
+                                                            0xFF38BDF8)),
+                                                  ),
+                                                  child: const Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      Icon(Icons.tune,
+                                                          color: Color(
+                                                              0xFF38BDF8),
+                                                          size: 14),
+                                                      SizedBox(width: 4),
+                                                      Icon(
+                                                          Icons
+                                                              .keyboard_arrow_down,
+                                                          color: Colors.white,
+                                                          size: 14),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
                                         // Бейдж «только просмотр» (A3.3)
                                         if (_isViewOnlySession ||
                                             !_isControlEnabled)
@@ -6399,12 +6965,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           // Быстрая панель действий для оператора (скролл, режим клика, ввод текста)
           // Ш3: панель управления — только при готовом канале управления
           if (_controlReady)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: const BoxDecoration(
-                color: Color(0xFF1E293B),
-                border: Border(top: BorderSide(color: Color(0xFF334155))),
-              ),
+            if (!kIsWeb && Platform.isAndroid)
+              _buildMobileBottomBar(context, strings, isOwner)
+            else
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF1E293B),
+                  border: Border(top: BorderSide(color: Color(0xFF334155))),
+                ),
               child: SafeArea(
                 top: false,
                 child: Row(

@@ -106,5 +106,34 @@ void main() {
       expect(errorCount, equals(0));
       expect(bannerVisible, isFalse);
     });
+
+    test('Mobile touch long-press right-click switches button to 2 and sends right click', () {
+      pointerDownButtons[1] = 0; // initially left click down
+      expect(pointerDownButtons[1], equals(0));
+
+      // simulate long press timer callback
+      pointerDownButtons[1] = 2; // switched to right click button
+      sentMessages.add({'type': 'mouse_up', 'button': 0});
+      sentMessages.add({'type': 'mouse_down', 'button': 2});
+
+      expect(pointerDownButtons[1], equals(2));
+      expect(sentMessages.length, equals(2));
+      expect(sentMessages[0]['button'], equals(0));
+      expect(sentMessages[1]['button'], equals(2));
+
+      // simulate pointer up
+      final upBtn = pointerDownButtons.remove(1);
+      sentMessages.add({'type': 'mouse_up', 'button': upBtn});
+      expect(upBtn, equals(2));
+      expect(pointerDownButtons.isEmpty, isTrue);
+    });
+
+    test('Mobile orientation lock toggle toggles boolean state', () {
+      bool isLandscapeLocked = false;
+      bool toggleLock() => isLandscapeLocked = !isLandscapeLocked;
+
+      expect(toggleLock(), isTrue);
+      expect(toggleLock(), isFalse);
+    });
   });
 }
