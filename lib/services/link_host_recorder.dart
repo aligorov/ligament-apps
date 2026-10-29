@@ -226,6 +226,7 @@ class LinkRecordingConfig {
     this.failurePolicy = 'strict',
     this.spoolEnabled = false,
     this.maxSpoolBytes = 1024 * 1024 * 1024,
+    this.profile = 'balanced',
   });
 
   final String contractVersion;
@@ -244,6 +245,63 @@ class LinkRecordingConfig {
   final String failurePolicy; // resilient, strict
   final bool spoolEnabled;
   final int maxSpoolBytes;
+  final String profile; // high_fidelity, balanced, low_bandwidth
+
+  Duration get frameInterval {
+    switch (profile) {
+      case 'high_fidelity':
+      case 'detailed':
+        return const Duration(milliseconds: 200); // До 5 кадров/сек
+      case 'low_bandwidth':
+      case 'eco':
+        return const Duration(seconds: 3); // 1 кадр в 3 секунды
+      case 'balanced':
+      default:
+        return const Duration(seconds: 1); // 1 кадр/сек
+    }
+  }
+
+  Duration get activityThrottle {
+    switch (profile) {
+      case 'high_fidelity':
+      case 'detailed':
+        return const Duration(milliseconds: 200); // Реакция на ввод до 5 кадров/сек
+      case 'low_bandwidth':
+      case 'eco':
+        return const Duration(seconds: 3);
+      case 'balanced':
+      default:
+        return const Duration(milliseconds: 500); // 2 кадра/сек при вводе
+    }
+  }
+
+  Duration get activityDebounce {
+    switch (profile) {
+      case 'high_fidelity':
+      case 'detailed':
+        return const Duration(milliseconds: 50);
+      case 'low_bandwidth':
+      case 'eco':
+        return const Duration(milliseconds: 500);
+      case 'balanced':
+      default:
+        return const Duration(milliseconds: 200);
+    }
+  }
+
+  Duration get flushInterval {
+    switch (profile) {
+      case 'high_fidelity':
+      case 'detailed':
+        return const Duration(milliseconds: 250); // Быстрый сброс батчей при 5 fps
+      case 'low_bandwidth':
+      case 'eco':
+        return const Duration(seconds: 2);
+      case 'balanced':
+      default:
+        return const Duration(seconds: 1);
+    }
+  }
 
   bool get isActive =>
       enabled && effectiveMode != 'exclude' && ingestUrl.isNotEmpty;
@@ -270,6 +328,12 @@ class LinkRecordingConfig {
     final maxSpoolBytes = raw['max_spool_bytes'] is int
         ? raw['max_spool_bytes'] as int
         : 1024 * 1024 * 1024;
+    final rawProfile = raw['profile']?.toString().trim().toLowerCase() ?? 'balanced';
+    final profile = (rawProfile == 'high_fidelity' || rawProfile == 'detailed')
+        ? 'high_fidelity'
+        : (rawProfile == 'low_bandwidth' || rawProfile == 'eco')
+            ? 'low_bandwidth'
+            : 'balanced';
     return LinkRecordingConfig(
       contractVersion: raw['contract_version']?.toString() ?? 'v1',
       enabled: enabled && mode != 'exclude',
@@ -287,6 +351,7 @@ class LinkRecordingConfig {
       failurePolicy: failurePolicy,
       spoolEnabled: spoolEnabled,
       maxSpoolBytes: maxSpoolBytes,
+      profile: profile,
     );
   }
 }
@@ -782,7 +847,7 @@ class LinkHostRecorder {
     if (_nextSeq == 0 && _pendingEvents.isEmpty) {
       _appendLifecycle('session_started', {'mode': config.effectiveMode});
     }
-    _flushTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    _flushTimer = Timer.periodic(config.flushInterval, (_) {
       unawaited(flushAndVerifyHealth().catchError((Object error) {
         _snapshot('recorder.flush.failed',
             error: error, fields: {'result': 'failed'});
@@ -881,7 +946,33 @@ class LinkHostRecorder {
         (spool == null || !spool!.hasPendingChunks);
     _snapshot('recorder.stop',
         fields: {'result': isTailFlushed ? 'tail_flushed' : 'tail_lost'});
+    if (_tailFlushed && config.ingestUrl.isNotEmpty) {
+      unawaited(_notifyComplete(reason.isNotEmpty ? reason : 'normal'));
+    }
     return isTailFlushed;
+  }
+
+  Future<void> _notifyComplete(String reason) async {
+    try {
+      final completeUrl = config.ingestUrl.replaceAll('/batch', '/complete');
+      final uri = Uri.tryParse(completeUrl);
+      if (uri == null) return;
+      final httpClient = _getSharedClient();
+      final request = await httpClient.postUrl(uri).timeout(const Duration(seconds: 4));
+      request.followRedirects = false;
+      request.headers.contentType = ContentType.json;
+      if (config.ingestToken.isNotEmpty) {
+        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${config.ingestToken}');
+      }
+      final payload = jsonEncode({
+        'epoch': config.epoch,
+        'status': 'completed',
+        'reason': reason,
+      });
+      request.add(utf8.encode(payload));
+      final response = await request.close().timeout(const Duration(seconds: 4));
+      await response.drain();
+    } catch (_) {}
   }
 
   /// Очищает команду управления от печатных символов, паролей и текста буфера обмена (Раздел 4.2).
@@ -1229,6 +1320,10 @@ class LinkHostRecorder {
     _nextSeq++;
     _queuedBytes += encodedBytes;
     _pendingFrames.add(frame);
+    if ((config.profile == 'high_fidelity' || config.profile == 'detailed') &&
+        _pendingFrames.length >= 2) {
+      unawaited(flushAndVerifyHealth().catchError((_) => false));
+    }
     return true;
   }
 

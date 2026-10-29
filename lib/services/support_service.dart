@@ -2171,7 +2171,7 @@ class SupportService extends ChangeNotifier {
       unawaited(_captureRecorderSnapshot('keyframe'));
       _recorderSnapshotTimer?.cancel();
       _recorderSnapshotTimer = Timer.periodic(
-        const Duration(seconds: 4),
+        const Duration(seconds: 1),
         (_) => unawaited(_captureRecorderSnapshot('periodic')),
       );
     } catch (e) {

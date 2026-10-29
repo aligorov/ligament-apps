@@ -982,6 +982,7 @@ Future<void> _runConnectedLinkHostWorker(
       offer['dlp'],
       desktopScope: offer['desktop_scope']?.toString(),
     ),
+    recordingConfig: recordingConfig,
   );
   state.bindChatSender(peer.sendChatMessage);
   session = LinkHostSession(
@@ -1182,6 +1183,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     this.onFrameCaptured,
     this.isRecorderReady,
     this.policy = const LinkSessionPolicy(),
+    this.recordingConfig,
   });
 
   static const Duration connectionGracePeriod = Duration(seconds: 60);
@@ -1245,6 +1247,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       onFrameCaptured;
   final bool Function()? isRecorderReady;
   final LinkSessionPolicy policy;
+  final LinkRecordingConfig? recordingConfig;
 
   RTCPeerConnection? _peer;
   MediaStream? _stream;
@@ -1660,8 +1663,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       if (onFrameCaptured != null) {
         unawaited(_captureRecorderSnapshot('keyframe'));
         _recorderFrameTimer?.cancel();
+        final interval = recordingConfig?.frameInterval ?? const Duration(seconds: 1);
         _recorderFrameTimer = Timer.periodic(
-          const Duration(seconds: 4),
+          interval,
           (_) {
             unawaited(_captureRecorderSnapshot('periodic'));
           },
@@ -2036,12 +2040,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (onFrameCaptured != null &&
         (type == 'mouse_down' || type == 'key_down' || type == 'hotkey')) {
       final now = DateTime.now();
+      final throttle = recordingConfig?.activityThrottle ?? const Duration(milliseconds: 500);
+      final debounce = recordingConfig?.activityDebounce ?? const Duration(milliseconds: 200);
       if (_activitySnapshotTimer == null &&
           (_lastFrameCaptureAt == null ||
-              now.difference(_lastFrameCaptureAt!) >=
-                  const Duration(milliseconds: 1500))) {
+              now.difference(_lastFrameCaptureAt!) >= throttle)) {
         _activitySnapshotTimer = Timer(
-          const Duration(milliseconds: 500),
+          debounce,
           () {
             _activitySnapshotTimer = null;
             if (!_closed) {
