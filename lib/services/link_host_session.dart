@@ -929,6 +929,11 @@ Future<void> _runConnectedLinkHostWorker(
           onMandatoryViolation: (reason) => unawaited(session.reject(reason)),
         )
       : null;
+  // Немедленно активируем recorder при наличии настроек записи,
+  // чтобы session_start сразу отправился на сервер и продлил аренду сессии.
+  if (recordingConfig.isActive) {
+    recorder?.start();
+  }
   final peer = FlutterLinkHostPeer(
     debugSessionId: sessionId,
     onConnected: () {
@@ -949,7 +954,7 @@ Future<void> _runConnectedLinkHostWorker(
         : (kind, bytes, monitorId) async {
             final frameInfo = await prepareRecordedFrame(bytes);
             if (frameInfo != null) {
-              recorder.enqueueFrame(
+              final enqueued = recorder.enqueueFrame(
                 frameKind: kind,
                 payload: frameInfo.payload,
                 monitorId: monitorId,
@@ -957,6 +962,20 @@ Future<void> _runConnectedLinkHostWorker(
                 height: frameInfo.height,
                 codec: frameInfo.codec,
               );
+              if (!enqueued) {
+                DebugLogService.instance.record('link.recorder.enqueue_failed',
+                    fields: {
+                      'kind': kind,
+                      'codec': frameInfo.codec,
+                      'bytes': frameInfo.payload.length,
+                    });
+              }
+            } else {
+              DebugLogService.instance.record('link.recorder.prepare_failed',
+                  fields: {
+                    'kind': kind,
+                    'raw_bytes': bytes.length,
+                  });
             }
           },
     policy: LinkSessionPolicy.fromWire(
@@ -1607,10 +1626,58 @@ class FlutterLinkHostPeer implements LinkHostPeer {
               'sdpSemantics': 'unified-plan',
             }));
     _peer = peer;
+    var peerConnected = false;
+    void markPeerConnected(String origin) {
+      if (peerConnected || _closed) return;
+      peerConnected = true;
+      _peerLog('link.connected', fields: {'origin': origin});
+      _connectionGraceTimer?.cancel();
+      _connectionGraceTimer = null;
+      InputInjector.instance.setKeepSessionAwake(true);
+      if (!kIsWeb && Platform.isWindows) {
+        _desktopSwitchTimer?.cancel();
+        _desktopSwitchTimer = Timer.periodic(
+          const Duration(milliseconds: 200),
+          (_) {
+            if (!_closed && InputInjector.instance.consumeDesktopChanged()) {
+              _peerLog('link.desktop.changed', fields: {'origin': 'desktop'});
+              onDesktopChanged?.call();
+              final screenId = _selectedScreenId ?? '0';
+              _desktopSwitchDebounceTimer?.cancel();
+              // Дебаунс 300мс даёт Windows завершить смену десктопа (Default <-> Winlogon) перед запросом DXGI
+              _desktopSwitchDebounceTimer = Timer(
+                const Duration(milliseconds: 300),
+                () {
+                  if (_closed) return;
+                  unawaited(switchScreen(_selectedScreenId ?? screenId));
+                },
+              );
+            }
+          },
+        );
+      }
+      onConnected?.call();
+      if (onFrameCaptured != null) {
+        unawaited(_captureRecorderSnapshot('keyframe'));
+        _recorderFrameTimer?.cancel();
+        _recorderFrameTimer = Timer.periodic(
+          const Duration(seconds: 4),
+          (_) {
+            unawaited(_captureRecorderSnapshot('periodic'));
+          },
+        );
+      }
+    }
+
     peer.onIceGatheringState = (state) =>
         _peerLog('link.ice.gathering', fields: {'ice_state': state.name});
-    peer.onIceConnectionState = (state) =>
-        _peerLog('link.ice.state', fields: {'ice_state': state.name});
+    peer.onIceConnectionState = (state) {
+      _peerLog('link.ice.state', fields: {'ice_state': state.name});
+      if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+          state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+        markPeerConnected('ice_state');
+      }
+    };
     peer.onTrack = (event) => _peerLog('link.track.remote', fields: {
           'phase': event.track.kind == 'audio'
               ? 'audio'
@@ -1649,6 +1716,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       channel.onDataChannelState = (state) {
         _peerLog('link.dc.state', fields: {'dc_state': state.name});
         if (state == RTCDataChannelState.RTCDataChannelOpen) {
+          markPeerConnected('data_channel');
           _sendScreenList();
           _flushPendingChatMessages();
         } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
@@ -1693,42 +1761,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     peer.onConnectionState = (state) {
       _peerLog('link.pc.state', fields: {'pc_state': state.name});
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-        _connectionGraceTimer?.cancel();
-        _connectionGraceTimer = null;
-        InputInjector.instance.setKeepSessionAwake(true);
-        if (!kIsWeb && Platform.isWindows) {
-          _desktopSwitchTimer?.cancel();
-          _desktopSwitchTimer = Timer.periodic(
-            const Duration(milliseconds: 200),
-            (_) {
-              if (!_closed && InputInjector.instance.consumeDesktopChanged()) {
-                _peerLog('link.desktop.changed', fields: {'origin': 'desktop'});
-                onDesktopChanged?.call();
-                final screenId = _selectedScreenId ?? '0';
-                _desktopSwitchDebounceTimer?.cancel();
-                // Дебаунс 300мс даёт Windows завершить смену десктопа (Default <-> Winlogon) перед запросом DXGI
-                _desktopSwitchDebounceTimer = Timer(
-                  const Duration(milliseconds: 300),
-                  () {
-                    if (_closed) return;
-                    unawaited(switchScreen(_selectedScreenId ?? screenId));
-                  },
-                );
-              }
-            },
-          );
-        }
-        onConnected?.call();
-        if (onFrameCaptured != null) {
-          unawaited(_captureRecorderSnapshot('keyframe'));
-          _recorderFrameTimer?.cancel();
-          _recorderFrameTimer = Timer.periodic(
-            const Duration(seconds: 4),
-            (_) {
-              unawaited(_captureRecorderSnapshot('periodic'));
-            },
-          );
-        }
+        markPeerConnected('pc_state');
       } else if (state ==
               RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
           state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
