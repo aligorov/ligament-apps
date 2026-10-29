@@ -357,12 +357,16 @@ class RdpConnectorService extends ChangeNotifier {
       return;
     }
     session.mstsc = mstsc;
-    // Пользователь закрыл окно mstsc → сессия завершена (§3.5).
     // На macOS команда `open` завершается сразу, туннель держится сокетом RDP-сеанса.
+    // На Windows mstsc после ввода учётных данных и прохождения NLA может завершить
+    // процесс лаунчера (exitCode 0) и передать окно сессии. Если сокет уже подключен
+    // (session.socket != null), туннель удерживается живым TCP-сокетом до закрытия окна.
+    // mstscExited завершает сессию только если процесс завершился ДО подключения сокета
+    // (пользователь нажал «Отмена» или лаунчер упал до подключения).
     if (!Platform.isMacOS) {
       unawaited(mstsc.exitCode.then(
         (_) {
-          if (_session == session) {
+          if (_session == session && session.socket == null) {
             _finish(session, reason: _TunnelEndReason.mstscExited, isRu: isRu);
           }
         },
@@ -391,7 +395,10 @@ class RdpConnectorService extends ChangeNotifier {
       return;
     }
     final clientIp = socket.remoteAddress.address;
-    if (clientIp != '127.0.0.1' && clientIp != '127.0.0.2' && !clientIp.startsWith('127.')) {
+    if (!socket.remoteAddress.isLoopback &&
+        clientIp != '127.0.0.1' &&
+        clientIp != '127.0.0.2' &&
+        !clientIp.startsWith('127.')) {
       try { socket.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       _fail(isRu ? 'Отвергнуто внешнее подключение к порту RDP' : 'Rejected non-loopback connection to RDP port');
       await _quietTeardown(session, ws);
@@ -467,6 +474,7 @@ class RdpConnectorService extends ChangeNotifier {
     required String token,
     String? name,
     bool isRu = true,
+    String? targetHost,
   }) async {
     DebugLogService.instance.record('rdp.connect.intent');
     if (isBusy || isActive) {
@@ -591,6 +599,7 @@ class RdpConnectorService extends ChangeNotifier {
       grantId: grantId,
       host: host,
       port: port,
+      targetHost: targetHost,
     );
     session.tempRdpFile = tempRdp;
     Process? mstsc;
@@ -613,12 +622,16 @@ class RdpConnectorService extends ChangeNotifier {
       return;
     }
     session.mstsc = mstsc;
-    // Пользователь закрыл окно mstsc → сессия завершена (как в connect()).
     // На macOS команда `open` завершается сразу, туннель держится сокетом RDP-сеанса.
+    // На Windows mstsc после ввода учётных данных и прохождения NLA может завершить
+    // процесс лаунчера (exitCode 0) и передать окно сессии. Если сокет уже подключен
+    // (session.socket != null), туннель удерживается живым TCP-сокетом до закрытия окна.
+    // mstscExited завершает сессию только если процесс завершился ДО подключения сокета
+    // (пользователь нажал «Отмена» или лаунчер упал до подключения).
     if (!Platform.isMacOS) {
       unawaited(mstsc.exitCode.then(
         (_) {
-          if (_session == session) {
+          if (_session == session && session.socket == null) {
             _finish(session, reason: _TunnelEndReason.mstscExited, isRu: isRu);
           }
         },
@@ -646,7 +659,10 @@ class RdpConnectorService extends ChangeNotifier {
       return;
     }
     final clientIp = socket.remoteAddress.address;
-    if (clientIp != '127.0.0.1' && clientIp != '127.0.0.2' && !clientIp.startsWith('127.')) {
+    if (!socket.remoteAddress.isLoopback &&
+        clientIp != '127.0.0.1' &&
+        clientIp != '127.0.0.2' &&
+        !clientIp.startsWith('127.')) {
       try { socket.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
       _fail(isRu ? 'Отвергнуто внешнее подключение к порту RDP' : 'Rejected non-loopback connection to RDP port');
       await _quietTeardownBridge(session);
@@ -1063,12 +1079,14 @@ File? _createTempRdpFile({
   required int port,
   String? targetHost,
 }) {
-  if (!Platform.isMacOS && (targetHost == null || targetHost.trim().isEmpty)) return null;
   try {
     final safeGrant = grantId.replaceAll(RegExp(r'[^a-zA-Z0-9\-]'), '');
     final tempDir = Directory.systemTemp;
     final file = File('${tempDir.path}${Platform.pathSeparator}ligament_rdp_$safeGrant.rdp');
     final buffer = StringBuffer();
+    final hasTarget = targetHost != null && targetHost.trim().isNotEmpty;
+    final th = hasTarget ? targetHost.trim() : host;
+
     if (Platform.isMacOS) {
       buffer.writeln('full address:s:$host:$port');
       buffer.writeln('server port:i:$port');
@@ -1076,13 +1094,20 @@ File? _createTempRdpFile({
       buffer.writeln('authentication level:i:0');
       buffer.writeln('enablecredsspsupport:i:1');
     } else {
-      final th = (targetHost != null && targetHost.trim().isNotEmpty) ? targetHost : host;
-      buffer.writeln('full address:s:$th');
-      buffer.writeln('alternate full address:s:$host:$port');
+      if (hasTarget && th != host) {
+        buffer.writeln('full address:s:$th');
+        buffer.writeln('alternate full address:s:$host:$port');
+      } else {
+        buffer.writeln('full address:s:$host:$port');
+      }
       buffer.writeln('server port:i:$port');
       buffer.writeln('prompt for credentials:i:1');
-      buffer.writeln('authentication level:i:2');
+      buffer.writeln('authentication level:i:0');
       buffer.writeln('enablecredsspsupport:i:1');
+      buffer.writeln('EnableUDP:i:0');
+      buffer.writeln('networkautodetect:i:0');
+      buffer.writeln('bandwidthautodetect:i:0');
+      buffer.writeln('disableconnectionsharing:i:1');
     }
     file.writeAsStringSync(buffer.toString(), flush: true);
     return file;
