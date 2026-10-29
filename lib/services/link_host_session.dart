@@ -1467,6 +1467,92 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     return stream;
   }
 
+  Future<MediaStream?> _acquireAudioStream() async {
+    if (kIsWeb) return null;
+    try {
+      // 1. Попытка захватить системный звук через loopback / стерео микшер
+      try {
+        final devices = await navigator.mediaDevices.enumerateDevices();
+        String? loopbackDeviceId;
+        for (final device in devices) {
+          if (device.kind == 'audioinput') {
+            final label = device.label.toLowerCase();
+            if (label.contains('stereo mix') ||
+                label.contains('стерео микшер') ||
+                label.contains('стереомикшер') ||
+                label.contains('loopback') ||
+                label.contains('what u hear') ||
+                label.contains('wave out')) {
+              loopbackDeviceId = device.deviceId;
+              break;
+            }
+          }
+        }
+        if (loopbackDeviceId != null && loopbackDeviceId.isNotEmpty) {
+          final loopback =
+              await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+            'audio': {
+              'deviceId': {'exact': loopbackDeviceId},
+              'echoCancellation': false,
+              'noiseSuppression': false,
+              'autoGainControl': false,
+            },
+            'video': false,
+          }).timeout(const Duration(seconds: 3));
+          if (loopback.getAudioTracks().isNotEmpty) {
+            _peerLog('link.capture.audio', fields: {
+              'tracks': loopback.getAudioTracks().length,
+              'source': 'loopback_device',
+              'result': 'ready'
+            });
+            return loopback;
+          }
+        }
+      } catch (e) {
+        _peerLog('link.exception',
+            error: e,
+            fields: {'phase': 'acquire_loopback', 'result': 'failed'});
+      }
+
+      // 2. Стандартный системный аудиовход / микрофон по умолчанию
+      try {
+        final mic = await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+          'audio': {
+            'echoCancellation': false,
+            'noiseSuppression': false,
+            'autoGainControl': false,
+          },
+          'video': false,
+        }).timeout(const Duration(seconds: 3));
+        if (mic.getAudioTracks().isNotEmpty) {
+          _peerLog('link.capture.audio', fields: {
+            'tracks': mic.getAudioTracks().length,
+            'source': 'default_audio',
+            'result': 'ready'
+          });
+          return mic;
+        }
+      } catch (_) {
+        final mic = await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+          'audio': true,
+          'video': false,
+        }).timeout(const Duration(seconds: 3));
+        if (mic.getAudioTracks().isNotEmpty) {
+          _peerLog('link.capture.audio', fields: {
+            'tracks': mic.getAudioTracks().length,
+            'source': 'default_audio_simple',
+            'result': 'ready'
+          });
+          return mic;
+        }
+      }
+    } catch (e) {
+      _peerLog('link.exception',
+          error: e, fields: {'phase': 'acquire_audio', 'result': 'failed'});
+    }
+    return null;
+  }
+
   Future<void> switchScreen(String screenId) async {
     if (kIsWeb || _peer == null || _closed) return;
     if (_switchingScreen) {
@@ -1560,6 +1646,27 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           if (_audioSender == null && _peer != null) {
             _audioSender =
                 await _peer!.addTrack(newAudioTracks.first, newStream);
+          }
+        }
+      } else if (_audioStream == null || _audioStream!.getAudioTracks().isEmpty) {
+        final audioCapture = await _acquireAudioStream();
+        if (audioCapture != null && audioCapture.getAudioTracks().isNotEmpty) {
+          _audioStream = audioCapture;
+          final track = audioCapture.getAudioTracks().first;
+          if (_audioSender != null) {
+            await _audioSender!.replaceTrack(track);
+          } else {
+            final senders = await _peer!.getSenders();
+            for (final sender in senders) {
+              if (sender.track?.kind == 'audio') {
+                _audioSender = sender;
+                await sender.replaceTrack(track);
+                break;
+              }
+            }
+            if (_audioSender == null && _peer != null) {
+              _audioSender = await _peer!.addTrack(track, audioCapture);
+            }
           }
         }
       }
@@ -1801,14 +1908,19 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       throw StateError('Link host peer closed during capture');
     }
     _stream = capture;
-    if (capture.getAudioTracks().isNotEmpty) {
-      _audioStream = capture;
+    MediaStream? audioCapture = capture.getAudioTracks().isNotEmpty
+        ? capture
+        : await _peerStep('acquire_audio', _acquireAudioStream);
+    if (audioCapture != null && audioCapture.getAudioTracks().isNotEmpty) {
+      _audioStream = audioCapture;
     }
     for (final track in capture.getVideoTracks()) {
       _videoSender = await peer.addTrack(track, capture);
     }
-    for (final track in capture.getAudioTracks()) {
-      _audioSender = await peer.addTrack(track, capture);
+    if (_audioStream != null) {
+      for (final track in _audioStream!.getAudioTracks()) {
+        _audioSender = await peer.addTrack(track, _audioStream!);
+      }
     }
     try {
       final transceivers = await peer.getTransceivers();
