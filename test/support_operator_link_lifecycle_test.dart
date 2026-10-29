@@ -247,6 +247,8 @@ class _Native {
           return null;
         case 'getStats':
           return {'stats': []};
+        case 'getSources':
+          return {'sources': []};
         default:
           return null;
       }

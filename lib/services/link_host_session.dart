@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'input_injector.dart';
@@ -1436,6 +1437,56 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     }
   }
 
+  AudioPlayer? _keepAlivePlayer;
+
+  void _startKeepAliveAudio() {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      final player = AudioPlayer();
+      _keepAlivePlayer = player;
+      unawaited(player.setReleaseMode(ReleaseMode.loop));
+      unawaited(player.setVolume(0.001));
+      final wav = _generateSilentWavBytes();
+      unawaited(player.play(BytesSource(wav)));
+      _peerLog('link.audio.keepalive', fields: {'result': 'started'});
+    } catch (e) {
+      _peerLog('link.exception',
+          error: e, fields: {'phase': 'keepalive_audio', 'result': 'failed'});
+    }
+  }
+
+  void _stopKeepAliveAudio() {
+    try {
+      _keepAlivePlayer?.stop();
+      _keepAlivePlayer?.dispose();
+      _keepAlivePlayer = null;
+    } catch (_) {}
+  }
+
+  static Uint8List _generateSilentWavBytes(
+      {int sampleRate = 44100, int durationMs = 100}) {
+    final numSamples = (sampleRate * (durationMs / 1000.0)).round();
+    final dataSize = numSamples * 2 * 2;
+    final fileSize = 36 + dataSize;
+    final bytes = Uint8List(44 + dataSize);
+    final bd = ByteData.sublistView(bytes);
+
+    bd.setUint8(0, 0x52); bd.setUint8(1, 0x49); bd.setUint8(2, 0x46); bd.setUint8(3, 0x46);
+    bd.setUint32(4, fileSize, Endian.little);
+    bd.setUint8(8, 0x57); bd.setUint8(9, 0x41); bd.setUint8(10, 0x56); bd.setUint8(11, 0x45);
+    bd.setUint8(12, 0x66); bd.setUint8(13, 0x6D); bd.setUint8(14, 0x74); bd.setUint8(15, 0x20);
+    bd.setUint32(16, 16, Endian.little);
+    bd.setUint16(20, 1, Endian.little);
+    bd.setUint16(22, 2, Endian.little);
+    bd.setUint32(24, sampleRate, Endian.little);
+    bd.setUint32(28, sampleRate * 4, Endian.little);
+    bd.setUint16(32, 4, Endian.little);
+    bd.setUint16(34, 16, Endian.little);
+    bd.setUint8(36, 0x64); bd.setUint8(37, 0x61); bd.setUint8(38, 0x74); bd.setUint8(39, 0x61);
+    bd.setUint32(40, dataSize, Endian.little);
+    return bytes;
+  }
+
   Future<MediaStream> _openDisplayStream(String sourceId,
       {bool withAudio = true}) async {
     final videoConstraints = <String, dynamic>{
@@ -1448,9 +1499,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (wantLoopbackAudio) {
       try {
         stream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-          'audio': true,
+          'audio': {
+            'echoCancellation': false,
+            'noiseSuppression': false,
+            'autoGainControl': false,
+          },
           'video': videoConstraints,
-        }).timeout(const Duration(seconds: 4));
+        }).timeout(const Duration(seconds: 10));
         final audioCount = stream.getAudioTracks().length;
         _peerLog('link.capture.audio',
             fields: {'tracks': audioCount, 'result': 'ready'});
@@ -1463,7 +1518,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     stream ??= await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
       'audio': false,
       'video': videoConstraints,
-    }).timeout(const Duration(seconds: 5));
+    }).timeout(const Duration(seconds: 10));
     return stream;
   }
 
@@ -1492,10 +1547,15 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           final loopback =
               await navigator.mediaDevices.getUserMedia(<String, dynamic>{
             'audio': {
-              'deviceId': {'exact': loopbackDeviceId},
-              'echoCancellation': false,
-              'noiseSuppression': false,
-              'autoGainControl': false,
+              'deviceId': loopbackDeviceId,
+              'optional': [
+                {'sourceId': loopbackDeviceId},
+                {'echoCancellation': false},
+                {'googEchoCancellation': false},
+                {'googAutoGainControl': false},
+                {'googNoiseSuppression': false},
+                {'googHighpassFilter': false},
+              ],
             },
             'video': false,
           }).timeout(const Duration(seconds: 3));
@@ -1518,9 +1578,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       try {
         final mic = await navigator.mediaDevices.getUserMedia(<String, dynamic>{
           'audio': {
-            'echoCancellation': false,
-            'noiseSuppression': false,
-            'autoGainControl': false,
+            'optional': [
+              {'echoCancellation': false},
+              {'googEchoCancellation': false},
+              {'googAutoGainControl': false},
+              {'googNoiseSuppression': false},
+              {'googHighpassFilter': false},
+            ],
           },
           'video': false,
         }).timeout(const Duration(seconds: 3));
@@ -1899,6 +1963,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         'set_remote',
         () => peer
             .setRemoteDescription(RTCSessionDescription(offerSdp, 'offer')));
+    _startKeepAliveAudio();
     final capture = await _peerStep('capture_screen', _captureScreen);
     _peerLog('link.capture.tracks',
         fields: {'tracks': capture.getTracks().length});
@@ -2618,6 +2683,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       control.onMessage = null;
       await control.close();
     }
+    _stopKeepAliveAudio();
     InputInjector.instance.setInputBlocked(false);
     InputInjector.instance.releaseAllPressed();
     InputInjector.instance.setActiveMonitorRect(null);

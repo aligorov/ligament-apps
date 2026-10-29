@@ -676,6 +676,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       unawaited(_runOperatorTask('toggle_remote_audio',
           () => Helper.setVolume(nextMuted ? 0.0 : 1.0, audioTrack)));
     }
+    if (!nextMuted) {
+      unawaited(_ensureOperatorAudioSession());
+    }
     final stream = _remoteRenderer.srcObject;
     if (stream != null) {
       for (final track in stream.getAudioTracks()) {
@@ -767,14 +770,44 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
+  bool _operatorAudioConfigured = false;
+
   Future<void> _ensureOperatorAudioSession() async {
-    if (!kIsWeb && Platform.isIOS) {
+    if (kIsWeb) return;
+    if (_operatorAudioConfigured) return;
+    _operatorAudioConfigured = true;
+
+    if (Platform.isIOS) {
       await _runOperatorTask('ensure_audio_session', Helper.ensureAudioSession);
+    } else {
+      try {
+        final devices = await navigator.mediaDevices.enumerateDevices();
+        for (final d in devices) {
+          if (d.kind == 'audiooutput') {
+            await Helper.selectAudioOutput(d.deviceId);
+            break;
+          }
+        }
+      } catch (e) {
+        _logConnection('operator.exception',
+            error: e, fields: {'phase': 'select_audio_output'});
+      }
+      try {
+        final dummy = await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+          'audio': true,
+          'video': false,
+        }).timeout(const Duration(seconds: 2));
+        for (final t in dummy.getTracks()) {
+          t.stop();
+        }
+        await dummy.dispose();
+      } catch (_) {}
     }
   }
 
   Future<void> _disposeOperatorPeer(
       RTCPeerConnection? peer, RTCDataChannel? channel) async {
+    _operatorAudioConfigured = false;
     if (channel != null) {
       channel.onMessage = null;
       channel.onDataChannelState = null;
@@ -1522,6 +1555,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'sdpSemantics': 'unified-plan',
       });
       logStep('ready');
+      await _ensureOperatorAudioSession();
       peer.onIceGatheringState = (state) => _logConnection(
           'operator.ice.gathering',
           fields: {'ice_state': state.name});
@@ -1659,17 +1693,34 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _logConnection('operator.exception',
                 error: e, fields: {'phase': 'begin_step', 'result': 'failed'});
           }
-          final currentStream = _remoteRenderer.srcObject;
-          if (currentStream != null &&
-              !currentStream
-                  .getAudioTracks()
-                  .any((t) => t.id == event.track.id)) {
-            try {
-              await currentStream.addTrack(event.track);
-            } catch (error) {
-              _logConnection('operator.exception',
-                  error: error,
-                  fields: {'phase': 'begin_step', 'result': 'failed'});
+          var currentStream = _remoteRenderer.srcObject;
+          if (currentStream != null) {
+            if (!currentStream
+                .getAudioTracks()
+                .any((t) => t.id == event.track.id)) {
+              try {
+                await currentStream.addTrack(event.track);
+              } catch (error) {
+                _logConnection('operator.exception',
+                    error: error,
+                    fields: {'phase': 'begin_step', 'result': 'failed'});
+              }
+            }
+          } else {
+            if (event.streams.isNotEmpty) {
+              currentStream = event.streams.first;
+            } else {
+              try {
+                currentStream = await createLocalMediaStream('remote_stream');
+                await currentStream.addTrack(event.track);
+              } catch (error) {
+                _logConnection('operator.exception',
+                    error: error,
+                    fields: {'phase': 'begin_step', 'result': 'failed'});
+              }
+            }
+            if (currentStream != null && mounted) {
+              _remoteRenderer.srcObject = currentStream;
             }
           }
           if (mounted &&
@@ -1681,8 +1732,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           return;
         }
 
-        MediaStream? stream;
-        if (event.streams.isNotEmpty) {
+        MediaStream? stream = _remoteRenderer.srcObject;
+        if (stream != null) {
+          if (!stream.getVideoTracks().any((t) => t.id == event.track.id)) {
+            try {
+              await stream.addTrack(event.track);
+            } catch (error) {
+              _logConnection('operator.exception',
+                  error: error,
+                  fields: {'phase': 'begin_step', 'result': 'failed'});
+            }
+          }
+        } else if (event.streams.isNotEmpty) {
           stream = event.streams[0];
         } else {
           try {
@@ -2464,6 +2525,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         fields: {'result': 'begin', 'ice_servers': auth.iceServers.length});
     _peerConnection = await createPeerConnection(config);
     _logConnection('operator.peer.create', fields: {'result': 'ready'});
+    await _ensureOperatorAudioSession();
     _peerConnection!.onIceGatheringState = (state) => _logConnection(
         'operator.ice.gathering',
         fields: {'ice_state': state.name});
@@ -2560,18 +2622,36 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 error: e,
                 fields: {'phase': 'setup_peer_connection', 'result': 'failed'});
           }
-          final currentStream = _remoteRenderer.srcObject;
-          if (currentStream != null &&
-              !currentStream
-                  .getAudioTracks()
-                  .any((t) => t.id == event.track.id)) {
-            try {
-              await currentStream.addTrack(event.track);
-            } catch (error) {
-              _logConnection('operator.exception', error: error, fields: {
-                'phase': 'setup_peer_connection',
-                'result': 'failed'
-              });
+          var currentStream = _remoteRenderer.srcObject;
+          if (currentStream != null) {
+            if (!currentStream
+                .getAudioTracks()
+                .any((t) => t.id == event.track.id)) {
+              try {
+                await currentStream.addTrack(event.track);
+              } catch (error) {
+                _logConnection('operator.exception', error: error, fields: {
+                  'phase': 'setup_peer_connection',
+                  'result': 'failed'
+                });
+              }
+            }
+          } else {
+            if (event.streams.isNotEmpty) {
+              currentStream = event.streams.first;
+            } else {
+              try {
+                currentStream = await createLocalMediaStream('remote_stream');
+                await currentStream.addTrack(event.track);
+              } catch (error) {
+                _logConnection('operator.exception', error: error, fields: {
+                  'phase': 'setup_peer_connection',
+                  'result': 'failed'
+                });
+              }
+            }
+            if (currentStream != null && mounted) {
+              _remoteRenderer.srcObject = currentStream;
             }
           }
           if (mounted) setState(() {});
@@ -2580,8 +2660,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         // Ш3/A-06: трек пришёл — offer/track стадии пройдены (Д5: трек ≠ кадр)
         _cancelOfferStageTimer();
         _cancelTrackStageTimer();
-        MediaStream? stream;
-        if (event.streams.isNotEmpty) {
+        MediaStream? stream = _remoteRenderer.srcObject;
+        if (stream != null) {
+          if (!stream.getVideoTracks().any((t) => t.id == event.track.id)) {
+            try {
+              await stream.addTrack(event.track);
+            } catch (e) {
+              _logConnection('operator.exception',
+                  error: e,
+                  fields: {'phase': 'setup_peer_connection', 'result': 'failed'});
+            }
+          }
+        } else if (event.streams.isNotEmpty) {
           stream = event.streams[0];
         } else {
           try {
