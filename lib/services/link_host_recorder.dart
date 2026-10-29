@@ -155,6 +155,24 @@ RecordedFrameInfo? parseImageHeader(Uint8List bytes) {
     }
   }
 
+  // 4. BMP: 42 4D ('BM')
+  if (bytes.length >= 26 && bytes[0] == 0x42 && bytes[1] == 0x4D) {
+    final width =
+        bytes[18] | (bytes[19] << 8) | (bytes[20] << 16) | (bytes[21] << 24);
+    var height =
+        bytes[22] | (bytes[23] << 8) | (bytes[24] << 16) | (bytes[25] << 24);
+    if (height > 0x7FFFFFFF) height = -(0x100000000 - height);
+    if (height < 0) height = -height;
+    if (width > 0 && height > 0) {
+      return RecordedFrameInfo(
+        payload: bytes,
+        width: width,
+        height: height,
+        codec: 'bmp',
+      );
+    }
+  }
+
   return null;
 }
 

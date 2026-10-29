@@ -25,6 +25,13 @@
 #include <thread>
 #include <vector>
 
+namespace Gdiplus {
+  using std::min;
+  using std::max;
+}
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
+
 namespace {
 
 std::atomic<bool> g_blocked{false};
@@ -34,6 +41,35 @@ HANDLE g_thread = nullptr;
 DWORD g_thread_id = 0;
 // Событие готовности хуков: установлены ли они в потоке успешно.
 HANDLE g_ready = nullptr;
+
+static ULONG_PTR g_gdiplusToken = 0;
+static std::once_flag g_gdiplusInitOnce;
+
+static void EnsureGdiplusInitialized() {
+  std::call_once(g_gdiplusInitOnce, []() {
+    Gdiplus::GdiplusStartupInput input;
+    Gdiplus::GdiplusStartup(&g_gdiplusToken, &input, nullptr);
+  });
+}
+
+static int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+  UINT num = 0;
+  UINT size = 0;
+  Gdiplus::GetImageEncodersSize(&num, &size);
+  if (size == 0) return -1;
+
+  std::vector<BYTE> buf(size);
+  auto pImageCodecInfo = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buf.data());
+  Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
+
+  for (UINT j = 0; j < num; ++j) {
+    if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
+      *pClsid = pImageCodecInfo[j].Clsid;
+      return j;
+    }
+  }
+  return -1;
+}
 
 // Выделенный поток инъекции ввода без окон/хуков (Winlogon / UAC / Default):
 // в Windows поток с HWND (главный поток Flutter) не может вызывать
@@ -673,19 +709,58 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
 
     GdiFlush();
 
-    BITMAPFILEHEADER bmfHeader{};
-    bmfHeader.bfType = 0x4D42; // 'BM'
-    bmfHeader.bfSize = total_bmp_size;
-    bmfHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+    EnsureGdiplusInitialized();
+    bool encodedJpeg = false;
+    IStream* pStream = nullptr;
+    if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream))) {
+      CLSID clsidJpeg;
+      if (GetEncoderClsid(L"image/jpeg", &clsidJpeg) != -1) {
+        Gdiplus::Bitmap gdiplusBitmap(hDIB, nullptr);
+        ULONG quality = 80; // Высокая чёткость текста и UI интерфейса (~60-90 КБ)
+        Gdiplus::EncoderParameters encoderParams{};
+        encoderParams.Count = 1;
+        encoderParams.Parameter[0].Guid = Gdiplus::EncoderQuality;
+        encoderParams.Parameter[0].Type = Gdiplus::EncoderParameterValueTypeLong;
+        encoderParams.Parameter[0].NumberOfValues = 1;
+        encoderParams.Parameter[0].Value = &quality;
 
-    memcpy(out_buf, &bmfHeader, sizeof(BITMAPFILEHEADER));
-    memcpy(out_buf + sizeof(BITMAPFILEHEADER), &bi.bmiHeader, sizeof(BITMAPINFOHEADER));
-    memcpy(out_buf + bmfHeader.bfOffBits, pBits, pixel_data_size);
+        if (gdiplusBitmap.Save(pStream, &clsidJpeg, &encoderParams) == Gdiplus::Ok) {
+          HGLOBAL hGlobal = nullptr;
+          if (SUCCEEDED(GetHGlobalFromStream(pStream, &hGlobal))) {
+            SIZE_T jpegSize = GlobalSize(hGlobal);
+            void* pData = GlobalLock(hGlobal);
+            if (pData && jpegSize > 0 && jpegSize <= static_cast<SIZE_T>(buf_size)) {
+              memcpy(out_buf, pData, jpegSize);
+              out_len_val = static_cast<int>(jpegSize);
+              out_w_val = target_w;
+              out_h_val = target_h;
+              result = 0;
+              encodedJpeg = true;
+            }
+            if (pData) GlobalUnlock(hGlobal);
+          }
+        }
+      }
+      pStream->Release();
+    }
 
-    out_len_val = total_bmp_size;
-    out_w_val = target_w;
-    out_h_val = target_h;
-    result = 0;
+    if (!encodedJpeg) {
+      // Безопасный фоллбэк: стандартный bottom-up BMP (положительная высота)
+      bi.bmiHeader.biHeight = target_h;
+      BITMAPFILEHEADER bmfHeader{};
+      bmfHeader.bfType = 0x4D42; // 'BM'
+      bmfHeader.bfSize = total_bmp_size;
+      bmfHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+
+      memcpy(out_buf, &bmfHeader, sizeof(BITMAPFILEHEADER));
+      memcpy(out_buf + sizeof(BITMAPFILEHEADER), &bi.bmiHeader, sizeof(BITMAPINFOHEADER));
+      memcpy(out_buf + bmfHeader.bfOffBits, pBits, pixel_data_size);
+
+      out_len_val = total_bmp_size;
+      out_w_val = target_w;
+      out_h_val = target_h;
+      result = 0;
+    }
 
     SelectObject(hMemDC, hOld);
     DeleteObject(hDIB);

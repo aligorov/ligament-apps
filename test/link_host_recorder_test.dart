@@ -679,6 +679,42 @@ void main() {
     expect(info.height, 1080);
   });
 
+  test('parseImageHeader correctly decodes BMP dimensions (both bottom-up and top-down)', () {
+    // 1280 (0x00000500) x 720 (0x000002D0) bottom-up BMP
+    final bmpHeader = Uint8List(54);
+    bmpHeader[0] = 0x42; // 'B'
+    bmpHeader[1] = 0x4D; // 'M'
+    // Width at offset 18
+    bmpHeader[18] = 0x00;
+    bmpHeader[19] = 0x05;
+    // Height at offset 22
+    bmpHeader[22] = 0xD0;
+    bmpHeader[23] = 0x02;
+
+    final info = parseImageHeader(bmpHeader);
+    expect(info, isNotNull);
+    expect(info!.codec, 'bmp');
+    expect(info.width, 1280);
+    expect(info.height, 720);
+
+    // Top-down BMP (-720 = 0xFFFFFD30 in 32-bit two's complement)
+    final topDownBmp = Uint8List(54);
+    topDownBmp[0] = 0x42;
+    topDownBmp[1] = 0x4D;
+    topDownBmp[18] = 0x00;
+    topDownBmp[19] = 0x05;
+    topDownBmp[22] = 0x30;
+    topDownBmp[23] = 0xFD;
+    topDownBmp[24] = 0xFF;
+    topDownBmp[25] = 0xFF;
+
+    final topDownInfo = parseImageHeader(topDownBmp);
+    expect(topDownInfo, isNotNull);
+    expect(topDownInfo!.codec, 'bmp');
+    expect(topDownInfo.width, 1280);
+    expect(topDownInfo.height, 720);
+  });
+
   test(
       'preserves events added during in-flight sendBatch and deletes only acked seq',
       () async {
