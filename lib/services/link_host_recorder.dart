@@ -1219,7 +1219,7 @@ class LinkHostRecorder {
         !_fitsDataQueue(encodedBytes) ||
         _pendingFrames.length >= _maxQueuedFrames ||
         (encodedBytes > maxBatchBytes &&
-            !const {'jpeg', 'png', 'webp'}.contains(codec))) {
+            !const {'jpeg', 'png', 'webp', 'bmp'}.contains(codec))) {
       _recordDrop(isFrame: true, bytes: encodedBytes);
       return false;
     }
@@ -1400,7 +1400,7 @@ class LinkHostRecorder {
         if (batchFrames.isEmpty &&
             batchEvents.isEmpty &&
             isFrame &&
-            const {'jpeg', 'png', 'webp'}.contains(item['codec']) &&
+            const {'jpeg', 'png', 'webp', 'bmp'}.contains(item['codec']) &&
             nextBytes <= 20 * 1024 * 1024) {
           selected.add(item);
           currentBatchBytes = nextBytes;

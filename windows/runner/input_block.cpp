@@ -613,6 +613,10 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
   int out_h_val = 0;
 
   std::thread capture_thread([&]() {
+    struct ComInit {
+      ComInit() { CoInitializeEx(nullptr, COINIT_MULTITHREADED); }
+      ~ComInit() { CoUninitialize(); }
+    } com_init;
     EnsureProcessWindowStation();
     HDESK desk = FindActiveInputDesktop();
     if (desk) {
@@ -715,7 +719,8 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
     if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream))) {
       CLSID clsidJpeg;
       if (GetEncoderClsid(L"image/jpeg", &clsidJpeg) != -1) {
-        Gdiplus::Bitmap gdiplusBitmap(hDIB, nullptr);
+        // Инициализируем Bitmap напрямую из сырых пикселей pBits (top-down), обходя баг GDI+ с HBITMAP
+        Gdiplus::Bitmap gdiplusBitmap(target_w, target_h, row_stride, PixelFormat32bppRGB, static_cast<BYTE*>(pBits));
         ULONG quality = 80; // Высокая чёткость текста и UI интерфейса (~60-90 КБ)
         Gdiplus::EncoderParameters encoderParams{};
         encoderParams.Count = 1;
