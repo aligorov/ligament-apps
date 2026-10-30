@@ -768,6 +768,24 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   bool _operatorAudioConfigured = false;
+  MediaStream? _operatorKeepAliveAudio;
+
+  Future<void> _kickstartDesktopPlayout() async {
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return;
+    }
+    if (_operatorKeepAliveAudio != null) return;
+    try {
+      final stream = await navigator.mediaDevices
+          .getUserMedia(<String, dynamic>{'audio': true, 'video': false}).timeout(
+              const Duration(milliseconds: 500));
+      for (final track in stream.getAudioTracks()) {
+        track.enabled = false;
+      }
+      _operatorKeepAliveAudio = stream;
+    } catch (_) {}
+  }
 
   Future<void> _ensureOperatorAudioSession() async {
     if (kIsWeb) return;
@@ -776,12 +794,33 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     if (Platform.isIOS) {
       await _runOperatorTask('ensure_audio_session', Helper.ensureAudioSession);
+    } else if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      try {
+        final outputs = await Helper.audiooutputs;
+        if (outputs.isNotEmpty) {
+          await Helper.selectAudioOutput(outputs.first.deviceId);
+        }
+      } catch (e) {
+        _logConnection('operator.exception',
+            error: e,
+            fields: {'phase': 'select_audio_output', 'result': 'failed'});
+      }
     }
   }
 
   Future<void> _disposeOperatorPeer(
       RTCPeerConnection? peer, RTCDataChannel? channel) async {
     _operatorAudioConfigured = false;
+    final keepAlive = _operatorKeepAliveAudio;
+    _operatorKeepAliveAudio = null;
+    if (keepAlive != null) {
+      for (final track in keepAlive.getTracks()) {
+        try {
+          track.stop();
+        } catch (_) {}
+      }
+      await _runOperatorTask('keepalive_audio_dispose', keepAlive.dispose);
+    }
     if (channel != null) {
       channel.onMessage = null;
       channel.onDataChannelState = null;
@@ -1529,6 +1568,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'sdpSemantics': 'unified-plan',
       });
       logStep('ready');
+      await _kickstartDesktopPlayout();
       await _ensureOperatorAudioSession();
       peer.onIceGatheringState = (state) => _logConnection(
           'operator.ice.gathering',
@@ -1667,13 +1707,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _logConnection('operator.exception',
                 error: e, fields: {'phase': 'set_audio_volume', 'result': 'failed'});
           }
+          if (event.streams.isNotEmpty && _remoteRenderer.srcObject == null) {
+            _remoteRenderer.srcObject = event.streams[0];
+          }
           final currentStream = _remoteRenderer.srcObject;
           if (currentStream != null &&
               !currentStream
                   .getAudioTracks()
                   .any((t) => t.id == event.track.id)) {
             try {
-              await currentStream.addTrack(event.track);
+              await currentStream.addTrack(event.track, addToNative: false);
             } catch (error) {
               _logConnection('operator.exception',
                   error: error,
@@ -1719,7 +1762,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   .getAudioTracks()
                   .any((t) => t.id == _remoteAudioTrack!.id)) {
             try {
-              await stream.addTrack(_remoteAudioTrack!);
+              await stream.addTrack(_remoteAudioTrack!, addToNative: false);
             } catch (error) {
               _logConnection('operator.exception',
                   error: error,
@@ -2482,6 +2525,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         fields: {'result': 'begin', 'ice_servers': auth.iceServers.length});
     _peerConnection = await createPeerConnection(config);
     _logConnection('operator.peer.create', fields: {'result': 'ready'});
+    await _kickstartDesktopPlayout();
     await _ensureOperatorAudioSession();
     _peerConnection!.onIceGatheringState = (state) => _logConnection(
         'operator.ice.gathering',
@@ -2579,13 +2623,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 error: e,
                 fields: {'phase': 'set_audio_volume', 'result': 'failed'});
           }
+          if (event.streams.isNotEmpty && _remoteRenderer.srcObject == null) {
+            _remoteRenderer.srcObject = event.streams[0];
+          }
           final currentStream = _remoteRenderer.srcObject;
           if (currentStream != null &&
               !currentStream
                   .getAudioTracks()
                   .any((t) => t.id == event.track.id)) {
             try {
-              await currentStream.addTrack(event.track);
+              await currentStream.addTrack(event.track, addToNative: false);
             } catch (error) {
               _logConnection('operator.exception', error: error, fields: {
                 'phase': 'add_audio_track',
@@ -2628,7 +2675,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   .getAudioTracks()
                   .any((t) => t.id == _remoteAudioTrack!.id)) {
             try {
-              await stream.addTrack(_remoteAudioTrack!);
+              await stream.addTrack(_remoteAudioTrack!, addToNative: false);
             } catch (error) {
               _logConnection('operator.exception', error: error, fields: {
                 'phase': 'setup_peer_connection',

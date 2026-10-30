@@ -1517,6 +1517,27 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       _peerLog('link.exception',
           error: e, fields: {'phase': 'acquire_audio', 'result': 'failed'});
     }
+
+    try {
+      final defaultAudio =
+          await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+        'audio': true,
+        'video': false,
+      }).timeout(const Duration(seconds: 3));
+      if (defaultAudio.getAudioTracks().isNotEmpty) {
+        _peerLog('link.capture.audio', fields: {
+          'tracks': defaultAudio.getAudioTracks().length,
+          'source': 'default_audio_input',
+          'result': 'ready'
+        });
+        return defaultAudio;
+      }
+    } catch (e) {
+      _peerLog('link.exception',
+          error: e,
+          fields: {'phase': 'acquire_default_audio', 'result': 'failed'});
+    }
+
     return null;
   }
 
@@ -1620,6 +1641,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         if (audioCapture != null && audioCapture.getAudioTracks().isNotEmpty) {
           _audioStream = audioCapture;
           final track = audioCapture.getAudioTracks().first;
+          await newStream.addTrack(track, addToNative: false);
           if (_audioSender != null) {
             await _audioSender!.replaceTrack(track);
           } else {
@@ -1632,10 +1654,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
               }
             }
             if (_audioSender == null && _peer != null) {
-              _audioSender = await _peer!.addTrack(track, audioCapture);
+              _audioSender = await _peer!.addTrack(track, newStream);
             }
           }
         }
+      } else if (_audioStream != null && _audioStream!.getAudioTracks().isNotEmpty) {
+        final track = _audioStream!.getAudioTracks().first;
+        await newStream.addTrack(track, addToNative: false);
       }
 
       final oldStream = _stream;
@@ -1880,13 +1905,18 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         : await _peerStep('acquire_audio', _acquireAudioStream);
     if (audioCapture != null && audioCapture.getAudioTracks().isNotEmpty) {
       _audioStream = audioCapture;
+      if (audioCapture != capture) {
+        for (final track in audioCapture.getAudioTracks()) {
+          await capture.addTrack(track, addToNative: false);
+        }
+      }
     }
     for (final track in capture.getVideoTracks()) {
       _videoSender = await peer.addTrack(track, capture);
     }
     if (_audioStream != null) {
       for (final track in _audioStream!.getAudioTracks()) {
-        _audioSender = await peer.addTrack(track, _audioStream!);
+        _audioSender = await peer.addTrack(track, capture);
       }
     }
     try {
