@@ -40,6 +40,7 @@ String supportDebugMessageType(Object? value) => const {
       'input_control',
       'screen_list',
       'switch_screen',
+      'screen_switched',
       'chat_message',
       'chat_sync',
       'chat_ack',
@@ -2104,6 +2105,19 @@ class SupportService extends ChangeNotifier {
           _logSupport('support.exception',
               error: e, fields: {'phase': 'switch_screen', 'result': 'failed'});
         }
+      }
+
+      final dc = _dataChannel;
+      if (dc != null && dc.state == RTCDataChannelState.RTCDataChannelOpen) {
+        final rect = InputInjector.instance.getMonitorRectForSource(screenId);
+        final ack = {
+          'type': 'screen_switched',
+          'screen_id': screenId,
+          if (rect != null) 'rect': rect.toJson(),
+        };
+        try {
+          dc.send(RTCDataChannelMessage(jsonEncode(ack)));
+        } catch (_) {}
       }
 
       await _sendScreenList();

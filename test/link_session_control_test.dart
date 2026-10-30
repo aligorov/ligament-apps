@@ -3,8 +3,26 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/models/link_control_messages.dart';
+import 'package:ligament_authenticator/services/input_injector.dart';
+import 'package:ligament_authenticator/services/support_service.dart';
 
 void main() {
+  group('sourceHandleParsing', () {
+    test('parses numeric monitor and display handles robustly', () {
+      expect(InputInjector.instance.parseSourceHandles('0'), [0]);
+      expect(InputInjector.instance.parseSourceHandles('1'), [1]);
+      expect(InputInjector.instance.parseSourceHandles('screen:1'), [1]);
+      expect(InputInjector.instance.parseSourceHandles('screen:0:0'), [0, 0]);
+      expect(InputInjector.instance.parseSourceHandles('HMONITOR:65539'), [65539]);
+      expect(InputInjector.instance.parseSourceHandles('invalid'), isEmpty);
+    });
+
+    test('supportDebugMessageType allows screen switching telemetry labels', () {
+      expect(supportDebugMessageType('screen_switched'), 'screen_switched');
+      expect(supportDebugMessageType('switch_screen'), 'switch_screen');
+      expect(supportDebugMessageType('screen_list'), 'screen_list');
+    });
+  });
   group('linkNormalizedPointerPosition', () {
     test('maps the rendered video inside a horizontal letterbox', () {
       const viewport = Size(1600, 900);

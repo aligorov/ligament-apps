@@ -256,6 +256,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   static const Set<String> _signalingSafeTypes = {
     'screen_list',
     'switch_screen',
+    'screen_switched',
     'chat_message',
     'chat_sync',
     'chat_ack',
@@ -314,6 +315,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'input_control',
         'screen_list',
         'switch_screen',
+        'screen_switched',
         'chat_message',
         'chat_sync',
         'chat_ack',
@@ -454,6 +456,26 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   List<Map<String, dynamic>> _screens = [];
   String? _selectedScreenId;
+  int _videoViewKeyEpoch = 0;
+
+  void _refreshRemoteRenderer() {
+    if (!mounted || _isCleanedUp) return;
+    final stream = _remoteRenderer.srcObject;
+    if (stream != null) {
+      try {
+        _remoteRenderer.srcObject = stream;
+      } catch (e) {
+        _logConnection('operator.exception',
+            error: e, fields: {'phase': 'refresh_remote_renderer'});
+      }
+    }
+    if (_zoomMode == OperatorZoomMode.fit) {
+      _applyVideoZoom(1.0);
+    }
+    setState(() {
+      _videoViewKeyEpoch++;
+    });
+  }
 
   Map<String, dynamic>? get _currentSelectedScreenRect {
     if (_screens.isNotEmpty && _selectedScreenId != null) {
@@ -1500,6 +1522,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _setStatus('waiting_consent', _currentNumberMatch ?? '2FA');
     }
     await _remoteRenderer.initialize();
+    _remoteRenderer.onResize = () {
+      if (mounted && !_isCleanedUp) {
+        setState(() {});
+      }
+    };
     // Ш3 (Д5): граница «изображение появилось» — нативный колбэк первого
     // кадра; трек ≠ кадр, чёрный экран больше не считается готовностью.
     _remoteRenderer.onFirstFrameRendered = () {
@@ -2802,15 +2829,33 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _pcGraceTimer = null;
       return;
     }
+    if (type == 'screen_switched') {
+      final swScreenId = data['screen_id']?.toString();
+      if (swScreenId != null && mounted) {
+        setState(() {
+          _selectedScreenId = swScreenId;
+          _videoViewKeyEpoch++;
+        });
+        _refreshRemoteRenderer();
+      }
+      return;
+    }
     if (type == 'screen_list') {
       final list = data['screens'] as List<dynamic>? ?? [];
       final sel = data['selected_id']?.toString();
+      final prevSelected = _selectedScreenId;
       if (mounted) {
         setState(() {
           _screens = list.cast<Map<String, dynamic>>();
           _selectedScreenId = sel ??
               (_screens.isNotEmpty ? _screens.first['id']?.toString() : null);
+          if (sel != null && sel != prevSelected) {
+            _videoViewKeyEpoch++;
+          }
         });
+        if (sel != null && sel != prevSelected) {
+          _refreshRemoteRenderer();
+        }
       }
     } else if (type == 'input_error') {
       if (mounted) {
@@ -3869,9 +3914,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _logConnection('operator.action', fields: {
       'message_type': 'switch_screen',
       'operation': 'user_action',
-      'result': 'requested'
+      'result': 'requested',
+      'screen_id': screenId,
     });
-    setState(() => _selectedScreenId = screenId);
+    setState(() {
+      _selectedScreenId = screenId;
+      _videoViewKeyEpoch++;
+    });
+    _refreshRemoteRenderer();
     _sendDataMessage({'type': 'switch_screen', 'screen_id': screenId});
   }
 
@@ -3981,6 +4031,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _isConnected = false;
     _frameReady = false;
     _remoteRenderer.onFirstFrameRendered = null;
+    _remoteRenderer.onResize = null;
 
     try {
       _remoteRenderer.srcObject = null;
@@ -6854,6 +6905,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                                                   key: _videoKey,
                                                   child: RTCVideoView(
                                                     _remoteRenderer,
+                                                    key: ValueKey(
+                                                        'rtc_video_${_selectedScreenId ?? "0"}_$_videoViewKeyEpoch'),
                                                     objectFit: RTCVideoViewObjectFit
                                                         .RTCVideoViewObjectFitContain,
                                                   ),

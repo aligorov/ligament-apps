@@ -416,6 +416,9 @@ class InputInjector {
     return handles;
   }
 
+  /// Публичный доступ к разбору handle источников монитора для сопоставления.
+  List<int> parseSourceHandles(String sourceId) => _parseSourceHandles(sourceId);
+
   /// Число активных мониторов (Windows: SM_CMONITORS = 80).
   int getMonitorCount() {
     if (kIsWeb) return 1;

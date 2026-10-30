@@ -1438,8 +1438,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   Future<MediaStream> _openDisplayStream(String sourceId,
       {bool withAudio = true}) async {
-    final videoConstraints = <String, dynamic>{
+    final videoConstraintsExact = <String, dynamic>{
       'deviceId': {'exact': sourceId},
+      'cursor': 'always',
+    };
+    final videoConstraintsPlain = <String, dynamic>{
+      'deviceId': sourceId,
       'cursor': 'always',
     };
     final wantLoopbackAudio =
@@ -1449,7 +1453,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       try {
         stream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': true,
-          'video': videoConstraints,
+          'video': videoConstraintsExact,
         }).timeout(const Duration(seconds: 10));
         final audioCount = stream.getAudioTracks().length;
         _peerLog('link.capture.audio',
@@ -1458,12 +1462,30 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         _peerLog('link.exception',
             error: e,
             fields: {'phase': 'open_display_stream', 'result': 'failed'});
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+            'audio': true,
+            'video': videoConstraintsPlain,
+          }).timeout(const Duration(seconds: 10));
+          final audioCount = stream.getAudioTracks().length;
+          _peerLog('link.capture.audio',
+              fields: {'tracks': audioCount, 'result': 'ready_fallback'});
+        } catch (_) {}
       }
     }
-    stream ??= await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-      'audio': false,
-      'video': videoConstraints,
-    }).timeout(const Duration(seconds: 10));
+    if (stream == null) {
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          'audio': false,
+          'video': videoConstraintsExact,
+        }).timeout(const Duration(seconds: 10));
+      } catch (_) {
+        stream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          'audio': false,
+          'video': videoConstraintsPlain,
+        }).timeout(const Duration(seconds: 10));
+      }
+    }
     return stream;
   }
 
@@ -1549,12 +1571,56 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       return;
     }
     _switchingScreen = true;
-    _peerLog('link.capture.switch', fields: {'result': 'begin'});
+    _peerLog('link.capture.switch',
+        fields: {'result': 'begin', 'screen_id': screenId});
     try {
       var targetScreenId = screenId;
       MediaStream? newStream;
       final needAudio =
           _audioStream == null || _audioStream!.getAudioTracks().isEmpty;
+
+      // 1. Пытаемся разрешить targetScreenId через desktopCapturer sources (если доступно)
+      try {
+        final sources = await desktopCapturer
+            .getSources(types: [SourceType.Screen])
+            .timeout(const Duration(seconds: 5));
+        if (sources.isNotEmpty) {
+          DesktopCapturerSource? matched;
+          for (final s in sources) {
+            if (s.id == targetScreenId || s.id.trim() == targetScreenId.trim()) {
+              matched = s;
+              break;
+            }
+          }
+          if (matched == null) {
+            final requestedHandles =
+                InputInjector.instance.parseSourceHandles(targetScreenId);
+            for (final s in sources) {
+              final sHandles =
+                  InputInjector.instance.parseSourceHandles(s.id);
+              if (requestedHandles.isNotEmpty &&
+                  sHandles.isNotEmpty &&
+                  requestedHandles.first == sHandles.first) {
+                matched = s;
+                break;
+              }
+            }
+          }
+          if (matched == null) {
+            final idx = int.tryParse(targetScreenId);
+            if (idx != null && idx >= 0 && idx < sources.length) {
+              matched = sources[idx];
+            }
+          }
+          if (matched != null) {
+            targetScreenId = matched.id;
+          }
+        }
+      } catch (e) {
+        _peerLog('link.exception',
+            error: e,
+            fields: {'phase': 'switch_screen_resolve', 'result': 'failed'});
+      }
 
       const backoffs = [100, 250, 500, 1000];
       final startTime = DateTime.now();
@@ -1564,12 +1630,6 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           DateTime.now().difference(startTime) < const Duration(seconds: 10)) {
         if (_closed || _peer == null) return;
         try {
-          final sources = await desktopCapturer.getSources(
-              types: [SourceType.Screen]).timeout(const Duration(seconds: 3));
-          if (sources.isNotEmpty &&
-              !sources.any((s) => s.id == targetScreenId)) {
-            targetScreenId = sources.first.id;
-          }
           newStream =
               await _openDisplayStream(targetScreenId, withAudio: needAudio);
           if (newStream.getVideoTracks().isNotEmpty) {
@@ -1603,14 +1663,15 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
       final newVideoTracks = newStream.getVideoTracks();
       if (newVideoTracks.isNotEmpty) {
+        final newTrack = newVideoTracks.first;
         if (_videoSender != null) {
-          await _videoSender!.replaceTrack(newVideoTracks.first);
+          await _videoSender!.replaceTrack(newTrack);
         } else {
           final senders = await _peer!.getSenders();
           for (final sender in senders) {
             if (sender.track?.kind == 'video') {
               _videoSender = sender;
-              await sender.replaceTrack(newVideoTracks.first);
+              await sender.replaceTrack(newTrack);
               break;
             }
           }
@@ -1693,8 +1754,26 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           InputInjector.instance.getMonitorRectForSource(targetScreenId);
       InputInjector.instance.setActiveMonitorRect(_screenRect);
       _peerLog('link.capture.monitor',
-          fields: {'width': _screenRect?.width, 'height': _screenRect?.height});
+          fields: {'screen_id': targetScreenId, 'width': _screenRect?.width, 'height': _screenRect?.height});
+
+      final control = _control;
+      if (control != null && !_closed) {
+        final ack = {
+          'type': 'screen_switched',
+          'screen_id': targetScreenId,
+          if (_screenRect != null) 'rect': _screenRect!.toJson(),
+        };
+        final text = jsonEncode(ack);
+        try {
+          _observeDataEnqueue(control.send(RTCDataChannelMessage(text)),
+              supportDebugMessageType(ack['type']), utf8.encode(text).length);
+        } catch (e) {
+          _peerLog('link.exception',
+              error: e, fields: {'phase': 'send_screen_switched'});
+        }
+      }
       await _sendScreenList();
+      unawaited(_captureRecorderSnapshot('keyframe'));
     } catch (e) {
       _peerLog('link.exception',
           error: e, fields: {'phase': 'switch_screen', 'result': 'failed'});
