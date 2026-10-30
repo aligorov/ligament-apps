@@ -32,5 +32,11 @@
 	<string>NSApplication</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Ligament 2FA использует Touch ID для подтверждения входа.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ligament 2FA использует микрофон для передачи звука в сессиях удаленного доступа Link и поддержки.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Ligament 2FA использует камеру для сканирования QR-кодов и сессий связи.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Ligament 2FA запрашивает доступ к записи экрана для демонстрации и управления рабочим столом в сессиях Link.</string>
 </dict>
 </plist>

@@ -793,8 +793,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   MediaStream? _operatorKeepAliveAudio;
 
   Future<void> _kickstartDesktopPlayout() async {
-    if (kIsWeb ||
-        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    if (kIsWeb || !Platform.isWindows) {
       return;
     }
     if (_operatorKeepAliveAudio != null) return;

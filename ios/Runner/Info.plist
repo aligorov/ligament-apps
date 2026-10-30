@@ -39,6 +39,10 @@
 	<true/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Ligament 2FA использует FaceID для безопасного подтверждения входа в корпоративные сервисы.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ligament 2FA использует микрофон для передачи звука в сессиях связи и поддержки.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Ligament 2FA использует камеру для сканирования QR-кодов двухфакторной аутентификации.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
