@@ -517,9 +517,9 @@ __declspec(dllexport) int ligament_consume_desktop_changed(void) {
   return g_desktop_changed.exchange(false, std::memory_order_relaxed) ? 1 : 0;
 }
 
-// C4 (Релиз C): честный резолвинг 3+ мониторов на Windows через EnumDisplayMonitors.
+// C4 (Релиз C): честный резолвинг 3+ мониторов на Windows через EnumDisplayMonitors + фоллбэк EnumDisplaySettingsExW.
 __declspec(dllexport) int ligament_get_monitor_rect_by_index(int index, int* out_l, int* out_t, int* out_r, int* out_b) {
-  if (!out_l || !out_t || !out_r || !out_b) return -1;
+  if (!out_l || !out_t || !out_r || !out_b || index < 0) return -1;
   struct EnumContext {
     int target_index;
     int current_index;
@@ -549,21 +549,70 @@ __declspec(dllexport) int ligament_get_monitor_rect_by_index(int index, int* out
     *out_b = ctx.rect.bottom;
     return 0;
   }
+
+  int active_idx = 0;
+  for (DWORD dev_idx = 0;; ++dev_idx) {
+    DISPLAY_DEVICEW dd{};
+    dd.cb = sizeof(dd);
+    if (!EnumDisplayDevicesW(nullptr, dev_idx, &dd, 0)) break;
+    if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) continue;
+    if (active_idx == index) {
+      DEVMODEW dm{};
+      dm.dmSize = sizeof(dm);
+      if (EnumDisplaySettingsExW(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm, 0) &&
+          dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0) {
+        *out_l = static_cast<int>(dm.dmPosition.x);
+        *out_t = static_cast<int>(dm.dmPosition.y);
+        *out_r = static_cast<int>(dm.dmPosition.x + static_cast<LONG>(dm.dmPelsWidth));
+        *out_b = static_cast<int>(dm.dmPosition.y + static_cast<LONG>(dm.dmPelsHeight));
+        return 0;
+      }
+      break;
+    }
+    active_idx++;
+  }
   return -1;
 }
 
 // Инцидент 2026-10-12 (SOS win-win, «перепутаны дисплеи»): id источника
-// desktopCapturer ("screen:N") нумеруется в порядке EnumDisplayDevices,
-// а прежний резолвинг шёл по индексу EnumDisplayMonitors — порядки
-// различаются на 2+ мониторах, мышь оператора попадала на соседний экран.
-// Здесь: EnumDisplayDevices(N) → DeviceName → ищем HMONITOR с тем же
-// именем (MONITORINFOEXW.szDevice) → честный rect виртуального стола.
+// desktopCapturer ("screen:N" / "N") нумеруется в порядке EnumDisplayDevices
+// (см. WebRTC GetScreenList / GetScreenRect в screen_capture_utils.cc).
+// Используем EnumDisplaySettingsExW(dd.DeviceName, ENUM_CURRENT_SETTINGS) как
+// основной источник физических координат монитора (идентично WebRTC GetScreenRect),
+// с фоллбэком на порядковый индекс активного дисплея и EnumDisplayMonitors.
 __declspec(dllexport) int ligament_get_monitor_rect_by_device_index(int device_index, int* out_l, int* out_t, int* out_r, int* out_b) {
-  if (!out_l || !out_t || !out_r || !out_b) return -1;
+  if (!out_l || !out_t || !out_r || !out_b || device_index < 0) return -1;
   DISPLAY_DEVICEW dd{};
   dd.cb = sizeof(dd);
-  if (!EnumDisplayDevicesW(nullptr, static_cast<DWORD>(device_index), &dd, 0)) return -1;
-  if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) return -1;
+  bool have_dd = EnumDisplayDevicesW(nullptr, static_cast<DWORD>(device_index), &dd, 0) &&
+                 ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0);
+  if (!have_dd) {
+    int active_idx = 0;
+    for (DWORD i = 0;; ++i) {
+      DISPLAY_DEVICEW cand{};
+      cand.cb = sizeof(cand);
+      if (!EnumDisplayDevicesW(nullptr, i, &cand, 0)) break;
+      if ((cand.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) continue;
+      if (active_idx == device_index) {
+        dd = cand;
+        have_dd = true;
+        break;
+      }
+      active_idx++;
+    }
+  }
+  if (!have_dd) return -1;
+
+  DEVMODEW dm{};
+  dm.dmSize = sizeof(dm);
+  if (EnumDisplaySettingsExW(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm, 0) &&
+      dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0) {
+    *out_l = static_cast<int>(dm.dmPosition.x);
+    *out_t = static_cast<int>(dm.dmPosition.y);
+    *out_r = static_cast<int>(dm.dmPosition.x + static_cast<LONG>(dm.dmPelsWidth));
+    *out_b = static_cast<int>(dm.dmPosition.y + static_cast<LONG>(dm.dmPelsHeight));
+    return 0;
+  }
 
   struct Ctx {
     const wchar_t* want;
@@ -591,7 +640,7 @@ __declspec(dllexport) int ligament_get_monitor_rect_by_device_index(int device_i
   return 0;
 }
 
-// Прямой захват активного экрана через GDI BitBlt в BMP (резервный канал для Recorder).
+// Прямой захват активного экрана через GDI BitBlt в BMP/JPEG (резервный канал для Recorder).
 // Выполняется строго в отдельном рабочем потоке без окон и сообщений, гарантируя успешный SetThreadDesktop
 // без взаимного влияния на поток инъекции ввода DesktopInputWorkerLoop.
 // Поддерживает захват произвольного прямоугольника монитора (src_x, src_y, src_w, src_h)
@@ -620,6 +669,17 @@ __declspec(dllexport) int ligament_capture_desktop_rect_bmp(
       ComInit() { CoInitializeEx(nullptr, COINIT_MULTITHREADED); }
       ~ComInit() { CoUninitialize(); }
     } com_init;
+
+    if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+      using SetThreadDpiAwarenessContextFn = HANDLE(WINAPI*)(HANDLE);
+      auto set_dpi_ctx = reinterpret_cast<SetThreadDpiAwarenessContextFn>(
+          GetProcAddress(user32, "SetThreadDpiAwarenessContext"));
+      if (set_dpi_ctx) {
+        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (HANDLE)-4
+        set_dpi_ctx(reinterpret_cast<HANDLE>(static_cast<intptr_t>(-4)));
+      }
+    }
+
     EnsureProcessWindowStation();
     HDESK desk = FindActiveInputDesktop();
     if (desk) {
@@ -700,16 +760,75 @@ __declspec(dllexport) int ligament_capture_desktop_rect_bmp(
     }
 
     HGDIOBJ hOld = SelectObject(hMemDC, hDIB);
-    SetStretchBltMode(hMemDC, HALFTONE);
-    SetBrushOrgEx(hMemDC, 0, 0, nullptr);
+    BOOL bltOk = FALSE;
 
-    BOOL bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
-                            hScreenDC, source_x, source_y, source_w, source_h,
-                            SRCCOPY | CAPTUREBLT);
-    if (!bltOk) {
-      bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
-                         hScreenDC, source_x, source_y, source_w, source_h,
-                         SRCCOPY);
+    // 1. Всегда выполняем 1:1 BitBlt из экранного DC (как в WebRTC ScreenCapturerWinGdi),
+    // так как прямой StretchBlt(HALFTONE | CAPTUREBLT) по ненулевым multi-monitor координатам
+    // на ряде WDDM-драйверов возвращает ошибку или чёрный кадр.
+    auto captureOneToOne = [&](HDC dstDC) -> BOOL {
+      BOOL ok = BitBlt(dstDC, 0, 0, source_w, source_h,
+                       hScreenDC, source_x, source_y, SRCCOPY | CAPTUREBLT);
+      if (!ok) {
+        ok = BitBlt(dstDC, 0, 0, source_w, source_h,
+                    hScreenDC, source_x, source_y, SRCCOPY);
+      }
+      if (!ok) {
+        // Фоллбэк: если виртуальный DC не отдал прямоугольник второго монитора,
+        // открываем DC конкретного дисплея по совпадению координат DEVMODEW.
+        for (DWORD i = 0;; ++i) {
+          DISPLAY_DEVICEW dd{};
+          dd.cb = sizeof(dd);
+          if (!EnumDisplayDevicesW(nullptr, i, &dd, 0)) break;
+          if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) continue;
+          DEVMODEW dm{};
+          dm.dmSize = sizeof(dm);
+          if (EnumDisplaySettingsExW(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm, 0) &&
+              static_cast<int>(dm.dmPosition.x) == source_x &&
+              static_cast<int>(dm.dmPosition.y) == source_y) {
+            HDC hMonDC = CreateDCW(L"DISPLAY", dd.DeviceName, nullptr, nullptr);
+            if (hMonDC) {
+              ok = BitBlt(dstDC, 0, 0, source_w, source_h, hMonDC, 0, 0, SRCCOPY | CAPTUREBLT);
+              if (!ok) {
+                ok = BitBlt(dstDC, 0, 0, source_w, source_h, hMonDC, 0, 0, SRCCOPY);
+              }
+              DeleteDC(hMonDC);
+            }
+            break;
+          }
+        }
+      }
+      return ok;
+    };
+
+    if (target_w == source_w && target_h == source_h) {
+      bltOk = captureOneToOne(hMemDC);
+    } else {
+      HDC hSrcDC = CreateCompatibleDC(hScreenDC);
+      if (hSrcDC) {
+        BITMAPINFO srcBi{};
+        srcBi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        srcBi.bmiHeader.biWidth = source_w;
+        srcBi.bmiHeader.biHeight = -source_h; // top-down
+        srcBi.bmiHeader.biPlanes = 1;
+        srcBi.bmiHeader.biBitCount = 32;
+        srcBi.bmiHeader.biCompression = BI_RGB;
+        void* pSrcBits = nullptr;
+        HBITMAP hSrcDIB = CreateDIBSection(hSrcDC, &srcBi, DIB_RGB_COLORS, &pSrcBits, nullptr, 0);
+        if (hSrcDIB && pSrcBits) {
+          HGDIOBJ hOldSrc = SelectObject(hSrcDC, hSrcDIB);
+          if (captureOneToOne(hSrcDC)) {
+            SetStretchBltMode(hMemDC, HALFTONE);
+            SetBrushOrgEx(hMemDC, 0, 0, nullptr);
+            bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
+                               hSrcDC, 0, 0, source_w, source_h, SRCCOPY);
+          }
+          SelectObject(hSrcDC, hOldSrc);
+          DeleteObject(hSrcDIB);
+        } else if (hSrcDIB) {
+          DeleteObject(hSrcDIB);
+        }
+        DeleteDC(hSrcDC);
+      }
     }
 
     if (!bltOk) {

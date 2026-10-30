@@ -433,6 +433,7 @@ class SupportService extends ChangeNotifier {
   LinkHostRecorder? _recorder;
   Timer? _recorderSnapshotTimer;
   bool _capturingRecorderFrame = false;
+  bool _pendingRecorderKeyframe = false;
 
   final List<SupportChatMessage> _chatMessages = [];
   int _unreadChatCount = 0;
@@ -1247,26 +1248,11 @@ class SupportService extends ChangeNotifier {
                 'phase': 'start_screen_sharing',
                 'result': 'failed'
               });
-              try {
-                screenStream = await navigator.mediaDevices
-                    .getDisplayMedia(<String, dynamic>{
-                  'audio': false,
-                  'video': {
-                    'deviceId': selectedSource.id,
-                    'cursor': 'always',
-                  },
-                }).timeout(captureTimeout);
-              } catch (error) {
-                _logSupport('support.exception', error: error, fields: {
-                  'phase': 'start_screen_sharing',
-                  'result': 'failed'
-                });
-                screenStream = await navigator.mediaDevices
-                    .getDisplayMedia(<String, dynamic>{
-                  'audio': false,
-                  'video': true,
-                }).timeout(captureTimeout);
-              }
+              screenStream = await navigator.mediaDevices
+                  .getDisplayMedia(<String, dynamic>{
+                'audio': false,
+                'video': true,
+              }).timeout(captureTimeout);
             }
           }
         } else {
@@ -2025,32 +2011,22 @@ class SupportService extends ChangeNotifier {
             fields: {'phase': 'switch_screen_resolve', 'result': 'failed'});
       }
 
+      _currentScreenId = targetScreenId;
+      _applyActiveScreenRect(targetScreenId);
+      unawaited(_captureRecorderSnapshot('keyframe'));
+
       MediaStream? newStream;
       for (var attempt = 0; attempt < 6; attempt++) {
         if (_peerConnection == null || _isStopping) return;
         try {
-          try {
-            newStream =
-                await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-              'audio': false,
-              'video': {
-                'deviceId': {'exact': targetScreenId},
-                'cursor': 'always',
-              },
-            }).timeout(const Duration(seconds: 4));
-          } catch (error) {
-            _logSupport('support.exception',
-                error: error,
-                fields: {'phase': 'switch_screen', 'result': 'failed'});
-            newStream =
-                await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
-              'audio': false,
-              'video': {
-                'deviceId': targetScreenId,
-                'cursor': 'always',
-              },
-            }).timeout(const Duration(seconds: 4));
-          }
+          newStream =
+              await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+            'audio': false,
+            'video': {
+              'deviceId': {'exact': targetScreenId},
+              'cursor': 'always',
+            },
+          }).timeout(const Duration(seconds: 4));
           if (newStream.getVideoTracks().isNotEmpty) {
             break;
           }
@@ -2250,9 +2226,13 @@ class SupportService extends ChangeNotifier {
 
   Future<void> _captureRecorderSnapshot(String frameKind) async {
     final rec = _recorder;
-    if (rec == null ||
-        _capturingRecorderFrame ||
-        _state != SupportSessionState.active) {
+    if (rec == null || _state != SupportSessionState.active) {
+      return;
+    }
+    if (_capturingRecorderFrame) {
+      if (frameKind == 'keyframe') {
+        _pendingRecorderKeyframe = true;
+      }
       return;
     }
     _capturingRecorderFrame = true;
@@ -2315,6 +2295,10 @@ class SupportService extends ChangeNotifier {
           fields: {'phase': 'capture_recorder_snapshot', 'result': 'failed'});
     } finally {
       _capturingRecorderFrame = false;
+      if (_pendingRecorderKeyframe && _state == SupportSessionState.active) {
+        _pendingRecorderKeyframe = false;
+        unawaited(_captureRecorderSnapshot('keyframe'));
+      }
     }
   }
 

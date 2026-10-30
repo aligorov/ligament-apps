@@ -29,6 +29,7 @@ class LinkSessionPolicy {
 
   bool allows(Map<String, dynamic> input, {required bool allowControl}) {
     if (input['type'] == 'screen_list' ||
+        input['type'] == 'get_screens' ||
         input['type'] == 'switch_screen' ||
         input['type'] == 'video_quality' ||
         input['type'] == 'chat_message' ||

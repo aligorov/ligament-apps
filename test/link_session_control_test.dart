@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/models/link_control_messages.dart';
+import 'package:ligament_authenticator/models/link_session_policy.dart';
 import 'package:ligament_authenticator/services/input_injector.dart';
+import 'package:ligament_authenticator/services/link_host_session.dart';
 import 'package:ligament_authenticator/services/support_service.dart';
 
 void main() {
@@ -27,6 +29,18 @@ void main() {
       const rect = ScreenRect(1920, 0, 1920, 1080);
       final result = InputInjector.instance.captureDesktopBmp(maxWidth: 1280, maxHeight: 720, rect: rect);
       expect(result, isNull);
+    });
+
+    test('validates and allows switch_screen, screen_list and get_screens in view and control modes', () {
+      const policy = LinkSessionPolicy();
+      expect(LinkHostSession.isValidControlInput({'type': 'screen_list'}), isTrue);
+      expect(LinkHostSession.isValidControlInput({'type': 'get_screens'}), isTrue);
+      expect(LinkHostSession.isValidControlInput({'type': 'switch_screen', 'screen_id': '1'}), isTrue);
+      expect(LinkHostSession.isValidControlInput({'type': 'switch_screen', 'screen_id': ''}), isFalse);
+
+      expect(policy.allows({'type': 'screen_list'}, allowControl: false), isTrue);
+      expect(policy.allows({'type': 'get_screens'}, allowControl: false), isTrue);
+      expect(policy.allows({'type': 'switch_screen', 'screen_id': '1'}, allowControl: false), isTrue);
     });
   });
   group('linkNormalizedPointerPosition', () {
