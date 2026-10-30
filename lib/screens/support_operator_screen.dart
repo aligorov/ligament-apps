@@ -676,9 +676,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       unawaited(_runOperatorTask('toggle_remote_audio',
           () => Helper.setVolume(nextMuted ? 0.0 : 1.0, audioTrack)));
     }
-    if (!nextMuted) {
-      unawaited(_ensureOperatorAudioSession());
-    }
     final stream = _remoteRenderer.srcObject;
     if (stream != null) {
       for (final track in stream.getAudioTracks()) {
@@ -779,29 +776,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     if (Platform.isIOS) {
       await _runOperatorTask('ensure_audio_session', Helper.ensureAudioSession);
-    } else {
-      try {
-        final devices = await navigator.mediaDevices.enumerateDevices();
-        for (final d in devices) {
-          if (d.kind == 'audiooutput') {
-            await Helper.selectAudioOutput(d.deviceId);
-            break;
-          }
-        }
-      } catch (e) {
-        _logConnection('operator.exception',
-            error: e, fields: {'phase': 'select_audio_output'});
-      }
-      try {
-        final dummy = await navigator.mediaDevices.getUserMedia(<String, dynamic>{
-          'audio': true,
-          'video': false,
-        }).timeout(const Duration(seconds: 2));
-        for (final t in dummy.getTracks()) {
-          t.stop();
-        }
-        await dummy.dispose();
-      } catch (_) {}
     }
   }
 
@@ -1691,36 +1665,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             await Helper.setVolume(_isAudioMuted ? 0.0 : 1.0, event.track);
           } catch (e) {
             _logConnection('operator.exception',
-                error: e, fields: {'phase': 'begin_step', 'result': 'failed'});
+                error: e, fields: {'phase': 'set_audio_volume', 'result': 'failed'});
           }
-          var currentStream = _remoteRenderer.srcObject;
-          if (currentStream != null) {
-            if (!currentStream
-                .getAudioTracks()
-                .any((t) => t.id == event.track.id)) {
-              try {
-                await currentStream.addTrack(event.track);
-              } catch (error) {
-                _logConnection('operator.exception',
-                    error: error,
-                    fields: {'phase': 'begin_step', 'result': 'failed'});
-              }
-            }
-          } else {
-            if (event.streams.isNotEmpty) {
-              currentStream = event.streams.first;
-            } else {
-              try {
-                currentStream = await createLocalMediaStream('remote_stream');
-                await currentStream.addTrack(event.track);
-              } catch (error) {
-                _logConnection('operator.exception',
-                    error: error,
-                    fields: {'phase': 'begin_step', 'result': 'failed'});
-              }
-            }
-            if (currentStream != null && mounted) {
-              _remoteRenderer.srcObject = currentStream;
+          final currentStream = _remoteRenderer.srcObject;
+          if (currentStream != null &&
+              !currentStream
+                  .getAudioTracks()
+                  .any((t) => t.id == event.track.id)) {
+            try {
+              await currentStream.addTrack(event.track);
+            } catch (error) {
+              _logConnection('operator.exception',
+                  error: error,
+                  fields: {'phase': 'add_audio_track', 'result': 'failed'});
             }
           }
           if (mounted &&
@@ -2620,38 +2577,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           } catch (e) {
             _logConnection('operator.exception',
                 error: e,
-                fields: {'phase': 'setup_peer_connection', 'result': 'failed'});
+                fields: {'phase': 'set_audio_volume', 'result': 'failed'});
           }
-          var currentStream = _remoteRenderer.srcObject;
-          if (currentStream != null) {
-            if (!currentStream
-                .getAudioTracks()
-                .any((t) => t.id == event.track.id)) {
-              try {
-                await currentStream.addTrack(event.track);
-              } catch (error) {
-                _logConnection('operator.exception', error: error, fields: {
-                  'phase': 'setup_peer_connection',
-                  'result': 'failed'
-                });
-              }
-            }
-          } else {
-            if (event.streams.isNotEmpty) {
-              currentStream = event.streams.first;
-            } else {
-              try {
-                currentStream = await createLocalMediaStream('remote_stream');
-                await currentStream.addTrack(event.track);
-              } catch (error) {
-                _logConnection('operator.exception', error: error, fields: {
-                  'phase': 'setup_peer_connection',
-                  'result': 'failed'
-                });
-              }
-            }
-            if (currentStream != null && mounted) {
-              _remoteRenderer.srcObject = currentStream;
+          final currentStream = _remoteRenderer.srcObject;
+          if (currentStream != null &&
+              !currentStream
+                  .getAudioTracks()
+                  .any((t) => t.id == event.track.id)) {
+            try {
+              await currentStream.addTrack(event.track);
+            } catch (error) {
+              _logConnection('operator.exception', error: error, fields: {
+                'phase': 'add_audio_track',
+                'result': 'failed'
+              });
             }
           }
           if (mounted) setState(() {});
