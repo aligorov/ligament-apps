@@ -1333,8 +1333,11 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       // 1. Приоритетный захват на Windows через Win32 GDI (не конфликтует с DXGI exclusive duplication)
       if (!kIsWeb && Platform.isWindows) {
         try {
+          final targetRect = _screenRect ??
+              InputInjector.instance.getMonitorRectForSource(currentMonitorId) ??
+              InputInjector.instance.activeMonitorRect;
           bytes = InputInjector.instance
-              .captureDesktopBmp(maxWidth: 1280, maxHeight: 720);
+              .captureDesktopBmp(maxWidth: 1280, maxHeight: 720, rect: targetRect);
         } catch (error) {
           _peerLog('link.exception', error: error, fields: {
             'phase': 'capture_recorder_snapshot_gdi',
@@ -1345,7 +1348,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
       // 2. Штатный запрос миниатюры через WebRTC (macOS/Linux или фоллбэк)
       if (bytes == null && !_closed) {
-        if (_selectedScreenId == null || _selectedScreenId == '0') {
+        if (_selectedScreenId == null) {
           try {
             final sources = await desktopCapturer.getSources(
                 types: [SourceType.Screen]).timeout(const Duration(seconds: 3));

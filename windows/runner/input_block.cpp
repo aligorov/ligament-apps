@@ -594,7 +594,10 @@ __declspec(dllexport) int ligament_get_monitor_rect_by_device_index(int device_i
 // Прямой захват активного экрана через GDI BitBlt в BMP (резервный канал для Recorder).
 // Выполняется строго в отдельном рабочем потоке без окон и сообщений, гарантируя успешный SetThreadDesktop
 // без взаимного влияния на поток инъекции ввода DesktopInputWorkerLoop.
-__declspec(dllexport) int ligament_capture_desktop_bmp(
+// Поддерживает захват произвольного прямоугольника монитора (src_x, src_y, src_w, src_h)
+// для корректной записи второго и последующих дисплеев на мультимониторных конфигурациях.
+__declspec(dllexport) int ligament_capture_desktop_rect_bmp(
+    int src_x, int src_y, int src_w, int src_h,
     int max_w, int max_h, uint8_t* out_buf, int buf_size, int* out_len, int* out_w, int* out_h) {
   if (!out_buf || buf_size <= static_cast<int>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER)) ||
       !out_len || !out_w || !out_h) {
@@ -630,17 +633,25 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
       return;
     }
 
-    int screen_w = GetSystemMetrics(SM_CXSCREEN);
-    int screen_h = GetSystemMetrics(SM_CYSCREEN);
-    if (screen_w <= 0 || screen_h <= 0) {
+    int source_x = src_x;
+    int source_y = src_y;
+    int source_w = src_w;
+    int source_h = src_h;
+    if (source_w <= 0 || source_h <= 0) {
+      source_x = 0;
+      source_y = 0;
+      source_w = GetSystemMetrics(SM_CXSCREEN);
+      source_h = GetSystemMetrics(SM_CYSCREEN);
+    }
+    if (source_w <= 0 || source_h <= 0) {
       ReleaseDC(nullptr, hScreenDC);
       if (desk) CloseDesktop(desk);
       result = -3;
       return;
     }
 
-    int target_w = screen_w;
-    int target_h = screen_h;
+    int target_w = source_w;
+    int target_h = source_h;
     if (max_w > 0 && max_h > 0 && (target_w > max_w || target_h > max_h)) {
       double scale = (std::min)(static_cast<double>(max_w) / target_w,
                                 static_cast<double>(max_h) / target_h);
@@ -693,11 +704,11 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
     SetBrushOrgEx(hMemDC, 0, 0, nullptr);
 
     BOOL bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
-                            hScreenDC, 0, 0, screen_w, screen_h,
+                            hScreenDC, source_x, source_y, source_w, source_h,
                             SRCCOPY | CAPTUREBLT);
     if (!bltOk) {
       bltOk = StretchBlt(hMemDC, 0, 0, target_w, target_h,
-                         hScreenDC, 0, 0, screen_w, screen_h,
+                         hScreenDC, source_x, source_y, source_w, source_h,
                          SRCCOPY);
     }
 
@@ -782,6 +793,11 @@ __declspec(dllexport) int ligament_capture_desktop_bmp(
     *out_h = out_h_val;
   }
   return result;
+}
+
+__declspec(dllexport) int ligament_capture_desktop_bmp(
+    int max_w, int max_h, uint8_t* out_buf, int buf_size, int* out_len, int* out_w, int* out_h) {
+  return ligament_capture_desktop_rect_bmp(0, 0, 0, 0, max_w, max_h, out_buf, buf_size, out_len, out_w, out_h);
 }
 
 } // extern "C"

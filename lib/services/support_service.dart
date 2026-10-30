@@ -1982,6 +1982,49 @@ class SupportService extends ChangeNotifier {
     if (kIsWeb || _peerConnection == null || _switchingScreen) return;
     _switchingScreen = true;
     try {
+      var targetScreenId = screenId;
+      try {
+        final sources = await desktopCapturer
+            .getSources(types: [SourceType.Screen])
+            .timeout(const Duration(seconds: 5));
+        if (sources.isNotEmpty) {
+          DesktopCapturerSource? matched;
+          for (final s in sources) {
+            if (s.id == targetScreenId || s.id.trim() == targetScreenId.trim()) {
+              matched = s;
+              break;
+            }
+          }
+          if (matched == null) {
+            final requestedHandles =
+                InputInjector.instance.parseSourceHandles(targetScreenId);
+            for (final s in sources) {
+              final sHandles =
+                  InputInjector.instance.parseSourceHandles(s.id);
+              if (requestedHandles.isNotEmpty &&
+                  sHandles.isNotEmpty &&
+                  requestedHandles.first == sHandles.first) {
+                matched = s;
+                break;
+              }
+            }
+          }
+          if (matched == null) {
+            final idx = int.tryParse(targetScreenId);
+            if (idx != null && idx >= 0 && idx < sources.length) {
+              matched = sources[idx];
+            }
+          }
+          if (matched != null) {
+            targetScreenId = matched.id;
+          }
+        }
+      } catch (e) {
+        _logSupport('support.exception',
+            error: e,
+            fields: {'phase': 'switch_screen_resolve', 'result': 'failed'});
+      }
+
       MediaStream? newStream;
       for (var attempt = 0; attempt < 6; attempt++) {
         if (_peerConnection == null || _isStopping) return;
@@ -1991,7 +2034,7 @@ class SupportService extends ChangeNotifier {
                 await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
               'audio': false,
               'video': {
-                'deviceId': {'exact': screenId},
+                'deviceId': {'exact': targetScreenId},
                 'cursor': 'always',
               },
             }).timeout(const Duration(seconds: 4));
@@ -2003,7 +2046,7 @@ class SupportService extends ChangeNotifier {
                 await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
               'audio': false,
               'video': {
-                'deviceId': screenId,
+                'deviceId': targetScreenId,
                 'cursor': 'always',
               },
             }).timeout(const Duration(seconds: 4));
@@ -2071,8 +2114,8 @@ class SupportService extends ChangeNotifier {
       }
 
       _localStream = newStream;
-      _currentScreenId = screenId;
-      _applyActiveScreenRect(screenId);
+      _currentScreenId = targetScreenId;
+      _applyActiveScreenRect(targetScreenId);
 
       // Если аудио изначально не было получено (на экране блокировки/Winlogon),
       // пытаемся захватить loopback после входа в сессию пользователя
@@ -2109,10 +2152,10 @@ class SupportService extends ChangeNotifier {
 
       final dc = _dataChannel;
       if (dc != null && dc.state == RTCDataChannelState.RTCDataChannelOpen) {
-        final rect = InputInjector.instance.getMonitorRectForSource(screenId);
+        final rect = InputInjector.instance.getMonitorRectForSource(targetScreenId);
         final ack = {
           'type': 'screen_switched',
-          'screen_id': screenId,
+          'screen_id': targetScreenId,
           if (rect != null) 'rect': rect.toJson(),
         };
         try {
@@ -2121,6 +2164,7 @@ class SupportService extends ChangeNotifier {
       }
 
       await _sendScreenList();
+      unawaited(_captureRecorderSnapshot('keyframe'));
       notifyListeners();
     } catch (e) {
       _logSupport('support.exception',
@@ -2219,8 +2263,11 @@ class SupportService extends ChangeNotifier {
       // 1. Приоритетный захват на Windows через Win32 GDI (не конфликтует с DXGI)
       if (!kIsWeb && Platform.isWindows) {
         try {
+          final targetRect = _currentScreenRect ??
+              InputInjector.instance.getMonitorRectForSource(srcId) ??
+              InputInjector.instance.activeMonitorRect;
           bytes = InputInjector.instance
-              .captureDesktopBmp(maxWidth: 1280, maxHeight: 720);
+              .captureDesktopBmp(maxWidth: 1280, maxHeight: 720, rect: targetRect);
         } catch (error) {
           _logSupport('support.exception',
               error: error,

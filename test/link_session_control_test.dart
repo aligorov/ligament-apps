@@ -22,6 +22,12 @@ void main() {
       expect(supportDebugMessageType('switch_screen'), 'switch_screen');
       expect(supportDebugMessageType('screen_list'), 'screen_list');
     });
+
+    test('captureDesktopBmp accepts custom rect and returns null on non-windows platform', () {
+      const rect = ScreenRect(1920, 0, 1920, 1080);
+      final result = InputInjector.instance.captureDesktopBmp(maxWidth: 1280, maxHeight: 720, rect: rect);
+      expect(result, isNull);
+    });
   });
   group('linkNormalizedPointerPosition', () {
     test('maps the rendered video inside a horizontal letterbox', () {

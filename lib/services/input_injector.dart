@@ -145,6 +145,8 @@ class InputInjector {
   // порядок EnumDisplayMonitors на 2+ мониторах иной.
   int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
       _nativeGetMonitorRectByDeviceIndex;
+  int Function(int, int, int, int, int, int, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
+      _nativeCaptureDesktopRectBmp;
   int Function(int, int, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)?
       _nativeCaptureDesktopBmp;
 
@@ -264,6 +266,12 @@ class InputInjector {
             ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
             int Function(int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
             'ligament_get_monitor_rect_by_device_index');
+        try {
+          _nativeCaptureDesktopRectBmp = exe.lookupFunction<
+              ffi.Int32 Function(ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
+              int Function(int, int, int, int, int, int, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>)>(
+              'ligament_capture_desktop_rect_bmp');
+        } catch (_) {}
         try {
           _nativeCaptureDesktopBmp = exe.lookupFunction<
               ffi.Int32 Function(ffi.Int32, ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.Int32, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>, ffi.Pointer<ffi.Int32>),
@@ -547,17 +555,37 @@ class InputInjector {
     return null;
   }
 
-  /// Прямой фоллбэк захвата экрана через Win32 GDI в формат BMP.
+  /// Прямой фоллбэк захвата экрана через Win32 GDI в формат BMP/JPEG.
   /// Используется Recorder'ом при недоступности WebRTC thumbnail источника.
-  Uint8List? captureDesktopBmp({int maxWidth = 1280, int maxHeight = 720}) {
-    if (kIsWeb || !Platform.isWindows || _nativeCaptureDesktopBmp == null) return null;
+  /// Поддерживает явный или активный [rect] монитора для multi-monitor сессий.
+  Uint8List? captureDesktopBmp({
+    int maxWidth = 1280,
+    int maxHeight = 720,
+    ScreenRect? rect,
+  }) {
+    if (kIsWeb || !Platform.isWindows) return null;
+    if (_nativeCaptureDesktopRectBmp == null && _nativeCaptureDesktopBmp == null) {
+      return null;
+    }
+    final targetRect = rect ?? _activeMonitorRect;
     const maxBuf = 10 * 1024 * 1024;
     final buf = calloc<ffi.Uint8>(maxBuf);
     final outLen = calloc<ffi.Int32>();
     final outW = calloc<ffi.Int32>();
     final outH = calloc<ffi.Int32>();
     try {
-      final rc = _nativeCaptureDesktopBmp!(maxWidth, maxHeight, buf, maxBuf, outLen, outW, outH);
+      int rc;
+      if (_nativeCaptureDesktopRectBmp != null) {
+        final srcX = targetRect?.x ?? 0;
+        final srcY = targetRect?.y ?? 0;
+        final srcW = targetRect?.width ?? 0;
+        final srcH = targetRect?.height ?? 0;
+        rc = _nativeCaptureDesktopRectBmp!(
+            srcX, srcY, srcW, srcH, maxWidth, maxHeight, buf, maxBuf, outLen, outW, outH);
+      } else {
+        rc = _nativeCaptureDesktopBmp!(
+            maxWidth, maxHeight, buf, maxBuf, outLen, outW, outH);
+      }
       if (rc == 0 && outLen.value > 54 && outLen.value <= maxBuf) {
         return Uint8List.fromList(buf.asTypedList(outLen.value));
       }
