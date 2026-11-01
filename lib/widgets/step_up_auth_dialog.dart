@@ -600,6 +600,13 @@ class _StepUpVerificationDialogState extends State<StepUpVerificationDialog> {
                             s.stepUpDeviceOnline,
                             style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.w500),
                           ),
+                        ] else if (dev['has_push'] == true || dev['status'] == 'push_ready') ...[
+                          const Icon(Icons.notifications_active, color: Color(0xFF38BDF8), size: 11),
+                          const SizedBox(width: 4),
+                          Text(
+                            s.stepUpDevicePushReady,
+                            style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.w500),
+                          ),
                         ] else ...[
                           const Icon(Icons.circle_outlined, color: Color(0xFF64748B), size: 8),
                           const SizedBox(width: 4),

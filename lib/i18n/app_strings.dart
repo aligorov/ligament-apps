@@ -646,6 +646,7 @@ class AppStrings {
   String get stepUpTotpTitle => isRu ? 'Код Authenticator (TOTP)' : 'Authenticator Code (TOTP)';
   String get stepUpTotpSub => isRu ? '6-значный код из Google Authenticator или Ligament' : '6-digit code from Google Authenticator or Ligament';
   String get stepUpDeviceOnline => isRu ? 'В сети' : 'Online';
+  String get stepUpDevicePushReady => isRu ? 'Доступен (WebPush)' : 'Available (WebPush)';
   String stepUpDeviceLastSeen(String time) => isRu ? 'Был(а) в сети: $time' : 'Last seen: $time';
   String get stepUpNumberMatchInstruction => isRu
       ? 'Откройте приложение на выбранном устройстве и выберите это число:'

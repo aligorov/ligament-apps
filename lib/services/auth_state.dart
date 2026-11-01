@@ -312,17 +312,32 @@ class AuthState extends ChangeNotifier {
   /// Запускает push-запрос с Number Matching на выбранное устройство
   Future<Map<String, dynamic>> beginStepUpPush(String targetDeviceId) async {
     if (api == null) throw StateError('Not connected');
-    return await api!.beginLinkStepUpPush(targetDeviceId);
+    final res = await api!.beginLinkStepUpPush(targetDeviceId);
+    final cid = res['challenge_id']?.toString();
+    if (cid != null && cid.isNotEmpty) {
+      activeOutboundStepUpChallengeId = cid;
+    }
+    return res;
   }
 
   /// Опрашивает статус выполнения push-запроса
   Future<Map<String, dynamic>> pollStepUpPush(String challengeId) async {
     if (api == null) throw StateError('Not connected');
-    return await api!.pollLinkStepUpPush(challengeId);
+    final res = await api!.pollLinkStepUpPush(challengeId);
+    final status = res['status']?.toString();
+    if (status != null && status != 'pending') {
+      if (activeOutboundStepUpChallengeId == challengeId) {
+        activeOutboundStepUpChallengeId = null;
+      }
+    }
+    return res;
   }
 
   /// Отменяет активный push-запрос
   Future<void> cancelStepUpPush(String challengeId) async {
+    if (activeOutboundStepUpChallengeId == challengeId) {
+      activeOutboundStepUpChallengeId = null;
+    }
     if (api == null) return;
     try {
       await api!.cancelLinkStepUpPush(challengeId);
@@ -348,6 +363,10 @@ class AuthState extends ChangeNotifier {
   /// экраном должно только устройство-цель (инициатор — viewer).
   String? _ownDeviceId;
   String? get ownDeviceId => _ownDeviceId;
+
+  /// ID активного исходящего push-челленджа Step-Up 2FA, инициированного этим клиентом.
+  /// Используется для подавления Same-Device Echo в _surfacePrompt.
+  String? activeOutboundStepUpChallengeId;
 
   /// Идентификатор текущего экземпляра запущенного процесса (instance_id, Tier 3).
   final String instanceId = generateUuidV4();
@@ -955,8 +974,10 @@ class AuthState extends ChangeNotifier {
     }
 
     final cid = prompt['challenge_id']?.toString();
-    if (cid != null && cid.isNotEmpty && _resolvedChallengeIds.contains(cid)) {
-      return;
+    if (cid != null && cid.isNotEmpty) {
+      if (_resolvedChallengeIds.contains(cid) || cid == activeOutboundStepUpChallengeId) {
+        return;
+      }
     }
     final isNew = activePrompt == null ||
         activePrompt!['challenge_id']?.toString() != cid;
