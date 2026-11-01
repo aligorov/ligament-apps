@@ -630,6 +630,36 @@ class AppStrings {
   String get browserSsoAutoSubtitle => isRu
       ? 'Подтверждать вход по Windows-билету без диалога, если разрешает политика сервера. Выключено по умолчанию.'
       : 'Approve Windows-ticket sign-in without a dialog when server policy allows. Off by default.';
+
+  // --- Step-Up 2FA Verification & Devices ---
+  String get stepUpTitle => isRu ? 'Внешний периметр: Step-Up 2FA' : 'External Perimeter: Step-Up 2FA';
+  String stepUpContext(String ip) => isRu
+      ? 'Вы подключаетесь из внешней сети ($ip). Выберите способ подтверждения:'
+      : 'You are connecting from an external network ($ip). Choose a verification method:';
+  String get stepUpDevicesHeader => isRu ? 'Доверенные устройства (Push с кодом)' : 'Trusted Devices (Push with Code)';
+  String get stepUpQuickHeader => isRu ? 'Быстрые и резервные способы' : 'Quick & Fallback Methods';
+  String get stepUpNoOtherDevices => isRu
+      ? 'Нет других активных устройств пользователя. Используйте Passkey или TOTP.'
+      : 'No other active devices registered. Use Passkey or TOTP.';
+  String get stepUpPasskeyTitle => isRu ? 'Passkey / Биометрия' : 'Passkey / Biometrics';
+  String get stepUpPasskeySub => isRu ? 'Touch ID, Windows Hello или ключ безопасности' : 'Touch ID, Windows Hello, or Security Key';
+  String get stepUpTotpTitle => isRu ? 'Код Authenticator (TOTP)' : 'Authenticator Code (TOTP)';
+  String get stepUpTotpSub => isRu ? '6-значный код из Google Authenticator или Ligament' : '6-digit code from Google Authenticator or Ligament';
+  String get stepUpDeviceOnline => isRu ? 'В сети' : 'Online';
+  String stepUpDeviceLastSeen(String time) => isRu ? 'Был(а) в сети: $time' : 'Last seen: $time';
+  String get stepUpNumberMatchInstruction => isRu
+      ? 'Откройте приложение на выбранном устройстве и выберите это число:'
+      : 'Open the app on the target device and select this number:';
+  String get stepUpWaitingConfirmation => isRu ? 'Ожидание подтверждения…' : 'Waiting for confirmation…';
+  String stepUpSecondsLeft(int sec) => isRu ? 'Осталось: $sec с' : '$sec s remaining';
+  String get stepUpChangeMethod => isRu ? '← Выбрать другой способ' : '← Choose another method';
+  String get stepUpConfirmWithCode => isRu ? 'Подтвердить кодом' : 'Confirm with code';
+  String get stepUpCodePlaceholder => isRu ? 'Введите 6-значный код TOTP' : 'Enter 6-digit TOTP code';
+  String get stepUpRequestDenied => isRu ? 'Запрос был отклонён на устройстве' : 'Request was denied on the device';
+  String get stepUpRequestExpired => isRu ? 'Время ожидания запроса истекло' : 'Request confirmation timed out';
+  String get stepUpSameDeviceBlocked => isRu ? 'Подтверждение на том же устройстве запрещено' : 'Confirmation on the same device is forbidden';
+  String get devicesTitle => isRu ? 'Устройства и входы' : 'Devices & Logins';
+  String get currentDeviceBadge => isRu ? 'Текущее устройство' : 'Current device';
 }
 
 extension BuildContextI18n on BuildContext {

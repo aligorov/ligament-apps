@@ -214,6 +214,12 @@ class ApiClient {
         headers: headers, body: body);
   }
 
+  Future<http.Response> _delete(String url, {Map<String, String>? headers}) {
+    return _request(
+        'DELETE', url, (h) => http.delete(Uri.parse(url), headers: h),
+        headers: headers);
+  }
+
   String _cleanUrl(String path) {
     var base = baseUrl.trim();
     if (base.endsWith('/')) {
@@ -1367,6 +1373,104 @@ class ApiClient {
       data['message']?.toString() ?? '',
       data,
     );
+  }
+
+  /// Fetches available Step-Up 2FA options and other authorized devices.
+  Future<Map<String, dynamic>> getLinkStepUpOptions() async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/link/stepup/options'),
+      headers: _headers(),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'stepup_options_failed',
+      data['message']?.toString() ?? '',
+      data,
+    );
+  }
+
+  /// Begins out-of-band Step-Up push to a specific remote device with Number Matching.
+  Future<Map<String, dynamic>> beginLinkStepUpPush(String targetDeviceId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/stepup/push-begin'),
+      headers: _headers(),
+      body: jsonEncode({'target_device_id': targetDeviceId}),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'stepup_push_begin_failed',
+      data['message']?.toString() ?? '',
+      data,
+    );
+  }
+
+  /// Polls the status of the Step-Up push challenge.
+  Future<Map<String, dynamic>> pollLinkStepUpPush(String challengeId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/stepup/push-poll'),
+      headers: _headers(),
+      body: jsonEncode({'challenge_id': challengeId}),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) return data;
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'stepup_push_poll_failed',
+      data['message']?.toString() ?? '',
+      data,
+    );
+  }
+
+  /// Cancels an active Step-Up push challenge.
+  Future<void> cancelLinkStepUpPush(String challengeId) async {
+    await _post(
+      _cleanUrl('/api/v1/app/link/stepup/push-cancel'),
+      headers: _headers(),
+      body: jsonEncode({'challenge_id': challengeId}),
+    );
+  }
+
+  /// Fetches the authenticated user's active devices and their online status.
+  Future<List<Map<String, dynamic>>> getUserDevices() async {
+    final res = await _get(
+      _cleanUrl('/api/v1/app/devices'),
+      headers: _headers(),
+    );
+    final data = _decodeJsonMap(res.bodyBytes);
+    if (res.statusCode == 200) {
+      final list = data['devices'];
+      if (list is List) {
+        return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      }
+      return [];
+    }
+    throw ApiException(
+      res.statusCode,
+      data['error']?.toString() ?? 'get_devices_failed',
+      data['message']?.toString() ?? '',
+      data,
+    );
+  }
+
+  /// Revokes an authorized device of the user.
+  Future<void> deleteUserDevice(String deviceId) async {
+    final res = await _delete(
+      _cleanUrl('/api/v1/app/devices/$deviceId'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      final data = _decodeJsonMap(res.bodyBytes);
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'delete_device_failed',
+        data['message']?.toString() ?? '',
+        data,
+      );
+    }
   }
 
   /// Posts the operator's SDP/ICE signaling payload to the enrolled agent.

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
@@ -280,6 +281,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Карточка авторизованных устройств и входов
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFF334155)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.devices, color: Color(0xFF38BDF8), size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          s.devicesTitle,
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _showDevicesDialog(context),
+                      icon: const Icon(Icons.visibility_outlined, size: 14),
+                      label: Text(auth.isRu ? 'Список' : 'View', style: const TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF38BDF8),
+                        side: const BorderSide(color: Color(0xFF38BDF8)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                _statusTile(
+                  auth.isRu ? 'Активных устройств' : 'Active devices',
+                  '${user['active_devices'] ?? 1} шт.',
+                  const Color(0xFF38BDF8),
+                ),
+                _statusTile(
+                  auth.isRu ? 'Текущий вход (IP)' : 'Current login (IP)',
+                  auth.clientIp ?? '—',
+                  Colors.white70,
+                ),
               ],
             ),
           ),
@@ -970,6 +1024,181 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
         ],
+      ),
+    );
+  }
+
+  void _showDevicesDialog(BuildContext context) {
+    final s = context.stringsRead;
+    final isRu = s.isRu;
+    final auth = context.read<AuthState>();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF0F172A),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: Color(0xFF334155)),
+            ),
+            title: Row(
+              children: [
+                const Icon(Icons.devices, color: Color(0xFF38BDF8), size: 22),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    s.devicesTitle,
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 500,
+              child: FutureBuilder<List<Map<String, dynamic>>>(
+                future: auth.loadUserDevices(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const SizedBox(
+                      height: 160,
+                      child: Center(child: CircularProgressIndicator(color: Color(0xFF38BDF8))),
+                    );
+                  }
+                  if (snapshot.hasError) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Text(
+                        '${s.networkError}: ${snapshot.error}',
+                        style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                      ),
+                    );
+                  }
+                  final devices = snapshot.data ?? [];
+                  if (devices.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Text(
+                        isRu ? 'Нет активных устройств' : 'No active devices',
+                        style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                      ),
+                    );
+                  }
+
+                  return ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: devices.length,
+                    separatorBuilder: (_, __) => const Divider(color: Color(0xFF334155), height: 16),
+                    itemBuilder: (_, i) {
+                      final dev = devices[i];
+                      final name = dev['device_name']?.toString() ?? 'Device';
+                      final platform = (dev['platform']?.toString() ?? '').toLowerCase();
+                      final isOnline = dev['is_online'] == true;
+                      final isCurrent = dev['is_current'] == true;
+                      final lastIp = dev['last_ip']?.toString() ?? '—';
+                      final lastSeenRaw = dev['last_seen_at']?.toString();
+                      String lastSeenStr = '—';
+                      if (lastSeenRaw != null) {
+                        final dt = DateTime.tryParse(lastSeenRaw)?.toLocal();
+                        if (dt != null) {
+                          lastSeenStr = DateFormat('dd.MM HH:mm').format(dt);
+                        }
+                      }
+
+                      IconData icon = Icons.devices;
+                      if (platform == 'ios') {
+                        icon = Icons.phone_iphone;
+                      } else if (platform == 'android') {
+                        icon = Icons.phone_android;
+                      } else if (platform == 'macos') {
+                        icon = Icons.laptop_mac;
+                      } else if (platform == 'windows') {
+                        icon = Icons.desktop_windows;
+                      } else if (platform.contains('web')) {
+                        icon = Icons.language;
+                      }
+
+                      return Row(
+                        children: [
+                          Icon(icon, color: isOnline ? const Color(0xFF10B981) : const Color(0xFF94A3B8), size: 24),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        name,
+                                        style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    if (isCurrent) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF38BDF8).withValues(alpha: 0.2),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: Text(
+                                          s.currentDeviceBadge,
+                                          style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 9, fontWeight: FontWeight.bold),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                const SizedBox(height: 3),
+                                Row(
+                                  children: [
+                                    if (isOnline) ...[
+                                      const Icon(Icons.circle, color: Color(0xFF10B981), size: 8),
+                                      const SizedBox(width: 4),
+                                      Text(s.stepUpDeviceOnline, style: const TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold)),
+                                    ] else ...[
+                                      const Icon(Icons.circle_outlined, color: Color(0xFF64748B), size: 8),
+                                      const SizedBox(width: 4),
+                                      Text(s.stepUpDeviceLastSeen(lastSeenStr), style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
+                                    ],
+                                    const Text(' · IP: ', style: TextStyle(color: Color(0xFF64748B), fontSize: 11)),
+                                    Text(lastIp, style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (!isCurrent)
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                              tooltip: isRu ? 'Отозвать доступ' : 'Revoke device',
+                              onPressed: () async {
+                                final devId = dev['id']?.toString();
+                                if (devId == null) return;
+                                try {
+                                  await auth.revokeUserDevice(devId);
+                                  setDialogState(() {});
+                                } catch (_) {}
+                              },
+                            ),
+                        ],
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: Text(s.close, style: const TextStyle(color: Color(0xFF94A3B8))),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

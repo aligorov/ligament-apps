@@ -303,6 +303,44 @@ class AuthState extends ChangeNotifier {
     throw StateError(resp['error']?.toString() ?? 'Step-up verification failed');
   }
 
+  /// Получает доступные опции Step-Up 2FA (список других устройств, Passkey, TOTP)
+  Future<Map<String, dynamic>> getStepUpOptions() async {
+    if (api == null) throw StateError('Not connected');
+    return await api!.getLinkStepUpOptions();
+  }
+
+  /// Запускает push-запрос с Number Matching на выбранное устройство
+  Future<Map<String, dynamic>> beginStepUpPush(String targetDeviceId) async {
+    if (api == null) throw StateError('Not connected');
+    return await api!.beginLinkStepUpPush(targetDeviceId);
+  }
+
+  /// Опрашивает статус выполнения push-запроса
+  Future<Map<String, dynamic>> pollStepUpPush(String challengeId) async {
+    if (api == null) throw StateError('Not connected');
+    return await api!.pollLinkStepUpPush(challengeId);
+  }
+
+  /// Отменяет активный push-запрос
+  Future<void> cancelStepUpPush(String challengeId) async {
+    if (api == null) return;
+    try {
+      await api!.cancelLinkStepUpPush(challengeId);
+    } catch (_) {}
+  }
+
+  /// Получает список всех авторизованных устройств пользователя
+  Future<List<Map<String, dynamic>>> loadUserDevices() async {
+    if (api == null) throw StateError('Not connected');
+    return await api!.getUserDevices();
+  }
+
+  /// Отзывает авторизацию устройства
+  Future<void> revokeUserDevice(String deviceId) async {
+    if (api == null) throw StateError('Not connected');
+    await api!.deleteUserDevice(deviceId);
+  }
+
   /// device_id этой сессии (выдаётся сервером при логине, хранится в prefs
   /// под тем же ключом, что у LocalDetectService). Режиму «Экран» (этап
   /// 2.4, план §5.2) он нужен, чтобы отличить инициатора от цели: пуш

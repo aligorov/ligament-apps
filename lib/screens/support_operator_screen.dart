@@ -20,6 +20,7 @@ import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
 import '../models/link_session_policy.dart';
 import '../widgets/remote_pointer_surface.dart';
+import '../widgets/step_up_auth_dialog.dart';
 import '../services/remote_keyboard.dart';
 import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
@@ -952,9 +953,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _peerConnection != null &&
       _peerConnection!.connectionState !=
           RTCPeerConnectionState.RTCPeerConnectionStateClosed &&
-      (!widget.isLink ||
-          (_linkSessionId != null &&
-              _dataChannel?.state != RTCDataChannelState.RTCDataChannelClosed));
+      (!widget.isLink || _linkSessionId != null);
 
   void _triggerIceRestart() {
     if (!_canRestartIce) return;
@@ -983,6 +982,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         _linkSessionId == sessionId;
     _linkIceRestartAttempt = attempt;
     try {
+      if (_dataChannel == null ||
+          _dataChannel!.state == RTCDataChannelState.RTCDataChannelClosed) {
+        try {
+          final channel = await peer!.createDataChannel(
+            'link-control-v1',
+            RTCDataChannelInit()..ordered = true,
+          );
+          _setupDataChannel(channel);
+        } catch (e) {
+          _logConnection('operator.exception',
+              error: e,
+              fields: {'phase': 'recreate_data_channel', 'result': 'failed'});
+        }
+      }
       final offer = await peer!.createOffer({'iceRestart': true});
       if (!isCurrent()) return;
       await peer.setLocalDescription(offer);
@@ -1002,187 +1015,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   Future<String?> _promptStepUpAuth() async {
-    final auth = context.read<AuthState>();
-    final controller = TextEditingController();
-    String? error;
-    bool isSubmitting = false;
-
     if (!mounted) return null;
-    return showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            final isRu = Localizations.localeOf(context).languageCode == 'ru';
-            return AlertDialog(
-              backgroundColor: const Color(0xFF0F172A),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(color: Color(0xFFD97706), width: 1.5),
-              ),
-              title: Row(
-                children: [
-                  const Icon(Icons.security,
-                      color: Color(0xFFF59E0B), size: 24),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      isRu
-                          ? 'Внешний периметр: Step-Up 2FA'
-                          : 'External Perimeter: Step-Up 2FA',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      isRu
-                          ? 'Вы подключаетесь к ПК из внешней сети (${auth.clientIp ?? "внешний IP"}).\nВведите 6-значный код подтверждения TOTP из приложения-аутентификатора:'
-                          : 'You are connecting from an external network (${auth.clientIp ?? "public IP"}).\nEnter your 6-digit TOTP verification code from your authenticator app:',
-                      style: const TextStyle(
-                          color: Color(0xFF94A3B8), fontSize: 13),
-                    ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: controller,
-                      autofocus: true,
-                      keyboardType: TextInputType.number,
-                      maxLength: 6,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        letterSpacing: 8,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                      decoration: InputDecoration(
-                        counterText: '',
-                        hintText: '000000',
-                        hintStyle: const TextStyle(
-                            color: Color(0xFF475569), letterSpacing: 8),
-                        filled: true,
-                        fillColor: const Color(0xFF1E293B),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide:
-                              const BorderSide(color: Color(0xFF334155)),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(
-                              color: Color(0xFFF59E0B), width: 2),
-                        ),
-                      ),
-                      onSubmitted: (val) async {
-                        if (val.trim().length == 6 && !isSubmitting) {
-                          setDialogState(() {
-                            isSubmitting = true;
-                            error = null;
-                          });
-                          try {
-                            final token =
-                                await auth.verifyStepUp(totpCode: val.trim());
-                            if (ctx.mounted) Navigator.of(ctx).pop(token);
-                          } catch (err) {
-                            _logConnection('operator.exception',
-                                error: err,
-                                fields: {
-                                  'phase': 'prompt_step_up_auth',
-                                  'result': 'failed'
-                                });
-                            setDialogState(() {
-                              isSubmitting = false;
-                              error = isRu
-                                  ? 'Неверный код TOTP'
-                                  : 'Invalid TOTP code';
-                            });
-                          }
-                        }
-                      },
-                    ),
-                    if (error != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        error!,
-                        style: const TextStyle(
-                            color: Color(0xFFEF4444),
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed:
-                      isSubmitting ? null : () => Navigator.of(ctx).pop(null),
-                  child: Text(isRu ? 'Отмена' : 'Cancel',
-                      style: const TextStyle(color: Color(0xFF94A3B8))),
-                ),
-                FilledButton(
-                  onPressed: isSubmitting
-                      ? null
-                      : () async {
-                          final code = controller.text.trim();
-                          if (code.length != 6) {
-                            setDialogState(() {
-                              error =
-                                  isRu ? 'Введите 6 цифр' : 'Enter 6 digits';
-                            });
-                            return;
-                          }
-                          setDialogState(() {
-                            isSubmitting = true;
-                            error = null;
-                          });
-                          try {
-                            final token =
-                                await auth.verifyStepUp(totpCode: code);
-                            if (ctx.mounted) Navigator.of(ctx).pop(token);
-                          } catch (err) {
-                            _logConnection('operator.exception',
-                                error: err,
-                                fields: {
-                                  'phase': 'prompt_step_up_auth',
-                                  'result': 'failed'
-                                });
-                            setDialogState(() {
-                              isSubmitting = false;
-                              error = isRu
-                                  ? 'Неверный код TOTP'
-                                  : 'Invalid TOTP code';
-                            });
-                          }
-                        },
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFD97706),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: isSubmitting
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white))
-                      : Text(isRu ? 'Подтвердить кодом' : 'Confirm with code'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
+    return StepUpVerificationDialog.show(context);
   }
 
   bool _sessionTerminatedHandled = false;
@@ -2194,6 +2028,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             origin: 'host_answer');
         return;
       }
+      if (isReconnecting &&
+          peer.signalingState == RTCSignalingState.RTCSignalingStateStable) {
+        // The host worker restarted and sent an answer for a stale offer epoch.
+        // WebRTC cannot apply a remote answer in stable state.
+        // Immediately trigger an ICE restart with a fresh data channel to attach to the new worker.
+        _triggerIceRestart();
+        return;
+      }
       final sdp = message['sdp']?.toString();
       if (sdp != null && sdp.isNotEmpty) {
         try {
@@ -2265,6 +2107,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           });
         }
       }
+      return;
+    }
+
+    final inner = (type == 'input_control' && message['data'] is Map)
+        ? Map<String, dynamic>.from(message['data'] as Map)
+        : message;
+    final innerType = inner['type']?.toString();
+    if (innerType == 'screen_list' ||
+        innerType == 'screen_switched' ||
+        innerType == 'chat_message' ||
+        innerType == 'chat_sync') {
+      _handleDataChannelMessage(inner);
       return;
     }
   }
@@ -2741,6 +2595,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _setupDataChannel(RTCDataChannel channel) {
+    final prevChannel = _dataChannel;
+    if (prevChannel != null && !identical(prevChannel, channel)) {
+      prevChannel.onDataChannelState = null;
+      prevChannel.onMessage = null;
+      try {
+        prevChannel.close();
+      } catch (_) {}
+    }
     _dataChannel = channel;
     void handleState(RTCDataChannelState state) {
       _logConnection('operator.dc.state', fields: {'dc_state': state.name});
@@ -3510,10 +3372,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       // Фолбэк на сигнальный канал — только информационные типы
       // (чат/список экранов/завершение), никакого удалённого ввода.
       try {
-        if (_wsChannel != null) {
+        if (_wsChannel != null || widget.isLink) {
           _sendWsSignal({'type': 'input_control', 'data': msg});
           sent = true;
-          _logDataSend(debugType, 'fallback_requested', 'wss', bytes);
+          _logDataSend(debugType, 'fallback_requested',
+              widget.isLink ? 'http' : 'wss', bytes);
         }
       } catch (error) {
         _logConnection('operator.exception',
