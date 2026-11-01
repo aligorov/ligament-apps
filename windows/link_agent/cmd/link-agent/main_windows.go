@@ -27,7 +27,7 @@ const (
 	stopWaitLimit     = 15 * time.Second
 )
 
-var agentVersion = "1.1.119"
+var agentVersion = "1.1.177"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--capture-worker" {
