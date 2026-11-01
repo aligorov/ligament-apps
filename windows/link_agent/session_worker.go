@@ -153,11 +153,13 @@ func (s *workerSession) sendFrame(msg any) error {
 // SessionWorkerBroker routes WSS session offers/signals to per-session
 // interactive workers and returns only session-scoped worker responses.
 type SessionWorkerBroker struct {
-	launcher  SessionWorkerLauncher
-	updater   *UpdateManager
-	serverURL string
-	mu        sync.Mutex
-	sessions  map[string]*workerSession
+	launcher      SessionWorkerLauncher
+	updater       *UpdateManager
+	rdsSupervisor *RDSSupervisor
+	serverURL     string
+	sender        func(any) error
+	mu            sync.Mutex
+	sessions      map[string]*workerSession
 }
 
 func NewSessionWorkerBroker(launcher SessionWorkerLauncher) *SessionWorkerBroker {
@@ -166,6 +168,24 @@ func NewSessionWorkerBroker(launcher SessionWorkerLauncher) *SessionWorkerBroker
 		updater:  NewUpdateManager(""),
 		sessions: make(map[string]*workerSession),
 	}
+}
+
+// SetRDSSupervisor binds the multi-session terminal server supervisor.
+func (b *SessionWorkerBroker) SetRDSSupervisor(s *RDSSupervisor) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rdsSupervisor = s
+}
+
+// SendFrame sends an application message over the currently active WSS control channel.
+func (b *SessionWorkerBroker) SendFrame(msg any) error {
+	b.mu.Lock()
+	send := b.sender
+	b.mu.Unlock()
+	if send == nil {
+		return errors.New("link agent: no active WSS sender")
+	}
+	return send(msg)
 }
 
 // SetServerURL sets the base server URL used to resolve relative update download paths.
@@ -182,10 +202,11 @@ func (b *SessionWorkerBroker) RebindSender(send func(any) error) {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.sender = send
 	for _, s := range b.sessions {
 		s.setSender(send)
 	}
+	b.mu.Unlock()
 }
 
 // Handler is an AgentMessageHandler suitable for RunAgent.
@@ -252,6 +273,20 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 		go func() {
 			_ = b.updater.ApplyUpdate(context.Background(), srvURL, cmd.DownloadURL, cmd.Version, cmd.DeadlineSec, send)
 		}()
+		return nil
+	case "rdp_session_start_ack":
+		b.mu.Lock()
+		rds := b.rdsSupervisor
+		b.mu.Unlock()
+		if rds != nil {
+			var policy RDSSessionStartPolicy
+			if err := json.Unmarshal(envelope.Payload, &policy); err != nil || policy.SessionID == "" {
+				_ = json.Unmarshal(message, &policy)
+			}
+			go func() {
+				_ = rds.ApplySessionPolicy(ctx, policy)
+			}()
+		}
 		return nil
 	default:
 		// Heartbeats and other service-level frames remain owned by RunAgent.

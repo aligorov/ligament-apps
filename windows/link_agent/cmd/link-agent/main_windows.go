@@ -30,6 +30,10 @@ const (
 var agentVersion = "1.1.119"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--capture-worker" {
+		runCaptureWorkerCLI()
+		return
+	}
 	isService, err := svc.IsWindowsService()
 	if err != nil {
 		log.Fatalf("link agent: detect service context: %v", err)
@@ -39,6 +43,36 @@ func main() {
 	}
 	if err := svc.Run(serviceName, &agentService{}); err != nil {
 		log.Fatalf("link agent: service dispatcher failed: %v", err)
+	}
+}
+
+func runCaptureWorkerCLI() {
+	var pipePath string
+	var sessionID uint32
+	var targetFPS float64 = 1.0
+	var quality int = 65
+
+	for _, arg := range os.Args[2:] {
+		if strings.HasPrefix(arg, "--pipe=") {
+			pipePath = strings.TrimPrefix(arg, "--pipe=")
+		} else if strings.HasPrefix(arg, "--session-id=") {
+			_, _ = fmt.Sscanf(strings.TrimPrefix(arg, "--session-id="), "%d", &sessionID)
+		} else if strings.HasPrefix(arg, "--fps=") {
+			_, _ = fmt.Sscanf(strings.TrimPrefix(arg, "--fps="), "%f", &targetFPS)
+		} else if strings.HasPrefix(arg, "--quality=") {
+			_, _ = fmt.Sscanf(strings.TrimPrefix(arg, "--quality="), "%d", &quality)
+		}
+	}
+
+	if pipePath == "" {
+		log.Fatal("capture worker: missing --pipe argument")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := linkagent.RunCaptureWorker(ctx, pipePath, sessionID, targetFPS, quality); err != nil {
+		log.Fatalf("capture worker failed: %v", err)
 	}
 }
 
@@ -85,6 +119,14 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 		serviceLog(logger, logErr, "[WORKER] "+format, args...)
 	})
 	config.OnConnected = workerBroker.RebindSender
+
+	rdsSupervisor, rdsErr := linkagent.NewRDSSupervisor("", workerBroker.SendFrame, logger)
+	if rdsErr != nil {
+		serviceLog(logger, logErr, "RDS supervisor initialization failed: %v", rdsErr)
+	} else {
+		workerBroker.SetRDSSupervisor(rdsSupervisor)
+		defer rdsSupervisor.StopAll("service_shutdown")
+	}
 	workerResults := make(chan serviceWorkerResult, 2)
 	activeWorkers := 0
 	startRuntime := func() {
@@ -185,6 +227,24 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 				activeConsole := linkagent.GetActiveConsoleSessionID()
 				serviceLog(logger, logErr, "WTS event=%s notification_session_id=%d active_console_session_id=%d",
 					changeName, notification.SessionID, activeConsole)
+
+				if rdsSupervisor != nil {
+					switch request.EventType {
+					case linkagent.WTSSessionLogon, linkagent.WTSRemoteConnect:
+						go func(targetID uint32) {
+							time.Sleep(500 * time.Millisecond)
+							sessions, _ := linkagent.EnumerateAllWTSSessions()
+							for _, s := range sessions {
+								if s.SessionID == targetID {
+									rdsSupervisor.HandleSessionLogon(s)
+									break
+								}
+							}
+						}(notification.SessionID)
+					case linkagent.WTSSessionLogoff, linkagent.WTSRemoteDisconnect:
+						rdsSupervisor.HandleSessionLogoff(notification.SessionID, changeName)
+					}
+				}
 			case svc.Stop, svc.Shutdown:
 				statuses <- svc.Status{State: svc.StopPending, WaitHint: uint32(stopWaitLimit / time.Millisecond)}
 				cancel()

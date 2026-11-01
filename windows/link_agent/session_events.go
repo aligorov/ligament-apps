@@ -1,17 +1,32 @@
 package linkagent
 
+// Windows Service Control Manager WTS Session Change notification constants
 const (
-	wtsConsoleConnect       uint32 = 1
-	wtsConsoleDisconnect    uint32 = 2
-	wtsRemoteConnect        uint32 = 3
-	wtsRemoteDisconnect     uint32 = 4
-	wtsSessionLogon         uint32 = 5
-	wtsSessionLogoff        uint32 = 6
-	wtsSessionLock          uint32 = 7
-	wtsSessionUnlock        uint32 = 8
-	wtsSessionRemoteControl uint32 = 9
-	wtsSessionCreate        uint32 = 10
-	wtsSessionTerminate     uint32 = 11
+	WTSConsoleConnect       uint32 = 1
+	WTSConsoleDisconnect    uint32 = 2
+	WTSRemoteConnect        uint32 = 3
+	WTSRemoteDisconnect     uint32 = 4
+	WTSSessionLogon         uint32 = 5
+	WTSSessionLogoff        uint32 = 6
+	WTSSessionLock          uint32 = 7
+	WTSSessionUnlock        uint32 = 8
+	WTSSessionRemoteControl uint32 = 9
+	WTSSessionCreate        uint32 = 10
+	WTSSessionTerminate     uint32 = 11
+)
+
+const (
+	wtsConsoleConnect       = WTSConsoleConnect
+	wtsConsoleDisconnect    = WTSConsoleDisconnect
+	wtsRemoteConnect        = WTSRemoteConnect
+	wtsRemoteDisconnect     = WTSRemoteDisconnect
+	wtsSessionLogon         = WTSSessionLogon
+	wtsSessionLogoff        = WTSSessionLogoff
+	wtsSessionLock          = WTSSessionLock
+	wtsSessionUnlock        = WTSSessionUnlock
+	wtsSessionRemoteControl = WTSSessionRemoteControl
+	wtsSessionCreate        = WTSSessionCreate
+	wtsSessionTerminate     = WTSSessionTerminate
 )
 
 // SessionChangeName maps the WTS session notification values delivered by the

@@ -161,10 +161,8 @@ func startInteractiveLinkHost(pipeName string, sessionID uint32, desktopName str
 	}
 	appPath := filepath.Join(filepath.Dir(executable), "ligament_authenticator.exe")
 	if info, err := os.Stat(appPath); err != nil || info.IsDir() {
-		return launchedProcess{}, &WorkerLaunchError{
-			Reason: ReasonHostWorkerNotInstalled,
-			Err:    errors.New("link agent: interactive Flutter host is not installed"),
-		}
+		// On headless terminal servers without Flutter GUI, fall back to the agent executable
+		appPath = executable
 	}
 	app, err := windows.UTF16PtrFromString(appPath)
 	if err != nil {
