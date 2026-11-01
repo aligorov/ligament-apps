@@ -48,7 +48,7 @@ func TestRecorderClient_DirectFlush(t *testing.T) {
 	})
 	client.EnqueueEvent(RecordedEvent{
 		Seq:       2,
-		EventKind: "focus_change",
+		EventType: "focus_change",
 	})
 
 	ctx := context.Background()

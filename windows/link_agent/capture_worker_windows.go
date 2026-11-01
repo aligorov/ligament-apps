@@ -12,6 +12,7 @@ import (
 	"image"
 	"image/jpeg"
 	"path/filepath"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -80,6 +81,9 @@ type bitmapInfo struct {
 
 // RunCaptureWorker runs the headless screen capture loop inside a user RDP/WTS session.
 func RunCaptureWorker(ctx context.Context, pipePath string, sessionID uint32, targetFPS float64, quality int) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	if procSetProcessDPIAware.Find() == nil {
 		_, _, _ = procSetProcessDPIAware.Call()
 	}
@@ -166,7 +170,7 @@ func RunCaptureWorker(ctx context.Context, pipePath string, sessionID uint32, ta
 		currentHash := ComputeDHash64(img)
 		winTitle, procName := queryForegroundWindowDetails()
 
-		contentChanged := DHashDistance(currentHash, prevHash) > 0
+		contentChanged := seq == 0 || DHashDistance(currentHash, prevHash) > 0
 		windowChanged := winTitle != prevWinTitle || procName != prevProcName
 
 		if !contentChanged && !windowChanged {
@@ -208,6 +212,8 @@ func RunCaptureWorker(ctx context.Context, pipePath string, sessionID uint32, ta
 	}
 }
 
+var activeInputDesk windows.Handle
+
 func switchInputDesktopSafe() {
 	if procOpenInputDesktop.Find() != nil || procSetThreadDesktop.Find() != nil {
 		return
@@ -217,8 +223,13 @@ func switchInputDesktopSafe() {
 		return
 	}
 	hDesk := windows.Handle(r)
-	_, _, _ = procSetThreadDesktop.Call(uintptr(hDesk))
-	if procCloseDesktop.Find() == nil {
+	ret, _, _ := procSetThreadDesktop.Call(uintptr(hDesk))
+	if ret != 0 {
+		if activeInputDesk != 0 && procCloseDesktop.Find() == nil {
+			_, _, _ = procCloseDesktop.Call(uintptr(activeInputDesk))
+		}
+		activeInputDesk = hDesk
+	} else if procCloseDesktop.Find() == nil {
 		_, _, _ = procCloseDesktop.Call(uintptr(hDesk))
 	}
 }
@@ -366,7 +377,7 @@ func getSystemMetric(idx int) int {
 		return 0
 	}
 	r, _, _ := procGetSystemMetrics.Call(uintptr(idx))
-	return int(r)
+	return int(int32(r))
 }
 
 func writeWorkerMessage(h windows.Handle, msg any) error {

@@ -45,9 +45,11 @@ type RecordedFrame struct {
 // RecordedEvent represents a user interaction or OS lifecycle event in the session.
 type RecordedEvent struct {
 	Seq        int64          `json:"seq"`
-	EventKind  string         `json:"event_kind"` // "focus_change", "lock", "unlock", "logon", "logoff"
+	EventType  string         `json:"event_type"` // "focus_change", "lock", "unlock", "logon", "logoff"
+	ActorID    string         `json:"actor_id,omitempty"`
+	Source     string         `json:"source,omitempty"`
 	OccurredAt string         `json:"occurred_at"`
-	Payload    map[string]any `json:"payload,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 // BatchACK represents the server response after ingesting a batch.
@@ -189,9 +191,35 @@ func (c *RecorderClient) IsThrottled() bool {
 func (c *RecorderClient) Flush(ctx context.Context) error {
 	c.mu.Lock()
 	if len(c.pendingFrames) == 0 && len(c.pendingEvents) == 0 {
+		closed := c.closed
+		lastAck := c.lastAckAt
+		if lastAck.IsZero() {
+			lastAck = c.startedAt
+		}
 		c.mu.Unlock()
 		// Check if there are spooled batches to drain
-		return c.drainSpool(ctx)
+		if err := c.drainSpool(ctx); err != nil {
+			return err
+		}
+		if closed || time.Since(lastAck) < 20*time.Second {
+			return nil
+		}
+		keepaliveBody, err := json.Marshal(map[string]any{
+			"session_id":        c.cfg.SessionID,
+			"epoch":             c.cfg.Epoch,
+			"lease_ttl_seconds": int(c.cfg.LeaseTTL.Seconds()),
+			"frames":            []RecordedFrame{},
+			"events":            []RecordedEvent{},
+		})
+		if err != nil {
+			return nil
+		}
+		if _, err := c.postBatchHTTP(ctx, keepaliveBody); err == nil {
+			c.mu.Lock()
+			c.lastAckAt = time.Now().UTC()
+			c.mu.Unlock()
+		}
+		return nil
 	}
 
 	// Build batch within MaxBatchBytes limit

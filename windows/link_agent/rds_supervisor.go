@@ -100,6 +100,30 @@ func (s *RDSSupervisor) HandleSessionLogon(session WTSSession) {
 	}
 }
 
+// SyncActiveSessions reconciles currently active WTS sessions with the supervisor state.
+func (s *RDSSupervisor) SyncActiveSessions(sessions []WTSSession) {
+	activeIDs := make(map[uint32]bool, len(sessions))
+	for _, sess := range sessions {
+		if (sess.IsRDP || sess.IsActive) && sess.State == WTSActive && sess.Username != "" {
+			activeIDs[sess.SessionID] = true
+			s.HandleSessionLogon(sess)
+		}
+	}
+
+	s.mu.Lock()
+	var staleIDs []uint32
+	for id := range s.sessions {
+		if !activeIDs[id] {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, id := range staleIDs {
+		s.HandleSessionLogoff(id, "session_inactive")
+	}
+}
+
 // HandleSessionLogoff is invoked when a user disconnects or logs off (WTS_SESSION_LOGOFF or WTS_REMOTE_DISCONNECT).
 func (s *RDSSupervisor) HandleSessionLogoff(sessionID uint32, reason string) {
 	s.mu.Lock()

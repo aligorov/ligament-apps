@@ -18,6 +18,14 @@ import (
 )
 
 func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID uint32, active *activeRDSSession, fps float64, quality int) {
+	defer func() {
+		s.mu.Lock()
+		if current, ok := s.sessions[wtsSessionID]; ok && current == active {
+			delete(s.sessions, wtsSessionID)
+		}
+		s.mu.Unlock()
+	}()
+
 	pipeNonce := make([]byte, 8)
 	_, _ = rand.Read(pipeNonce)
 	pipeName := fmt.Sprintf(`\\.\pipe\ligament-rds-%d-%s`, wtsSessionID, hex.EncodeToString(pipeNonce))
@@ -203,7 +211,7 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 					var frame WorkerFrameMessage
 					if json.Unmarshal(payload, &frame) == nil {
 						active.recorder.EnqueueFrame(RecordedFrame{
-							Seq:           frame.Seq,
+							Seq:           active.recorder.NextSeq(),
 							FrameKind:     "periodic",
 							Width:         frame.Width,
 							Height:        frame.Height,
@@ -218,10 +226,11 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 					var ev WorkerEventMessage
 					if json.Unmarshal(payload, &ev) == nil {
 						active.recorder.EnqueueEvent(RecordedEvent{
-							Seq:        ev.Seq,
-							EventKind:  ev.EventKind,
+							Seq:        active.recorder.NextSeq(),
+							EventType:  ev.EventKind,
+							Source:     "host_system",
 							OccurredAt: ev.OccurredAt,
-							Payload:    ev.Payload,
+							Metadata:   ev.Payload,
 						})
 					}
 				}

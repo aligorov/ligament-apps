@@ -277,11 +277,15 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 	case "rdp_session_start_ack":
 		b.mu.Lock()
 		rds := b.rdsSupervisor
+		srvURL := b.serverURL
 		b.mu.Unlock()
 		if rds != nil {
 			var policy RDSSessionStartPolicy
 			if err := json.Unmarshal(envelope.Payload, &policy); err != nil || policy.SessionID == "" {
 				_ = json.Unmarshal(message, &policy)
+			}
+			if strings.HasPrefix(policy.RecorderURL, "/") && srvURL != "" {
+				policy.RecorderURL = strings.TrimRight(srvURL, "/") + policy.RecorderURL
 			}
 			go func() {
 				_ = rds.ApplySessionPolicy(ctx, policy)

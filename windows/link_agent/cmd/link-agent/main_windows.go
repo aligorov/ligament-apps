@@ -27,7 +27,7 @@ const (
 	stopWaitLimit     = 15 * time.Second
 )
 
-var agentVersion = "1.1.180"
+var agentVersion = "1.1.181"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -182,8 +182,6 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 	linkagent.SetWorkerLogger(func(format string, args ...any) {
 		serviceLog(logger, logErr, "[WORKER] "+format, args...)
 	})
-	config.OnConnected = workerBroker.RebindSender
-
 	rdsSupervisor, rdsErr := linkagent.NewRDSSupervisor("", workerBroker.SendFrame, logger)
 	if rdsErr != nil {
 		serviceLog(logger, logErr, "RDS supervisor initialization failed: %v", rdsErr)
@@ -191,14 +189,31 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 		workerBroker.SetRDSSupervisor(rdsSupervisor)
 		defer rdsSupervisor.StopAll("service_shutdown")
 		go func() {
-			time.Sleep(2 * time.Second)
-			sessions, _ := linkagent.EnumerateAllWTSSessions()
-			for _, s := range sessions {
-				if (s.IsRDP || s.IsActive) && s.Username != "" {
-					rdsSupervisor.HandleSessionLogon(s)
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sessions, err := linkagent.EnumerateAllWTSSessions()
+					if err == nil {
+						rdsSupervisor.SyncActiveSessions(sessions)
+					}
 				}
 			}
 		}()
+	}
+	config.OnConnected = func(send func(any) error) {
+		workerBroker.RebindSender(send)
+		if rdsSupervisor != nil {
+			go func() {
+				sessions, err := linkagent.EnumerateAllWTSSessions()
+				if err == nil {
+					rdsSupervisor.SyncActiveSessions(sessions)
+				}
+			}()
+		}
 	}
 	workerResults := make(chan serviceWorkerResult, 2)
 	activeWorkers := 0
@@ -314,7 +329,7 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 
 				if rdsSupervisor != nil {
 					switch request.EventType {
-					case linkagent.WTSSessionLogon, linkagent.WTSRemoteConnect:
+					case linkagent.WTSSessionLogon, linkagent.WTSRemoteConnect, linkagent.WTSConsoleConnect, linkagent.WTSSessionUnlock:
 						go func(targetID uint32) {
 							for attempt := 0; attempt < 3; attempt++ {
 								if attempt > 0 {
