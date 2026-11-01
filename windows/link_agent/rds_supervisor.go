@@ -70,7 +70,7 @@ func (s *RDSSupervisor) logf(format string, args ...any) {
 
 // HandleSessionLogon is invoked when a user logs on (WTS_SESSION_LOGON or WTS_REMOTE_CONNECT).
 func (s *RDSSupervisor) HandleSessionLogon(session WTSSession) {
-	if !session.IsRDP && !session.IsActive {
+	if !session.IsRDP || !session.IsActive {
 		return
 	}
 	if session.Username == "" {
@@ -104,7 +104,7 @@ func (s *RDSSupervisor) HandleSessionLogon(session WTSSession) {
 func (s *RDSSupervisor) SyncActiveSessions(sessions []WTSSession) {
 	activeIDs := make(map[uint32]bool, len(sessions))
 	for _, sess := range sessions {
-		if (sess.IsRDP || sess.IsActive) && sess.State == WTSActive && sess.Username != "" {
+		if sess.IsRDP && sess.State == WTSActive && sess.Username != "" {
 			activeIDs[sess.SessionID] = true
 			s.HandleSessionLogon(sess)
 		}

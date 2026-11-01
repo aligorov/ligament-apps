@@ -34,6 +34,25 @@ func TestRDSSupervisor_Lifecycle(t *testing.T) {
 		t.Fatalf("NewRDSSupervisor: %v", err)
 	}
 
+	// 0. Local console session (IsRDP: false, IsActive: true) must be ignored
+	consoleSession := WTSSession{
+		SessionID:    1,
+		StationName:  "Console",
+		State:        WTSActive,
+		Username:     "localuser",
+		ProtocolType: WTSProtocolConsole,
+		IsRDP:        false,
+		IsConsole:    true,
+		IsActive:     true,
+	}
+	super.HandleSessionLogon(consoleSession)
+	super.SyncActiveSessions([]WTSSession{consoleSession})
+	sentMessagesMu.Lock()
+	if len(sentMessages) != 0 {
+		t.Fatalf("expected local console session to be ignored, got: %+v", sentMessages)
+	}
+	sentMessagesMu.Unlock()
+
 	// 1. Handle logon of RDP session 2
 	session := WTSSession{
 		SessionID:    2,

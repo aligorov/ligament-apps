@@ -70,9 +70,14 @@ func defaultEnumerateAllWTSSessions() ([]WTSSession, error) {
 		session.Domain = queryWTSString(raw.SessionID, wtsInfoDomainName)
 		session.ClientName = queryWTSString(raw.SessionID, wtsInfoClientName)
 		session.ProtocolType = queryWTSProtocolType(raw.SessionID)
-		session.IsRDP = session.ProtocolType == WTSProtocolRDP || strings.HasPrefix(strings.ToUpper(session.StationName), "RDP-")
-		session.IsConsole = session.ProtocolType == WTSProtocolConsole
 		session.ClientIP = queryWTSClientIP(raw.SessionID)
+		session.IsRDP = session.ProtocolType == WTSProtocolRDP ||
+			strings.HasPrefix(strings.ToUpper(session.StationName), "RDP-") ||
+			session.ClientIP != ""
+		if session.IsRDP && session.ProtocolType == 0 {
+			session.ProtocolType = WTSProtocolRDP
+		}
+		session.IsConsole = !session.IsRDP && session.ProtocolType == WTSProtocolConsole
 
 		sessions = append(sessions, session)
 	}

@@ -27,7 +27,7 @@ const (
 	stopWaitLimit     = 15 * time.Second
 )
 
-var agentVersion = "1.1.181"
+var agentVersion = "1.1.182"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -329,7 +329,7 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 
 				if rdsSupervisor != nil {
 					switch request.EventType {
-					case linkagent.WTSSessionLogon, linkagent.WTSRemoteConnect, linkagent.WTSConsoleConnect, linkagent.WTSSessionUnlock:
+					case linkagent.WTSSessionLogon, linkagent.WTSRemoteConnect, linkagent.WTSSessionUnlock:
 						go func(targetID uint32) {
 							for attempt := 0; attempt < 3; attempt++ {
 								if attempt > 0 {
