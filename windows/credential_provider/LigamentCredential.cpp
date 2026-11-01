@@ -1864,25 +1864,16 @@ HRESULT LigamentCredential::ReportResult(
 #endif
 
 // CPLog — файловая диагностика провайдера (winlogon-контекст, прав на
-// отладчик нет): %ProgramData%\Ligament\cp.log через общий hardened-писатель
-// LogCPFileLine (явный DACL SYSTEM/Admins, защита от pre-create/symlink).
+// отладчик нет): направляет вывод в общий LogDebug (%ProgramData%\Ligament\cp.log).
 // Пишутся ТОЛЬКО несекретные детали (имя/домен/длины/пакет/коды NTSTATUS),
 // никогда пароль.
 static void CPLog(const wchar_t* fmt, ...) {
-    wchar_t line[1024];
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    int n = swprintf_s(line, L"[%02u.%02u %02u:%02u:%02u.%03u tid=%lu] ",
-        st.wDay, st.wMonth, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-        GetCurrentThreadId());
-    if (n > 0) {
-        va_list args;
-        va_start(args, fmt);
-        _vsnwprintf_s(line + n, _countof(line) - n, _TRUNCATE, fmt, args);
-        va_end(args);
-    }
-    wcscat_s(line, L"\r\n");
-    LogCPFileLine(line);
+    wchar_t buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    _vsnwprintf_s(buf, _countof(buf), _TRUNCATE, fmt, args);
+    va_end(args);
+    LogDebug(L"%s", buf);
 }
 
 // Имена машины: NetBIOS (домен для ЛОКАЛЬНЫХ учёток у MsV1_0) и DNS-домен

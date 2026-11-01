@@ -63,6 +63,9 @@ constexpr bool ValidField(std::string_view value, std::size_t limit,
 constexpr bool ValidEvent(std::string_view value) noexcept {
   return ValidField(value, 80, false, true);
 }
+constexpr bool ValidLevel(std::string_view value) noexcept {
+  return value == "INFO" || value == "WARN" || value == "ERROR";
+}
 constexpr bool ValidErrorType(std::string_view value) noexcept {
   return ValidField(value, 64, true, false);
 }
@@ -116,17 +119,19 @@ constexpr bool ValidContextValue(std::string_view key, std::string_view value) n
       "request_id", "attempt", "duration_ms", "elapsed_ms", "count", "bytes",
       "response_bytes", "sent_bytes", "received_bytes", "width", "height",
       "frames", "rtt_ms", "queue_bytes", "acked_seq", "seq", "cursor",
-      "ice_servers", "candidates", "tracks", "timeout_ms", "code", "http_status"};
+      "ice_servers", "candidates", "tracks", "timeout_ms", "code", "http_status",
+      "fps", "step", "monitor", "restarts"};
   constexpr std::string_view booleans[] = {
       "connected", "frame_ready", "control_ready", "owner", "recorder_enabled",
-      "mandatory", "first_frame_acked"};
+      "mandatory", "first_frame_acked", "is_relay"};
   constexpr std::string_view labels[] = {
       "phase", "origin", "reason", "state", "ice_state", "pc_state", "dc_state",
-      "message_type", "transport", "operation", "result"};
+      "message_type", "transport", "operation", "result", "status", "codec", "channel",
+      "component"};
   constexpr std::string_view methods[] = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"};
   if (OneOf(key, numbers)) return ValidNumber(value);
   if (OneOf(key, booleans)) return value == "true" || value == "false";
-  if (key == "session_id" || key == "agent_id") return ValidUuid(value);
+  if (key == "session_id" || key == "agent_id" || key == "challenge_id" || key == "target_id") return ValidUuid(value);
   if (OneOf(key, labels)) return ValidErrorCode(value) && !LooksLikeSecret(value);
   if (key == "method") return OneOf(value, methods);
   if (key == "server") {
@@ -175,7 +180,8 @@ bool Write(std::string_view event, std::string_view error_type = {},
            std::string_view error_code = {},
            std::optional<int64_t> os_error = std::nullopt,
            std::string_view context = {},
-           uint32_t* diagnostic_code = nullptr) noexcept;
+           uint32_t* diagnostic_code = nullptr,
+           std::string_view level = {}) noexcept;
 
 }  // namespace debug_log
 

@@ -64,6 +64,12 @@ int main() {
   static_assert(ValidEvent("startup.mode.link_host"));
   static_assert(!ValidEvent("Startup"));
   static_assert(!ValidEvent(""));
+  static_assert(ValidLevel("INFO"));
+  static_assert(ValidLevel("WARN"));
+  static_assert(ValidLevel("ERROR"));
+  static_assert(!ValidLevel("DEBUG"));
+  static_assert(!ValidLevel(""));
+  static_assert(!ValidLevel("info"));
   assert(ValidEvent(std::string(80, 'a')));
   assert(!ValidEvent(std::string(81, 'a')));
   assert(ValidErrorType(std::string(64, 'A')));
@@ -90,7 +96,7 @@ int main() {
   assert(!ValidEvent(std::string_view("a\0b", 3)));
   static_assert(ValidContext(""));
   static_assert(ValidContext("request_id=17 method=POST route=/api/v1/app/link/sessions/{id}/signal server=2fa.example.test:8443 http_status=403 duration_ms=250 reason=access_denied connected=false"));
-  static_assert(ValidContext("session_id=10000000-0000-4000-8000-000000000001 origin=host_answer frame_ready=false queue_bytes=4096 rtt_ms=2.5"));
+  static_assert(ValidContext("session_id=10000000-0000-4000-8000-000000000001 challenge_id=20000000-0000-4000-8000-000000000002 origin=host_answer frame_ready=false queue_bytes=4096 rtt_ms=2.5 fps=60 status=active component=worker"));
   static_assert(!ValidContext("token=private-token"));
   static_assert(!ValidContext("password=private-password"));
   static_assert(!ValidContext("route=/api/v1/app/login?token=private-token"));

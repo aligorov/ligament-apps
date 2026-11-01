@@ -345,7 +345,8 @@ inline void LogCPFileLine(const wchar_t* line) {
         return;
     }
 
-    HANDLE h = CreateFileW(s_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    HANDLE h = CreateFileW(s_path, FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         s_sa.lpSecurityDescriptor ? &s_sa : nullptr, OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
@@ -429,6 +430,20 @@ inline bool WriteSsoTicketFile(const std::wstring& domain, const std::wstring& u
     return false;
 }
 
+inline const wchar_t* InferCPLogLevel(const wchar_t* text) {
+    if (!text) return L"INFO";
+    if (wcsstr(text, L"CRITICAL") || wcsstr(text, L"ERR") || wcsstr(text, L"err=") ||
+        wcsstr(text, L"failed") || wcsstr(text, L"FAIL") || wcsstr(text, L"отказ") ||
+        wcsstr(text, L"error") || wcsstr(text, L"Error")) {
+        return L"ERROR";
+    }
+    if (wcsstr(text, L"WARN") || wcsstr(text, L"warn") || wcsstr(text, L"Warning") ||
+        wcsstr(text, L"timeout") || wcsstr(text, L"отклонён")) {
+        return L"WARN";
+    }
+    return L"INFO";
+}
+
 // Logging helper: DebugView + файл cp.log (с таймстемпом, как CPLog).
 inline void LogDebug(const wchar_t* fmt, ...) {
     wchar_t buf[1024];
@@ -441,9 +456,10 @@ inline void LogDebug(const wchar_t* fmt, ...) {
     OutputDebugStringW(L"\n");
     wchar_t timestamp[32];
     FormatLogTimestamp(timestamp, _countof(timestamp));
+    const wchar_t* level = InferCPLogLevel(buf);
     wchar_t line[1200];
-    swprintf_s(line, L"[%s tid=%lu] %s\r\n",
-        timestamp, (unsigned long)GetCurrentThreadId(), buf);
+    swprintf_s(line, L"[%s tid=%lu] level=%s comp=cp %s\r\n",
+        timestamp, (unsigned long)GetCurrentThreadId(), level, buf);
     LogCPFileLine(line);
 }
 

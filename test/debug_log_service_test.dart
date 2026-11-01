@@ -77,6 +77,7 @@ void main() {
     await logs.flush();
 
     final content = await File(logs.path!).readAsString();
+    expect(content, contains('level=ERROR'));
     expect(content, contains('error_type=PlatformException'));
     expect(content, contains('error_code=storage_unavailable'));
     expect(content, isNot(contains('secret-token')));
@@ -106,6 +107,7 @@ void main() {
     });
     await logs.flush();
     final output = await File(logs.path!).readAsString();
+    expect(output, contains('level=WARN'));
     expect(output, contains('request_id=17'));
     expect(output, contains('http_status=403'));
     expect(output, contains('duration_ms=250'));

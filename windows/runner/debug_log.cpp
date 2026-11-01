@@ -243,9 +243,9 @@ DWORD Rotate(HANDLE current, const std::wstring& path,
   return ::SetEndOfFile(current) ? ERROR_SUCCESS : Win32Failure();
 }
 
-std::string Line(std::string_view event, std::string_view error_type,
-                 std::string_view error_code, std::optional<int64_t> os_error,
-                 std::string_view context) {
+std::string Line(std::string_view event, std::string_view level,
+                 std::string_view error_type, std::string_view error_code,
+                 std::optional<int64_t> os_error, std::string_view context) {
   SYSTEMTIME now{};
   ::GetLocalTime(&now);
   TIME_ZONE_INFORMATION zone{};
@@ -256,14 +256,36 @@ std::string Line(std::string_view event, std::string_view error_type,
   else if (zone_state == TIME_ZONE_ID_STANDARD) bias += zone.StandardBias;
   const LONG offset = -bias;
   const LONG absolute = offset < 0 ? -offset : offset;
-  char prefix[160]{};
+
+  std::string_view resolved_level = level;
+  if (resolved_level.empty() || !ValidLevel(resolved_level)) {
+    if (!error_type.empty() || !error_code.empty() || os_error.has_value() ||
+        (event.size() >= 7 && event.substr(event.size() - 7) == ".failed") ||
+        (event.size() >= 6 && event.substr(event.size() - 6) == ".error")) {
+      resolved_level = "ERROR";
+    } else if (event.find(".blocked") != std::string_view::npos ||
+               event.find(".cancelled") != std::string_view::npos ||
+               event.find(".timeout") != std::string_view::npos ||
+               event.find(".retry") != std::string_view::npos ||
+               event.find(".dropped") != std::string_view::npos ||
+               context.find("result=http_error") != std::string_view::npos ||
+               context.find("http_status=4") != std::string_view::npos ||
+               context.find("http_status=5") != std::string_view::npos) {
+      resolved_level = "WARN";
+    } else {
+      resolved_level = "INFO";
+    }
+  }
+
+  char prefix[180]{};
   const int count = std::snprintf(prefix, sizeof(prefix),
-      "%04u-%02u-%02uT%02u:%02u:%02u.%03u%c%02ld:%02ld pid=%lu tid=%lu event=",
+      "%04u-%02u-%02uT%02u:%02u:%02u.%03u%c%02ld:%02ld pid=%lu tid=%lu level=%.*s event=",
       static_cast<unsigned>(now.wYear), static_cast<unsigned>(now.wMonth),
       static_cast<unsigned>(now.wDay), static_cast<unsigned>(now.wHour),
       static_cast<unsigned>(now.wMinute), static_cast<unsigned>(now.wSecond),
       static_cast<unsigned>(now.wMilliseconds), offset < 0 ? '-' : '+',
-      absolute / 60, absolute % 60, ::GetCurrentProcessId(), ::GetCurrentThreadId());
+      absolute / 60, absolute % 60, ::GetCurrentProcessId(), ::GetCurrentThreadId(),
+      static_cast<int>(resolved_level.size()), resolved_level.data());
   if (count <= 0 || static_cast<size_t>(count) >= sizeof(prefix)) return {};
   std::string line(prefix, static_cast<size_t>(count));
   line.append(event.data(), event.size());
@@ -301,7 +323,8 @@ std::string Line(std::string_view event, std::string_view error_type,
 DWORD Append(std::string_view event, std::string_view error_type = {},
              std::string_view error_code = {},
              std::optional<int64_t> os_error = std::nullopt,
-             std::string_view context = {}) {
+             std::string_view context = {},
+             std::string_view level = {}) {
   if (base_path.empty() || log_path.empty()) return ERROR_PATH_NOT_FOUND;
   LocalMemory descriptor;
   SECURITY_ATTRIBUTES attributes{};
@@ -351,7 +374,7 @@ DWORD Append(std::string_view event, std::string_view error_type = {},
   status = CheckHandle(current.value, detail::SecurityUse::log_file);
   if (status != ERROR_SUCCESS) return status;
   LARGE_INTEGER size{};
-  const std::string line = Line(event, error_type, error_code, os_error, context);
+  const std::string line = Line(event, level, error_type, error_code, os_error, context);
   if (line.empty() || line.size() > static_cast<size_t>(kMaxBytes)) return ERROR_INVALID_DATA;
   if (!::GetFileSizeEx(current.value, &size)) return Win32Failure();
   if (size.QuadPart > kMaxBytes - static_cast<LONGLONG>(line.size())) {
@@ -426,20 +449,22 @@ uint32_t SetEnabled(bool enabled) noexcept {
 
 bool Write(std::string_view event, std::string_view error_type,
            std::string_view error_code, std::optional<int64_t> os_error,
-           std::string_view context, uint32_t* diagnostic_code) noexcept {
+           std::string_view context, uint32_t* diagnostic_code,
+           std::string_view level) noexcept {
   LastErrorGuard error;
   const auto result = [diagnostic_code](DWORD status) {
     if (diagnostic_code) *diagnostic_code = status;
     return status == ERROR_SUCCESS;
   };
   if (!ValidEvent(event) ||
+      (!level.empty() && !ValidLevel(level)) ||
       (!error_type.empty() && !ValidErrorType(error_type)) ||
       (!error_code.empty() && !ValidErrorCode(error_code)) ||
       !ValidContext(context)) return result(ERROR_INVALID_PARAMETER);
   try {
     std::lock_guard<std::mutex> lock(log_mutex);
     if (!ReadEnabled()) return result(ERROR_NOT_READY);
-    return result(Append(event, error_type, error_code, os_error, context));
+    return result(Append(event, error_type, error_code, os_error, context, level));
   } catch (...) { return result(ERROR_NOT_ENOUGH_MEMORY); }
 }
 }  // namespace debug_log

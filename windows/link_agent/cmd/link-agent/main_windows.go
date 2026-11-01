@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -286,24 +287,103 @@ func readWindowsVersion() string {
 	return product + " (build " + build + ")"
 }
 
+type rotatingLogWriter struct {
+	mu      sync.Mutex
+	path    string
+	maxSize int64
+	size    int64
+	file    *os.File
+}
+
+func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return 0, os.ErrInvalid
+	}
+	if w.size+int64(len(p)) > w.maxSize {
+		_ = w.file.Close()
+		_ = os.Rename(w.path, w.path+".1")
+		f, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return 0, err
+		}
+		w.file = f
+		w.size = 0
+	}
+	n, err = w.file.Write(p)
+	w.size += int64(n)
+	return n, err
+}
+
+func (w *rotatingLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file != nil {
+		err := w.file.Close()
+		w.file = nil
+		return err
+	}
+	return nil
+}
+
 func openServiceLog() (*log.Logger, func(), error) {
 	identityPath, err := linkagent.DefaultIdentityStorePath()
 	if err != nil {
 		return nil, func() {}, err
 	}
-	file, err := os.OpenFile(filepath.Join(filepath.Dir(identityPath), "agent.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logPath := filepath.Join(filepath.Dir(identityPath), "agent.log")
+	var initialSize int64
+	if fi, err := os.Stat(logPath); err == nil {
+		if fi.Size() > 5*1024*1024 {
+			_ = os.Rename(logPath, logPath+".1")
+		} else {
+			initialSize = fi.Size()
+		}
+	}
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, func() {}, err
 	}
-	return log.New(file, "link-agent ", 0), func() { _ = file.Close() }, nil
+	writer := &rotatingLogWriter{
+		path:    logPath,
+		maxSize: 5 * 1024 * 1024,
+		size:    initialSize,
+		file:    file,
+	}
+	return log.New(writer, "", 0), func() { _ = writer.Close() }, nil
+}
+
+func inferAgentLogLevel(msg string) string {
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "failed") || strings.Contains(lower, "error") ||
+		strings.Contains(lower, "rejected") || strings.Contains(lower, "stopped") ||
+		strings.Contains(lower, "exceeded") || strings.Contains(lower, "critical") {
+		return "ERROR"
+	}
+	if strings.Contains(lower, "warn") || strings.Contains(lower, "mismatch") ||
+		strings.Contains(lower, "restarting") || strings.Contains(lower, "timeout") {
+		return "WARN"
+	}
+	return "INFO"
 }
 
 func serviceLog(logger *log.Logger, logErr error, format string, args ...any) {
+	raw := fmt.Sprintf(format, args...)
+	comp := "agent"
+	msg := raw
+	if strings.HasPrefix(msg, "[WORKER] ") {
+		comp = "worker"
+		msg = strings.TrimPrefix(msg, "[WORKER] ")
+	}
+	level := inferAgentLogLevel(msg)
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	line := fmt.Sprintf("%s level=%s comp=%s %s\r\n", now, level, comp, msg)
 	if logger != nil {
-		logger.Printf("%s %s", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
+		logger.Print(line)
 		return
 	}
-	log.Printf("link agent (file log unavailable: %v): "+format, append([]any{logErr}, args...)...)
+	log.Printf("link agent (file log unavailable: %v): %s", logErr, strings.TrimRight(line, "\r\n"))
 }
 
 //go:nosplit

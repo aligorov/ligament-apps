@@ -10,8 +10,8 @@ class _ActionLogs extends DebugLogService {
 
   @override
   void record(String event,
-      {Object? error, Map<String, Object?> fields = const {}}) {
-    entries.add({'event': event, ...fields});
+      {String? level, Object? error, Map<String, Object?> fields = const {}}) {
+    entries.add({'event': event, if (level != null) 'level': level, ...fields});
   }
 
   String get text => entries
@@ -25,7 +25,7 @@ void main() {
   setUp(() => logs = _ActionLogs());
 
   testWidgets(
-      'pointer intent and scroll are recorded without labels or position',
+      'pointer intent records down without labels, scroll spam or pointer up',
       (tester) async {
     var tapped = 0;
     await tester.pumpWidget(MaterialApp(
@@ -46,15 +46,15 @@ void main() {
     ));
     expect(tapped, 1);
     expect(logs.text, contains('event=ui.pointer.down'));
-    expect(logs.text, contains('event=ui.pointer.up'));
-    expect(logs.text, contains('operation=scroll'));
+    expect(logs.text, isNot(contains('event=ui.pointer.up')));
+    expect(logs.text, isNot(contains('operation=scroll')));
     expect(logs.text, isNot(contains('private-button-label')));
     expect(logs.text, isNot(contains('position=')));
     expect(logs.text, isNot(contains('scrollDelta=')));
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('keyboard diagnostics redact characters and detach on disposal',
+  testWidgets('keyboard diagnostics record key_down, redact characters and ignore key_up',
       (tester) async {
     await tester.pumpWidget(DebugActionScope(
       debugLogs: logs,
@@ -65,7 +65,7 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     final text = logs.text;
     expect(text, contains('operation=key_down phase=key_redacted'));
-    expect(text, contains('operation=key_up phase=key_redacted'));
+    expect(text, isNot(contains('operation=key_up')));
     expect(text, contains('phase=enter'));
     expect(text, isNot(contains('character=')));
     expect(text, isNot(contains('keyQ')));

@@ -61,6 +61,19 @@ void LogLine(const wchar_t* line) {
     AppendUtf8LogLine(s_path, line);
 }
 
+static const wchar_t* InferServiceLogLevel(const wchar_t* text) {
+    if (!text) return L"INFO";
+    if (wcsstr(text, L"failed") || wcsstr(text, L"FAIL") || wcsstr(text, L"ошибка") ||
+        wcsstr(text, L"error") || wcsstr(text, L"Error") || wcsstr(text, L"CRITICAL")) {
+        return L"ERROR";
+    }
+    if (wcsstr(text, L"WARN") || wcsstr(text, L"warn") || wcsstr(text, L"Warning") ||
+        wcsstr(text, L"timeout")) {
+        return L"WARN";
+    }
+    return L"INFO";
+}
+
 void Log(const wchar_t* fmt, ...) {
     wchar_t body[512];
     va_list args;
@@ -70,8 +83,9 @@ void Log(const wchar_t* fmt, ...) {
 
     wchar_t timestamp[32];
     FormatLogTimestamp(timestamp, _countof(timestamp));
+    const wchar_t* level = InferServiceLogLevel(body);
     wchar_t line[600];
-    swprintf_s(line, L"[%s] %s\r\n", timestamp, body);
+    swprintf_s(line, L"[%s] level=%s comp=service %s\r\n", timestamp, level, body);
     LogLine(line);
 }
 

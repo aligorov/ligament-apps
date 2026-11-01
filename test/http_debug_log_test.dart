@@ -50,6 +50,7 @@ void main() {
       bodies.add(await utf8.decoder.bind(request).join());
       expect(request.headers.value(HttpHeaders.authorizationHeader),
           'Bearer private-bearer-token');
+      expect(request.headers.value('x-request-id'), startsWith('req-'));
       request.response.headers.contentType = ContentType.json;
       request.response.write(jsonEncode({
         'ok': true,

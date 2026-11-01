@@ -52,6 +52,10 @@ class DebugLogService extends ChangeNotifier {
     'timeout_ms',
     'code',
     'http_status',
+    'fps',
+    'step',
+    'monitor',
+    'restarts',
   };
   static const _boolFields = {
     'connected',
@@ -61,6 +65,7 @@ class DebugLogService extends ChangeNotifier {
     'recorder_enabled',
     'mandatory',
     'first_frame_acked',
+    'is_relay',
   };
   static const _labelFields = {
     'phase',
@@ -74,6 +79,10 @@ class DebugLogService extends ChangeNotifier {
     'transport',
     'operation',
     'result',
+    'status',
+    'codec',
+    'channel',
+    'component',
   };
 
   static String protocolLabel(Object? value) => const {
@@ -270,7 +279,10 @@ class DebugLogService extends ChangeNotifier {
         }
       } else if (_boolFields.contains(key) && value is bool) {
         result[key] = value.toString();
-      } else if ((key == 'session_id' || key == 'agent_id') &&
+      } else if ((key == 'session_id' ||
+              key == 'agent_id' ||
+              key == 'challenge_id' ||
+              key == 'target_id') &&
           value is String &&
           _uuidPattern.hasMatch(value)) {
         result[key] = value.toLowerCase();
@@ -399,8 +411,35 @@ class DebugLogService extends ChangeNotifier {
     notifyListeners();
   }
 
+  static String inferLevel(
+    String event, {
+    Object? error,
+    Map<String, Object?> fields = const {},
+  }) {
+    if (error != null || event.endsWith('.failed') || event.endsWith('.error')) {
+      return 'ERROR';
+    }
+    final httpStatus = fields['http_status'];
+    if (httpStatus is num && httpStatus >= 400) {
+      return 'WARN';
+    }
+    final result = fields['result']?.toString();
+    if (result == 'http_error' || result == 'transport_error') {
+      return 'WARN';
+    }
+    if (event.contains('.blocked') ||
+        event.contains('.cancelled') ||
+        event.contains('.timeout') ||
+        event.contains('.retry') ||
+        event.contains('.dropped')) {
+      return 'WARN';
+    }
+    return 'INFO';
+  }
+
   void record(
     String event, {
+    String? level,
     Object? error,
     Map<String, Object?> fields = const {},
   }) {
@@ -416,7 +455,14 @@ class DebugLogService extends ChangeNotifier {
       return;
     }
     _queuedWrites++;
-    final entry = <String, Object>{'event': event};
+    final resolvedLevel =
+        (level != null && const {'INFO', 'WARN', 'ERROR'}.contains(level))
+            ? level
+            : inferLevel(event, error: error, fields: fields);
+    final entry = <String, Object>{
+      'event': event,
+      'level': resolvedLevel,
+    };
     final context = safeFields(fields);
     if (context.isNotEmpty) {
       entry['context'] =
@@ -454,13 +500,30 @@ class DebugLogService extends ChangeNotifier {
         final zone = '${offset.isNegative ? '-' : '+'}'
             '${(absoluteMinutes ~/ 60).toString().padLeft(2, '0')}:'
             '${(absoluteMinutes % 60).toString().padLeft(2, '0')}';
-        final values = entry.entries
-            .where((e) => e.key != 'context')
-            .map((e) => '${e.key}=${e.value}')
-            .join(' ');
+        final ms = now.millisecond.toString().padLeft(3, '0');
+        final datePart = '${now.year.toString().padLeft(4, '0')}-'
+            '${now.month.toString().padLeft(2, '0')}-'
+            '${now.day.toString().padLeft(2, '0')}';
+        final timePart = '${now.hour.toString().padLeft(2, '0')}:'
+            '${now.minute.toString().padLeft(2, '0')}:'
+            '${now.second.toString().padLeft(2, '0')}';
+        final ts = '$datePart${'T'}$timePart.$ms$zone';
+
+        final eventName = entry['event'];
+        final errorType = entry['error_type'];
+        final errorCode = entry['error_code'];
+        final osError = entry['os_error'];
         final details = entry['context'];
-        final line = '${now.toIso8601String()}$zone pid=$pid $values'
-            '${details == null ? '' : ' $details'}\n';
+
+        final sb = StringBuffer('$ts pid=$pid level=$resolvedLevel event=$eventName');
+        if (errorType != null) sb.write(' error_type=$errorType');
+        if (errorCode != null) sb.write(' error_code=$errorCode');
+        if (osError != null) sb.write(' os_error=$osError');
+        if (details != null && (details as String).isNotEmpty) {
+          sb.write(' $details');
+        }
+        sb.write('\n');
+        final line = sb.toString();
         if (await file.exists() &&
             await file.length() + utf8.encode(line).length > maxFileBytes) {
           final backup = File('$path.1');

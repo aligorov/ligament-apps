@@ -1,4 +1,3 @@
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -24,6 +23,7 @@ class _DebugActionScopeState extends State<DebugActionScope> {
   }
 
   bool _keyEvent(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
     final key = event.logicalKey;
     final phase = key == LogicalKeyboardKey.enter
         ? 'enter'
@@ -33,7 +33,7 @@ class _DebugActionScopeState extends State<DebugActionScope> {
                 ? 'tab'
                 : 'key_redacted';
     _logs.record('ui.keyboard', fields: {
-      'operation': event is KeyUpEvent ? 'key_up' : 'key_down',
+      'operation': 'key_down',
       'phase': phase,
       'count': 1,
     });
@@ -52,13 +52,6 @@ class _DebugActionScopeState extends State<DebugActionScope> {
         onPointerDown: (event) => _logs.record('ui.pointer.down', fields: {
           'code': event.buttons,
           'operation': 'pointer_down',
-        }),
-        onPointerUp: (event) => _logs.record('ui.pointer.up', fields: {
-          'operation': 'pointer_up',
-        }),
-        onPointerSignal: (event) => _logs.record('ui.pointer.signal', fields: {
-          'operation':
-              event is PointerScrollEvent ? 'scroll' : 'pointer_signal',
         }),
         child: widget.child,
       );

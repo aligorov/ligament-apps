@@ -140,11 +140,13 @@ class ApiClient {
   }
 
   Future<http.Response> _request(
-      String method, String url, Future<http.Response> Function() send,
-      {String? body, Duration timeout = _requestTimeout}) async {
+      String method, String url, Future<http.Response> Function(Map<String, String> headers) send,
+      {Map<String, String>? headers, String? body, Duration timeout = _requestTimeout}) async {
     final id = _debugLogs.nextRequestId();
     final timer = Stopwatch()..start();
     final uri = Uri.tryParse(url);
+    final effectiveHeaders = Map<String, String>.from(headers ?? _headers());
+    effectiveHeaders.putIfAbsent('X-Request-ID', () => 'req-$id');
     final fields = <String, Object?>{
       'request_id': id,
       'method': method,
@@ -159,7 +161,7 @@ class ApiClient {
     };
     _debugLogs.record('http.request', fields: fields);
     try {
-      final response = await send().timeout(timeout);
+      final response = await send(effectiveHeaders).timeout(timeout);
       timer.stop();
       final error =
           response.statusCode >= 400 && response.bodyBytes.length <= 64 * 1024
@@ -187,28 +189,29 @@ class ApiClient {
 
   Future<http.Response> _get(String url, {Map<String, String>? headers}) {
     return _request(
-        'GET', url, () => http.get(Uri.parse(url), headers: headers));
+        'GET', url, (h) => http.get(Uri.parse(url), headers: h),
+        headers: headers);
   }
 
   Future<http.Response> _post(String url,
       {Map<String, String>? headers, String? body}) {
     return _request('POST', url,
-        () => http.post(Uri.parse(url), headers: headers, body: body),
-        body: body);
+        (h) => http.post(Uri.parse(url), headers: h, body: body),
+        headers: headers, body: body);
   }
 
   Future<http.Response> _put(String url,
       {Map<String, String>? headers, String? body}) {
     return _request('PUT', url,
-        () => http.put(Uri.parse(url), headers: headers, body: body),
-        body: body);
+        (h) => http.put(Uri.parse(url), headers: h, body: body),
+        headers: headers, body: body);
   }
 
   Future<http.Response> _patch(String url,
       {Map<String, String>? headers, String? body}) {
     return _request('PATCH', url,
-        () => http.patch(Uri.parse(url), headers: headers, body: body),
-        body: body);
+        (h) => http.patch(Uri.parse(url), headers: h, body: body),
+        headers: headers, body: body);
   }
 
   String _cleanUrl(String path) {
@@ -323,7 +326,7 @@ class ApiClient {
     final url = client._cleanUrl('/api/v1/status');
     try {
       final res = await client._request(
-          'GET', url, () => http.get(Uri.parse(url)),
+          'GET', url, (h) => http.get(Uri.parse(url), headers: h),
           timeout: const Duration(milliseconds: 1500));
       if (res.statusCode == 200) {
         return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
