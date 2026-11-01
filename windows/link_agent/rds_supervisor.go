@@ -62,6 +62,12 @@ func NewRDSSupervisor(spoolBaseDir string, sendToCore func(any) error, logger *l
 	}, nil
 }
 
+func (s *RDSSupervisor) logf(format string, args ...any) {
+	if s != nil && s.logger != nil {
+		s.logger.Printf(format, args...)
+	}
+}
+
 // HandleSessionLogon is invoked when a user logs on (WTS_SESSION_LOGON or WTS_REMOTE_CONNECT).
 func (s *RDSSupervisor) HandleSessionLogon(session WTSSession) {
 	if !session.IsRDP && !session.IsActive {
@@ -78,10 +84,8 @@ func (s *RDSSupervisor) HandleSessionLogon(session WTSSession) {
 	}
 	s.mu.Unlock()
 
-	if s.logger != nil {
-		s.logger.Printf("[RDS] user logon detected: session=%d user=%s ip=%s",
-			session.SessionID, session.UserAccount(), session.ClientIP)
-	}
+	s.logf("[RDS] user logon detected: session=%d user=%s ip=%s",
+		session.SessionID, session.UserAccount(), session.ClientIP)
 
 	if s.sendToCore != nil {
 		_ = s.sendToCore(map[string]any{
@@ -107,10 +111,8 @@ func (s *RDSSupervisor) HandleSessionLogoff(sessionID uint32, reason string) {
 	delete(s.sessions, sessionID)
 	s.mu.Unlock()
 
-	if s.logger != nil {
-		s.logger.Printf("[RDS] user logoff: session=%d core_id=%s reason=%s",
-			sessionID, sess.coreSessionID, reason)
-	}
+	s.logf("[RDS] user logoff: session=%d core_id=%s reason=%s",
+		sessionID, sess.coreSessionID, reason)
 
 	if sess.cancel != nil {
 		sess.cancel()

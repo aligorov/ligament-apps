@@ -25,18 +25,18 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 
 	pipeNameUTF16, err := windows.UTF16PtrFromString(pipeName)
 	if err != nil {
-		s.logger.Printf("[RDS] encode pipe name failed: %v", err)
+		s.logf("[RDS] encode pipe name failed: %v", err)
 		return
 	}
 
 	sd, err := windows.SecurityDescriptorFromString(linkHostPipeSDDL)
 	if err != nil {
-		s.logger.Printf("[RDS] parse SDDL failed: %v", err)
+		s.logf("[RDS] parse SDDL failed: %v", err)
 		return
 	}
 	absSD, err := sd.ToAbsolute()
 	if err != nil {
-		s.logger.Printf("[RDS] convert SD to absolute failed: %v", err)
+		s.logf("[RDS] convert SD to absolute failed: %v", err)
 		return
 	}
 	secAttrs := windows.SecurityAttributes{
@@ -51,7 +51,7 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 		1, linkHostFrameLimit, linkHostFrameLimit, 0, &secAttrs,
 	)
 	if err != nil {
-		s.logger.Printf("[RDS] create named pipe failed: %v", err)
+		s.logf("[RDS] create named pipe failed: %v", err)
 		return
 	}
 	defer windows.CloseHandle(pipe)
@@ -59,7 +59,7 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 	// Launch worker process in wtsSessionID under LocalSystem token
 	exePath, err := os.Executable()
 	if err != nil {
-		s.logger.Printf("[RDS] resolve executable failed: %v", err)
+		s.logf("[RDS] resolve executable failed: %v", err)
 		return
 	}
 
@@ -71,14 +71,14 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 
 	token, err := systemTokenForSession(wtsSessionID)
 	if err != nil {
-		s.logger.Printf("[RDS] acquire system token for session %d failed: %v", wtsSessionID, err)
+		s.logf("[RDS] acquire system token for session %d failed: %v", wtsSessionID, err)
 		return
 	}
 	defer token.Close()
 
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		s.logger.Printf("[RDS] create job object failed: %v", err)
+		s.logf("[RDS] create job object failed: %v", err)
 		return
 	}
 	defer windows.CloseHandle(job)
@@ -115,7 +115,7 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 		&procInfo,
 	)
 	if err != nil {
-		s.logger.Printf("[RDS] CreateProcessAsUser for session %d failed: %v", wtsSessionID, err)
+		s.logf("[RDS] CreateProcessAsUser for session %d failed: %v", wtsSessionID, err)
 		return
 	}
 	defer windows.CloseHandle(procInfo.Process)
@@ -139,7 +139,7 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !connected {
-		s.logger.Printf("[RDS] worker for session %d failed to connect to pipe in time", wtsSessionID)
+		s.logf("[RDS] worker for session %d failed to connect to pipe in time", wtsSessionID)
 		return
 	}
 
@@ -167,7 +167,7 @@ func (s *RDSSupervisor) runSessionRecording(ctx context.Context, wtsSessionID ui
 		available, peekErr := peekPipeBytes(pipe)
 		if peekErr != nil {
 			if errors.Is(peekErr, windows.ERROR_PIPE_NOT_CONNECTED) || errors.Is(peekErr, windows.ERROR_BROKEN_PIPE) {
-				s.logger.Printf("[RDS] pipe closed for session %d", wtsSessionID)
+				s.logf("[RDS] pipe closed for session %d", wtsSessionID)
 				return
 			}
 			time.Sleep(20 * time.Millisecond)
