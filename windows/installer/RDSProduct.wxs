@@ -34,6 +34,13 @@
                       Name="RdpAgentKey"
                       Type="raw" />
     </Property>
+    <Property Id="ENROLLTOKEN" Secure="yes" Hidden="yes">
+      <RegistrySearch Id="ExistingEnrollToken"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="EnrollToken"
+                      Type="raw" />
+    </Property>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
@@ -79,6 +86,8 @@
           <RegistryValue Name="RDP2FAEnabled" Type="string" Value="1" />
           <RegistryValue Name="RDSRecordingEnabled" Type="string" Value="1" />
           <RegistryValue Name="RdpAgentKey" Type="string" Value="[RDPAGENTKEY]" />
+          <RegistryValue Name="ServerURL" Type="string" Value="[SERVERURL]" />
+          <RegistryValue Name="EnrollToken" Type="string" Value="[ENROLLTOKEN]" />
         </RegistryKey>
       </Component>
 

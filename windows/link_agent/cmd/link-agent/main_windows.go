@@ -27,23 +27,87 @@ const (
 	stopWaitLimit     = 15 * time.Second
 )
 
-var agentVersion = "1.1.178"
+var agentVersion = "1.1.179"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--capture-worker" {
-		runCaptureWorkerCLI()
-		return
+	if len(os.Args) > 1 {
+		switch {
+		case os.Args[1] == "--capture-worker":
+			runCaptureWorkerCLI()
+			return
+		case os.Args[1] == "--enroll" || strings.HasPrefix(os.Args[1], "--enroll="):
+			runEnrollCLI()
+			return
+		case os.Args[1] == "--help" || os.Args[1] == "-h":
+			printCLIUsage()
+			return
+		}
 	}
 	isService, err := svc.IsWindowsService()
 	if err != nil {
 		log.Fatalf("link agent: detect service context: %v", err)
 	}
 	if !isService {
-		log.Fatalf("link agent: %s must be started by the Windows Service Control Manager", serviceName)
+		fmt.Fprintf(os.Stderr, "%s: Windows service binary\n\n", serviceName)
+		fmt.Fprintf(os.Stderr, "Usage:\n")
+		fmt.Fprintf(os.Stderr, "  %s --enroll=<token> [--server=https://...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  (as a Windows service: sc.exe start %s)\n", serviceName)
+		os.Exit(1)
 	}
 	if err := svc.Run(serviceName, &agentService{}); err != nil {
 		log.Fatalf("link agent: service dispatcher failed: %v", err)
 	}
+}
+
+func printCLIUsage() {
+	fmt.Printf("Ligament Link Agent v%s\n\n", agentVersion)
+	fmt.Println("Usage:")
+	fmt.Println("  ligament_link_agent.exe --enroll=<token> [--server=https://...]   Enroll host with server")
+	fmt.Println("  ligament_link_agent.exe --capture-worker --pipe=...               Internal capture worker")
+	fmt.Println("  sc.exe start LigamentLinkAgent                                    Run as Windows Service")
+}
+
+func runEnrollCLI() {
+	var token string
+	var serverURL string
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "--enroll=") {
+			token = strings.TrimPrefix(arg, "--enroll=")
+		} else if strings.HasPrefix(arg, "--server=") {
+			serverURL = strings.TrimPrefix(arg, "--server=")
+		} else if arg != "--enroll" && token == "" && !strings.HasPrefix(arg, "--") {
+			token = arg
+		}
+	}
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "Error: missing enrollment token")
+		fmt.Fprintln(os.Stderr, "Usage: ligament_link_agent.exe --enroll=<token> [--server=https://...]")
+		os.Exit(1)
+	}
+	config, err := readServiceConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading service config: %v\n", err)
+		os.Exit(1)
+	}
+	if serverURL != "" {
+		config.ServerURL = serverURL
+		_, _ = configureBindingServerURL("", serverURL)
+	}
+	if config.ServerURL == "" {
+		fmt.Fprintln(os.Stderr, "Error: ServerURL is not configured. Provide --server=https://... or set HKLM\\SOFTWARE\\Ligament\\2FA\\ServerURL")
+		os.Exit(1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fingerprint, err := linkagent.EnrollAndStoreIdentity(ctx, config, token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Enrollment failed: %v\n", err)
+		os.Exit(1)
+	}
+	deleteRegistryEnrollToken()
+	fmt.Printf("Host enrolled successfully! Fingerprint: %s\n", fingerprint)
+	fmt.Println("The host is now registered. Start the service: sc.exe start LigamentLinkAgent")
 }
 
 func runCaptureWorkerCLI() {
@@ -171,6 +235,17 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 	}
 	if identityErr == nil {
 		startRuntime()
+	} else if enrollToken := readRegistryEnrollToken(); enrollToken != "" {
+		serviceLog(logger, logErr, "found EnrollToken in registry, attempting automatic headless enrollment")
+		fingerprint, err := linkagent.EnrollAndStoreIdentity(ctx, config, enrollToken)
+		if err != nil {
+			serviceLog(logger, logErr, "automatic headless enrollment failed: %v, falling back to local pipe", err)
+			startBinding()
+		} else {
+			serviceLog(logger, logErr, "automatic headless enrollment succeeded: fingerprint=%s", fingerprint)
+			deleteRegistryEnrollToken()
+			startRuntime()
+		}
 	} else {
 		startBinding()
 	}
@@ -321,6 +396,28 @@ func configureBindingServerURL(configuredURL, requestedURL string) (string, erro
 		return "", fmt.Errorf("save ServerURL to HKLM\\%s: %w", serviceRegistry, err)
 	}
 	return serverURL, nil
+}
+
+func readRegistryEnrollToken() string {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, serviceRegistry, registry.QUERY_VALUE|registry.WOW64_64KEY)
+	if err != nil {
+		return ""
+	}
+	defer key.Close()
+	val, _, err := key.GetStringValue("EnrollToken")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(val)
+}
+
+func deleteRegistryEnrollToken() {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, serviceRegistry, registry.SET_VALUE|registry.WOW64_64KEY)
+	if err != nil {
+		return
+	}
+	defer key.Close()
+	_ = key.DeleteValue("EnrollToken")
 }
 
 func readWindowsVersion() string {

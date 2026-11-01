@@ -30,6 +30,7 @@
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="AutoStartupRegistry" />
       <ComponentRef Id="AppServerUrlRegistry" />
+      <ComponentRef Id="AppEnrollTokenRegistry" />
       <ComponentRef Id="UrlProtocolRegistry" />
       <ComponentRef Id="CredentialProviderComponent" />
       <ComponentRef Id="RdpWebAuthnPolicyComponent" />
@@ -60,6 +61,16 @@
                       Root="HKLM"
                       Key="SOFTWARE\Ligament\2FA"
                       Name="RdpAgentKey"
+                      Type="raw" />
+    </Property>
+    <!-- ENROLLTOKEN: одноразовый токен привязки Link-агента при установке без GUI.
+         Служба LigamentLinkAgent при старте автоматически выполняет привязку хоста
+         и удаляет значение EnrollToken из реестра. -->
+    <Property Id="ENROLLTOKEN" Secure="yes" Hidden="yes">
+      <RegistrySearch Id="ExistingEnrollToken"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="EnrollToken"
                       Type="raw" />
     </Property>
     <!-- Локальные authored defaults: AppSearch восстанавливает значения из
@@ -169,6 +180,16 @@
                        Name="ServerURL"
                        Type="string"
                        Value="[SERVERURL]"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Id="AppEnrollTokenRegistry" Guid="3F8A1B2C-4D5E-6A7B-8C9D-0E1F2A3B4C5D" Win64="yes">
+        <Condition>ENROLLTOKEN</Condition>
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\Ligament\2FA"
+                       Name="EnrollToken"
+                       Type="string"
+                       Value="[ENROLLTOKEN]"
                        KeyPath="yes" />
       </Component>
 
