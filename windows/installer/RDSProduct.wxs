@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Product Id="*"
+           Name="Ligament RDS Agent"
+           Language="1033"
+           Codepage="1252"
+           Version="$(var.ProductVersion)"
+           Manufacturer="Ligament Security"
+           UpgradeCode="5C7F4887-F2F8-45F9-CB0D-2FF82DE2C843">
+    <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Platform="x64" Description="Ligament RDS Agent (Terminal Server Edition - Headless)" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Ligament RDS Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="RDSProductFeature" Title="Ligament RDS Agent" Level="1">
+      <ComponentRef Id="LinkAgentServiceComponent" />
+      <ComponentRef Id="CredentialProviderComponent" />
+      <ComponentRef Id="RdpWebAuthnPolicyComponent" />
+      <ComponentRef Id="SpoolDirectoryComponent" />
+    </Feature>
+
+    <Property Id="SERVERURL" Secure="yes">
+      <RegistrySearch Id="ExistingServerUrl"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="ServerURL"
+                      Type="raw" />
+    </Property>
+    <Property Id="RDPAGENTKEY" Secure="yes" Hidden="yes">
+      <RegistrySearch Id="ExistingRdpAgentKey"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="RdpAgentKey"
+                      Type="raw" />
+    </Property>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="LigamentProgramFilesFolder" Name="Ligament">
+          <Directory Id="INSTALLFOLDER" Name="RDS Agent" />
+        </Directory>
+      </Directory>
+      <Directory Id="System64Folder" />
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="LigamentAppDataFolder" Name="Ligament">
+          <Directory Id="SPOOLFOLDER" Name="Spool" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="System64Folder">
+      <Component Id="CredentialProviderComponent" Guid="D2A8E1B3-4C7F-4B9A-8E0D-3C4B5A6D7E8F" Win64="yes">
+        <File Id="LigamentCPDll"
+              Name="LigamentCredentialProvider.dll"
+              Source="windows/credential_provider/build/Release/LigamentCredentialProvider.dll"
+              KeyPath="yes" />
+
+        <!-- COM InprocServer32 Registration -->
+        <RegistryKey Root="HKCR" Key="CLSID\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider" />
+          <RegistryKey Key="InprocServer32">
+            <RegistryValue Type="string" Value="[System64Folder]LigamentCredentialProvider.dll" />
+            <RegistryValue Name="ThreadingModel" Type="string" Value="Apartment" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <!-- Windows Credential Provider Registration -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider" />
+        </RegistryKey>
+
+        <!-- Windows Credential Provider Filter Registration -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Provider Filters\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider Filter" />
+        </RegistryKey>
+
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Ligament\2FA">
+          <RegistryValue Name="RDP2FAEnabled" Type="string" Value="1" />
+          <RegistryValue Name="RDSRecordingEnabled" Type="string" Value="1" />
+          <RegistryValue Name="RdpAgentKey" Type="string" Value="[RDPAGENTKEY]" />
+        </RegistryKey>
+      </Component>
+
+      <Component Id="RdpWebAuthnPolicyComponent" Guid="E3B9F2C4-5D8A-4C0B-9F1E-4D5C6B7E8F9A" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services">
+          <RegistryValue Name="fEnableWebAuthn" Type="integer" Value="1" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="LinkAgentServiceComponent" Guid="F4C0A3D5-6E9B-4D1C-A02F-5E6D7C8F9A0B" Win64="yes">
+        <File Id="LigamentLinkAgentServiceExe"
+              Name="ligament_link_agent.exe"
+              Source="windows/link_agent/build/Release/ligament_link_agent.exe"
+              KeyPath="yes" />
+        <ServiceInstall Name="LigamentLinkAgent"
+                        DisplayName="Ligament RDS Agent"
+                        Description="Ligament Terminal Server headless agent: multi-session WTS supervision and recording"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="ignore" />
+        <ServiceControl Id="LigamentLinkAgentServiceControl"
+                        Name="LigamentLinkAgent"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="SPOOLFOLDER">
+      <Component Id="SpoolDirectoryComponent" Guid="A5D1B4E6-7F0C-4E2D-B13A-6F7E8D9A0B1C" Win64="yes">
+        <CreateFolder>
+          <util:PermissionEx User="SYSTEM" GenericAll="yes" />
+          <util:PermissionEx User="Administrators" GenericAll="yes" />
+        </CreateFolder>
+      </Component>
+    </DirectoryRef>
+  </Product>
+</Wix>
