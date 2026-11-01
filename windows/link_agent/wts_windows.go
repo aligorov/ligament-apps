@@ -4,6 +4,7 @@ package linkagent
 
 import (
 	"errors"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -69,7 +70,7 @@ func defaultEnumerateAllWTSSessions() ([]WTSSession, error) {
 		session.Domain = queryWTSString(raw.SessionID, wtsInfoDomainName)
 		session.ClientName = queryWTSString(raw.SessionID, wtsInfoClientName)
 		session.ProtocolType = queryWTSProtocolType(raw.SessionID)
-		session.IsRDP = session.ProtocolType == WTSProtocolRDP
+		session.IsRDP = session.ProtocolType == WTSProtocolRDP || strings.HasPrefix(strings.ToUpper(session.StationName), "RDP-")
 		session.IsConsole = session.ProtocolType == WTSProtocolConsole
 		session.ClientIP = queryWTSClientIP(raw.SessionID)
 

@@ -1513,6 +1513,26 @@ class ApiClient {
     throw ApiException(res.statusCode, errCode);
   }
 
+  /// Продление lease прямого локального RDP-сеанса (LAN/VPN).
+  Future<void> rdpHeartbeat(String sessionId) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/rdp/heartbeat'),
+      headers: _headers(),
+      body: jsonEncode({
+        'session_id': sessionId,
+      }),
+    );
+    if (res.statusCode == 200) {
+      return;
+    }
+    String errCode = 'rdp_heartbeat_failed';
+    try {
+      final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+      errCode = errObj['error']?.toString() ?? errCode;
+    } catch (_) {}
+    throw ApiException(res.statusCode, errCode);
+  }
+
   /// Начало церемонии подтверждения доступа через WebAuthn / Passkey.
   Future<Map<String, dynamic>> rdpMfaPasskeyBegin({
     required String targetId,

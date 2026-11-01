@@ -266,7 +266,17 @@ class RdpConnectorService extends ChangeNotifier {
     if (directSocket != null) {
       // Прямой маршрут в локальной сети успешен: клеймим сессию в Core
       try {
-        await _traceAwait('direct_claim', () => api.rdpDirectClaim(grantId: grantId, token: token));
+        final claimRes = await _traceAwait('direct_claim', () => api.rdpDirectClaim(grantId: grantId, token: token));
+        final sId = claimRes['session_id']?.toString();
+        if (sId != null && sId.isNotEmpty) {
+          session.serverSessionId = sId;
+          session.heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+            if (_session != session) return;
+            unawaited(api.rdpHeartbeat(sId).catchError((Object error) {
+              DebugLogService.instance.record('rdp.heartbeat.failed', error: error);
+            }));
+          });
+        }
       } catch (e) {
         try { directSocket.destroy(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
         await _teardownListener(session);
@@ -734,6 +744,7 @@ class RdpConnectorService extends ChangeNotifier {
     DebugLogService.instance.record('rdp.finish.started', fields: {'reason': reason.name, 'phase': _phase.name});
     _session = null;
     s.grantTtl?.cancel();
+    s.heartbeatTimer?.cancel();
     _cleanupTempRdpFile(s);
     // mstsc рвём всегда, КРОМЕ случая «пользователь сам закрыл mstsc» —
     // там процесс уже завершился.
@@ -800,6 +811,7 @@ class RdpConnectorService extends ChangeNotifier {
 
   Future<void> _quietTeardown(_RdpTunnelSession s, IOWebSocketChannel? ws) async {
     s.grantTtl?.cancel();
+    s.heartbeatTimer?.cancel();
     _cleanupTempRdpFile(s);
     try {
       s.remote?.destroy();
@@ -814,6 +826,7 @@ class RdpConnectorService extends ChangeNotifier {
   /// гасим удалённую ногу, локальный сокет и слушатель.
   Future<void> _quietTeardownBridge(_RdpTunnelSession s) async {
     s.grantTtl?.cancel();
+    s.heartbeatTimer?.cancel();
     _cleanupTempRdpFile(s);
     try {
       s.socket?.destroy();
@@ -829,6 +842,7 @@ class RdpConnectorService extends ChangeNotifier {
     final s = _session;
     _session = null;
     s?.grantTtl?.cancel();
+    s?.heartbeatTimer?.cancel();
     if (s != null) {
       _cleanupTempRdpFile(s);
     }
@@ -877,6 +891,8 @@ class _RdpTunnelSession {
   Process? mstsc;
   File? tempRdpFile;
   Timer? grantTtl;
+  Timer? heartbeatTimer;
+  String? serverSessionId;
 
   _RdpTunnelSession({required this.grantId});
 }

@@ -27,7 +27,7 @@ const (
 	stopWaitLimit     = 15 * time.Second
 )
 
-var agentVersion = "1.1.179"
+var agentVersion = "1.1.180"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -190,6 +190,15 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 	} else {
 		workerBroker.SetRDSSupervisor(rdsSupervisor)
 		defer rdsSupervisor.StopAll("service_shutdown")
+		go func() {
+			time.Sleep(2 * time.Second)
+			sessions, _ := linkagent.EnumerateAllWTSSessions()
+			for _, s := range sessions {
+				if (s.IsRDP || s.IsActive) && s.Username != "" {
+					rdsSupervisor.HandleSessionLogon(s)
+				}
+			}
+		}()
 	}
 	workerResults := make(chan serviceWorkerResult, 2)
 	activeWorkers := 0
@@ -307,12 +316,18 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 					switch request.EventType {
 					case linkagent.WTSSessionLogon, linkagent.WTSRemoteConnect:
 						go func(targetID uint32) {
-							time.Sleep(500 * time.Millisecond)
-							sessions, _ := linkagent.EnumerateAllWTSSessions()
-							for _, s := range sessions {
-								if s.SessionID == targetID {
-									rdsSupervisor.HandleSessionLogon(s)
-									break
+							for attempt := 0; attempt < 3; attempt++ {
+								if attempt > 0 {
+									time.Sleep(1 * time.Second)
+								} else {
+									time.Sleep(500 * time.Millisecond)
+								}
+								sessions, _ := linkagent.EnumerateAllWTSSessions()
+								for _, s := range sessions {
+									if s.SessionID == targetID && s.Username != "" {
+										rdsSupervisor.HandleSessionLogon(s)
+										return
+									}
 								}
 							}
 						}(notification.SessionID)
