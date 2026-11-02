@@ -294,9 +294,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
   final StreamController<Map<String, dynamic>> _fsStreamController =
       StreamController<Map<String, dynamic>>.broadcast();
   String? _customDownloadDir;
-  bool _isWindowFocused = true;
   bool _isAppInForeground = true;
-  bool _autoSyncClipboard = false; // По умолчанию ВЫКЛ для защиты от утечек DLP
+  bool _autoSyncClipboard = true; // Активный двусторонний буфер обмена по умолчанию
   String? _lastSentLocalClipboardText;
   String? _lastRemoteClipboardText;
   Timer? _clipboardWatcherTimer;
@@ -304,9 +303,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
   bool get _canSyncLocalClipboard =>
       _autoSyncClipboard &&
-      _isWindowFocused &&
       _isAppInForeground &&
-      _keyboardFocus.hasFocus &&
       _controlReady &&
       !_isCleanedUp &&
       !_isViewOnlySession;
@@ -1376,20 +1373,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
   @override
   void onWindowFocus() {
-    _isWindowFocused = true;
+    _syncLocalClipboardNow();
   }
 
   @override
-  void onWindowBlur() {
-    _isWindowFocused = false;
-  }
+  void onWindowBlur() {}
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _isAppInForeground = state == AppLifecycleState.resumed;
-    if (state != AppLifecycleState.resumed) {
-      _isWindowFocused = false;
-    }
   }
 
   @override
@@ -2723,6 +2715,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
           });
         });
         _startClipboardWatcher();
+        _syncLocalClipboardNow();
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
         _clipboardWatcherTimer?.cancel();
         _clipboardWatcherTimer = null;
@@ -3920,8 +3913,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
       return;
     }
     _lastRemoteClipboardText = text;
+    _lastSentLocalClipboardText = text;
     Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(context.stringsRead.clipboardActiveSyncNotice),
@@ -3932,16 +3927,19 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
     }
   }
 
-  Future<void> _syncLocalClipboardBeforePaste() async {
-    try {
-      final clip = await Clipboard.getData(Clipboard.kTextPlain);
+  void _syncLocalClipboardNow() {
+    if (!_canSyncLocalClipboard) return;
+    Clipboard.getData(Clipboard.kTextPlain).then((clip) {
+      if (!_canSyncLocalClipboard) return;
       final text = clip?.text;
-      if (text != null && text.isNotEmpty && text != _lastRemoteClipboardText) {
+      if (text != null &&
+          text.isNotEmpty &&
+          text != _lastRemoteClipboardText &&
+          text != _lastSentLocalClipboardText) {
         _lastSentLocalClipboardText = text;
         _sendDataMessage({'type': 'clipboard_set', 'text': text});
-        await Future.delayed(const Duration(milliseconds: 40));
       }
-    } catch (_) {}
+    }).catchError((_) {});
   }
 
   void _startClipboardWatcher() {
@@ -3949,20 +3947,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
     if (!_autoSyncClipboard) return;
 
     _clipboardWatcherTimer =
-        Timer.periodic(const Duration(milliseconds: 1500), (_) async {
-      if (!_canSyncLocalClipboard) return;
-      try {
-        final clip = await Clipboard.getData(Clipboard.kTextPlain);
-        if (!_canSyncLocalClipboard) return;
-        final text = clip?.text;
-        if (text != null &&
-            text.isNotEmpty &&
-            text != _lastRemoteClipboardText &&
-            text != _lastSentLocalClipboardText) {
-          _lastSentLocalClipboardText = text;
-          _sendDataMessage({'type': 'clipboard_set', 'text': text});
-        }
-      } catch (_) {}
+        Timer.periodic(const Duration(milliseconds: 750), (_) {
+      _syncLocalClipboardNow();
     });
   }
 
@@ -6272,6 +6258,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
                             });
                             if (_autoSyncClipboard) {
                               _startClipboardWatcher();
+                              _syncLocalClipboardNow();
                             } else {
                               _clipboardWatcherTimer?.cancel();
                               _clipboardWatcherTimer = null;
@@ -6341,6 +6328,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
                         });
                         if (_autoSyncClipboard) {
                           _startClipboardWatcher();
+                          _syncLocalClipboardNow();
                         } else {
                           _clipboardWatcherTimer?.cancel();
                           _clipboardWatcherTimer = null;
@@ -6749,11 +6737,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
                 // Active clipboard: перехват Ctrl+V / Cmd+V для опережающей синхронизации буфера
                 if (isCtrlOrCmd && isKeyV && isDown) {
-                  _syncLocalClipboardBeforePaste().then((_) {
-                    if (mounted && _controlReady) {
-                      _sendDataMessage(msg);
-                    }
-                  });
+                  _syncLocalClipboardNow();
+                  _sendDataMessage(msg);
                   return KeyEventResult.handled;
                 }
 
@@ -6778,6 +6763,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
                   _sendPointerEvent('move', ev, 0);
                 },
                 onPointerDown: (ev) {
+                  _syncLocalClipboardNow();
                   if (!_controlReady) {
                     _logConnection('operator.action.blocked', fields: {
                       'reason': 'control_unavailable',

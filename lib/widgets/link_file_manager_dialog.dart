@@ -72,6 +72,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   List<FsEntry> _localEntries = [];
   FsEntry? _selectedLocalEntry;
   bool _isLoadingLocal = false;
+  List<String> _localDrives = [];
 
   // Удалённая файловая система
   String _remotePath = '';
@@ -80,6 +81,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   FsEntry? _selectedRemoteEntry;
   bool _isLoadingRemote = false;
   String? _remoteError;
+  List<String> _remoteDrives = [];
 
   StreamSubscription<Map<String, dynamic>>? _fsSub;
   int _reqCounter = 0;
@@ -129,6 +131,10 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
       final path = msg['path']?.toString() ?? '';
       final parent = msg['parent']?.toString() ?? '';
       final rawEntries = msg['entries'] as List<dynamic>? ?? [];
+      final rawDrives = msg['drives'] as List<dynamic>?;
+      if (rawDrives != null && rawDrives.isNotEmpty) {
+        _remoteDrives = rawDrives.map((e) => e.toString()).toList();
+      }
       final isWin = path.contains('\\') || path.contains(':');
       final page = msg['page'] as int?;
       final totalPages = msg['total_pages'] as int?;
@@ -174,7 +180,15 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
     try {
       String startPath = '';
       if (!kIsWeb && Platform.isWindows) {
-        startPath = Platform.environment['USERPROFILE'] ?? 'C:\\';
+        final drives = <String>[];
+        for (final letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
+          final d = '$letter:\\';
+          if (Directory(d).existsSync()) {
+            drives.add(d);
+          }
+        }
+        _localDrives = drives;
+        startPath = Platform.environment['USERPROFILE'] ?? (drives.isNotEmpty ? drives.first : 'C:\\');
       } else if (!kIsWeb && (Platform.isMacOS || Platform.isLinux)) {
         startPath = Platform.environment['HOME'] ?? '/';
       } else {
@@ -278,10 +292,8 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   }
 
   void _navigateRemoteUp() {
-    if (_remoteParent.isNotEmpty) {
+    if (_remoteParent.isNotEmpty && _remoteParent != _remotePath) {
       _requestRemoteList(_remoteParent);
-    } else {
-      _requestRemoteList('');
     }
   }
 
@@ -488,6 +500,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
                       entries: _localEntries,
                       selectedEntry: _selectedLocalEntry,
                       isLoading: _isLoadingLocal,
+                      drives: _localDrives,
                       onNavigateUp: _navigateLocalUp,
                       onRefresh: () => _loadLocalDirectory(_localPath),
                       onCreateFolder: _createLocalFolder,
@@ -579,6 +592,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
                       entries: _remoteEntries,
                       selectedEntry: _selectedRemoteEntry,
                       isLoading: _isLoadingRemote,
+                      drives: _remoteDrives,
                       errorMessage: _remoteError,
                       onNavigateUp: _navigateRemoteUp,
                       onRefresh: () => _requestRemoteList(_remotePath),
@@ -615,6 +629,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
     required List<FsEntry> entries,
     required FsEntry? selectedEntry,
     required bool isLoading,
+    List<String> drives = const [],
     String? errorMessage,
     required VoidCallback onNavigateUp,
     required VoidCallback onRefresh,
@@ -680,7 +695,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
           ),
         ),
 
-        // Поле пути
+        // Поле пути и диски
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
@@ -702,6 +717,46 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (drives.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                for (final d in drives)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: () {
+                        if (isRemote) {
+                          _requestRemoteList(d);
+                        } else {
+                          _loadLocalDirectory(d);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: path.toLowerCase().startsWith(d.toLowerCase())
+                                ? (isRemote ? const Color(0xFF10B981) : const Color(0xFF38BDF8))
+                                : Colors.transparent,
+                            width: 1,
+                          ),
+                        ),
+                        child: Text(
+                          d,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: path.toLowerCase().startsWith(d.toLowerCase())
+                                ? (isRemote ? const Color(0xFF10B981) : const Color(0xFF38BDF8))
+                                : (isDark ? Colors.white70 : Colors.black87),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ],
           ),
         ),

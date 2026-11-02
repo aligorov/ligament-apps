@@ -1315,6 +1315,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   String? _pendingScreenId;
   final Map<String, _LinkActiveFileDownload> _activeDownloads = {};
   final List<Map<String, dynamic>> _pendingChatMessages = [];
+  Timer? _hostClipboardWatcherTimer;
+  String? _lastSentHostClipboardText;
   int _mouseMessages = 0;
   int _mouseBytes = 0;
   int _mousePolicyBlocked = 0;
@@ -1959,7 +1961,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           markPeerConnected('data_channel');
           _sendScreenList();
           _flushPendingChatMessages();
+          _startHostClipboardWatcher();
         } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
+          _stopHostClipboardWatcher();
           if (identical(_control, channel)) {
             _control = null;
           }
@@ -2384,7 +2388,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         _handleFsMkdir(input);
       } else if (type == 'clipboard_set') {
         final text = input['text']?.toString() ?? '';
-        if (text.length <= 65536) {
+        if (text.length <= LinkSessionPolicy.maxClipboardLength &&
+            policy.allowClipboardIn) {
+          _lastSentHostClipboardText = text;
           Clipboard.setData(ClipboardData(text: text));
         }
       } else if (type == 'clipboard_get') {
@@ -2392,6 +2398,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           if (_closed || !policy.allowClipboardOut || !_allowControl) return;
           final text = clip?.text ?? '';
           if (text.length > LinkSessionPolicy.maxClipboardLength) return;
+          _lastSentHostClipboardText = text;
           final control = _control;
           if (control == null) {
             _peerLog('link.data.outbound', fields: {
@@ -2432,6 +2439,38 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         'type': 'input_error',
       });
     }
+  }
+
+  void _startHostClipboardWatcher() {
+    _hostClipboardWatcherTimer?.cancel();
+    if (!policy.allowClipboardOut) return;
+    _hostClipboardWatcherTimer =
+        Timer.periodic(const Duration(milliseconds: 750), (_) async {
+      if (_closed || !_allowControl || !policy.allowClipboardOut) return;
+      try {
+        final clip = await Clipboard.getData(Clipboard.kTextPlain);
+        final text = clip?.text;
+        if (text != null &&
+            text.isNotEmpty &&
+            text.length <= LinkSessionPolicy.maxClipboardLength &&
+            text != _lastSentHostClipboardText) {
+          _lastSentHostClipboardText = text;
+          final control = _control;
+          if (control != null &&
+              control.state == RTCDataChannelState.RTCDataChannelOpen) {
+            final encoded =
+                jsonEncode({'type': 'clipboard_data', 'text': text});
+            _observeDataEnqueue(control.send(RTCDataChannelMessage(encoded)),
+                'clipboard_data', utf8.encode(encoded).length);
+          }
+        }
+      } catch (_) {}
+    });
+  }
+
+  void _stopHostClipboardWatcher() {
+    _hostClipboardWatcherTimer?.cancel();
+    _hostClipboardWatcherTimer = null;
   }
 
   bool _sendControlJson(Map<String, dynamic> payload) {
@@ -2784,12 +2823,32 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     String targetPath = rawPath;
     if (targetPath.isEmpty) {
       if (!kIsWeb && Platform.isWindows) {
-        targetPath = Platform.environment['USERPROFILE'] ?? (drives.isNotEmpty ? drives.first : 'C:\\');
+        final sysDrive = Platform.environment['SystemDrive'] ??
+            (drives.isNotEmpty ? drives.first.replaceAll('\\', '') : 'C:');
+        final usersDir = '$sysDrive\\Users';
+        if (Directory(usersDir).existsSync()) {
+          targetPath = usersDir;
+        } else if (Directory('C:\\Users').existsSync()) {
+          targetPath = 'C:\\Users';
+        } else {
+          final profile = Platform.environment['USERPROFILE'];
+          if (profile != null &&
+              !profile.toLowerCase().contains('systemprofile') &&
+              Directory(profile).existsSync()) {
+            targetPath = profile;
+          } else {
+            targetPath = drives.isNotEmpty ? drives.first : 'C:\\';
+          }
+        }
       } else if (!kIsWeb) {
         targetPath = Platform.environment['HOME'] ?? '/';
       } else {
         targetPath = '/';
       }
+    } else if (!kIsWeb &&
+        Platform.isWindows &&
+        RegExp(r'^[A-Za-z]:$').hasMatch(targetPath)) {
+      targetPath = '$targetPath\\';
     }
 
     try {
@@ -3088,6 +3147,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   @override
   Future<void> close() async {
     if (_closed) return;
+    _stopHostClipboardWatcher();
     _flushMouseSummary();
     _peerLog('link.peer.close', fields: {'result': 'begin'});
     _closed = true;
