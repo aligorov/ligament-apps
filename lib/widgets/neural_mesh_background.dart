@@ -61,30 +61,71 @@ class _ThemeMeshConfig {
     lineOpacityMultiplier: 0.40,
   );
 
-  static const nordicFrost = _ThemeMeshConfig(
-    backgroundColor: Color(0xFFF8FAFC),
+  static const midnightBlack = _ThemeMeshConfig(
+    backgroundColor: Color(0xFF050507),
     gradient: RadialGradient(
-      center: Alignment(0.2, -0.4),
-      radius: 1.2,
+      center: Alignment(0.0, -0.6),
+      radius: 1.35,
       colors: [
-        Color(0x143B82F6),
-        Color(0x0CE2E8F0),
-        Color(0xFFF8FAFC),
+        Color(0x2438BDF8),
+        Color(0x0A0F172A),
+        Color(0xFF050507),
       ],
       stops: [0.0, 0.5, 1.0],
     ),
-    cyanColor: Color(0xFF3B82F6),
-    indigoColor: Color(0xFF64748B),
-    lineColor: Color(0xFF60A5FA),
-    lineOpacityMultiplier: 0.20,
+    cyanColor: Color(0xFF60A5FA),
+    indigoColor: Color(0xFF475569),
+    lineColor: Color(0xFF94A3B8),
+    lineOpacityMultiplier: 0.25,
+  );
+
+  static const emeraldMatrix = _ThemeMeshConfig(
+    backgroundColor: Color(0xFF04100E),
+    gradient: RadialGradient(
+      center: Alignment(0.2, -0.5),
+      radius: 1.25,
+      colors: [
+        Color(0x28059669),
+        Color(0x14047857),
+        Color(0xFF04100E),
+      ],
+      stops: [0.0, 0.45, 1.0],
+    ),
+    cyanColor: Color(0xFF34D399),
+    indigoColor: Color(0xFF059669),
+    lineColor: Color(0xFF10B981),
+    lineOpacityMultiplier: 0.35,
+  );
+
+  static const nordicAurora = _ThemeMeshConfig(
+    backgroundColor: Color(0xFF090E1A),
+    gradient: RadialGradient(
+      center: Alignment(-0.2, -0.5),
+      radius: 1.3,
+      colors: [
+        Color(0x280EA5E9),
+        Color(0x1E14B8A6),
+        Color(0xFF090E1A),
+      ],
+      stops: [0.0, 0.45, 1.0],
+    ),
+    cyanColor: Color(0xFF38BDF8),
+    indigoColor: Color(0xFF2DD4BF),
+    lineColor: Color(0xFF2DD4BF),
+    lineOpacityMultiplier: 0.32,
   );
 
   static _ThemeMeshConfig fromTheme(String theme) {
     switch (theme) {
       case 'deep_cyber':
         return deepCyber;
+      case 'midnight_black':
+        return midnightBlack;
+      case 'emerald_matrix':
+        return emeraldMatrix;
+      case 'nordic_aurora':
       case 'nordic_frost':
-        return nordicFrost;
+        return nordicAurora;
       case 'slate_minimal':
       default:
         return slateMinimal;
@@ -92,7 +133,7 @@ class _ThemeMeshConfig {
   }
 }
 
-/// Адаптивный фон со стилями тем оформления (Slate Minimal, Deep Cyber, Nordic Frost)
+/// Адаптивный фон со стилями тем оформления (Slate Minimal, Deep Cyber, Midnight Black, Emerald Matrix, Nordic Aurora)
 /// и режимами энергосбережения:
 /// - animated: плавная фоновая динамика с автоматической паузой при потере фокуса / минимизации
 /// - static: статичное фиксированное созвездие (0% CPU / без таймеров и нагрузки на VDI)

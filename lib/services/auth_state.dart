@@ -182,10 +182,11 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> setAppTheme(String theme) async {
-    if (_appTheme == theme) return;
-    _appTheme = theme;
+    final normalized = theme == 'nordic_frost' ? 'nordic_aurora' : theme;
+    if (_appTheme == normalized) return;
+    _appTheme = normalized;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_appThemeKey, theme);
+    await prefs.setString(_appThemeKey, normalized);
     notifyListeners();
   }
 
@@ -880,7 +881,8 @@ class AuthState extends ChangeNotifier {
     _userAlwaysOnTop = prefs.getBool(_alwaysOnTopKey) ?? false;
     _bringToFrontOnPrompt = prefs.getBool(_bringToFrontPromptKey) ?? false;
     _bringToFrontOnMessage = prefs.getBool(_bringToFrontMessageKey) ?? false;
-    _appTheme = prefs.getString(_appThemeKey) ?? 'slate_minimal';
+    final savedTheme = prefs.getString(_appThemeKey) ?? 'slate_minimal';
+    _appTheme = savedTheme == 'nordic_frost' ? 'nordic_aurora' : savedTheme;
     _bgAnimation = prefs.getString(_bgAnimationKey) ?? 'static';
 
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {

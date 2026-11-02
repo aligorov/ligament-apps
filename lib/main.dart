@@ -296,16 +296,41 @@ ThemeData _buildAppTheme(String themeName) {
         scaffoldBackgroundColor: const Color(0xFF060913),
         useMaterial3: true,
       );
+    case 'midnight_black':
+      return ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF60A5FA),
+          secondary: Color(0xFF94A3B8),
+          surface: Color(0xFF121214),
+          error: Color(0xFFEF4444),
+        ),
+        scaffoldBackgroundColor: const Color(0xFF050507),
+        useMaterial3: true,
+      );
+    case 'emerald_matrix':
+      return ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF10B981),
+          secondary: Color(0xFF34D399),
+          surface: Color(0xFF061814),
+          error: Color(0xFFEF4444),
+        ),
+        scaffoldBackgroundColor: const Color(0xFF04100E),
+        useMaterial3: true,
+      );
+    case 'nordic_aurora':
     case 'nordic_frost':
       return ThemeData(
-        brightness: Brightness.light,
-        colorScheme: const ColorScheme.light(
-          primary: Color(0xFF0284C7),
-          secondary: Color(0xFF38BDF8),
-          surface: Color(0xFFFFFFFF),
-          error: Color(0xFFDC2626),
+        brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF38BDF8),
+          secondary: Color(0xFF2DD4BF),
+          surface: Color(0xFF0F172A),
+          error: Color(0xFFEF4444),
         ),
-        scaffoldBackgroundColor: const Color(0xFFF8FAFC),
+        scaffoldBackgroundColor: const Color(0xFF090E1A),
         useMaterial3: true,
       );
     case 'slate_minimal':

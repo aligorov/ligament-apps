@@ -524,32 +524,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF94A3B8)),
                 ),
                 const SizedBox(height: 8),
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
                     _themeChip(
                       label: auth.isRu ? 'Slate Dark' : 'Slate Dark',
                       themeKey: 'slate_minimal',
                       activeTheme: auth.appTheme,
                       color: const Color(0xFF0F172A),
+                      accentColor: const Color(0xFF38BDF8),
                       icon: Icons.nightlight_round,
                       onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
                     ),
-                    const SizedBox(width: 8),
                     _themeChip(
                       label: auth.isRu ? 'Cyber Neon' : 'Cyber Neon',
                       themeKey: 'deep_cyber',
                       activeTheme: auth.appTheme,
                       color: const Color(0xFF060913),
+                      accentColor: const Color(0xFF22D3EE),
                       icon: Icons.auto_awesome,
                       onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
                     ),
-                    const SizedBox(width: 8),
                     _themeChip(
-                      label: auth.isRu ? 'Nordic Light' : 'Nordic Light',
-                      themeKey: 'nordic_frost',
+                      label: auth.isRu ? 'Midnight OLED' : 'Midnight OLED',
+                      themeKey: 'midnight_black',
                       activeTheme: auth.appTheme,
-                      color: const Color(0xFFF8FAFC),
-                      icon: Icons.wb_sunny_outlined,
+                      color: const Color(0xFF050507),
+                      accentColor: const Color(0xFF60A5FA),
+                      icon: Icons.dark_mode_outlined,
+                      onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
+                    ),
+                    _themeChip(
+                      label: auth.isRu ? 'Emerald Matrix' : 'Emerald Matrix',
+                      themeKey: 'emerald_matrix',
+                      activeTheme: auth.appTheme,
+                      color: const Color(0xFF04100E),
+                      accentColor: const Color(0xFF10B981),
+                      icon: Icons.terminal_rounded,
+                      onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
+                    ),
+                    _themeChip(
+                      label: auth.isRu ? 'Nordic Aurora' : 'Nordic Aurora',
+                      themeKey: 'nordic_aurora',
+                      activeTheme: auth.appTheme,
+                      color: const Color(0xFF090E1A),
+                      accentColor: const Color(0xFF2DD4BF),
+                      icon: Icons.ac_unit_rounded,
                       onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
                     ),
                   ],
@@ -1369,56 +1390,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String themeKey,
     required String activeTheme,
     required Color color,
+    required Color accentColor,
     required IconData icon,
     required ValueChanged<String> onSelected,
   }) {
-    final selected = activeTheme == themeKey;
-    return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () => onSelected(themeKey),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-          decoration: BoxDecoration(
-            color: selected
-                ? const Color(0xFF38BDF8).withValues(alpha: 0.18)
-                : const Color(0xFF0F172A).withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: selected ? const Color(0xFF38BDF8) : const Color(0xFF334155),
-              width: selected ? 1.5 : 1.0,
+    final selected = activeTheme == themeKey || (activeTheme == 'nordic_frost' && themeKey == 'nordic_aurora');
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => onSelected(themeKey),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+        decoration: BoxDecoration(
+          color: selected
+              ? const Color(0xFF38BDF8).withValues(alpha: 0.18)
+              : const Color(0xFF0F172A).withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: selected ? const Color(0xFF38BDF8) : const Color(0xFF334155),
+            width: selected ? 1.5 : 1.0,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 14,
+              height: 14,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(color: accentColor, width: 2),
+              ),
             ),
-          ),
-          child: Column(
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 14,
-                    height: 14,
-                    decoration: BoxDecoration(
-                      color: color,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white24, width: 1),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Icon(icon, size: 14, color: selected ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8)),
-                ],
+            const SizedBox(width: 8),
+            Icon(icon, size: 14, color: selected ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8)),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                color: selected ? Colors.white : const Color(0xFF94A3B8),
               ),
-              const SizedBox(height: 6),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                  color: selected ? Colors.white : const Color(0xFF94A3B8),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

@@ -93,16 +93,24 @@ void main() {
       expect(notifyCount, 4);
 
       await auth.setAppTheme('nordic_frost');
-      expect(auth.appTheme, equals('nordic_frost'));
+      expect(auth.appTheme, equals('nordic_aurora'));
       expect(notifyCount, 5);
+
+      await auth.setAppTheme('midnight_black');
+      expect(auth.appTheme, equals('midnight_black'));
+      expect(notifyCount, 6);
+
+      await auth.setAppTheme('emerald_matrix');
+      expect(auth.appTheme, equals('emerald_matrix'));
+      expect(notifyCount, 7);
 
       await auth.setBgAnimation('animated');
       expect(auth.bgAnimation, equals('animated'));
-      expect(notifyCount, 6);
+      expect(notifyCount, 8);
 
       await auth.setBgAnimation('off');
       expect(auth.bgAnimation, equals('off'));
-      expect(notifyCount, 7);
+      expect(notifyCount, 9);
     });
   });
 
@@ -131,8 +139,18 @@ void main() {
       await tester.pump();
       expect(find.text('Protected Surface'), findsOneWidget);
 
-      // Change theme to nordic_frost
-      await auth.setAppTheme('nordic_frost');
+      // Change theme to nordic_aurora
+      await auth.setAppTheme('nordic_aurora');
+      await tester.pump();
+      expect(find.text('Protected Surface'), findsOneWidget);
+
+      // Change theme to midnight_black
+      await auth.setAppTheme('midnight_black');
+      await tester.pump();
+      expect(find.text('Protected Surface'), findsOneWidget);
+
+      // Change theme to emerald_matrix
+      await auth.setAppTheme('emerald_matrix');
       await tester.pump();
       expect(find.text('Protected Surface'), findsOneWidget);
 
@@ -171,7 +189,9 @@ void main() {
       // Check Theme chips
       expect(find.text('Slate Dark'), findsOneWidget);
       expect(find.text('Cyber Neon'), findsOneWidget);
-      expect(find.text('Nordic Light'), findsOneWidget);
+      expect(find.text('Midnight OLED'), findsOneWidget);
+      expect(find.text('Emerald Matrix'), findsOneWidget);
+      expect(find.text('Nordic Aurora'), findsOneWidget);
 
       // Check Animation mode chips
       expect(find.text('Анимация'), findsOneWidget);
