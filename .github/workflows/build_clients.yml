@@ -165,7 +165,6 @@ jobs:
           (cd windows/link_agent && go test ./... && go vet ./... && go build -trimpath -ldflags="-linkmode=external -s -w -X main.unixAgentVersion=${TAG_VER}" -o ../../build/macos-link-agent ./cmd/link-agent)
           flutter build macos --release --no-tree-shake-icons --obfuscate --split-debug-info=build/macos_symbols
           install -m 755 build/macos-link-agent 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-agent'
-          install -m 755 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/Ligament 2FA' 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/ligament_authenticator'
           codesign --force --sign - 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-agent'
           app_path='build/macos/Build/Products/Release/Ligament 2FA.app'
           # Flutter signs the app before Link's agent and LaunchAgent files are

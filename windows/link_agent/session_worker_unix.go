@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -29,6 +30,25 @@ type UnixSessionWorkerLauncher struct{}
 
 func NewNativeSessionWorkerLauncher() SessionWorkerLauncher {
 	return NewUnixSessionWorkerLauncher()
+}
+
+func resolveUnixWorkerExecutable(agentExecutable string) string {
+	dir := filepath.Dir(agentExecutable)
+	if runtime.GOOS == "darwin" {
+		candidates := []string{
+			filepath.Join(dir, "link-worker-darwin"),
+			filepath.Join(dir, "..", "Helpers", "link-worker-darwin"),
+			filepath.Join(dir, "Ligament 2FA"),
+		}
+		for _, candidate := range candidates {
+			clean := filepath.Clean(candidate)
+			if info, err := os.Stat(clean); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+				return clean
+			}
+		}
+		return filepath.Join(dir, "link-worker-darwin")
+	}
+	return filepath.Join(dir, "ligament_authenticator")
 }
 
 func NewUnixSessionWorkerLauncher() *UnixSessionWorkerLauncher {
@@ -82,7 +102,7 @@ func (*UnixSessionWorkerLauncher) Launch(ctx context.Context, _ SessionOffer, of
 			Err:    fmt.Errorf("link agent: locate agent executable: %w", err),
 		}
 	}
-	appPath := filepath.Join(filepath.Dir(executable), "ligament_authenticator")
+	appPath := resolveUnixWorkerExecutable(executable)
 	if info, err := os.Stat(appPath); err != nil || info.IsDir() || info.Mode()&0111 == 0 {
 		_ = listener.Close()
 		_ = os.RemoveAll(base)

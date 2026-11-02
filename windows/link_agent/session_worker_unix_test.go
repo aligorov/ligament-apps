@@ -10,6 +10,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -206,3 +208,48 @@ func TestUnixWorkerCloseKillsChildAndRemovesPrivateDirectory(t *testing.T) {
 		t.Fatalf("private worker directory still exists: %v", err)
 	}
 }
+
+func TestResolveUnixWorkerExecutable(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := dir + "/link-agent"
+
+	if runtime.GOOS == "darwin" {
+		// 1. Prefer native helper if present
+		nativeHelper := dir + "/link-worker-darwin"
+		if err := os.WriteFile(nativeHelper, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if got := resolveUnixWorkerExecutable(agentPath); got != nativeHelper {
+			t.Fatalf("expected native helper %q, got %q", nativeHelper, got)
+		}
+
+		// 2. Fall back to bundle binary "Ligament 2FA"
+		_ = os.Remove(nativeHelper)
+		bundleBinary := dir + "/Ligament 2FA"
+		if err := os.WriteFile(bundleBinary, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if got := resolveUnixWorkerExecutable(agentPath); got != bundleBinary {
+			t.Fatalf("expected bundle binary %q, got %q", bundleBinary, got)
+		}
+
+		// 3. Helpers directory candidate
+		_ = os.Remove(bundleBinary)
+		helpersDir := dir + "/../Helpers"
+		_ = os.MkdirAll(helpersDir, 0755)
+		helperInHelpers := filepath.Clean(helpersDir + "/link-worker-darwin")
+		if err := os.WriteFile(helperInHelpers, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(helpersDir)
+		if got := resolveUnixWorkerExecutable(agentPath); got != helperInHelpers {
+			t.Fatalf("expected helper in Helpers %q, got %q", helperInHelpers, got)
+		}
+	} else {
+		expected := dir + "/ligament_authenticator"
+		if got := resolveUnixWorkerExecutable(agentPath); got != expected {
+			t.Fatalf("expected linux binary %q, got %q", expected, got)
+		}
+	}
+}
+
