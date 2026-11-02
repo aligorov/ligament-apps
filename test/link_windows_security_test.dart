@@ -8,5 +8,13 @@ void main() {
       // On non-Windows platforms (like macOS runner), it safely returns false.
       expect(isSensitive, isA<bool>());
     });
+
+    test('getWindowsDrives does not throw and returns valid list', () {
+      final drives = LinkWindowsSecurity.getWindowsDrives();
+      expect(drives, isA<List<String>>());
+      for (final d in drives) {
+        expect(d.endsWith(':\\'), isTrue);
+      }
+    });
   });
 }

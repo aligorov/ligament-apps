@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../i18n/app_strings.dart';
+import '../services/link_windows_security.dart';
 
 /// Элемент файловой системы (локальный или удалённый)
 class FsEntry {
@@ -84,6 +85,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   List<String> _remoteDrives = [];
 
   StreamSubscription<Map<String, dynamic>>? _fsSub;
+  Timer? _remoteRequestTimeoutTimer;
   int _reqCounter = 0;
   final Map<String, Completer<Map<String, dynamic>>> _pendingRequests = {};
 
@@ -94,11 +96,14 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
     super.initState();
     _initLocalFs();
     _fsSub = widget.fsStream.listen(_handleFsMessage);
-    _requestRemoteList('');
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _requestRemoteList('');
+    });
   }
 
   @override
   void dispose() {
+    _remoteRequestTimeoutTimer?.cancel();
     _fsSub?.cancel();
     for (final completer in _pendingRequests.values) {
       if (!completer.isCompleted) {
@@ -110,6 +115,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   }
 
   void _handleFsMessage(Map<String, dynamic> msg) {
+    _remoteRequestTimeoutTimer?.cancel();
     final reqId = (msg['req_id'] ?? msg['request_id'])?.toString();
     if (reqId != null && _pendingRequests.containsKey(reqId)) {
       _pendingRequests.remove(reqId)?.complete(msg);
@@ -180,15 +186,9 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
     try {
       String startPath = '';
       if (!kIsWeb && Platform.isWindows) {
-        final drives = <String>[];
-        for (final letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
-          final d = '$letter:\\';
-          if (Directory(d).existsSync()) {
-            drives.add(d);
-          }
-        }
-        _localDrives = drives;
-        startPath = Platform.environment['USERPROFILE'] ?? (drives.isNotEmpty ? drives.first : 'C:\\');
+        _localDrives = LinkWindowsSecurity.getWindowsDrives();
+        startPath = Platform.environment['USERPROFILE'] ??
+            (_localDrives.isNotEmpty ? _localDrives.first : r'C:\');
       } else if (!kIsWeb && (Platform.isMacOS || Platform.isLinux)) {
         startPath = Platform.environment['HOME'] ?? '/';
       } else {
@@ -271,15 +271,34 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   }
 
   void _requestRemoteList(String path) {
+    _remoteRequestTimeoutTimer?.cancel();
     setState(() {
       _isLoadingRemote = true;
       _remoteError = null;
     });
     final reqId = 'req_${++_reqCounter}_${DateTime.now().millisecondsSinceEpoch}';
-    widget.sendDataMessage({
+    final sent = widget.sendDataMessage({
       'type': 'fs_list',
       'path': path,
       'req_id': reqId,
+    });
+    if (!sent) {
+      if (mounted) {
+        setState(() {
+          _isLoadingRemote = false;
+          _remoteError = 'Канал передачи данных не активен';
+        });
+      }
+      return;
+    }
+    // Таймаут на случай непредвиденной сетевой задержки или недоступности
+    _remoteRequestTimeoutTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && _isLoadingRemote) {
+        setState(() {
+          _isLoadingRemote = false;
+          _remoteError = 'Таймаут получения списка файлов с удалённого хоста (8 сек)';
+        });
+      }
     });
   }
 
@@ -817,9 +836,37 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
                 )
               : errorMessage != null
                   ? Center(
-                      child: Text(
-                        'Ошибка: $errorMessage',
-                        style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline,
+                                size: 36, color: Color(0xFFEF4444)),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Ошибка: $errorMessage',
+                              style: const TextStyle(
+                                  color: Color(0xFFEF4444), fontSize: 12),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 12),
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isDark
+                                    ? const Color(0xFF1E293B)
+                                    : const Color(0xFFE2E8F0),
+                                foregroundColor:
+                                    isDark ? Colors.white : Colors.black87,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 8),
+                              ),
+                              icon: const Icon(Icons.refresh, size: 16),
+                              label: Text(strings.fileManagerRefresh),
+                              onPressed: onRefresh,
+                            ),
+                          ],
+                        ),
                       ),
                     )
                   : entries.isEmpty

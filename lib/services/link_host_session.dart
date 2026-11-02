@@ -2380,7 +2380,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       } else if (type == 'file_end') {
         unawaited(_handleFileEnd(input));
       } else if (type == 'fs_list') {
-        _handleFsList(input);
+        unawaited(_handleFsList(input));
       } else if (type == 'fs_download_start') {
         unawaited(_handleFsDownloadStart(input));
       } else if (type == 'fs_delete') {
@@ -2798,7 +2798,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     }
   }
 
-  void _handleFsList(Map<String, dynamic> input) {
+  Future<void> _handleFsList(Map<String, dynamic> input) async {
     final reqId = (input['req_id'] ?? input['request_id'])?.toString();
     if (!policy.allowFileTransfer) {
       _sendControlJson({
@@ -2813,12 +2813,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     final rawPath = input['path']?.toString().trim() ?? '';
     final List<String> drives = [];
     if (!kIsWeb && Platform.isWindows) {
-      for (final letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
-        final d = '$letter:\\';
-        if (Directory(d).existsSync()) {
-          drives.add(d);
-        }
-      }
+      drives.addAll(LinkWindowsSecurity.getWindowsDrives());
     } else if (!kIsWeb) {
       drives.add('/');
     }
@@ -2864,25 +2859,42 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       }
 
       final entries = <Map<String, dynamic>>[];
-      for (final entity in dir.listSync(followLinks: false)) {
-        try {
-          final isDir = entity is Directory;
-          final stat = entity.statSync();
-          final name = entity.uri.pathSegments.where((s) => s.isNotEmpty).last;
-          entries.add({
-            'name': name,
-            'is_dir': isDir,
-            'size': isDir ? 0 : stat.size,
-            'mtime': stat.modified.millisecondsSinceEpoch,
-          });
-        } catch (_) {}
-      }
+      // Асинхронное перечисление с изолированной обработкой ошибок каждого элемента,
+      // чтобы junction points (All Users, Default User) и защищенные профили не срывали листинг
+      try {
+        await for (final entity
+            in dir.list(followLinks: false).handleError((_) {})) {
+          try {
+            final isDir = entity is Directory;
+            int size = 0;
+            int mtime = 0;
+            try {
+              final stat = await entity.stat();
+              size = isDir ? 0 : stat.size;
+              mtime = stat.modified.millisecondsSinceEpoch;
+            } catch (_) {}
+            final name = entity.path
+                .split(RegExp(r'[\\/]'))
+                .lastWhere((s) => s.isNotEmpty, orElse: () => '');
+            if (name.isNotEmpty) {
+              entries.add({
+                'name': name,
+                'is_dir': isDir,
+                'size': size,
+                'mtime': mtime,
+              });
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
 
       entries.sort((a, b) {
         final aDir = a['is_dir'] == true;
         final bDir = b['is_dir'] == true;
         if (aDir != bDir) return aDir ? -1 : 1;
-        return (a['name'] as String).toLowerCase().compareTo((b['name'] as String).toLowerCase());
+        return (a['name'] as String)
+            .toLowerCase()
+            .compareTo((b['name'] as String).toLowerCase());
       });
 
       String? parentPath;

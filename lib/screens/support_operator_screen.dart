@@ -295,7 +295,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
   final StreamController<Map<String, dynamic>> _fsStreamController =
       StreamController<Map<String, dynamic>>.broadcast();
   String? _customDownloadDir;
-  bool _isAppInForeground = true;
   bool _autoSyncClipboard = true; // Активный двусторонний буфер обмена по умолчанию
   String? _lastSentLocalClipboardText;
   String? _lastRemoteClipboardText;
@@ -304,7 +303,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
   bool get _canSyncLocalClipboard =>
       _autoSyncClipboard &&
-      _isAppInForeground &&
       _controlReady &&
       !_isCleanedUp &&
       !_isViewOnlySession;
@@ -1382,7 +1380,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _isAppInForeground = state == AppLifecycleState.resumed;
+    if (state == AppLifecycleState.resumed) {
+      _syncLocalClipboardNow();
+    }
   }
 
   @override
@@ -3943,6 +3943,27 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
         _sendDataMessage({'type': 'clipboard_set', 'text': text});
       }
     }).catchError((_) {});
+  }
+
+  void _handlePasteKeyAhead(Map<String, dynamic> keyMsg) {
+    if (!_canSyncLocalClipboard) {
+      _sendDataMessage(keyMsg);
+      return;
+    }
+    Clipboard.getData(Clipboard.kTextPlain).then((clip) {
+      final text = clip?.text;
+      if (text != null &&
+          text.isNotEmpty &&
+          text != _lastRemoteClipboardText &&
+          text != _lastSentLocalClipboardText &&
+          !LinkWindowsSecurity.isSensitiveClipboard()) {
+        _lastSentLocalClipboardText = text;
+        _sendDataMessage({'type': 'clipboard_set', 'text': text});
+      }
+      _sendDataMessage(keyMsg);
+    }).catchError((_) {
+      _sendDataMessage(keyMsg);
+    });
   }
 
   void _startClipboardWatcher() {
@@ -6738,10 +6759,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
                   return KeyEventResult.handled;
                 }
 
-                // Active clipboard: перехват Ctrl+V / Cmd+V для опережающей синхронизации буфера
+                // Active clipboard: перехват Ctrl+V / Cmd+V для гарантированной опережающей синхронизации буфера
                 if (isCtrlOrCmd && isKeyV && isDown) {
-                  _syncLocalClipboardNow();
-                  _sendDataMessage(msg);
+                  _handlePasteKeyAhead(msg);
                   return KeyEventResult.handled;
                 }
 

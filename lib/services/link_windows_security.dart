@@ -27,11 +27,12 @@ class LinkWindowsSecurity {
     } catch (_) {}
   }
 
-  /// Проверяет, помечен ли буфер обмена как чувствительный (пароли KeePass, 1Password, Bitwarden).
+  /// Проверяет, помечен ли буфер обмена как чувствительный (пароли KeePass, 1Password).
   /// Форматы:
-  /// - 'Clipboard Viewer Ignore'
-  /// - 'ExcludeClipboardContentFromMonitor'
-  /// - 'CanIncludeInClipboardHistory'
+  /// - 'Clipboard Viewer Ignore' (KeePass, KeePassXC)
+  /// - 'ExcludeClipboardContentFromMonitor' (1Password)
+  /// Примечание: 'CanIncludeInClipboardHistory' НЕ используется, так как Windows 10/11
+  /// выставляет его для обычного текста, что ложно блокировало синхронизацию.
   static bool isSensitiveClipboard() {
     if (kIsWeb || !Platform.isWindows) return false;
     _init();
@@ -42,7 +43,6 @@ class LinkWindowsSecurity {
     const formatNames = [
       'Clipboard Viewer Ignore',
       'ExcludeClipboardContentFromMonitor',
-      'CanIncludeInClipboardHistory',
     ];
 
     for (final name in formatNames) {
@@ -58,5 +58,29 @@ class LinkWindowsSecurity {
       }
     }
     return false;
+  }
+
+  /// Быстрое и безопасное перечисление букв дисков Windows без блокировок ввода-вывода (I/O)
+  /// через системный вызов GetLogicalDrives() в kernel32.dll.
+  /// Исключает флоппи-дисководы A: и B: и сетевые таймауты.
+  static List<String> getWindowsDrives() {
+    if (kIsWeb || !Platform.isWindows) return const [];
+    try {
+      final kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
+      final getLogicalDrives = kernel32.lookupFunction<
+          ffi.Uint32 Function(),
+          int Function()>('GetLogicalDrives');
+      final mask = getLogicalDrives();
+      final result = <String>[];
+      // Индексы 0 и 1 соответствуют A: и B: (флоппи). Начинаем с 2 (C:).
+      for (int i = 2; i < 26; i++) {
+        if ((mask & (1 << i)) != 0) {
+          result.add('${String.fromCharCode(65 + i)}:\\');
+        }
+      }
+      return result.isNotEmpty ? result : ['C:\\'];
+    } catch (_) {
+      return ['C:\\'];
+    }
   }
 }
