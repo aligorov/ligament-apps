@@ -13,6 +13,7 @@ import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
 import '../app_version.dart';
 import 'alert_service.dart';
+import 'push_service.dart';
 import 'deep_link_service.dart';
 import 'debug_log_service.dart';
 import 'gpo_service.dart';
@@ -237,6 +238,7 @@ class AuthState extends ChangeNotifier {
 
   final GPOService gpo = GPOService();
   final AlertService alert = AlertService();
+  final PushService push = PushService();
 
   /// Телеметрия — НЕ final: подменяется тестом login-крэша
   /// (test/login_crash_test.dart) на бросающую реализацию. Продакшн-код
@@ -856,6 +858,7 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> init() async {
+    unawaited(push.init());
     DebugLogService.instance.record('auth.preferences.begin');
     final prefs = await _traceAwait('init', 'preferences', SharedPreferences.getInstance);
     DebugLogService.instance.record('auth.preferences.ready');
@@ -1139,6 +1142,34 @@ class AuthState extends ChangeNotifier {
       );
       loadNotifications();
       notifyListeners();
+    };
+
+    // 2. Нативные APNs push-уведомления (iOS / macOS)
+    push.onPushToken = (tok) async {
+      try {
+        await client.updatePushToken('apns:$tok');
+      } catch (e) {
+        debugPrint('auth_state: push-токен не обновлен: $e');
+      }
+    };
+    if (push.pushToken != null && push.pushToken!.isNotEmpty) {
+      push.onPushToken!(push.pushToken!);
+    }
+    push.onRemoteNotification = (prompt) {
+      _surfacePrompt(prompt);
+      loadPendingChallenges();
+    };
+    push.onNotificationAction = (action, cid, payload) async {
+      if (cid != null && cid.isNotEmpty) {
+        if (action == 'APPROVE') {
+          await submitDecision(challengeId: cid, approve: true);
+        } else if (action == 'DENY') {
+          await submitDecision(challengeId: cid, approve: false);
+        } else {
+          _surfacePrompt(payload);
+          loadPendingChallenges();
+        }
+      }
     };
 
     ws.onSupportPrompt = (prompt) {

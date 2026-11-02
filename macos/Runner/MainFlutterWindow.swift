@@ -9,6 +9,7 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    (NSApp.delegate as? AppDelegate)?.setupPushChannel(messenger: flutterViewController.engine.binaryMessenger)
 
     let linkAgentChannel = FlutterMethodChannel(
       name: "ligament/link_agent",
