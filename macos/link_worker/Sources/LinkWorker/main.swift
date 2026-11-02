@@ -31,6 +31,7 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
             // Start ScreenCaptureKit (Video + System Audio)
             do {
                 try await capturer.startCapture(captureAudio: true)
+                webRTC.targetDisplayBounds = capturer.activeDisplayBounds
             } catch {
                 let answer = SessionAnswerEnvelope(
                     sessionId: offer.sessionId,
@@ -119,6 +120,8 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
         webRTC.close()
         ipc.close()
         CFRunLoopStop(runLoop)
+        CFRunLoopWakeUp(runLoop)
+        exit(0)
     }
 
     // MARK: - ScreenCaptureDelegate
@@ -129,6 +132,15 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
 
     func didCaptureAudioFrame(_ sampleBuffer: CMSampleBuffer) {
         // Reserved for audio forwarding
+    }
+
+    func didPauseCapture(reason: String) {
+        fputs("link-worker-darwin: stream paused (\(reason))\n", stderr)
+    }
+
+    func didResumeCapture() {
+        fputs("link-worker-darwin: stream resumed\n", stderr)
+        webRTC.targetDisplayBounds = capturer.activeDisplayBounds
     }
 
     func didFailCapture(error: Error) {

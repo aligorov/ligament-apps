@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.ligament.authenticator.link-worker</string>
+    <key>CFBundleName</key>
+    <string>Ligament Link Worker</string>
+    <key>CFBundleDisplayName</key>
+    <string>Ligament Link Worker</string>
+    <key>CFBundleExecutable</key>
+    <string>link-worker-darwin</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Ligament Link requires screen recording to stream your desktop during remote assistance sessions.</string>
+</dict>
+</plist>

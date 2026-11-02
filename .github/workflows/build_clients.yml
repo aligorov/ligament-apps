@@ -167,8 +167,13 @@ jobs:
           flutter build macos --release --no-tree-shake-icons --obfuscate --split-debug-info=build/macos_symbols
           install -m 755 build/macos-link-agent 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-agent'
           install -m 755 macos/link_worker/.build/release/link-worker-darwin 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-worker-darwin'
+          helper_dir='build/macos/Build/Products/Release/Ligament 2FA.app/Contents/Helpers/LinkWorker.app/Contents'
+          mkdir -p "$helper_dir/MacOS"
+          cp macos/link_worker/Info.plist "$helper_dir/Info.plist"
+          install -m 755 macos/link_worker/.build/release/link-worker-darwin "$helper_dir/MacOS/link-worker-darwin"
           codesign --force --sign - 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-agent'
           codesign --force --sign - 'build/macos/Build/Products/Release/Ligament 2FA.app/Contents/MacOS/link-worker-darwin'
+          codesign --force --sign - "$helper_dir/MacOS/link-worker-darwin"
           app_path='build/macos/Build/Products/Release/Ligament 2FA.app'
           # Flutter signs the app before Link's agent and LaunchAgent files are
           # injected. Re-seal the complete bundle so the DMG is not corrupted.

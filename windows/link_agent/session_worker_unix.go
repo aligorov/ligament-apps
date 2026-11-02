@@ -37,6 +37,7 @@ func resolveUnixWorkerExecutable(agentExecutable string) string {
 	if runtime.GOOS == "darwin" {
 		candidates := []string{
 			filepath.Join(dir, "link-worker-darwin"),
+			filepath.Join(dir, "..", "Helpers", "LinkWorker.app", "Contents", "MacOS", "link-worker-darwin"),
 			filepath.Join(dir, "..", "Helpers", "link-worker-darwin"),
 			filepath.Join(dir, "Ligament 2FA"),
 		}

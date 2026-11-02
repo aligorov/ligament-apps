@@ -45,7 +45,12 @@ if [[ ! -f "${APP_PATH}/Contents/MacOS/link-worker-darwin" ]]; then
   echo "--> Сборка и интеграция нативного Link Worker (macOS)..."
   (cd "${CLIENT_DIR}/macos/link_worker" && swift build -c release)
   install -m 755 "${CLIENT_DIR}/macos/link_worker/.build/release/link-worker-darwin" "${APP_PATH}/Contents/MacOS/link-worker-darwin"
+  HELPER_DIR="${APP_PATH}/Contents/Helpers/LinkWorker.app/Contents"
+  mkdir -p "${HELPER_DIR}/MacOS"
+  cp "${CLIENT_DIR}/macos/link_worker/Info.plist" "${HELPER_DIR}/Info.plist"
+  install -m 755 "${CLIENT_DIR}/macos/link_worker/.build/release/link-worker-darwin" "${HELPER_DIR}/MacOS/link-worker-darwin"
   codesign --force --sign - "${APP_PATH}/Contents/MacOS/link-worker-darwin"
+  codesign --force --sign - "${HELPER_DIR}/MacOS/link-worker-darwin"
   codesign --force --deep --sign - "${APP_PATH}"
 fi
 

@@ -8,7 +8,7 @@ public protocol WebRTCBridgeDelegate: AnyObject {
     func webRTCBridgeDidDisconnect(_ bridge: WebRTCBridge)
 }
 
-public final class WebRTCBridge: NSObject {
+public final class WebRTCBridge: NSObject, @unchecked Sendable {
     private let factory: RTCPeerConnectionFactory
     private var peerConnection: RTCPeerConnection?
     private var videoSource: RTCVideoSource?
@@ -17,8 +17,9 @@ public final class WebRTCBridge: NSObject {
     private var dataChannel: RTCDataChannel?
 
     public weak var delegate: WebRTCBridgeDelegate?
-    public var targetDisplayWidth: Double = 1920
-    public var targetDisplayHeight: Double = 1080
+    public var targetDisplayBounds: CGRect = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    private var hasRemoteDescription: Bool = false
+    private var pendingIceCandidates: [RTCIceCandidate] = []
 
     public override init() {
         RTCInitializeSSL()
@@ -67,6 +68,16 @@ public final class WebRTCBridge: NSObject {
 
         peer?.add(vTrack, streamIds: ["screen_stream"])
 
+        if let sender = peer?.senders.first(where: { $0.track?.kind == "video" }) {
+            let params = sender.parameters
+            params.degradationPreference = NSNumber(value: RTCDegradationPreference.maintainResolution.rawValue)
+            for encoding in params.encodings {
+                encoding.maxBitrateBps = 10_000_000
+                encoding.minBitrateBps = 1_500_000
+            }
+            sender.parameters = params
+        }
+
         self.peerConnection = peer
         self.videoSource = vSource
         self.videoTrack = vTrack
@@ -74,24 +85,26 @@ public final class WebRTCBridge: NSObject {
     }
 
     public func feedVideoFrame(_ sampleBuffer: CMSampleBuffer) {
-        guard sampleBuffer.isValid,
-              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let source = videoSource,
-              let capturer = videoCapturer else {
-            return
+        autoreleasepool {
+            guard sampleBuffer.isValid,
+                  let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+                  let source = videoSource,
+                  let capturer = videoCapturer else {
+                return
+            }
+
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let timeStampNs = Int64(CMTimeGetSeconds(presentationTime) * 1_000_000_000)
+
+            let rtcPixelBuffer = RTCCVPixelBuffer(pixelBuffer: imageBuffer)
+            let rtcVideoFrame = RTCVideoFrame(
+                buffer: rtcPixelBuffer,
+                rotation: ._0,
+                timeStampNs: timeStampNs
+            )
+
+            source.capturer(capturer, didCapture: rtcVideoFrame)
         }
-
-        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let timeStampNs = Int64(CMTimeGetSeconds(presentationTime) * 1_000_000_000)
-
-        let rtcPixelBuffer = RTCCVPixelBuffer(pixelBuffer: imageBuffer)
-        let rtcVideoFrame = RTCVideoFrame(
-            buffer: rtcPixelBuffer,
-            rotation: ._0,
-            timeStampNs: timeStampNs
-        )
-
-        source.capturer(capturer, didCapture: rtcVideoFrame)
     }
 
     public func createAnswer(for offerSdp: String) async throws -> String {
@@ -101,10 +114,19 @@ public final class WebRTCBridge: NSObject {
 
         let remoteDescription = RTCSessionDescription(type: .offer, sdp: offerSdp)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            peer.setRemoteDescription(remoteDescription) { error in
+            peer.setRemoteDescription(remoteDescription) { [weak self] error in
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
+                    guard let self = self else {
+                        continuation.resume(returning: ())
+                        return
+                    }
+                    self.hasRemoteDescription = true
+                    for candidate in self.pendingIceCandidates {
+                        self.peerConnection?.add(candidate) { _ in }
+                    }
+                    self.pendingIceCandidates.removeAll()
                     continuation.resume(returning: ())
                 }
             }
@@ -145,10 +167,16 @@ public final class WebRTCBridge: NSObject {
 
     public func addCandidate(sdp: String, sdpMLineIndex: Int32, sdpMid: String?) {
         let candidate = RTCIceCandidate(sdp: sdp, sdpMLineIndex: sdpMLineIndex, sdpMid: sdpMid)
-        peerConnection?.add(candidate) { _ in }
+        if hasRemoteDescription {
+            peerConnection?.add(candidate) { _ in }
+        } else {
+            pendingIceCandidates.append(candidate)
+        }
     }
 
     public func close() {
+        hasRemoteDescription = false
+        pendingIceCandidates.removeAll()
         dataChannel?.close()
         dataChannel = nil
         peerConnection?.close()
@@ -198,14 +226,14 @@ extension WebRTCBridge: RTCDataChannelDelegate {
         switch type {
         case "mouse_move":
             if let x = json["x"] as? Double, let y = json["y"] as? Double {
-                InputInjector.shared.moveMouse(normX: x, normY: y, width: targetDisplayWidth, height: targetDisplayHeight)
+                InputInjector.shared.moveMouse(normX: x, normY: y, bounds: targetDisplayBounds)
             }
         case "mouse_action":
             if let action = json["action"] as? String,
                let button = json["button"] as? Int,
                let x = json["x"] as? Double,
                let y = json["y"] as? Double {
-                InputInjector.shared.mouseAction(action: action, button: button, normX: x, normY: y, width: targetDisplayWidth, height: targetDisplayHeight)
+                InputInjector.shared.mouseAction(action: action, button: button, normX: x, normY: y, bounds: targetDisplayBounds)
             }
         case "mouse_wheel":
             if let deltaY = json["delta_y"] as? Double {
@@ -215,6 +243,10 @@ extension WebRTCBridge: RTCDataChannelDelegate {
             if let keyCode = json["mac_key_code"] as? UInt16,
                let isDown = json["is_down"] as? Bool {
                 InputInjector.shared.keyAction(macKeyCode: keyCode, isDown: isDown)
+            }
+        case "text_input":
+            if let text = json["text"] as? String {
+                InputInjector.shared.insertText(text)
             }
         default:
             break
