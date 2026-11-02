@@ -232,7 +232,8 @@ class SupportOperatorScreen extends StatefulWidget {
   State<SupportOperatorScreen> createState() => _SupportOperatorScreenState();
 }
 
-class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
+class _SupportOperatorScreenState extends State<SupportOperatorScreen>
+    with WidgetsBindingObserver, WindowListener {
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
 
   String? _linkSessionId;
@@ -293,10 +294,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   final StreamController<Map<String, dynamic>> _fsStreamController =
       StreamController<Map<String, dynamic>>.broadcast();
   String? _customDownloadDir;
+  bool _isWindowFocused = true;
+  bool _isAppInForeground = true;
+  bool _autoSyncClipboard = false; // По умолчанию ВЫКЛ для защиты от утечек DLP
   String? _lastSentLocalClipboardText;
   String? _lastRemoteClipboardText;
   Timer? _clipboardWatcherTimer;
   Timer? _clipboardFetchTimer;
+
+  bool get _canSyncLocalClipboard =>
+      _autoSyncClipboard &&
+      _isWindowFocused &&
+      _isAppInForeground &&
+      _keyboardFocus.hasFocus &&
+      _controlReady &&
+      !_isCleanedUp &&
+      !_isViewOnlySession;
 
   bool get _isDataChannelActive =>
       _dataChannel != null &&
@@ -1362,8 +1375,30 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   @override
+  void onWindowFocus() {
+    _isWindowFocused = true;
+  }
+
+  @override
+  void onWindowBlur() {
+    _isWindowFocused = false;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _isAppInForeground = state == AppLifecycleState.resumed;
+    if (state != AppLifecycleState.resumed) {
+      _isWindowFocused = false;
+    }
+  }
+
+  @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      windowManager.addListener(this);
+    }
     _chatMessagesNotifier =
         ValueNotifier<List<SupportChatMessage>>(_chatMessages);
     _expandWindowForOperator();
@@ -3911,11 +3946,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   void _startClipboardWatcher() {
     _clipboardWatcherTimer?.cancel();
+    if (!_autoSyncClipboard) return;
+
     _clipboardWatcherTimer =
         Timer.periodic(const Duration(milliseconds: 1500), (_) async {
-      if (!mounted || _isCleanedUp || !_controlReady) return;
+      if (!_canSyncLocalClipboard) return;
       try {
         final clip = await Clipboard.getData(Clipboard.kTextPlain);
+        if (!_canSyncLocalClipboard) return;
         final text = clip?.text;
         if (text != null &&
             text.isNotEmpty &&
@@ -4179,6 +4217,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      windowManager.removeListener(this);
+    }
     if (!_sessionTerminatedHandled) {
       _logConnection('operator.session.terminated', fields: {
         'origin': 'dispose',
@@ -4731,8 +4773,22 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             });
           }
 
-          if (i % 8 == 0) {
-            await Future.delayed(const Duration(milliseconds: 10));
+          // Backpressure Flow Control с гистерезисом (High: 2 MB, Low: 512 KB)
+          if (i % 4 == 0 && _dataChannel != null) {
+            try {
+              int buffered = await _dataChannel!.getBufferedAmount();
+              if (buffered > 2 * 1024 * 1024) {
+                while (buffered > 512 * 1024 &&
+                    !transferItem.isCancelled &&
+                    !_isCleanedUp &&
+                    _isDataChannelActive) {
+                  await Future.delayed(const Duration(milliseconds: 15));
+                  buffered = await _dataChannel!.getBufferedAmount();
+                }
+              }
+            } catch (_) {}
+          } else if (i % 16 == 0) {
+            await Future.delayed(Duration.zero);
           }
         }
       } finally {
@@ -6195,6 +6251,43 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         : null,
                   ),
 
+                  // DLP Active Clipboard Toggle
+                  IconButton(
+                    icon: Icon(
+                      _autoSyncClipboard
+                          ? Icons.assignment_turned_in
+                          : Icons.assignment_outlined,
+                      color: _autoSyncClipboard
+                          ? const Color(0xFF38BDF8)
+                          : const Color(0xFF64748B),
+                      size: 18,
+                    ),
+                    tooltip: _autoSyncClipboard
+                        ? strings.clipboardAutoSyncEnabled
+                        : strings.clipboardAutoSyncDisabled,
+                    onPressed: _controlReady
+                        ? () {
+                            setState(() {
+                              _autoSyncClipboard = !_autoSyncClipboard;
+                            });
+                            if (_autoSyncClipboard) {
+                              _startClipboardWatcher();
+                            } else {
+                              _clipboardWatcherTimer?.cancel();
+                              _clipboardWatcherTimer = null;
+                            }
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(_autoSyncClipboard
+                                    ? strings.clipboardAutoSyncNoticeOn
+                                    : strings.clipboardAutoSyncNoticeOff),
+                                duration: const Duration(seconds: 1),
+                              ),
+                            );
+                          }
+                        : null,
+                  ),
+
                   // Буфер обмена
                   PopupMenuButton<String>(
                     enabled: _controlReady,
@@ -6211,10 +6304,56 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                           value: 'get',
                           child: Text(strings.readRemoteBuffer,
                               style: const TextStyle(color: Colors.white))),
+                      const PopupMenuDivider(),
+                      PopupMenuItem(
+                          value: 'toggle_auto',
+                          child: Row(
+                            children: [
+                              Icon(
+                                _autoSyncClipboard
+                                    ? Icons.check_box
+                                    : Icons.check_box_outline_blank,
+                                size: 18,
+                                color: _autoSyncClipboard
+                                    ? const Color(0xFF10B981)
+                                    : Colors.white54,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _autoSyncClipboard
+                                    ? strings.clipboardAutoSyncEnabled
+                                    : strings.clipboardAutoSyncDisabled,
+                                style: TextStyle(
+                                  color: _autoSyncClipboard
+                                      ? const Color(0xFF10B981)
+                                      : Colors.white70,
+                                ),
+                              ),
+                            ],
+                          )),
                     ],
                     onSelected: (val) {
                       if (val == 'send') _sendLocalClipboardToRemote();
                       if (val == 'get') _requestRemoteClipboard();
+                      if (val == 'toggle_auto') {
+                        setState(() {
+                          _autoSyncClipboard = !_autoSyncClipboard;
+                        });
+                        if (_autoSyncClipboard) {
+                          _startClipboardWatcher();
+                        } else {
+                          _clipboardWatcherTimer?.cancel();
+                          _clipboardWatcherTimer = null;
+                        }
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(_autoSyncClipboard
+                                ? strings.clipboardAutoSyncNoticeOn
+                                : strings.clipboardAutoSyncNoticeOff),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
+                      }
                     },
                   ),
 

@@ -358,6 +358,10 @@ class AppStrings {
   String get consoleFileIncoming => isRu ? 'Входящий файл' : 'Incoming file';
   String get consoleFileOutgoing => isRu ? 'Исходящий файл' : 'Outgoing file';
   String get clipboardActiveSyncNotice => isRu ? 'Буфер обмена синхронизирован' : 'Clipboard synchronized';
+  String get clipboardAutoSyncEnabled => isRu ? '✓ Автосинхронизация буфера' : '✓ Clipboard Auto-Sync';
+  String get clipboardAutoSyncDisabled => isRu ? '✗ Автосинхронизация буфера' : '✗ Clipboard Auto-Sync';
+  String get clipboardAutoSyncNoticeOn => isRu ? 'Автосинхронизация буфера включена' : 'Clipboard auto-sync enabled';
+  String get clipboardAutoSyncNoticeOff => isRu ? 'Автосинхронизация буфера выключена' : 'Clipboard auto-sync disabled';
   String get fileManagerTitle => isRu ? 'Файловый менеджер' : 'File Manager';
   String get fileManagerLocal => isRu ? 'Локальный компьютер' : 'Local Computer';
   String get fileManagerRemote => isRu ? 'Удалённый компьютер' : 'Remote Computer';

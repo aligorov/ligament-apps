@@ -2757,10 +2757,12 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   }
 
   void _handleFsList(Map<String, dynamic> input) {
+    final reqId = (input['req_id'] ?? input['request_id'])?.toString();
     if (!policy.allowFileTransfer) {
       _sendControlJson({
         'type': 'fs_list_ack',
-        'request_id': input['request_id'],
+        'req_id': reqId,
+        'request_id': reqId,
         'ok': false,
         'error': 'policy_denied',
       });
@@ -2795,7 +2797,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       if (!dir.existsSync()) {
         _sendControlJson({
           'type': 'fs_list_ack',
-          'request_id': input['request_id'],
+          'req_id': reqId,
+          'request_id': reqId,
           'path': targetPath,
           'drives': drives,
           'entries': <Map<String, dynamic>>[],
@@ -2833,19 +2836,48 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         parentPath = parentDir.path;
       }
 
-      _sendControlJson({
-        'type': 'fs_list_ack',
-        'request_id': input['request_id'],
-        'path': dir.path,
-        'parent': parentPath,
-        'drives': drives,
-        'entries': entries,
-        'ok': true,
-      });
+      // Пагинация списка файлов порциями по 150 элементов во избежание превышения SCTP MTU WebRTC
+      const batchSize = 150;
+      if (entries.isEmpty) {
+        _sendControlJson({
+          'type': 'fs_list_ack',
+          'req_id': reqId,
+          'request_id': reqId,
+          'path': dir.path,
+          'parent': parentPath,
+          'drives': drives,
+          'entries': <Map<String, dynamic>>[],
+          'page': 0,
+          'total_pages': 1,
+          'is_final': true,
+          'ok': true,
+        });
+      } else {
+        final totalPages = (entries.length / batchSize).ceil();
+        for (int p = 0; p < totalPages; p++) {
+          final start = p * batchSize;
+          final end = min(start + batchSize, entries.length);
+          final batch = entries.sublist(start, end);
+          _sendControlJson({
+            'type': 'fs_list_ack',
+            'req_id': reqId,
+            'request_id': reqId,
+            'path': dir.path,
+            'parent': parentPath,
+            'drives': drives,
+            'entries': batch,
+            'page': p,
+            'total_pages': totalPages,
+            'is_final': p == totalPages - 1,
+            'ok': true,
+          });
+        }
+      }
     } catch (e) {
       _sendControlJson({
         'type': 'fs_list_ack',
-        'request_id': input['request_id'],
+        'req_id': reqId,
+        'request_id': reqId,
         'path': targetPath,
         'drives': drives,
         'entries': <Map<String, dynamic>>[],
@@ -2908,7 +2940,23 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         sentBytes += chunkBytes.length;
         chunkIndex++;
         if (chunkIndex % 8 == 0) {
-          await Future.delayed(const Duration(milliseconds: 5));
+          final control = _control;
+          if (control != null) {
+            int buf = control.bufferedAmount ?? 0;
+            if (buf > 1024 * 1024) {
+              while (buf > 256 * 1024 && !_closed) {
+                await Future.delayed(const Duration(milliseconds: 15));
+                try {
+                  buf = await control.getBufferedAmount();
+                } catch (_) {
+                  buf = control.bufferedAmount ?? 0;
+                  break;
+                }
+              }
+            } else {
+              await Future.delayed(Duration.zero);
+            }
+          }
         }
       }
       hashInput.close();
@@ -2925,6 +2973,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   void _handleFsDelete(Map<String, dynamic> input) {
     if (!policy.allowFileTransfer) return;
+    final reqId = (input['req_id'] ?? input['request_id'])?.toString();
     final path = input['path']?.toString() ?? '';
     if (path.isEmpty) return;
     try {
@@ -2937,7 +2986,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       }
       _sendControlJson({
         'type': 'fs_action_ack',
-        'request_id': input['request_id'],
+        'req_id': reqId,
+        'request_id': reqId,
         'action': 'delete',
         'path': path,
         'ok': true,
@@ -2945,7 +2995,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     } catch (e) {
       _sendControlJson({
         'type': 'fs_action_ack',
-        'request_id': input['request_id'],
+        'req_id': reqId,
+        'request_id': reqId,
         'action': 'delete',
         'path': path,
         'ok': false,
@@ -2956,6 +3007,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
 
   void _handleFsMkdir(Map<String, dynamic> input) {
     if (!policy.allowFileTransfer) return;
+    final reqId = (input['req_id'] ?? input['request_id'])?.toString();
     final path = input['path']?.toString() ?? '';
     final name = input['name']?.toString() ?? '';
     if (path.isEmpty || name.isEmpty) return;
@@ -2964,7 +3016,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       newDir.createSync(recursive: true);
       _sendControlJson({
         'type': 'fs_action_ack',
-        'request_id': input['request_id'],
+        'req_id': reqId,
+        'request_id': reqId,
         'action': 'mkdir',
         'path': newDir.path,
         'ok': true,
@@ -2972,7 +3025,8 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     } catch (e) {
       _sendControlJson({
         'type': 'fs_action_ack',
-        'request_id': input['request_id'],
+        'req_id': reqId,
+        'request_id': reqId,
         'action': 'mkdir',
         'path': path,
         'ok': false,

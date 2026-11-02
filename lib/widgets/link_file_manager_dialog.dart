@@ -108,7 +108,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   }
 
   void _handleFsMessage(Map<String, dynamic> msg) {
-    final reqId = msg['req_id']?.toString();
+    final reqId = (msg['req_id'] ?? msg['request_id'])?.toString();
     if (reqId != null && _pendingRequests.containsKey(reqId)) {
       _pendingRequests.remove(reqId)?.complete(msg);
     }
@@ -130,6 +130,9 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
       final parent = msg['parent']?.toString() ?? '';
       final rawEntries = msg['entries'] as List<dynamic>? ?? [];
       final isWin = path.contains('\\') || path.contains(':');
+      final page = msg['page'] as int?;
+      final totalPages = msg['total_pages'] as int?;
+      final isFinal = msg['is_final'] == true || totalPages == null;
 
       final entries = rawEntries
           .whereType<Map<String, dynamic>>()
@@ -140,9 +143,13 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
         setState(() {
           _remotePath = path;
           _remoteParent = parent;
-          _remoteEntries = entries;
+          if (page == null || page == 0) {
+            _remoteEntries = entries;
+          } else {
+            _remoteEntries.addAll(entries);
+          }
           _selectedRemoteEntry = null;
-          _isLoadingRemote = false;
+          _isLoadingRemote = !isFinal;
           _remoteError = null;
         });
       }
