@@ -1420,7 +1420,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
       }
     }
     _loadChatHistory();
-    if (!kIsWeb && Platform.isAndroid) {
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     }
     if (_isChatOnly && !widget.isLink) {
@@ -4252,7 +4252,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
     _pendingMouseMoveTimer = null;
     _touchLongPressTimer?.cancel();
     _touchLongPressTimer = null;
-    if (!kIsWeb && Platform.isAndroid) {
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     }
@@ -4332,7 +4332,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
   }
 
   void _toggleMobileOrientationLock() {
-    if (kIsWeb || !Platform.isAndroid) return;
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
     final next = !_isMobileLandscapeLocked;
     setState(() => _isMobileLandscapeLocked = next);
     if (next) {
@@ -6076,7 +6076,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
       body: Column(
         children: [
           // Верхняя панель управления (Toolbar)
-          if (!kIsWeb && Platform.isAndroid)
+          if (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
             if (_isMobileToolbarVisible)
               _buildMobileTopBar(context, strings, isLink, isOwner, pcName)
             else
@@ -7048,8 +7048,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
                 onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerMove: (ev) {
                   if (!kIsWeb &&
-                      Platform.isAndroid &&
-                      ev.kind == ui.PointerDeviceKind.touch) {
+                      (Platform.isAndroid || Platform.isIOS) &&
+                      (ev.kind == ui.PointerDeviceKind.touch ||
+                          ev.kind == ui.PointerDeviceKind.stylus)) {
                     if (_touchDownPosition != null) {
                       final dist = (ev.position - _touchDownPosition!).distance;
                       if (dist > 15) {
@@ -7078,8 +7079,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
                   _sendPointerEvent('mouse_down', ev, btn);
 
                   if (!kIsWeb &&
-                      Platform.isAndroid &&
-                      ev.kind == ui.PointerDeviceKind.touch) {
+                      (Platform.isAndroid || Platform.isIOS) &&
+                      (ev.kind == ui.PointerDeviceKind.touch ||
+                          ev.kind == ui.PointerDeviceKind.stylus)) {
                     _touchDownPosition = ev.position;
                     _touchDownPointer = ev.pointer;
                     _touchLongPressTimer?.cancel();
@@ -7393,12 +7395,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
                                             ),
                                           ),
                                         ),
-                                        // Кнопка вызова скрытой панели управления на Android
+                                        // Кнопка вызова скрытой панели управления на Android/iOS
                                         if (!kIsWeb &&
-                                            Platform.isAndroid &&
+                                            (Platform.isAndroid || Platform.isIOS) &&
                                             !_isMobileToolbarVisible)
                                           Positioned(
-                                            top: 10,
+                                            top: MediaQuery.paddingOf(context).top + 8,
                                             right: (_isViewOnlySession ||
                                                     !_isControlEnabled)
                                                 ? 140
@@ -7572,7 +7574,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
           // Быстрая панель действий для оператора (скролл, режим клика, ввод текста)
           // Ш3: панель управления — только при готовом канале управления
           if (_controlReady)
-            if (!kIsWeb && Platform.isAndroid)
+            if (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
               _buildMobileBottomBar(context, strings, isOwner)
             else
               Container(

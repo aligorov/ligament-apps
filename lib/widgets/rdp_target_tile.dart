@@ -25,7 +25,9 @@ class RdpTargetTile extends StatefulWidget {
   static bool get canLaunchRdp =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.windows ||
-          defaultTargetPlatform == TargetPlatform.macOS);
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android);
 
   @override
   State<RdpTargetTile> createState() => _RdpTargetTileState();
@@ -273,7 +275,7 @@ class _RdpTargetTileState extends State<RdpTargetTile> {
           border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
         ),
         child: Text(
-          isRu ? 'RDP — Windows / macOS' : 'RDP — Windows / macOS',
+          isRu ? 'RDP — Windows / macOS / iOS' : 'RDP — Windows / macOS / iOS',
           maxLines: 1,
           style: const TextStyle(color: Color(0xFF64748B), fontSize: 10),
           overflow: TextOverflow.ellipsis,

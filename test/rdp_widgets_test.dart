@@ -65,8 +65,8 @@ void main() {
   });
 
   group('RdpTargetTile @ 390px', () {
-    testWidgets('не-десктоп: подсказка «RDP — Windows / macOS», без Console и overflow', (tester) async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    testWidgets('неподдерживаемая платформа: подсказка «RDP — Windows / macOS / iOS», без Console и overflow', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
@@ -79,10 +79,29 @@ void main() {
       await tester.pump();
 
       expect(tester.takeException(), isNull);
-      expect(find.text('RDP — Windows / macOS'), findsOneWidget);
+      expect(find.text('RDP — Windows / macOS / iOS'), findsOneWidget);
       expect(find.text('Console'), findsNothing);
       // Длинный маршрут обрезается многоточием, а не ломает строку чипов.
       expect(find.textContaining('agent-relay-moscow'), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('iOS + online: только «Подключиться», без Console и overflow', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(harness(RdpTargetTile(
+        target: heavyTarget,
+        isRu: true,
+      )));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Подключиться'), findsOneWidget);
+      expect(find.text('Console'), findsNothing);
       debugDefaultTargetPlatformOverride = null;
     });
 

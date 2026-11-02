@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:web_socket_channel/io.dart';
 
 import '../api/client.dart';
@@ -124,11 +125,22 @@ class RdpConnectorService extends ChangeNotifier {
     File? tempRdpFile,
   })? startClientOverride;
 
+  @visibleForTesting
+  static Future<bool> Function({
+    required String host,
+    required int port,
+  })? launchMobileOverride;
+
   bool get _canRunMstsc =>
-      windowsOverride ?? (!kIsWeb && (Platform.isWindows || Platform.isMacOS));
+      windowsOverride ??
+      (!kIsWeb &&
+          (Platform.isWindows ||
+              Platform.isMacOS ||
+              Platform.isIOS ||
+              Platform.isAndroid));
 
   /// Запуск туннеля до цели. Владелец — AuthState (одиночка на приложение).
-  /// Windows (mstsc) и macOS (Windows App / Remote Desktop).
+  /// Windows (mstsc), macOS (Windows App / Remote Desktop) и iOS (Windows App).
   Future<void> connect({
     required ApiClient api,
     required String baseUrl,
@@ -148,8 +160,8 @@ class RdpConnectorService extends ChangeNotifier {
     if (!_canRunMstsc) {
       DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'platform'});
       _fail(isRu
-          ? 'RDP-подключение доступно только на Windows и macOS'
-          : 'RDP connection is available on Windows and macOS only');
+          ? 'RDP-подключение доступно на Windows, macOS и iOS'
+          : 'RDP connection is available on Windows, macOS and iOS');
       return;
     }
     final generation = ++_connectGeneration;
@@ -341,9 +353,29 @@ class RdpConnectorService extends ChangeNotifier {
       targetHost: targetHost,
     );
     session.tempRdpFile = tempRdp;
+    bool clientSuccess = false;
     Process? mstsc;
     try {
-      mstsc = await _traceAwait('launch_client', () => _startRdpClient(host: host, port: port, tempRdpFile: tempRdp));
+      if (RdpConnectorService.startClientOverride != null) {
+        mstsc = await _traceAwait('launch_client', () => RdpConnectorService.startClientOverride!(
+          host: host,
+          port: port,
+          tempRdpFile: tempRdp,
+        ));
+        clientSuccess = mstsc != null;
+      } else if (!kIsWeb && (Platform.isIOS || Platform.isAndroid)) {
+        clientSuccess = await _traceAwait('launch_mobile_client', () => _launchMobileRdp(
+          host: host,
+          port: port,
+        ));
+      } else {
+        mstsc = await _traceAwait('launch_client', () => _startRdpClient(
+          host: host,
+          port: port,
+          tempRdpFile: tempRdp,
+        ));
+        clientSuccess = mstsc != null;
+      }
     } catch (e) {
       if (_connectGeneration == generation && _session == session) {
         _fail(rdpConnectErrorText(e, isRu: isRu));
@@ -358,25 +390,28 @@ class RdpConnectorService extends ChangeNotifier {
     }
 
     // 4b. RDP-клиент не найден — туннель не нужен.
-    if (mstsc == null) {
-      _fail(isRu
-          ? (Platform.isMacOS
-              ? 'Не удалось запустить RDP-клиент (Windows App)'
-              : 'Не удалось запустить удалённый рабочий стол (mstsc.exe)')
-          : (Platform.isMacOS
-              ? 'Failed to launch RDP client (Windows App)'
-              : 'Failed to launch Remote Desktop (mstsc.exe)'));
+    if (!clientSuccess) {
+      final String failMsg;
+      if (!kIsWeb && Platform.isIOS) {
+        failMsg = isRu
+            ? 'Не удалось открыть Windows App (Microsoft Remote Desktop). Установите приложение из App Store.'
+            : 'Failed to launch Windows App (Microsoft Remote Desktop). Please install it from the App Store.';
+      } else if (!kIsWeb && Platform.isMacOS) {
+        failMsg = isRu
+            ? 'Не удалось запустить RDP-клиент (Windows App)'
+            : 'Failed to launch RDP client (Windows App)';
+      } else {
+        failMsg = isRu
+            ? 'Не удалось запустить удалённый рабочий стол (mstsc.exe)'
+            : 'Failed to launch Remote Desktop (mstsc.exe)';
+      }
+      _fail(failMsg);
       await _quietTeardown(session, ws);
       return;
     }
     session.mstsc = mstsc;
-    // На macOS команда `open` завершается сразу, туннель держится сокетом RDP-сеанса.
-    // На Windows mstsc после ввода учётных данных и прохождения NLA может завершить
-    // процесс лаунчера (exitCode 0) и передать окно сессии. Если сокет уже подключен
-    // (session.socket != null), туннель удерживается живым TCP-сокетом до закрытия окна.
-    // mstscExited завершает сессию только если процесс завершился ДО подключения сокета
-    // (пользователь нажал «Отмена» или лаунчер упал до подключения).
-    if (!Platform.isMacOS) {
+    session.clientLaunched = true;
+    if (!kIsWeb && Platform.isWindows && mstsc != null) {
       unawaited(mstsc.exitCode.then(
         (_) {
           if (_session == session && session.socket == null) {
@@ -497,8 +532,8 @@ class RdpConnectorService extends ChangeNotifier {
     if (!_canRunMstsc) {
       DebugLogService.instance.record('rdp.connect.blocked', fields: {'reason': 'platform'});
       _fail(isRu
-          ? 'RDP-подключение доступно только на Windows и macOS'
-          : 'RDP connection is available on Windows and macOS only');
+          ? 'RDP-подключение доступно на Windows, macOS и iOS'
+          : 'RDP connection is available on Windows, macOS and iOS');
       return;
     }
     if (grantId.isEmpty || token.isEmpty) {
@@ -615,33 +650,61 @@ class RdpConnectorService extends ChangeNotifier {
       targetHost: targetHost,
     );
     session.tempRdpFile = tempRdp;
+    bool clientSuccess = false;
     Process? mstsc;
     try {
-      mstsc = await _traceAwait('launch_client', () => _startRdpClient(host: host, port: port, tempRdpFile: tempRdp));
+      if (RdpConnectorService.startClientOverride != null) {
+        mstsc = await _traceAwait('launch_client', () => RdpConnectorService.startClientOverride!(
+          host: host,
+          port: port,
+          tempRdpFile: tempRdp,
+        ));
+        clientSuccess = mstsc != null;
+      } else if (!kIsWeb && (Platform.isIOS || Platform.isAndroid)) {
+        clientSuccess = await _traceAwait('launch_mobile_client', () => _launchMobileRdp(
+          host: host,
+          port: port,
+        ));
+      } else {
+        mstsc = await _traceAwait('launch_client', () => _startRdpClient(
+          host: host,
+          port: port,
+          tempRdpFile: tempRdp,
+        ));
+        clientSuccess = mstsc != null;
+      }
     } catch (e) {
       _fail(rdpConnectErrorText(e, isRu: isRu));
       await _quietTeardownBridge(session);
       return;
     }
-    if (mstsc == null) {
-      _fail(isRu
-          ? (Platform.isMacOS
-              ? 'Не удалось запустить RDP-клиент (Windows App)'
-              : 'Не удалось запустить удаленный рабочий стол (mstsc.exe)')
-          : (Platform.isMacOS
-              ? 'Failed to launch RDP client (Windows App)'
-              : 'Failed to launch Remote Desktop (mstsc.exe)'));
+    if (_connectGeneration != generation || _session != session) {
+      try { mstsc?.kill(); } catch (error) { DebugLogService.instance.record('rdp.best_effort.failed', error: error); }
+      await _quietTeardownBridge(session);
+      return;
+    }
+    if (!clientSuccess) {
+      final String failMsg;
+      if (!kIsWeb && Platform.isIOS) {
+        failMsg = isRu
+            ? 'Не удалось открыть Windows App (Microsoft Remote Desktop). Установите приложение из App Store.'
+            : 'Failed to launch Windows App (Microsoft Remote Desktop). Please install it from the App Store.';
+      } else if (!kIsWeb && Platform.isMacOS) {
+        failMsg = isRu
+            ? 'Не удалось запустить RDP-клиент (Windows App)'
+            : 'Failed to launch RDP client (Windows App)';
+      } else {
+        failMsg = isRu
+            ? 'Не удалось запустить удаленный рабочий стол (mstsc.exe)'
+            : 'Failed to launch Remote Desktop (mstsc.exe)';
+      }
+      _fail(failMsg);
       await _quietTeardownBridge(session);
       return;
     }
     session.mstsc = mstsc;
-    // На macOS команда `open` завершается сразу, туннель держится сокетом RDP-сеанса.
-    // На Windows mstsc после ввода учётных данных и прохождения NLA может завершить
-    // процесс лаунчера (exitCode 0) и передать окно сессии. Если сокет уже подключен
-    // (session.socket != null), туннель удерживается живым TCP-сокетом до закрытия окна.
-    // mstscExited завершает сессию только если процесс завершился ДО подключения сокета
-    // (пользователь нажал «Отмена» или лаунчер упал до подключения).
-    if (!Platform.isMacOS) {
+    session.clientLaunched = true;
+    if (!kIsWeb && Platform.isWindows && mstsc != null) {
       unawaited(mstsc.exitCode.then(
         (_) {
           if (_session == session && session.socket == null) {
@@ -892,6 +955,7 @@ class _RdpTunnelSession {
   Socket? remote;
   Socket? socket;
   Process? mstsc;
+  bool clientLaunched = false;
   File? tempRdpFile;
   Timer? grantTtl;
   Timer? heartbeatTimer;
@@ -920,10 +984,10 @@ const Duration rdpBridgeHandshakeWindow = Duration(seconds: 2);
   return (host, port);
 }
 
-/// Адрес локального слушателя: 127.0.0.1 на macOS, 127.0.0.2 на Windows (весь 127/8 — loopback,
+/// Адрес локального слушателя: 127.0.0.1 на macOS/iOS/Android, 127.0.0.2 на Windows (весь 127/8 — loopback,
 /// не конфликтует с занятыми портами других localhost-сервисов клиента).
 InternetAddress rdpLoopbackBindAddress() {
-  if (!kIsWeb && Platform.isMacOS) {
+  if (!kIsWeb && (Platform.isMacOS || Platform.isIOS || Platform.isAndroid)) {
     return InternetAddress.loopbackIPv4;
   }
   return InternetAddress('127.0.0.2');
@@ -1135,6 +1199,55 @@ File? _createTempRdpFile({
     debugPrint('rdp: failed to create temporary .rdp file: $e');
     return null;
   }
+}
+
+/// Запуск RDP-клиента на мобильных платформах (Windows App / Microsoft Remote Desktop через URI rdp://).
+Future<bool> _launchMobileRdp({
+  required String host,
+  required int port,
+}) async {
+  if (RdpConnectorService.launchMobileOverride != null) {
+    return await RdpConnectorService.launchMobileOverride!(host: host, port: port);
+  }
+  final rdpUri = Uri.parse('rdp://full%20address=s:$host:$port');
+  DebugLogService.instance.record('rdp.mobile_launch.intent', fields: {
+    'host': host,
+    'port': port,
+    'uri': rdpUri.toString(),
+  });
+
+  try {
+    if (await canLaunchUrl(rdpUri)) {
+      final ok = await launchUrl(rdpUri, mode: LaunchMode.externalApplication);
+      if (ok) {
+        DebugLogService.instance.record('rdp.mobile_launch.completed', fields: {'result': 'launched'});
+        return true;
+      }
+    }
+  } catch (e) {
+    DebugLogService.instance.record('rdp.mobile_launch.failed', error: e);
+  }
+
+  try {
+    final ok = await launchUrl(rdpUri, mode: LaunchMode.externalApplication);
+    if (ok) {
+      DebugLogService.instance.record('rdp.mobile_launch.completed', fields: {'result': 'launched_direct'});
+      return true;
+    }
+  } catch (e) {
+    DebugLogService.instance.record('rdp.mobile_launch.failed', error: e);
+  }
+
+  if (!kIsWeb && Platform.isIOS) {
+    final appStoreUri = Uri.parse('https://apps.apple.com/app/windows-app/id714464092');
+    try {
+      if (await canLaunchUrl(appStoreUri)) {
+        await launchUrl(appStoreUri, mode: LaunchMode.externalApplication);
+      }
+    } catch (_) {}
+  }
+
+  return false;
 }
 
 /// Запуск RDP-клиента: Windows App / Microsoft Remote Desktop на macOS, mstsc на Windows (§3.5). null — не найден.
