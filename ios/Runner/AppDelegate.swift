@@ -22,13 +22,18 @@ import UserNotifications
       ]
     }
 
+    if let flutterVC = window?.rootViewController as? FlutterViewController, self.pushChannel == nil {
+      setupPushChannel(messenger: flutterVC.binaryMessenger)
+    }
+
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LigamentPush")
-    setupPushChannel(messenger: registrar.messenger())
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LigamentPush") {
+      setupPushChannel(messenger: registrar.messenger())
+    }
   }
 
   private func setupNotificationCategories() {
