@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/models/link_session_policy.dart';
+import 'package:ligament_authenticator/widgets/link_file_manager_dialog.dart';
 
 void main() {
   test('view-only permits monitor selection but never remote input', () {
@@ -104,5 +105,46 @@ void main() {
     expect(
         policyWithoutFiles.allows({'type': 'file_start'}, allowControl: true),
         isFalse);
+    for (final fsType in [
+      'fs_list',
+      'fs_list_ack',
+      'fs_download_start',
+      'fs_delete',
+      'fs_mkdir'
+    ]) {
+      expect(policyWithFiles.allows({'type': fsType}, allowControl: true),
+          isTrue,
+          reason: '$fsType should be allowed when file transfer is permitted');
+      expect(policyWithoutFiles.allows({'type': fsType}, allowControl: true),
+          isFalse,
+          reason: '$fsType should be blocked when file transfer is disabled');
+    }
+  });
+
+  test('FsEntry.fromMap parses POSIX and Windows paths correctly', () {
+    final posixEntry = FsEntry.fromMap({
+      'name': 'document.pdf',
+      'is_dir': false,
+      'size': 1048576,
+      'modified': 1700000000000,
+    }, '/home/user/downloads', isWindows: false);
+
+    expect(posixEntry.name, 'document.pdf');
+    expect(posixEntry.path, '/home/user/downloads/document.pdf');
+    expect(posixEntry.isDir, isFalse);
+    expect(posixEntry.size, 1048576);
+    expect(posixEntry.modified?.millisecondsSinceEpoch, 1700000000000);
+
+    final winEntry = FsEntry.fromMap({
+      'name': 'Photos',
+      'is_dir': true,
+      'size': 0,
+      'modified': 1700000000000,
+    }, 'C:\\Users\\User', isWindows: true);
+
+    expect(winEntry.name, 'Photos');
+    expect(winEntry.path, 'C:\\Users\\User\\Photos');
+    expect(winEntry.isDir, isTrue);
+    expect(winEntry.size, 0);
   });
 }

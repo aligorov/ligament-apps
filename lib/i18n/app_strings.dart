@@ -346,7 +346,7 @@ class AppStrings {
   String get consoleFilesDisabledService => isRu ? 'Файлы недоступны, пока на ПК не запущено приложение' : 'Files unavailable until application is running on remote PC';
   String get consoleFilesDisabledViewOnly => isRu ? 'Передача файлов недоступна в режиме только просмотра' : 'File transfer is disabled in view-only mode';
   String get consoleFilesRequireDataChannel => isRu ? 'Передача файлов требует прямого соединения (DataChannel)' : 'File transfer requires direct DataChannel connection';
-  String get consoleFileLimitExceeded => isRu ? 'Файл превышает лимит 50 МБ' : 'File exceeds 50 MB limit';
+  String get consoleFileLimitExceeded => isRu ? 'Файл превышает лимит 1 ГБ' : 'File exceeds 1 GB limit';
   String get consoleFileAlreadyTransferring => isRu ? 'Уже выполняется передача другого файла' : 'Another file transfer is already in progress';
   String get consoleFilesDestinationHint => isRu ? 'Файлы сохраняются в Загрузки → LigamentSupport' : 'Files are saved to Downloads → LigamentSupport';
   String get consoleFileSending => isRu ? 'Отправка...' : 'Sending...';
@@ -357,6 +357,21 @@ class AppStrings {
   String get consoleFileCancelTooltip => isRu ? 'Отменить передачу' : 'Cancel transfer';
   String get consoleFileIncoming => isRu ? 'Входящий файл' : 'Incoming file';
   String get consoleFileOutgoing => isRu ? 'Исходящий файл' : 'Outgoing file';
+  String get clipboardActiveSyncNotice => isRu ? 'Буфер обмена синхронизирован' : 'Clipboard synchronized';
+  String get fileManagerTitle => isRu ? 'Файловый менеджер' : 'File Manager';
+  String get fileManagerLocal => isRu ? 'Локальный компьютер' : 'Local Computer';
+  String get fileManagerRemote => isRu ? 'Удалённый компьютер' : 'Remote Computer';
+  String get fileManagerUpload => isRu ? 'Отправить на удалённый ПК' : 'Upload to Remote PC';
+  String get fileManagerDownload => isRu ? 'Скачать на локальный ПК' : 'Download to Local PC';
+  String get fileManagerRefresh => isRu ? 'Обновить' : 'Refresh';
+  String get fileManagerUp => isRu ? 'Вверх' : 'Up';
+  String get fileManagerDelete => isRu ? 'Удалить' : 'Delete';
+  String get fileManagerNewFolder => isRu ? 'Новая папка' : 'New Folder';
+  String get fileManagerEmptyFolder => isRu ? 'Папка пуста' : 'Folder is empty';
+  String get fileManagerLoading => isRu ? 'Загрузка списка файлов...' : 'Loading file list...';
+  String get fileManagerName => isRu ? 'Имя' : 'Name';
+  String get fileManagerSize => isRu ? 'Размер' : 'Size';
+  String get fileManagerModified => isRu ? 'Изменён' : 'Modified';
 
   String get consoleFullscreen => isRu ? 'Во весь экран' : 'Full Screen';
   String get consoleExitFullscreen => isRu ? 'Выйти из полноэкранного режима' : 'Exit Full Screen';

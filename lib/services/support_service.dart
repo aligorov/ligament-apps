@@ -372,7 +372,7 @@ class SupportService extends ChangeNotifier {
   }
 
   /// Лимиты файловых передач (защита памяти/диска от нелимитированных закачек)
-  static const int _maxFileTransferBytes = 50 * 1024 * 1024; // 50 МБ
+  static const int _maxFileTransferBytes = 1024 * 1024 * 1024; // 1 ГБ
   static const int _maxConcurrentDownloads = 2;
   static const Duration _downloadStallTimeout = Duration(seconds: 60);
 
@@ -687,7 +687,7 @@ class SupportService extends ChangeNotifier {
 
     if (totalSize > _maxFileTransferBytes) {
       _addSystemMessage(
-          '⚠ Файл не отправлен: превышен лимит размера 50 МБ ($filename)');
+          '⚠ Файл не отправлен: превышен лимит размера 1 ГБ ($filename)');
       notifyListeners();
       return;
     }
@@ -2359,7 +2359,7 @@ class SupportService extends ChangeNotifier {
       }
       // Защита от заниженного size в file_start
       if (dl.receivedBytes > _maxFileTransferBytes) {
-        _abortDownload(transferId, 'фактический объем превысил лимит 50 МБ');
+        _abortDownload(transferId, 'фактический объем превысил лимит 1 ГБ');
         return;
       }
       dl.chunks[chunkIndex] = bytes;

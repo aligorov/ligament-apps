@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -15,7 +16,6 @@ import 'debug_log_service.dart';
 import 'support_service.dart'
     show
         SupportChatMessage,
-        assembleFileChunks,
         resolveNonCollidingFilePath,
         supportDebugMessageType;
 import '../models/link_control_messages.dart';
@@ -1175,6 +1175,19 @@ Future<void> _runConnectedLinkHostWorker(
   }
 }
 
+/// Простой аккумулятор дайджеста для потокового хеширования без внешних библиотек
+class _DigestAccumulator implements Sink<crypto.Digest> {
+  crypto.Digest? digest;
+
+  @override
+  void add(crypto.Digest data) {
+    digest = data;
+  }
+
+  @override
+  void close() {}
+}
+
 class _LinkActiveFileDownload {
   _LinkActiveFileDownload({
     required this.id,
@@ -1182,6 +1195,11 @@ class _LinkActiveFileDownload {
     required this.totalSize,
     required this.totalChunks,
     this.expectedChecksum,
+    this.targetDirectory,
+    this.partFile,
+    this.sink,
+    this.hashOutput,
+    this.hashInput,
   });
 
   final String id;
@@ -1189,8 +1207,13 @@ class _LinkActiveFileDownload {
   final int totalSize;
   final int totalChunks;
   final String? expectedChecksum;
-  final Map<int, List<int>> chunks = {};
+  final String? targetDirectory;
+  final File? partFile;
+  final IOSink? sink;
+  final _DigestAccumulator? hashOutput;
+  final ByteConversionSink? hashInput;
   int receivedBytes = 0;
+  int receivedChunks = 0;
   Timer? stallTimer;
 }
 
@@ -1209,9 +1232,9 @@ class FlutterLinkHostPeer implements LinkHostPeer {
   });
 
   static const Duration connectionGracePeriod = Duration(seconds: 60);
-  static const int _maxFileTransferBytes = 50 * 1024 * 1024;
+  static const int _maxFileTransferBytes = 1024 * 1024 * 1024; // 1 GB
   static const int _maxConcurrentDownloads = 4;
-  static const Duration _downloadStallTimeout = Duration(seconds: 30);
+  static const Duration _downloadStallTimeout = Duration(seconds: 45);
 
   final String? debugSessionId;
   final VoidCallback? onConnected;
@@ -2191,7 +2214,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           filename.isNotEmpty &&
           (size == null ||
               (size is int && size >= 0 && size <= _maxFileTransferBytes)) &&
-          (chunks == null || (chunks is int && chunks > 0 && chunks <= 8192));
+          (chunks == null || (chunks is int && chunks > 0 && chunks <= 65536));
     }
     if (type == 'file_chunk') {
       final id = input['transfer_id'] ?? input['id'];
@@ -2207,6 +2230,23 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     if (type == 'file_end') {
       final id = input['transfer_id'] ?? input['id'];
       return id is String && id.isNotEmpty;
+    }
+    if (type == 'fs_list') {
+      final p = input['path'];
+      return p == null || p is String;
+    }
+    if (type == 'fs_download_start') {
+      final p = input['remote_path'] ?? input['path'];
+      return p is String && p.isNotEmpty;
+    }
+    if (type == 'fs_delete') {
+      final p = input['path'];
+      return p is String && p.isNotEmpty;
+    }
+    if (type == 'fs_mkdir') {
+      final p = input['path'];
+      final name = input['name'];
+      return p is String && p.isNotEmpty && name is String && name.isNotEmpty;
     }
     return false;
   }
@@ -2334,6 +2374,14 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         _handleFileChunk(input);
       } else if (type == 'file_end') {
         unawaited(_handleFileEnd(input));
+      } else if (type == 'fs_list') {
+        _handleFsList(input);
+      } else if (type == 'fs_download_start') {
+        unawaited(_handleFsDownloadStart(input));
+      } else if (type == 'fs_delete') {
+        _handleFsDelete(input);
+      } else if (type == 'fs_mkdir') {
+        _handleFsMkdir(input);
       } else if (type == 'clipboard_set') {
         final text = input['text']?.toString() ?? '';
         if (text.length <= 65536) {
@@ -2505,6 +2553,7 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         'file_${DateTime.now().millisecondsSinceEpoch}';
     final size = (input['size'] as num?)?.toInt() ?? 0;
     final totalChunks = (input['total_chunks'] as num?)?.toInt() ?? 1;
+    final destDir = input['dest_dir']?.toString();
     if (size < 0 ||
         size > _maxFileTransferBytes ||
         totalChunks <= 0 ||
@@ -2516,16 +2565,44 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       });
       return;
     }
-    _activeDownloads.remove(transferId)?.stallTimer?.cancel();
+    final existing = _activeDownloads.remove(transferId);
+    existing?.stallTimer?.cancel();
+    try {
+      existing?.sink?.close();
+    } catch (_) {}
+
+    File? partFile;
+    IOSink? sink;
+    _DigestAccumulator? hashOutput;
+    ByteConversionSink? hashInput;
+    try {
+      final tempDir = Directory.systemTemp;
+      partFile = File('${tempDir.path}${Platform.pathSeparator}link_dl_$transferId.part');
+      sink = partFile.openWrite(mode: FileMode.write);
+      hashOutput = _DigestAccumulator();
+      hashInput = crypto.sha256.startChunkedConversion(hashOutput);
+    } catch (e) {
+      _peerLog('link.exception', error: e, fields: {'phase': 'file_start_sink', 'result': 'failed'});
+    }
+
     final dl = _LinkActiveFileDownload(
       id: transferId,
       filename: filename,
       totalSize: size,
       totalChunks: totalChunks,
       expectedChecksum: input['checksum']?.toString(),
+      targetDirectory: destDir,
+      partFile: partFile,
+      sink: sink,
+      hashOutput: hashOutput,
+      hashInput: hashInput,
     );
     dl.stallTimer = Timer(_downloadStallTimeout, () {
       _activeDownloads.remove(transferId);
+      try {
+        dl.sink?.close();
+        if (dl.partFile != null && dl.partFile!.existsSync()) dl.partFile!.deleteSync();
+      } catch (_) {}
       _sendControlJson({
         'type': 'file_ack',
         'transfer_id': transferId,
@@ -2545,11 +2622,14 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     try {
       final bytes = base64Decode(base64Data);
       if (chunkIndex < 0 || chunkIndex >= dl.totalChunks) return;
-      if (!dl.chunks.containsKey(chunkIndex)) {
-        dl.receivedBytes += bytes.length;
-      }
+      dl.receivedBytes += bytes.length;
+      dl.receivedChunks++;
       if (dl.receivedBytes > _maxFileTransferBytes) {
         _activeDownloads.remove(transferId)?.stallTimer?.cancel();
+        try {
+          dl.sink?.close();
+          if (dl.partFile != null && dl.partFile!.existsSync()) dl.partFile!.deleteSync();
+        } catch (_) {}
         _sendControlJson({
           'type': 'file_ack',
           'transfer_id': transferId,
@@ -2557,10 +2637,15 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         });
         return;
       }
-      dl.chunks[chunkIndex] = bytes;
+      dl.sink?.add(bytes);
+      dl.hashInput?.add(bytes);
       dl.stallTimer?.cancel();
       dl.stallTimer = Timer(_downloadStallTimeout, () {
         _activeDownloads.remove(transferId);
+        try {
+          dl.sink?.close();
+          if (dl.partFile != null && dl.partFile!.existsSync()) dl.partFile!.deleteSync();
+        } catch (_) {}
         _sendControlJson({
           'type': 'file_ack',
           'transfer_id': transferId,
@@ -2572,6 +2657,10 @@ class FlutterLinkHostPeer implements LinkHostPeer {
           error: error,
           fields: {'phase': 'handle_file_chunk', 'result': 'failed'});
       _activeDownloads.remove(transferId)?.stallTimer?.cancel();
+      try {
+        dl.sink?.close();
+        if (dl.partFile != null && dl.partFile!.existsSync()) dl.partFile!.deleteSync();
+      } catch (_) {}
       _sendControlJson({
         'type': 'file_ack',
         'transfer_id': transferId,
@@ -2586,17 +2675,24 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     final dl = _activeDownloads.remove(transferId);
     dl?.stallTimer?.cancel();
     if (dl == null) return;
+    try {
+      await dl.sink?.flush();
+      await dl.sink?.close();
+    } catch (_) {}
+    try {
+      dl.hashInput?.close();
+    } catch (_) {}
+
     final endChecksum = input['checksum']?.toString();
     final checksum = (endChecksum != null && endChecksum.isNotEmpty)
         ? endChecksum
         : dl.expectedChecksum;
-    final result = assembleFileChunks(
-      dl.chunks,
-      dl.totalChunks,
-      expectedSize: dl.totalSize > 0 ? dl.totalSize : null,
-      expectedChecksum: checksum,
-    );
-    if (!result.isOk || result.bytes == null) {
+    final computedChecksum = dl.hashOutput?.digest?.toString();
+
+    if (checksum != null && computedChecksum != null && checksum != computedChecksum) {
+      try {
+        if (dl.partFile != null && await dl.partFile!.exists()) await dl.partFile!.delete();
+      } catch (_) {}
       _sendControlJson({
         'type': 'file_ack',
         'transfer_id': transferId,
@@ -2606,25 +2702,28 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         'type': 'file_reject',
         'transfer_id': transferId,
         'filename': dl.filename,
-        'reason': result.error ?? 'invalid_file',
+        'reason': 'checksum_mismatch',
       });
       return;
     }
 
     String? targetPath;
     try {
-      final home = Platform.environment['USERPROFILE'] ??
-          Platform.environment['HOME'] ??
-          Directory.systemTemp.path;
-      final dir = Directory(
-          '$home${Platform.pathSeparator}Downloads${Platform.pathSeparator}LigamentSupport');
+      String dirPath = dl.targetDirectory ?? '';
+      if (dirPath.isEmpty) {
+        final home = Platform.environment['USERPROFILE'] ??
+            Platform.environment['HOME'] ??
+            Directory.systemTemp.path;
+        dirPath = '$home${Platform.pathSeparator}Downloads${Platform.pathSeparator}LigamentSupport';
+      }
+      final dir = Directory(dirPath);
       if (!await dir.exists()) {
         await dir.create(recursive: true);
       }
       targetPath = resolveNonCollidingFilePath(dir.path, dl.filename);
-      final partFile = File('$targetPath.part');
-      await partFile.writeAsBytes(result.bytes!, flush: true);
-      await partFile.rename(targetPath);
+      if (dl.partFile != null && await dl.partFile!.exists()) {
+        await dl.partFile!.rename(targetPath);
+      }
       if (!kIsWeb && Platform.isWindows) {
         try {
           await File('$targetPath:Zone.Identifier')
@@ -2644,20 +2743,240 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       _peerLog('link.exception',
           error: error,
           fields: {'phase': 'handle_file_end', 'result': 'failed'});
-      if (targetPath != null) {
+      if (dl.partFile != null) {
         try {
-          final partFile = File('$targetPath.part');
-          if (await partFile.exists()) await partFile.delete();
-        } catch (error) {
-          _peerLog('link.exception',
-              error: error,
-              fields: {'phase': 'handle_file_end', 'result': 'failed'});
-        }
+          if (await dl.partFile!.exists()) await dl.partFile!.delete();
+        } catch (_) {}
       }
       _sendControlJson({
         'type': 'file_ack',
         'transfer_id': transferId,
         'ok': false,
+      });
+    }
+  }
+
+  void _handleFsList(Map<String, dynamic> input) {
+    if (!policy.allowFileTransfer) {
+      _sendControlJson({
+        'type': 'fs_list_ack',
+        'request_id': input['request_id'],
+        'ok': false,
+        'error': 'policy_denied',
+      });
+      return;
+    }
+    final rawPath = input['path']?.toString().trim() ?? '';
+    final List<String> drives = [];
+    if (!kIsWeb && Platform.isWindows) {
+      for (final letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
+        final d = '$letter:\\';
+        if (Directory(d).existsSync()) {
+          drives.add(d);
+        }
+      }
+    } else if (!kIsWeb) {
+      drives.add('/');
+    }
+
+    String targetPath = rawPath;
+    if (targetPath.isEmpty) {
+      if (!kIsWeb && Platform.isWindows) {
+        targetPath = Platform.environment['USERPROFILE'] ?? (drives.isNotEmpty ? drives.first : 'C:\\');
+      } else if (!kIsWeb) {
+        targetPath = Platform.environment['HOME'] ?? '/';
+      } else {
+        targetPath = '/';
+      }
+    }
+
+    try {
+      final dir = Directory(targetPath);
+      if (!dir.existsSync()) {
+        _sendControlJson({
+          'type': 'fs_list_ack',
+          'request_id': input['request_id'],
+          'path': targetPath,
+          'drives': drives,
+          'entries': <Map<String, dynamic>>[],
+          'ok': false,
+          'error': 'directory_not_found',
+        });
+        return;
+      }
+
+      final entries = <Map<String, dynamic>>[];
+      for (final entity in dir.listSync(followLinks: false)) {
+        try {
+          final isDir = entity is Directory;
+          final stat = entity.statSync();
+          final name = entity.uri.pathSegments.where((s) => s.isNotEmpty).last;
+          entries.add({
+            'name': name,
+            'is_dir': isDir,
+            'size': isDir ? 0 : stat.size,
+            'mtime': stat.modified.millisecondsSinceEpoch,
+          });
+        } catch (_) {}
+      }
+
+      entries.sort((a, b) {
+        final aDir = a['is_dir'] == true;
+        final bDir = b['is_dir'] == true;
+        if (aDir != bDir) return aDir ? -1 : 1;
+        return (a['name'] as String).toLowerCase().compareTo((b['name'] as String).toLowerCase());
+      });
+
+      String? parentPath;
+      final parentDir = dir.parent;
+      if (parentDir.path != dir.path) {
+        parentPath = parentDir.path;
+      }
+
+      _sendControlJson({
+        'type': 'fs_list_ack',
+        'request_id': input['request_id'],
+        'path': dir.path,
+        'parent': parentPath,
+        'drives': drives,
+        'entries': entries,
+        'ok': true,
+      });
+    } catch (e) {
+      _sendControlJson({
+        'type': 'fs_list_ack',
+        'request_id': input['request_id'],
+        'path': targetPath,
+        'drives': drives,
+        'entries': <Map<String, dynamic>>[],
+        'ok': false,
+        'error': e.toString(),
+      });
+    }
+  }
+
+  Future<void> _handleFsDownloadStart(Map<String, dynamic> input) async {
+    final remotePath = input['remote_path']?.toString() ?? input['path']?.toString() ?? '';
+    final transferId = input['transfer_id']?.toString() ?? 'dl_${DateTime.now().millisecondsSinceEpoch}';
+    if (remotePath.isEmpty || !policy.allowFileTransfer) {
+      _sendControlJson({'type': 'file_reject', 'transfer_id': transferId, 'reason': 'policy_or_invalid_path'});
+      return;
+    }
+    final file = File(remotePath);
+    if (!await file.exists()) {
+      _sendControlJson({'type': 'file_reject', 'transfer_id': transferId, 'reason': 'not_found'});
+      return;
+    }
+    final totalSize = await file.length();
+    if (totalSize > _maxFileTransferBytes) {
+      _sendControlJson({'type': 'file_reject', 'transfer_id': transferId, 'reason': 'file_too_large'});
+      return;
+    }
+
+    final filename = file.uri.pathSegments.where((s) => s.isNotEmpty).last;
+    const chunkSize = 32768;
+    final totalChunks = (totalSize / chunkSize).ceil();
+
+    _sendControlJson({
+      'type': 'file_start',
+      'transfer_id': transferId,
+      'filename': filename,
+      'size': totalSize,
+      'total_chunks': totalChunks,
+      'sender': 'host',
+    });
+
+    final raf = await file.open(mode: FileMode.read);
+    final hashOutput = _DigestAccumulator();
+    final hashInput = crypto.sha256.startChunkedConversion(hashOutput);
+
+    int sentBytes = 0;
+    int chunkIndex = 0;
+    try {
+      while (sentBytes < totalSize && !_closed) {
+        final toRead = min(chunkSize, totalSize - sentBytes);
+        final chunkBytes = await raf.read(toRead);
+        if (chunkBytes.isEmpty) break;
+        hashInput.add(chunkBytes);
+        final b64 = base64Encode(chunkBytes);
+        _sendControlJson({
+          'type': 'file_chunk',
+          'transfer_id': transferId,
+          'chunk_index': chunkIndex,
+          'data': b64,
+        });
+        sentBytes += chunkBytes.length;
+        chunkIndex++;
+        if (chunkIndex % 8 == 0) {
+          await Future.delayed(const Duration(milliseconds: 5));
+        }
+      }
+      hashInput.close();
+      final checksum = hashOutput.digest?.toString() ?? '';
+      _sendControlJson({
+        'type': 'file_end',
+        'transfer_id': transferId,
+        'checksum': checksum,
+      });
+    } finally {
+      await raf.close();
+    }
+  }
+
+  void _handleFsDelete(Map<String, dynamic> input) {
+    if (!policy.allowFileTransfer) return;
+    final path = input['path']?.toString() ?? '';
+    if (path.isEmpty) return;
+    try {
+      final f = File(path);
+      if (f.existsSync()) {
+        f.deleteSync();
+      } else {
+        final d = Directory(path);
+        if (d.existsSync()) d.deleteSync(recursive: true);
+      }
+      _sendControlJson({
+        'type': 'fs_action_ack',
+        'request_id': input['request_id'],
+        'action': 'delete',
+        'path': path,
+        'ok': true,
+      });
+    } catch (e) {
+      _sendControlJson({
+        'type': 'fs_action_ack',
+        'request_id': input['request_id'],
+        'action': 'delete',
+        'path': path,
+        'ok': false,
+        'error': e.toString(),
+      });
+    }
+  }
+
+  void _handleFsMkdir(Map<String, dynamic> input) {
+    if (!policy.allowFileTransfer) return;
+    final path = input['path']?.toString() ?? '';
+    final name = input['name']?.toString() ?? '';
+    if (path.isEmpty || name.isEmpty) return;
+    try {
+      final newDir = Directory('$path${Platform.pathSeparator}$name');
+      newDir.createSync(recursive: true);
+      _sendControlJson({
+        'type': 'fs_action_ack',
+        'request_id': input['request_id'],
+        'action': 'mkdir',
+        'path': newDir.path,
+        'ok': true,
+      });
+    } catch (e) {
+      _sendControlJson({
+        'type': 'fs_action_ack',
+        'request_id': input['request_id'],
+        'action': 'mkdir',
+        'path': path,
+        'ok': false,
+        'error': e.toString(),
       });
     }
   }

@@ -49,6 +49,11 @@ class LinkSessionPolicy {
       case 'file_start':
       case 'file_chunk':
       case 'file_end':
+      case 'fs_list':
+      case 'fs_list_ack':
+      case 'fs_download_start':
+      case 'fs_delete':
+      case 'fs_mkdir':
         return allowFileTransfer;
       default:
         return const {

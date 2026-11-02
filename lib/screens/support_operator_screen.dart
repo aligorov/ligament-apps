@@ -21,6 +21,7 @@ import '../api/client.dart';
 import '../models/link_session_policy.dart';
 import '../widgets/remote_pointer_surface.dart';
 import '../widgets/step_up_auth_dialog.dart';
+import '../widgets/link_file_manager_dialog.dart';
 import '../services/remote_keyboard.dart';
 import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
@@ -65,6 +66,50 @@ class _ConsoleFileTransfer {
         errorMessage = null,
         isCancelled = false,
         timestamp = timestamp ?? DateTime.now();
+}
+
+/// Простой аккумулятор дайджеста для потокового хеширования
+class _DigestAccumulator implements Sink<crypto.Digest> {
+  crypto.Digest? digest;
+
+  @override
+  void add(crypto.Digest data) {
+    digest = data;
+  }
+
+  @override
+  void close() {}
+}
+
+/// Состояние потоковой загрузки файла на операторской стороне (OOM protection)
+class _OperatorActiveDownload {
+  final String id;
+  final String filename;
+  final int totalSize;
+  final int totalChunks;
+  final String? expectedChecksum;
+  final String targetPath;
+  final String partPath;
+  final File partFile;
+  final IOSink sink;
+  final _DigestAccumulator digestSink;
+  final ByteConversionSink inputSink;
+  int receivedBytes = 0;
+  int receivedChunks = 0;
+
+  _OperatorActiveDownload({
+    required this.id,
+    required this.filename,
+    required this.totalSize,
+    required this.totalChunks,
+    required this.expectedChecksum,
+    required this.targetPath,
+    required this.partPath,
+    required this.partFile,
+    required this.sink,
+    required this.digestSink,
+    required this.inputSink,
+  });
 }
 
 /// Кнопка мыши для протокола агента (0 — левая, 1 — средняя, 2 — правая)
@@ -244,7 +289,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   bool _isSendingFile = false;
   _ConsoleFileTransfer? _currentSendingTransfer;
   Completer<bool>? _currentFileAckCompleter;
-  final Map<String, Map<String, dynamic>> _incomingFileChunks = {};
+  final Map<String, _OperatorActiveDownload> _activeIncomingDownloads = {};
+  final StreamController<Map<String, dynamic>> _fsStreamController =
+      StreamController<Map<String, dynamic>>.broadcast();
+  String? _customDownloadDir;
+  String? _lastSentLocalClipboardText;
+  String? _lastRemoteClipboardText;
+  Timer? _clipboardWatcherTimer;
+  Timer? _clipboardFetchTimer;
 
   bool get _isDataChannelActive =>
       _dataChannel != null &&
@@ -2635,7 +2687,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             'timestamp': DateTime.now().millisecondsSinceEpoch,
           });
         });
+        _startClipboardWatcher();
       } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
+        _clipboardWatcherTimer?.cancel();
+        _clipboardWatcherTimer = null;
         _dataChannelPingTimer?.cancel();
         _dataChannelPingTimer = null;
         if (widget.isLink) {
@@ -2757,7 +2812,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
     } else if (type == 'clipboard_data') {
       final text = data['text']?.toString() ?? '';
-      _showRemoteClipboardDialog(text);
+      _handleIncomingRemoteClipboard(text);
     } else if (type == 'chat_message') {
       try {
         final msg = SupportChatMessage.fromJson(data);
@@ -2861,6 +2916,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _handleIncomingFileChunk(data);
     } else if (type == 'file_end') {
       _handleIncomingFileEnd(data);
+    } else if (type == 'fs_list_ack' || type == 'fs_action_ack') {
+      _fsStreamController.add(data);
     }
   }
 
@@ -3804,6 +3861,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       }
       return;
     }
+    _lastSentLocalClipboardText = text;
     if (!_sendDataMessage({'type': 'clipboard_set', 'text': text})) return;
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3812,7 +3870,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  void _requestRemoteClipboard() {
+  void _requestRemoteClipboard({bool silent = false}) {
     _logConnection('operator.action', fields: {
       'message_type': 'clipboard_get',
       'operation': 'user_action',
@@ -3821,36 +3879,94 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _sendDataMessage({'type': 'clipboard_get'});
   }
 
-  void _showRemoteClipboardDialog(String text) {
-    final strings = context.stringsRead;
+  void _handleIncomingRemoteClipboard(String text) {
+    if (text.isEmpty) return;
+    if (text == _lastSentLocalClipboardText || text == _lastRemoteClipboardText) {
+      return;
+    }
+    _lastRemoteClipboardText = text;
+    Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(context.stringsRead.clipboardActiveSyncNotice),
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _syncLocalClipboardBeforePaste() async {
+    try {
+      final clip = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = clip?.text;
+      if (text != null && text.isNotEmpty && text != _lastRemoteClipboardText) {
+        _lastSentLocalClipboardText = text;
+        _sendDataMessage({'type': 'clipboard_set', 'text': text});
+        await Future.delayed(const Duration(milliseconds: 40));
+      }
+    } catch (_) {}
+  }
+
+  void _startClipboardWatcher() {
+    _clipboardWatcherTimer?.cancel();
+    _clipboardWatcherTimer =
+        Timer.periodic(const Duration(milliseconds: 1500), (_) async {
+      if (!mounted || _isCleanedUp || !_controlReady) return;
+      try {
+        final clip = await Clipboard.getData(Clipboard.kTextPlain);
+        final text = clip?.text;
+        if (text != null &&
+            text.isNotEmpty &&
+            text != _lastRemoteClipboardText &&
+            text != _lastSentLocalClipboardText) {
+          _lastSentLocalClipboardText = text;
+          _sendDataMessage({'type': 'clipboard_set', 'text': text});
+        }
+      } catch (_) {}
+    });
+  }
+
+  void _startRemoteDownload(String remoteFilePath, String localDestDir) {
+    _customDownloadDir = localDestDir;
+    final transferId = 'file_${DateTime.now().millisecondsSinceEpoch}';
+    _sendDataMessage({
+      'type': 'fs_download_start',
+      'path': remoteFilePath,
+      'transfer_id': transferId,
+    });
+  }
+
+  void _openFileManagerDialog() {
+    final transferItem = _fileTransfers.cast<_ConsoleFileTransfer?>().firstWhere(
+      (t) => t?.status == 'sending' || t?.status == 'receiving',
+      orElse: () => null,
+    );
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: Text(strings.clientClipboardTitle,
-            style: const TextStyle(color: Colors.white)),
-        content: SelectableText(
-          text.isNotEmpty ? text : strings.clipboardEmpty,
-          style: const TextStyle(color: Color(0xFF94A3B8)),
-        ),
-        actions: [
-          if (text.isNotEmpty)
-            TextButton.icon(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: text));
-                Navigator.of(ctx).pop();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(strings.copiedToLocalClipboard)),
-                );
-              },
-              icon: const Icon(Icons.copy, size: 16),
-              label: Text(strings.copyToMyself),
-            ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(strings.close),
-          ),
-        ],
+      barrierDismissible: true,
+      builder: (ctx) => LinkFileManagerDialog(
+        sendDataMessage: _sendDataMessage,
+        fsStream: _fsStreamController.stream,
+        onUploadFile: (localFile, remoteDestDir) async {
+          await _sendFileViaDataChannel(localFile, remoteDestDir: remoteDestDir);
+        },
+        onDownloadFile: (remoteFilePath, localDestDir) {
+          _startRemoteDownload(remoteFilePath, localDestDir);
+        },
+        transferProgress: transferItem?.progress,
+        transferStatusText: transferItem != null
+            ? '${transferItem.filename} (${(transferItem.progress * 100).toStringAsFixed(0)}%)'
+            : null,
+        onCancelTransfer: transferItem != null
+            ? () {
+                setState(() {
+                  transferItem.isCancelled = true;
+                });
+              }
+            : null,
       ),
     );
   }
@@ -3883,6 +3999,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _linkHostAnswerTimer = null;
     _linkConnectWatchdogTimer?.cancel();
     _linkConnectWatchdogTimer = null;
+    _clipboardWatcherTimer?.cancel();
+    _clipboardWatcherTimer = null;
+    _clipboardFetchTimer?.cancel();
+    _clipboardFetchTimer = null;
+    _fsStreamController.close();
+    for (final dl in _activeIncomingDownloads.values) {
+      unawaited(dl.sink.close().catchError((_) {}));
+      unawaited(dl.partFile.delete().catchError((_) => dl.partFile));
+    }
+    _activeIncomingDownloads.clear();
     if (widget.isLink) unawaited(_closeLinkSessionOnce(_linkCloseId));
 
     // Сначала сбрасываем зажатые кнопки мыши, пока DataChannel ещё активен
@@ -4489,7 +4615,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final totalSize = await file.length();
       _logConnection('operator.file.selected',
           fields: {'bytes': totalSize, 'count': 1});
-      if (totalSize > 50 * 1024 * 1024) {
+      if (totalSize > 1024 * 1024 * 1024) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(strings.consoleFileLimitExceeded),
@@ -4507,13 +4633,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  Future<void> _sendFileViaDataChannel(File file) async {
+  Future<void> _sendFileViaDataChannel(File file, {String? remoteDestDir}) async {
     final strings = context.stringsRead;
     final filename = file.uri.pathSegments.last;
     final totalSize = await file.length();
-    final bytes = await file.readAsBytes();
+    if (totalSize > 1024 * 1024 * 1024) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(strings.consoleFileLimitExceeded),
+        ));
+      }
+      return;
+    }
+
+    // Stream hash calculation to avoid memory bloat
+    final digest = await crypto.sha256.bind(file.openRead()).first;
     if (!mounted || _isCleanedUp) return;
-    final checksum = crypto.sha256.convert(bytes).toString();
+    final checksum = digest.toString();
 
     const chunkSize = 32768; // 32 KB
     final totalChunks = (totalSize / chunkSize).ceil();
@@ -4536,7 +4672,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _currentFileAckCompleter = Completer<bool>();
 
     try {
-      if (!_sendDataMessage({
+      final startPayload = <String, dynamic>{
         'type': 'file_start',
         'transfer_id': transferId,
         'filename': filename,
@@ -4544,51 +4680,63 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'total_chunks': totalChunks,
         'checksum': checksum,
         'sender': 'operator',
-      })) {
+      };
+      if (remoteDestDir != null && remoteDestDir.isNotEmpty) {
+        startPayload['dest_dir'] = remoteDestDir;
+      }
+
+      if (!_sendDataMessage(startPayload)) {
         throw StateError('data_channel_unavailable');
       }
 
-      for (int i = 0; i < totalChunks; i++) {
-        if (transferItem.isCancelled) {
-          _sendDataMessage({
-            'type': 'file_reject',
+      final raf = await file.open(mode: FileMode.read);
+      try {
+        for (int i = 0; i < totalChunks; i++) {
+          if (transferItem.isCancelled) {
+            _sendDataMessage({
+              'type': 'file_reject',
+              'transfer_id': transferId,
+              'filename': filename,
+              'reason': 'cancelled_by_operator',
+            });
+            if (mounted) {
+              setState(() {
+                transferItem.status = 'cancelled';
+              });
+            }
+            return;
+          }
+
+          final chunkBytes = await raf.read(chunkSize);
+          final b64 = base64Encode(chunkBytes);
+
+          if (!_sendDataMessage({
+            'type': 'file_chunk',
             'transfer_id': transferId,
-            'filename': filename,
-            'reason': 'cancelled_by_operator',
-          });
+            'chunk_index': i,
+            'data': b64,
+          })) {
+            throw StateError('data_channel_unavailable');
+          }
+
+          final currentTransferred = (i + 1) * chunkSize;
+          final actualTransferred =
+              currentTransferred > totalSize ? totalSize : currentTransferred;
+
           if (mounted) {
             setState(() {
-              transferItem.status = 'cancelled';
+              transferItem.transferredBytes = actualTransferred;
+              transferItem.progress =
+                  totalSize > 0 ? (actualTransferred / totalSize) : 1.0;
             });
           }
-          return;
-        }
 
-        final start = i * chunkSize;
-        final end =
-            (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
-        final chunkBytes = bytes.sublist(start, end);
-        final b64 = base64Encode(chunkBytes);
-
-        if (!_sendDataMessage({
-          'type': 'file_chunk',
-          'transfer_id': transferId,
-          'chunk_index': i,
-          'data': b64,
-        })) {
-          throw StateError('data_channel_unavailable');
+          if (i % 8 == 0) {
+            await Future.delayed(const Duration(milliseconds: 10));
+          }
         }
-
-        if (mounted) {
-          setState(() {
-            transferItem.transferredBytes = end;
-            transferItem.progress = totalSize > 0 ? (end / totalSize) : 1.0;
-          });
-        }
-
-        if (i % 10 == 0) {
-          await Future.delayed(const Duration(milliseconds: 15));
-        }
+      } finally {
+        await raf.close();
       }
 
       if (!_sendDataMessage({
@@ -4605,7 +4753,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       });
 
       final ok = await _currentFileAckCompleter!.future.timeout(
-        const Duration(seconds: 30),
+        const Duration(seconds: 45),
         onTimeout: () => false,
       );
 
@@ -4657,7 +4805,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
-  void _handleIncomingFileStart(Map<String, dynamic> data) {
+  Future<void> _handleIncomingFileStart(Map<String, dynamic> data) async {
     final transferId =
         data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
     final filename = data['filename']?.toString() ?? 'remote_file';
@@ -4665,7 +4813,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final totalChunks = (data['total_chunks'] as num?)?.toInt() ?? 1;
     final checksum = data['checksum']?.toString();
 
-    if (transferId.isEmpty) return;
+    if (transferId.isEmpty || totalSize > 1024 * 1024 * 1024) return;
 
     final item = _ConsoleFileTransfer(
       id: transferId,
@@ -4675,99 +4823,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       status: 'receiving',
     );
 
-    _incomingFileChunks[transferId] = {
-      'filename': filename,
-      'size': totalSize,
-      'total_chunks': totalChunks,
-      'checksum': checksum,
-      'chunks': <int, List<int>>{},
-    };
-
-    if (mounted) {
-      setState(() {
-        _fileTransfers.insert(0, item);
-      });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('${context.stringsRead.consoleFileIncoming}: $filename'),
-        duration: const Duration(seconds: 2),
-      ));
-    }
-  }
-
-  void _handleIncomingFileChunk(Map<String, dynamic> data) {
-    final transferId =
-        data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
-    final chunkIndex = (data['chunk_index'] as num?)?.toInt() ?? 0;
-    final base64Data = data['data']?.toString() ?? '';
-    final record = _incomingFileChunks[transferId];
-    if (record == null || base64Data.isEmpty) return;
-
-    try {
-      final bytes = base64Decode(base64Data);
-      final chunks = record['chunks'] as Map<int, List<int>>;
-      chunks[chunkIndex] = bytes;
-
-      final totalChunks = record['total_chunks'] as int;
-
-      if (mounted) {
-        setState(() {
-          for (final t in _fileTransfers) {
-            if (t.id == transferId) {
-              t.transferredBytes += bytes.length;
-              t.progress =
-                  totalChunks > 0 ? (chunks.length / totalChunks) : 0.0;
-              break;
-            }
-          }
-        });
-      }
-    } catch (e) {
-      _logConnection('operator.exception',
-          error: e,
-          fields: {'phase': 'handle_incoming_file_chunk', 'result': 'failed'});
-    }
-  }
-
-  Future<void> _handleIncomingFileEnd(Map<String, dynamic> data) async {
-    final transferId =
-        data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
-    final record = _incomingFileChunks.remove(transferId);
-    if (record == null) return;
-
-    final filename = record['filename'] as String;
-    final totalSize = record['size'] as int;
-    final totalChunks = record['total_chunks'] as int;
-    final checksum =
-        data['checksum']?.toString() ?? record['checksum'] as String?;
-    final chunks = record['chunks'] as Map<int, List<int>>;
-
-    final result = assembleFileChunks(
-      chunks,
-      totalChunks,
-      expectedSize: totalSize > 0 ? totalSize : null,
-      expectedChecksum: checksum,
-    );
-
-    if (!result.isOk) {
-      _sendDataMessage(
-          {'type': 'file_ack', 'transfer_id': transferId, 'ok': false});
-      if (mounted) {
-        setState(() {
-          for (final t in _fileTransfers) {
-            if (t.id == transferId) {
-              t.status = 'error';
-              t.errorMessage = 'Checksum or size mismatch';
-              break;
-            }
-          }
-        });
-      }
-      return;
-    }
-
     try {
       final String dirPath;
-      if (!kIsWeb && Platform.isWindows) {
+      if (_customDownloadDir != null && _customDownloadDir!.isNotEmpty) {
+        dirPath = _customDownloadDir!;
+      } else if (!kIsWeb && Platform.isWindows) {
         final profile =
             Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
         dirPath = '$profile\\Downloads\\LigamentSupport';
@@ -4786,46 +4846,135 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       final targetPath = resolveNonCollidingFilePath(dir.path, filename);
       final partPath = '$targetPath.part';
       final partFile = File(partPath);
-      await partFile.writeAsBytes(result.bytes!, flush: true);
-      await partFile.rename(targetPath);
+      final sink = partFile.openWrite();
+      final digestSink = _DigestAccumulator();
+      final inputSink = crypto.sha256.startChunkedConversion(digestSink);
 
-      _sendDataMessage(
-          {'type': 'file_ack', 'transfer_id': transferId, 'ok': true});
+      final dl = _OperatorActiveDownload(
+        id: transferId,
+        filename: filename,
+        totalSize: totalSize,
+        totalChunks: totalChunks,
+        expectedChecksum: checksum,
+        targetPath: targetPath,
+        partPath: partPath,
+        partFile: partFile,
+        sink: sink,
+        digestSink: digestSink,
+        inputSink: inputSink,
+      );
+
+      _activeIncomingDownloads[transferId] = dl;
 
       if (mounted) {
         setState(() {
-          for (final t in _fileTransfers) {
-            if (t.id == transferId) {
-              t.status = 'completed';
-              t.progress = 1.0;
-              break;
-            }
-          }
+          _fileTransfers.insert(0, item);
         });
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              '${context.stringsRead.consoleFileSavedSuccess}: $targetPath'),
-          duration: const Duration(seconds: 4),
+          content: Text('${context.stringsRead.consoleFileIncoming}: $filename'),
+          duration: const Duration(seconds: 2),
         ));
       }
     } catch (e) {
       _logConnection('operator.exception',
           error: e,
-          fields: {'phase': 'handle_incoming_file_end', 'result': 'failed'});
+          fields: {'phase': 'handle_incoming_file_start', 'result': 'failed'});
+    }
+  }
 
-      _sendDataMessage(
-          {'type': 'file_ack', 'transfer_id': transferId, 'ok': false});
+  void _handleIncomingFileChunk(Map<String, dynamic> data) {
+    final transferId =
+        data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
+    final base64Data = data['data']?.toString() ?? '';
+    final dl = _activeIncomingDownloads[transferId];
+    if (dl == null || base64Data.isEmpty) return;
+
+    try {
+      final bytes = base64Decode(base64Data);
+      dl.sink.add(bytes);
+      dl.inputSink.add(bytes);
+      dl.receivedBytes += bytes.length;
+      dl.receivedChunks++;
+
       if (mounted) {
         setState(() {
           for (final t in _fileTransfers) {
             if (t.id == transferId) {
-              t.status = 'error';
-              t.errorMessage = e.toString();
+              t.transferredBytes = dl.receivedBytes;
+              t.progress = dl.totalSize > 0
+                  ? (dl.receivedBytes / dl.totalSize)
+                  : (dl.totalChunks > 0 ? (dl.receivedChunks / dl.totalChunks) : 0.0);
               break;
             }
           }
         });
       }
+    } catch (e) {
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'handle_incoming_file_chunk', 'result': 'failed'});
+    }
+  }
+
+  Future<void> _handleIncomingFileEnd(Map<String, dynamic> data) async {
+    final transferId =
+        data['transfer_id']?.toString() ?? data['id']?.toString() ?? '';
+    final dl = _activeIncomingDownloads.remove(transferId);
+    if (dl == null) return;
+
+    bool success = false;
+    try {
+      await dl.sink.flush();
+      await dl.sink.close();
+      dl.inputSink.close();
+
+      final actualChecksum = dl.digestSink.digest?.toString() ?? '';
+      final endChecksum = data['checksum']?.toString();
+      final expectedChecksum = (endChecksum != null && endChecksum.isNotEmpty)
+          ? endChecksum
+          : dl.expectedChecksum;
+
+      final checksumMatch = expectedChecksum == null ||
+          expectedChecksum.isEmpty ||
+          actualChecksum.toLowerCase() == expectedChecksum.toLowerCase();
+
+      final sizeMatch = dl.totalSize <= 0 || dl.receivedBytes == dl.totalSize;
+
+      if (checksumMatch && sizeMatch) {
+        await dl.partFile.rename(dl.targetPath);
+        success = true;
+      } else {
+        await dl.partFile.delete().catchError((_) => dl.partFile);
+      }
+    } catch (e) {
+      await dl.partFile.delete().catchError((_) => dl.partFile);
+      _logConnection('operator.exception',
+          error: e,
+          fields: {'phase': 'handle_incoming_file_end', 'result': 'failed'});
+    }
+
+    _sendDataMessage(
+        {'type': 'file_ack', 'transfer_id': transferId, 'ok': success});
+
+    if (mounted) {
+      setState(() {
+        for (final t in _fileTransfers) {
+          if (t.id == transferId) {
+            t.status = success ? 'completed' : 'error';
+            t.progress = success ? 1.0 : t.progress;
+            if (!success) {
+              t.errorMessage = 'Checksum or size mismatch';
+            }
+            break;
+          }
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(success
+            ? '${context.stringsRead.consoleFileSavedSuccess}: ${dl.targetPath}'
+            : '${context.stringsRead.consoleFileTransferFailed}: ${dl.filename}'),
+        duration: const Duration(seconds: 4),
+      ));
     }
   }
 
@@ -4915,6 +5064,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  ElevatedButton.icon(
+                    onPressed: _openFileManagerDialog,
+                    icon: const Icon(Icons.folder_shared, size: 18),
+                    label: Text(
+                      strings.fileManagerTitle,
+                      style: const TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   ElevatedButton.icon(
                     onPressed: _canSendFiles ? _pickAndSendFile : null,
                     icon: _isSendingFile
@@ -6324,8 +6488,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       child: const Icon(Icons.folder_outlined,
                           color: Color(0xFF38BDF8), size: 20),
                     ),
-                    tooltip: strings.consoleFilesTooltip,
-                    onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+                    tooltip: strings.fileManagerTitle,
+                    onPressed: _openFileManagerDialog,
                   ),
 
                   // Перезагрузка удаленного ПК (B3.4)
@@ -6417,6 +6581,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               onKeyEvent: (node, event) {
                 if (!_controlReady) return KeyEventResult.ignored;
                 final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
+                final isCtrlOrCmd = HardwareKeyboard.instance.isControlPressed ||
+                    HardwareKeyboard.instance.isMetaPressed;
+                final isKeyC = event.logicalKey == LogicalKeyboardKey.keyC;
+                final isKeyV = event.logicalKey == LogicalKeyboardKey.keyV;
+
                 final msg = _remoteKeyboard.message(event);
                 final keyIdent =
                     msg['key']?.toString() ?? event.logicalKey.keyLabel;
@@ -6425,6 +6594,30 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                 } else {
                   _pressedKeys.remove(keyIdent);
                 }
+
+                // Active clipboard: перехват Ctrl+C / Cmd+C для подтягивания буфера с хоста
+                if (isCtrlOrCmd && isKeyC && isDown) {
+                  _sendDataMessage(msg);
+                  _clipboardFetchTimer?.cancel();
+                  _clipboardFetchTimer =
+                      Timer(const Duration(milliseconds: 120), () {
+                    if (mounted && _controlReady) {
+                      _requestRemoteClipboard(silent: true);
+                    }
+                  });
+                  return KeyEventResult.handled;
+                }
+
+                // Active clipboard: перехват Ctrl+V / Cmd+V для опережающей синхронизации буфера
+                if (isCtrlOrCmd && isKeyV && isDown) {
+                  _syncLocalClipboardBeforePaste().then((_) {
+                    if (mounted && _controlReady) {
+                      _sendDataMessage(msg);
+                    }
+                  });
+                  return KeyEventResult.handled;
+                }
+
                 _sendDataMessage(msg);
                 return KeyEventResult.handled;
               },
