@@ -43,7 +43,8 @@ target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib" "wtsapi32.lib" "ole32
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 if(MSVC)
-  target_compile_options(${BINARY_NAME} PRIVATE /wd4456 /wd4244)
+  target_compile_options(${BINARY_NAME} PRIVATE /wd4456 /wd4244 /guard:cf /GS)
+  target_link_options(${BINARY_NAME} PRIVATE /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /GUARD:CF)
 endif()
 
 # Run the Flutter tool portions of the build. This must not be removed.

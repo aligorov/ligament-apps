@@ -12,7 +12,8 @@ add_definitions(-DUNICODE -D_UNICODE -D_WINDLL)
 # в DLL кракозябрами ровно того вида, что виден на тайле входа. Флаг задаёт
 # и source-, и execution-charset = UTF-8 независимо от локали сборщика.
 if(MSVC)
-    add_compile_options(/utf-8)
+    add_compile_options(/utf-8 /guard:cf /GS)
+    add_link_options(/DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /GUARD:CF)
 endif()
 
 set(SOURCES

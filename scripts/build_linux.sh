@@ -32,9 +32,9 @@ echo "--> Версия приложения: ${APP_VERSION} (билд: ${BUILD_N
 mkdir -p "${DIST_DIR}"
 
 if [[ ! -f "${BUILD_BUNDLE_DIR}/ligament_authenticator" ]]; then
-    echo "--> Бандл не найден. Запуск сборки flutter build linux --release..."
+    echo "--> Бандл не найден. Запуск сборки flutter build linux --release (с обфускацией AOT)..."
     if command -v flutter >/dev/null 2>&1; then
-        (cd "${ROOT_DIR}" && flutter build linux --release --no-tree-shake-icons)
+        (cd "${ROOT_DIR}" && flutter build linux --release --no-tree-shake-icons --obfuscate --split-debug-info=build/linux_symbols)
     else
         echo "ОШИБКА: Flutter SDK не найден в PATH."
         exit 1

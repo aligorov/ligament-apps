@@ -22,8 +22,8 @@ Write-Host "========================================================" -Foregroun
 # 1. Сборка релизной версии Flutter для Windows
 Set-Location $ClientDir
 $env:CL = "$env:CL /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
-Write-Host "`n[1/5] Компиляция Flutter Windows Release..." -ForegroundColor Yellow
-flutter build windows --release --no-tree-shake-icons
+Write-Host "`n[1/5] Компиляция Flutter Windows Release (с обфускацией AOT)..." -ForegroundColor Yellow
+flutter build windows --release --no-tree-shake-icons --obfuscate --split-debug-info=build\windows_symbols
 
 if (-not (Test-Path "$BuildReleaseDir\ligament_authenticator.exe")) {
     Write-Error "Ошибка: Бинарный файл $BuildReleaseDir\ligament_authenticator.exe не найден!"
@@ -76,7 +76,7 @@ if (Test-Path "$LinkAgentDir\go.mod") {
         if ($LASTEXITCODE -ne 0) { throw 'Link agent Go tests failed' }
         go vet ./...
         if ($LASTEXITCODE -ne 0) { throw 'Link agent go vet failed' }
-        go build -trimpath -ldflags "-s -w -X main.agentVersion=$linkAgentVersion" -o "$LinkAgentBuildDir\ligament_link_agent.exe" .\cmd\link-agent
+        go build -trimpath -ldflags "-s -w -buildid= -X main.agentVersion=$linkAgentVersion" -o "$LinkAgentBuildDir\ligament_link_agent.exe" .\cmd\link-agent
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$LinkAgentBuildDir\ligament_link_agent.exe")) {
             throw 'Link agent Windows service build failed'
         }
