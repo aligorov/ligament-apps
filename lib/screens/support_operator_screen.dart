@@ -25,6 +25,7 @@ import '../widgets/link_file_manager_dialog.dart';
 import '../services/remote_keyboard.dart';
 import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
+import '../services/link_windows_security.dart';
 import '../services/support_service.dart';
 import '../services/ws_service.dart';
 import '../i18n/app_strings.dart';
@@ -3929,8 +3930,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
   void _syncLocalClipboardNow() {
     if (!_canSyncLocalClipboard) return;
+    if (LinkWindowsSecurity.isSensitiveClipboard()) return;
     Clipboard.getData(Clipboard.kTextPlain).then((clip) {
       if (!_canSyncLocalClipboard) return;
+      if (LinkWindowsSecurity.isSensitiveClipboard()) return;
       final text = clip?.text;
       if (text != null &&
           text.isNotEmpty &&

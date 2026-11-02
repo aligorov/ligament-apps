@@ -12,6 +12,7 @@ import 'input_injector.dart';
 import 'link_host_readiness.dart';
 import 'link_host_recorder.dart';
 import 'link_spool_storage.dart';
+import 'link_windows_security.dart';
 import 'debug_log_service.dart';
 import 'support_service.dart'
     show
@@ -2447,8 +2448,10 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     _hostClipboardWatcherTimer =
         Timer.periodic(const Duration(milliseconds: 750), (_) async {
       if (_closed || !_allowControl || !policy.allowClipboardOut) return;
+      if (LinkWindowsSecurity.isSensitiveClipboard()) return;
       try {
         final clip = await Clipboard.getData(Clipboard.kTextPlain);
+        if (LinkWindowsSecurity.isSensitiveClipboard()) return;
         final text = clip?.text;
         if (text != null &&
             text.isNotEmpty &&
@@ -2823,21 +2826,26 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     String targetPath = rawPath;
     if (targetPath.isEmpty) {
       if (!kIsWeb && Platform.isWindows) {
-        final sysDrive = Platform.environment['SystemDrive'] ??
-            (drives.isNotEmpty ? drives.first.replaceAll('\\', '') : 'C:');
-        final usersDir = '$sysDrive\\Users';
-        if (Directory(usersDir).existsSync()) {
-          targetPath = usersDir;
-        } else if (Directory('C:\\Users').existsSync()) {
-          targetPath = 'C:\\Users';
+        final activeProfile = LinkWindowsSecurity.findActiveUserProfile();
+        if (activeProfile != null && Directory(activeProfile).existsSync()) {
+          targetPath = activeProfile;
         } else {
-          final profile = Platform.environment['USERPROFILE'];
-          if (profile != null &&
-              !profile.toLowerCase().contains('systemprofile') &&
-              Directory(profile).existsSync()) {
-            targetPath = profile;
+          final sysDrive = Platform.environment['SystemDrive'] ??
+              (drives.isNotEmpty ? drives.first.replaceAll('\\', '') : 'C:');
+          final usersDir = '$sysDrive\\Users';
+          if (Directory(usersDir).existsSync()) {
+            targetPath = usersDir;
+          } else if (Directory('C:\\Users').existsSync()) {
+            targetPath = 'C:\\Users';
           } else {
-            targetPath = drives.isNotEmpty ? drives.first : 'C:\\';
+            final profile = Platform.environment['USERPROFILE'];
+            if (profile != null &&
+                !profile.toLowerCase().contains('systemprofile') &&
+                Directory(profile).existsSync()) {
+              targetPath = profile;
+            } else {
+              targetPath = drives.isNotEmpty ? drives.first : 'C:\\';
+            }
           }
         }
       } else if (!kIsWeb) {
