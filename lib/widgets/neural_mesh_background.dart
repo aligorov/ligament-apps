@@ -275,17 +275,21 @@ class _NeuralMeshBackgroundState extends State<NeuralMeshBackground>
         return Stack(
           fit: StackFit.expand,
           children: [
-            // 1. Тематический градиент
+            // 1. Обязательная непрозрачная подложка темы (100% непрозрачный базовый цвет)
+            Positioned.fill(
+              child: ColoredBox(color: config.backgroundColor),
+            ),
+
+            // 2. Тематический радиальный градиент поверх непрозрачной подложки
             Positioned.fill(
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: config.backgroundColor,
                   gradient: config.gradient,
                 ),
               ),
             ),
 
-            // 2. Слой частиц со связями (если не отключен)
+            // 3. Слой частиц со связями (если не отключен)
             if (animMode != 'off' && _particles.isNotEmpty)
               Positioned.fill(
                 child: RepaintBoundary(

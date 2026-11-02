@@ -200,7 +200,31 @@ class _AppsScreenState extends State<AppsScreen>
                 onTap: () {
                   DebugLogService.instance.record('ui.apps.catalog.open');
                   Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const LinkCatalogScreen()),
+                    PageRouteBuilder<void>(
+                      pageBuilder: (context, animation, secondaryAnimation) =>
+                          const LinkCatalogScreen(),
+                      transitionsBuilder:
+                          (context, animation, secondaryAnimation, child) {
+                        final curve = CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                          reverseCurve: Curves.easeInCubic,
+                        );
+                        return FadeTransition(
+                          opacity: curve,
+                          child: SlideTransition(
+                            position: Tween<Offset>(
+                              begin: const Offset(0.04, 0.0),
+                              end: Offset.zero,
+                            ).animate(curve),
+                            child: child,
+                          ),
+                        );
+                      },
+                      transitionDuration: const Duration(milliseconds: 220),
+                      reverseTransitionDuration:
+                          const Duration(milliseconds: 180),
+                    ),
                   );
                 },
                 child: Padding(

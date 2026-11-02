@@ -10,6 +10,7 @@ import '../services/auth_state.dart';
 import '../services/debug_log_service.dart';
 import '../services/link_agent_binding_service.dart';
 import '../widgets/neural_mesh_background.dart';
+import '../widgets/window_caption_controls.dart';
 
 /// Lowercase search corpus built once per inventory snapshot. Filtering then
 /// scans only the cached strings, rather than allocating/joining every host's
@@ -318,29 +319,56 @@ class _LinkCatalogScreenState extends State<LinkCatalogScreen>
         appBar: AppBar(
           backgroundColor: Colors.transparent,
           elevation: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+            tooltip: isRu ? 'Назад' : 'Back',
+            onPressed: () => Navigator.of(context).pop(),
+          ),
           shape: const Border(
             bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
           ),
-          title: Text(isRu ? 'Ligament Link' : 'Ligament Link'),
+          title: Text(
+            isRu ? 'Ligament Link' : 'Ligament Link',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           actions: [
             if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
-              FilledButton.tonalIcon(
-                onPressed: _bindingThisHost || !auth.linkFeatureAvailable
-                    ? null
-                    : () => _bindThisHost(auth, isRu),
-                label: Text(isRu ? 'Добавить ПК' : 'Add computer'),
-                icon: _bindingThisHost
-                    ? const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.add_to_queue_rounded),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: FilledButton.tonalIcon(
+                  onPressed: _bindingThisHost || !auth.linkFeatureAvailable
+                      ? null
+                      : () => _bindThisHost(auth, isRu),
+                  label: Text(
+                    isRu ? 'Добавить ПК' : 'Add computer',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  icon: _bindingThisHost
+                      ? const SizedBox.square(
+                          dimension: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.add_to_queue_rounded, size: 16),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 0),
+                    minimumSize: const Size(0, 32),
+                  ),
+                ),
               ),
             IconButton(
               tooltip: isRu ? 'Обновить каталог' : 'Refresh catalog',
-              onPressed: auth.linkHostsLoading ? null : () => _traceAction('refresh_cycle', auth.loadLinkHosts),
-              icon: const Icon(Icons.refresh_rounded),
+              onPressed: auth.linkHostsLoading
+                  ? null
+                  : () => _traceAction('refresh_cycle', auth.loadLinkHosts),
+              icon: const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8)),
             ),
+            if (WindowCaptionControls.isSupported)
+              const WindowCaptionControls(),
           ],
         ),
         body: Column(
