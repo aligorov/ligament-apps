@@ -1082,6 +1082,8 @@ class LinkHostRecorder {
         };
       case 'file_start':
       case 'file_end':
+      case 'file_ack':
+      case 'file_reject':
         return {
           'event_type': 'file_transfer_meta',
           'source': 'remote_operator',
@@ -1089,8 +1091,12 @@ class LinkHostRecorder {
           'metadata': {
             'stage': type,
             'transfer_id': raw['transfer_id'] ?? raw['id'],
-            'filename': raw['filename'],
-            'size': raw['size'],
+            if (raw['filename'] != null) 'filename': raw['filename'],
+            if (raw['size'] != null) 'size': raw['size'],
+            if (raw['dest_dir'] != null) 'dest_dir': raw['dest_dir'],
+            if (raw['checksum'] != null) 'checksum': raw['checksum'],
+            if (raw['ok'] != null) 'ok': raw['ok'],
+            if (raw['reason'] != null) 'reason': raw['reason'],
           },
         };
       default:

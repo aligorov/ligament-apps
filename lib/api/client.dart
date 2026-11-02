@@ -1537,6 +1537,30 @@ class ApiClient {
     }
   }
 
+  Future<void> recordLinkSessionAudit(
+    String sessionId, {
+    required String event,
+    required Map<String, dynamic> detail,
+    String result = 'ok',
+  }) async {
+    final res = await _post(
+      _cleanUrl('/api/v1/app/link/sessions/$sessionId/audit'),
+      headers: _headers(),
+      body: jsonEncode({
+        'event': event,
+        'detail': detail,
+        'result': result,
+      }),
+    );
+    if (res.statusCode != 200) {
+      final data = _decodeJsonMap(res.bodyBytes);
+      throw ApiException(
+        res.statusCode,
+        data['error']?.toString() ?? 'link_session_audit_failed',
+      );
+    }
+  }
+
   Map<String, dynamic> _decodeJsonMap(List<int> bodyBytes) {
     try {
       final value = jsonDecode(utf8.decode(bodyBytes));

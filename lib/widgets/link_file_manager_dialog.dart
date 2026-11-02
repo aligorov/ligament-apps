@@ -42,12 +42,45 @@ class FsEntry {
   }
 }
 
+/// Реактивное состояние передачи файла для диалога и строки состояния.
+class LinkFileTransferState {
+  final String id;
+  final String filename;
+  final int totalSize;
+  final int transferredBytes;
+  final double progress; // 0.0 .. 1.0
+  final bool isOutgoing; // true = upload, false = download
+  final String status; // 'sending', 'receiving', 'waiting_ack', 'completed', 'error', 'cancelled'
+  final String? speedText;
+  final String? errorMessage;
+  final String? targetDir;
+
+  const LinkFileTransferState({
+    required this.id,
+    required this.filename,
+    required this.totalSize,
+    required this.transferredBytes,
+    required this.progress,
+    required this.isOutgoing,
+    required this.status,
+    this.speedText,
+    this.errorMessage,
+    this.targetDir,
+  });
+
+  bool get isActive =>
+      status == 'sending' || status == 'receiving' || status == 'waiting_ack';
+  bool get isCompleted => status == 'completed';
+  bool get isFailed => status == 'error' || status == 'cancelled';
+}
+
 /// Двухпанельный диалог файлового менеджера для сессии Ligament LINK.
 class LinkFileManagerDialog extends StatefulWidget {
   final bool Function(Map<String, dynamic> msg) sendDataMessage;
   final Stream<Map<String, dynamic>> fsStream;
   final Future<void> Function(File localFile, String remoteDestDir) onUploadFile;
   final void Function(String remoteFilePath, String localDestDir) onDownloadFile;
+  final ValueListenable<LinkFileTransferState?>? transferStateListenable;
   final double? transferProgress;
   final String? transferStatusText;
   final VoidCallback? onCancelTransfer;
@@ -58,6 +91,7 @@ class LinkFileManagerDialog extends StatefulWidget {
     required this.fsStream,
     required this.onUploadFile,
     required this.onDownloadFile,
+    this.transferStateListenable,
     this.transferProgress,
     this.transferStatusText,
     this.onCancelTransfer,
@@ -83,6 +117,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
   bool _isLoadingRemote = false;
   String? _remoteError;
   List<String> _remoteDrives = [];
+  String? _lastCompletedTransferId;
 
   StreamSubscription<Map<String, dynamic>>? _fsSub;
   Timer? _remoteRequestTimeoutTimer;
@@ -96,6 +131,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
     super.initState();
     _initLocalFs();
     _fsSub = widget.fsStream.listen(_handleFsMessage);
+    widget.transferStateListenable?.addListener(_onTransferStateChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _requestRemoteList('');
     });
@@ -103,6 +139,7 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
 
   @override
   void dispose() {
+    widget.transferStateListenable?.removeListener(_onTransferStateChanged);
     _remoteRequestTimeoutTimer?.cancel();
     _fsSub?.cancel();
     for (final completer in _pendingRequests.values) {
@@ -112,6 +149,20 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
     }
     _pendingRequests.clear();
     super.dispose();
+  }
+
+  void _onTransferStateChanged() {
+    final state = widget.transferStateListenable?.value;
+    if (state != null && state.isCompleted && _lastCompletedTransferId != state.id) {
+      _lastCompletedTransferId = state.id;
+      if (mounted) {
+        if (state.isOutgoing) {
+          _requestRemoteList(_remotePath);
+        } else {
+          _loadLocalDirectory(_localPath);
+        }
+      }
+    }
   }
 
   void _handleFsMessage(Map<String, dynamic> msg) {
@@ -545,60 +596,16 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
                         ),
                       ),
                     ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Tooltip(
-                          message: strings.fileManagerUpload,
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              shape: const CircleBorder(),
-                              padding: const EdgeInsets.all(14),
-                              backgroundColor: const Color(0xFF0284C7),
-                              foregroundColor: Colors.white,
-                              disabledBackgroundColor:
-                                  isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
-                            ),
-                            onPressed: (_selectedLocalEntry != null &&
-                                    !_selectedLocalEntry!.isDir &&
-                                    _remotePath.isNotEmpty &&
-                                    widget.transferProgress == null)
-                                ? () {
-                                    final file = File(_selectedLocalEntry!.path);
-                                    widget.onUploadFile(file, _remotePath);
-                                  }
-                                : null,
-                            child: const Icon(Icons.arrow_forward, size: 20),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        Tooltip(
-                          message: strings.fileManagerDownload,
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              shape: const CircleBorder(),
-                              padding: const EdgeInsets.all(14),
-                              backgroundColor: const Color(0xFF10B981),
-                              foregroundColor: Colors.white,
-                              disabledBackgroundColor:
-                                  isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
-                            ),
-                            onPressed: (_selectedRemoteEntry != null &&
-                                    !_selectedRemoteEntry!.isDir &&
-                                    _localPath.isNotEmpty &&
-                                    widget.transferProgress == null)
-                                ? () {
-                                    widget.onDownloadFile(
-                                      _selectedRemoteEntry!.path,
-                                      _localPath,
-                                    );
-                                  }
-                                : null,
-                            child: const Icon(Icons.arrow_back, size: 20),
-                          ),
-                        ),
-                      ],
-                    ),
+                    child: widget.transferStateListenable != null
+                        ? ValueListenableBuilder<LinkFileTransferState?>(
+                            valueListenable: widget.transferStateListenable!,
+                            builder: (ctx, transfer, _) {
+                              final isBusy = transfer?.isActive ?? false;
+                              return _buildTransferButtons(isDark, strings, isBusy);
+                            },
+                          )
+                        : _buildTransferButtons(
+                            isDark, strings, widget.transferProgress != null),
                   ),
 
                   // Правая панель: Удалённый ПК
@@ -676,11 +683,13 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
                 color: isRemote ? const Color(0xFF10B981) : const Color(0xFF38BDF8),
               ),
               const SizedBox(width: 6),
-              Text(
-                title,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              const Spacer(),
               IconButton(
                 icon: const Icon(Icons.arrow_upward, size: 16),
                 tooltip: strings.fileManagerUp,
@@ -947,9 +956,92 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
     );
   }
 
-  Widget _buildStatusBar(bool isDark, AppStrings strings) {
-    final hasActiveTransfer = widget.transferProgress != null;
+  Widget _buildTransferButtons(bool isDark, AppStrings strings, bool isBusy) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Tooltip(
+          message: strings.fileManagerUpload,
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              shape: const CircleBorder(),
+              padding: const EdgeInsets.all(14),
+              backgroundColor: const Color(0xFF0284C7),
+              foregroundColor: Colors.white,
+              disabledBackgroundColor:
+                  isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+            ),
+            onPressed: (!isBusy &&
+                    _selectedLocalEntry != null &&
+                    !_selectedLocalEntry!.isDir &&
+                    _remotePath.isNotEmpty)
+                ? () {
+                    final file = File(_selectedLocalEntry!.path);
+                    widget.onUploadFile(file, _remotePath);
+                  }
+                : null,
+            child: const Icon(Icons.arrow_forward, size: 20),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Tooltip(
+          message: strings.fileManagerDownload,
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              shape: const CircleBorder(),
+              padding: const EdgeInsets.all(14),
+              backgroundColor: const Color(0xFF10B981),
+              foregroundColor: Colors.white,
+              disabledBackgroundColor:
+                  isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+            ),
+            onPressed: (!isBusy &&
+                    _selectedRemoteEntry != null &&
+                    !_selectedRemoteEntry!.isDir &&
+                    _localPath.isNotEmpty)
+                ? () {
+                    widget.onDownloadFile(
+                      _selectedRemoteEntry!.path,
+                      _localPath,
+                    );
+                  }
+                : null,
+            child: const Icon(Icons.arrow_back, size: 20),
+          ),
+        ),
+      ],
+    );
+  }
 
+  Widget _buildStatusBar(bool isDark, AppStrings strings) {
+    if (widget.transferStateListenable != null) {
+      return ValueListenableBuilder<LinkFileTransferState?>(
+        valueListenable: widget.transferStateListenable!,
+        builder: (ctx, transfer, _) {
+          return _buildStatusBarContent(isDark, strings, transfer);
+        },
+      );
+    }
+    LinkFileTransferState? fallbackTransfer;
+    if (widget.transferProgress != null) {
+      fallbackTransfer = LinkFileTransferState(
+        id: '',
+        filename: widget.transferStatusText ?? '',
+        totalSize: 0,
+        transferredBytes: 0,
+        progress: widget.transferProgress ?? 0.0,
+        isOutgoing: true,
+        status: 'sending',
+      );
+    }
+    return _buildStatusBarContent(isDark, strings, fallbackTransfer);
+  }
+
+  Widget _buildStatusBarContent(
+    bool isDark,
+    AppStrings strings,
+    LinkFileTransferState? transfer,
+  ) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
@@ -965,29 +1057,57 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (hasActiveTransfer) ...[
+          if (transfer != null && transfer.isActive) ...[
             Row(
               children: [
+                Icon(
+                  transfer.isOutgoing ? Icons.arrow_upward : Icons.arrow_downward,
+                  size: 14,
+                  color: transfer.isOutgoing
+                      ? const Color(0xFF0284C7)
+                      : const Color(0xFF10B981),
+                ),
+                const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    widget.transferStatusText ?? strings.consoleFileSending,
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                    '${transfer.isOutgoing ? (strings.isRu ? "Отправка" : "Sending") : (strings.isRu ? "Загрузка" : "Receiving")}: ${transfer.filename}'
+                    ' • ${_formatBytes(transfer.transferredBytes)} из ${_formatBytes(transfer.totalSize)}'
+                    '${transfer.speedText != null && transfer.speedText!.isNotEmpty ? " • ${transfer.speedText}" : ""}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                const SizedBox(width: 8),
                 Text(
-                  '${((widget.transferProgress ?? 0) * 100).toStringAsFixed(1)}%',
-                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                  '${(transfer.progress * 100).toStringAsFixed(1)}%',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF0284C7),
+                  ),
                 ),
                 if (widget.onCancelTransfer != null) ...[
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   InkWell(
                     onTap: widget.onCancelTransfer,
-                    child: Text(
-                      strings.isRu ? 'Отмена' : 'Cancel',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Color(0xFFEF4444),
-                        fontWeight: FontWeight.bold,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0x1FEF4444),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: const Color(0x66EF4444)),
+                      ),
+                      child: Text(
+                        strings.isRu ? 'Отмена' : 'Cancel',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFFEF4444),
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
@@ -998,11 +1118,52 @@ class _LinkFileManagerDialogState extends State<LinkFileManagerDialog> {
             ClipRRect(
               borderRadius: BorderRadius.circular(3),
               child: LinearProgressIndicator(
-                value: widget.transferProgress,
+                value: transfer.progress.clamp(0.0, 1.0),
                 minHeight: 6,
-                backgroundColor: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
-                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF0284C7)),
+                backgroundColor:
+                    isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  transfer.isOutgoing
+                      ? const Color(0xFF0284C7)
+                      : const Color(0xFF10B981),
+                ),
               ),
+            ),
+          ] else if (transfer != null && transfer.isCompleted) ...[
+            Row(
+              children: [
+                const Icon(Icons.check_circle, size: 15, color: Color(0xFF10B981)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '✓ ${strings.isRu ? "Файл успешно передан" : "File transferred successfully"}: ${transfer.filename} (${_formatBytes(transfer.totalSize)})',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF10B981),
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ] else if (transfer != null && transfer.isFailed) ...[
+            Row(
+              children: [
+                const Icon(Icons.error_outline, size: 15, color: Color(0xFFEF4444)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '✗ ${strings.isRu ? "Ошибка передачи файла" : "Transfer failed"}: ${transfer.filename}${transfer.errorMessage != null ? " (${transfer.errorMessage})" : ""}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFFEF4444),
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
             ),
           ] else ...[
             Row(

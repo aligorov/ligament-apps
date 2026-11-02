@@ -2652,6 +2652,15 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       });
     });
     _activeDownloads[transferId] = dl;
+    _peerLog('link.file_transfer.start', fields: {
+      'transfer_id': transferId,
+      'direction': 'incoming',
+      'filename': filename,
+      'size_bytes': size,
+      'total_chunks': totalChunks,
+      'dest_dir': destDir ?? '',
+      'sender': input['sender']?.toString() ?? 'operator',
+    });
   }
 
   void _handleFileChunk(Map<String, dynamic> input) {
@@ -2781,10 +2790,25 @@ class FlutterLinkHostPeer implements LinkHostPeer {
         'transfer_id': transferId,
         'ok': true,
       });
+      _peerLog('link.file_transfer.completed', fields: {
+        'transfer_id': transferId,
+        'direction': 'incoming',
+        'filename': dl.filename,
+        'size_bytes': dl.receivedBytes,
+        'target_path': targetPath,
+        'checksum': dl.expectedChecksum ?? '',
+        'result': 'ok',
+      });
     } catch (error) {
       _peerLog('link.exception',
           error: error,
           fields: {'phase': 'handle_file_end', 'result': 'failed'});
+      _peerLog('link.file_transfer.failed', fields: {
+        'transfer_id': transferId,
+        'direction': 'incoming',
+        'filename': dl.filename,
+        'result': 'fail',
+      });
       if (dl.partFile != null) {
         try {
           if (await dl.partFile!.exists()) await dl.partFile!.delete();
@@ -2983,6 +3007,13 @@ class FlutterLinkHostPeer implements LinkHostPeer {
       'size': totalSize,
       'total_chunks': totalChunks,
       'sender': 'host',
+    });
+    _peerLog('link.file_transfer.download_start', fields: {
+      'transfer_id': transferId,
+      'direction': 'outgoing',
+      'source_path': remotePath,
+      'filename': filename,
+      'size_bytes': totalSize,
     });
 
     final raf = await file.open(mode: FileMode.read);

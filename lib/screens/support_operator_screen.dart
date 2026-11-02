@@ -97,6 +97,10 @@ class _OperatorActiveDownload {
   final ByteConversionSink inputSink;
   int receivedBytes = 0;
   int receivedChunks = 0;
+  final DateTime startTime = DateTime.now();
+  DateTime lastSpeedTime = DateTime.now();
+  int lastSpeedBytes = 0;
+  String currentSpeedText = '0 KB/s';
 
   _OperatorActiveDownload({
     required this.id,
@@ -111,6 +115,14 @@ class _OperatorActiveDownload {
     required this.digestSink,
     required this.inputSink,
   });
+}
+
+String _formatSpeed(num bytesPerSec) {
+  if (bytesPerSec <= 0) return '0 KB/s';
+  if (bytesPerSec < 1024 * 1024) {
+    return '${(bytesPerSec / 1024).toStringAsFixed(1)} KB/s';
+  }
+  return '${(bytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s';
 }
 
 /// Кнопка мыши для протокола агента (0 — левая, 1 — средняя, 2 — правая)
@@ -288,6 +300,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
   bool _isFullScreen = false;
   String _videoQuality = 'balanced';
   final List<_ConsoleFileTransfer> _fileTransfers = [];
+  final ValueNotifier<LinkFileTransferState?> _activeFileTransferNotifier =
+      ValueNotifier<LinkFileTransferState?>(null);
+  Timer? _transferResetTimer;
   bool _isSendingFile = false;
   _ConsoleFileTransfer? _currentSendingTransfer;
   Completer<bool>? _currentFileAckCompleter;
@@ -3987,11 +4002,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
   }
 
   void _openFileManagerDialog() {
-    final transferItem = _fileTransfers.cast<_ConsoleFileTransfer?>().firstWhere(
-      (t) => t?.status == 'sending' || t?.status == 'receiving',
-      orElse: () => null,
-    );
-
     showDialog(
       context: context,
       barrierDismissible: true,
@@ -4004,17 +4014,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
         onDownloadFile: (remoteFilePath, localDestDir) {
           _startRemoteDownload(remoteFilePath, localDestDir);
         },
-        transferProgress: transferItem?.progress,
-        transferStatusText: transferItem != null
-            ? '${transferItem.filename} (${(transferItem.progress * 100).toStringAsFixed(0)}%)'
-            : null,
-        onCancelTransfer: transferItem != null
-            ? () {
-                setState(() {
-                  transferItem.isCancelled = true;
-                });
-              }
-            : null,
+        transferStateListenable: _activeFileTransferNotifier,
+        onCancelTransfer: () {
+          if (_currentSendingTransfer != null) {
+            _cancelActiveFileTransfer(_currentSendingTransfer!);
+          }
+        },
       ),
     );
   }
@@ -4025,6 +4030,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
     _flushMouseLog();
     if (_isCleanedUp) return;
     _isCleanedUp = true;
+    _transferResetTimer?.cancel();
+    _transferResetTimer = null;
+    _activeFileTransferNotifier.dispose();
     _linkAttemptGeneration++;
     _linkQueuedCandidates.clear();
     _linkRecoveryTimer?.cancel();
@@ -4706,6 +4714,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
     const chunkSize = 32768; // 32 KB
     final totalChunks = (totalSize / chunkSize).ceil();
     final transferId = 'file_${DateTime.now().millisecondsSinceEpoch}';
+    final startTime = DateTime.now();
+    DateTime lastSpeedTime = startTime;
+    int lastSpeedBytes = 0;
+    String currentSpeedText = '0 KB/s';
 
     final transferItem = _ConsoleFileTransfer(
       id: transferId,
@@ -4720,6 +4732,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
       _currentSendingTransfer = transferItem;
       _fileTransfers.insert(0, transferItem);
     });
+
+    _activeFileTransferNotifier.value = LinkFileTransferState(
+      id: transferId,
+      filename: filename,
+      totalSize: totalSize,
+      transferredBytes: 0,
+      progress: 0.0,
+      isOutgoing: true,
+      status: 'sending',
+      speedText: '0 KB/s',
+      targetDir: remoteDestDir,
+    );
 
     _currentFileAckCompleter = Completer<bool>();
 
@@ -4751,6 +4775,23 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
               'filename': filename,
               'reason': 'cancelled_by_operator',
             });
+            _activeFileTransferNotifier.value = LinkFileTransferState(
+              id: transferId,
+              filename: filename,
+              totalSize: totalSize,
+              transferredBytes: transferItem.transferredBytes,
+              progress: transferItem.progress,
+              isOutgoing: true,
+              status: 'cancelled',
+              errorMessage: 'Cancelled by operator',
+              targetDir: remoteDestDir,
+            );
+            _transferResetTimer?.cancel();
+            _transferResetTimer = Timer(const Duration(seconds: 4), () {
+              if (mounted && _activeFileTransferNotifier.value?.id == transferId) {
+                _activeFileTransferNotifier.value = null;
+              }
+            });
             if (mounted) {
               setState(() {
                 transferItem.status = 'cancelled';
@@ -4775,11 +4816,35 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
           final actualTransferred =
               currentTransferred > totalSize ? totalSize : currentTransferred;
 
+          final now = DateTime.now();
+          final elapsedMs = now.difference(lastSpeedTime).inMilliseconds;
+          if (elapsedMs >= 250) {
+            final bytesDelta = actualTransferred - lastSpeedBytes;
+            final sec = elapsedMs / 1000.0;
+            final bytesPerSec = sec > 0 ? (bytesDelta / sec) : 0;
+            currentSpeedText = _formatSpeed(bytesPerSec);
+            lastSpeedTime = now;
+            lastSpeedBytes = actualTransferred;
+          }
+          final progressVal =
+              totalSize > 0 ? (actualTransferred / totalSize).clamp(0.0, 1.0) : 1.0;
+
+          _activeFileTransferNotifier.value = LinkFileTransferState(
+            id: transferId,
+            filename: filename,
+            totalSize: totalSize,
+            transferredBytes: actualTransferred,
+            progress: progressVal,
+            isOutgoing: true,
+            status: 'sending',
+            speedText: currentSpeedText,
+            targetDir: remoteDestDir,
+          );
+
           if (mounted) {
             setState(() {
               transferItem.transferredBytes = actualTransferred;
-              transferItem.progress =
-                  totalSize > 0 ? (actualTransferred / totalSize) : 1.0;
+              transferItem.progress = progressVal;
             });
           }
 
@@ -4817,10 +4882,68 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
       setState(() {
         transferItem.status = 'waiting_ack';
       });
+      _activeFileTransferNotifier.value = LinkFileTransferState(
+        id: transferId,
+        filename: filename,
+        totalSize: totalSize,
+        transferredBytes: totalSize,
+        progress: 1.0,
+        isOutgoing: true,
+        status: 'waiting_ack',
+        speedText: currentSpeedText,
+        targetDir: remoteDestDir,
+      );
 
       final ok = await _currentFileAckCompleter!.future.timeout(
         const Duration(seconds: 45),
         onTimeout: () => false,
+      );
+
+      _activeFileTransferNotifier.value = LinkFileTransferState(
+        id: transferId,
+        filename: filename,
+        totalSize: totalSize,
+        transferredBytes: totalSize,
+        progress: 1.0,
+        isOutgoing: true,
+        status: ok ? 'completed' : 'error',
+        speedText: currentSpeedText,
+        errorMessage: ok ? null : strings.consoleFileTransferFailed,
+        targetDir: remoteDestDir,
+      );
+      _transferResetTimer?.cancel();
+      _transferResetTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted && _activeFileTransferNotifier.value?.id == transferId) {
+          _activeFileTransferNotifier.value = null;
+        }
+      });
+
+      DebugLogService.instance.record(
+        ok ? 'link.file_transfer.completed' : 'link.file_transfer.failed',
+        fields: {
+          'transfer_id': transferId,
+          'direction': 'upload',
+          'filename': filename,
+          'size_bytes': totalSize,
+          'sha256': checksum,
+          'target_dir': remoteDestDir ?? '',
+          'source_path': file.path,
+          'duration_ms': DateTime.now().difference(startTime).inMilliseconds,
+          'result': ok ? 'ok' : 'fail',
+        },
+      );
+      _recordServerFileAudit(
+        event: 'link.file_transfer',
+        detail: {
+          'direction': 'upload',
+          'filename': filename,
+          'size_bytes': totalSize,
+          'sha256': checksum,
+          'target_dir': remoteDestDir ?? '',
+          'source_path': file.path,
+          'duration_ms': DateTime.now().difference(startTime).inMilliseconds,
+        },
+        result: ok ? 'ok' : 'fail',
       );
 
       if (mounted) {
@@ -4840,6 +4963,38 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
       _logConnection('operator.exception',
           error: e,
           fields: {'phase': 'send_file_via_data_channel', 'result': 'failed'});
+
+      _activeFileTransferNotifier.value = LinkFileTransferState(
+        id: transferId,
+        filename: filename,
+        totalSize: totalSize,
+        transferredBytes: transferItem.transferredBytes,
+        progress: transferItem.progress,
+        isOutgoing: true,
+        status: 'error',
+        errorMessage: e.toString(),
+        targetDir: remoteDestDir,
+      );
+      _transferResetTimer?.cancel();
+      _transferResetTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted && _activeFileTransferNotifier.value?.id == transferId) {
+          _activeFileTransferNotifier.value = null;
+        }
+      });
+
+      _recordServerFileAudit(
+        event: 'link.file_transfer',
+        detail: {
+          'direction': 'upload',
+          'filename': filename,
+          'size_bytes': totalSize,
+          'sha256': checksum,
+          'target_dir': remoteDestDir ?? '',
+          'source_path': file.path,
+          'error': e.toString(),
+        },
+        result: 'fail',
+      );
 
       if (mounted) {
         setState(() {
@@ -4863,12 +5018,46 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
   void _cancelActiveFileTransfer(_ConsoleFileTransfer transfer) {
     if (transfer == _currentSendingTransfer) {
       transfer.isCancelled = true;
+      _activeFileTransferNotifier.value = LinkFileTransferState(
+        id: transfer.id,
+        filename: transfer.filename,
+        totalSize: transfer.totalSize,
+        transferredBytes: transfer.transferredBytes,
+        progress: transfer.progress,
+        isOutgoing: transfer.isOutgoing,
+        status: 'cancelled',
+        errorMessage: 'Cancelled by operator',
+      );
+      _transferResetTimer?.cancel();
+      _transferResetTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted && _activeFileTransferNotifier.value?.id == transfer.id) {
+          _activeFileTransferNotifier.value = null;
+        }
+      });
       setState(() {
         transfer.status = 'cancelled';
         _isSendingFile = false;
         _currentSendingTransfer = null;
       });
     }
+  }
+
+  void _recordServerFileAudit({
+    required String event,
+    required Map<String, dynamic> detail,
+    String result = 'ok',
+  }) {
+    final sessId = _linkCloseId;
+    final api = _auth?.api;
+    if (sessId == null || sessId.isEmpty || api == null) return;
+    unawaited(api.recordLinkSessionAudit(
+      sessId,
+      event: event,
+      detail: detail,
+      result: result,
+    ).catchError((e) {
+      _logConnection('operator.audit_exception', error: e);
+    }));
   }
 
   Future<void> _handleIncomingFileStart(Map<String, dynamic> data) async {
@@ -4932,6 +5121,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
       _activeIncomingDownloads[transferId] = dl;
 
+      _activeFileTransferNotifier.value = LinkFileTransferState(
+        id: transferId,
+        filename: filename,
+        totalSize: totalSize,
+        transferredBytes: 0,
+        progress: 0.0,
+        isOutgoing: false,
+        status: 'receiving',
+        speedText: '0 KB/s',
+        targetDir: targetPath,
+      );
+
       if (mounted) {
         setState(() {
           _fileTransfers.insert(0, item);
@@ -4962,14 +5163,38 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
       dl.receivedBytes += bytes.length;
       dl.receivedChunks++;
 
+      final now = DateTime.now();
+      final elapsedMs = now.difference(dl.lastSpeedTime).inMilliseconds;
+      if (elapsedMs >= 250) {
+        final bytesDelta = dl.receivedBytes - dl.lastSpeedBytes;
+        final sec = elapsedMs / 1000.0;
+        final bytesPerSec = sec > 0 ? (bytesDelta / sec) : 0;
+        dl.currentSpeedText = _formatSpeed(bytesPerSec);
+        dl.lastSpeedTime = now;
+        dl.lastSpeedBytes = dl.receivedBytes;
+      }
+      final progressVal = dl.totalSize > 0
+          ? (dl.receivedBytes / dl.totalSize).clamp(0.0, 1.0)
+          : (dl.totalChunks > 0 ? (dl.receivedChunks / dl.totalChunks).clamp(0.0, 1.0) : 0.0);
+
+      _activeFileTransferNotifier.value = LinkFileTransferState(
+        id: transferId,
+        filename: dl.filename,
+        totalSize: dl.totalSize,
+        transferredBytes: dl.receivedBytes,
+        progress: progressVal,
+        isOutgoing: false,
+        status: 'receiving',
+        speedText: dl.currentSpeedText,
+        targetDir: dl.targetPath,
+      );
+
       if (mounted) {
         setState(() {
           for (final t in _fileTransfers) {
             if (t.id == transferId) {
               t.transferredBytes = dl.receivedBytes;
-              t.progress = dl.totalSize > 0
-                  ? (dl.receivedBytes / dl.totalSize)
-                  : (dl.totalChunks > 0 ? (dl.receivedChunks / dl.totalChunks) : 0.0);
+              t.progress = progressVal;
               break;
             }
           }
@@ -4989,12 +5214,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
     if (dl == null) return;
 
     bool success = false;
+    String actualChecksum = '';
     try {
       await dl.sink.flush();
       await dl.sink.close();
       dl.inputSink.close();
 
-      final actualChecksum = dl.digestSink.digest?.toString() ?? '';
+      actualChecksum = dl.digestSink.digest?.toString() ?? '';
       final endChecksum = data['checksum']?.toString();
       final expectedChecksum = (endChecksum != null && endChecksum.isNotEmpty)
           ? endChecksum
@@ -5021,6 +5247,55 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen>
 
     _sendDataMessage(
         {'type': 'file_ack', 'transfer_id': transferId, 'ok': success});
+
+    _activeFileTransferNotifier.value = LinkFileTransferState(
+      id: transferId,
+      filename: dl.filename,
+      totalSize: dl.totalSize,
+      transferredBytes: dl.receivedBytes,
+      progress: success
+          ? 1.0
+          : (dl.totalSize > 0
+              ? (dl.receivedBytes / dl.totalSize).clamp(0.0, 1.0)
+              : 0.0),
+      isOutgoing: false,
+      status: success ? 'completed' : 'error',
+      speedText: dl.currentSpeedText,
+      errorMessage: success ? null : 'Checksum or size mismatch',
+      targetDir: dl.targetPath,
+    );
+    _transferResetTimer?.cancel();
+    _transferResetTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _activeFileTransferNotifier.value?.id == transferId) {
+        _activeFileTransferNotifier.value = null;
+      }
+    });
+
+    DebugLogService.instance.record(
+      success ? 'link.file_transfer.completed' : 'link.file_transfer.failed',
+      fields: {
+        'transfer_id': transferId,
+        'direction': 'download',
+        'filename': dl.filename,
+        'size_bytes': dl.receivedBytes,
+        'sha256': actualChecksum,
+        'target_path': dl.targetPath,
+        'duration_ms': DateTime.now().difference(dl.startTime).inMilliseconds,
+        'result': success ? 'ok' : 'fail',
+      },
+    );
+    _recordServerFileAudit(
+      event: 'link.file_transfer',
+      detail: {
+        'direction': 'download',
+        'filename': dl.filename,
+        'size_bytes': dl.receivedBytes,
+        'sha256': actualChecksum,
+        'target_path': dl.targetPath,
+        'duration_ms': DateTime.now().difference(dl.startTime).inMilliseconds,
+      },
+      result: success ? 'ok' : 'fail',
+    );
 
     if (mounted) {
       setState(() {
