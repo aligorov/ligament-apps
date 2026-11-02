@@ -86,15 +86,16 @@ class RdpConnectorService extends ChangeNotifier {
   /// mfa_required (или 401 invalid_code при повторе) запрашивает подтверждение через
   /// mfaPrompt (или mfaCodePrompt) и повторяет запрос. Пустая карта = отмена.
   static Future<Map<String, dynamic>> _grantWithInlineMfa(
-    Future<Map<String, dynamic>> Function({String? code, String? attemptId, bool? passkey}) grant,
+    Future<Map<String, dynamic>> Function({String? code, String? attemptId, bool? passkey, String? stepUpToken}) grant,
     Future<RdpMfaResult?> Function(bool wrongCode)? mfaPrompt,
   ) async {
     String? code;
     String? attemptId;
     bool? passkey;
+    String? stepUpToken;
     while (true) {
       try {
-        return await grant(code: code, attemptId: attemptId, passkey: passkey);
+        return await grant(code: code, attemptId: attemptId, passkey: passkey, stepUpToken: stepUpToken);
       } on ApiException catch (e) {
         if (mfaPrompt == null) rethrow;
         if (e.statusCode != 428 && e.code != 'invalid_code' && e.code != 'mfa_required') rethrow;
@@ -107,7 +108,8 @@ class RdpConnectorService extends ChangeNotifier {
         code = res.code;
         attemptId = res.attemptId;
         passkey = res.passkey ? true : null;
-        if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty) && passkey != true) return const {};
+        stepUpToken = res.stepUpToken;
+        if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty) && passkey != true && (stepUpToken == null || stepUpToken.isEmpty)) return const {};
       }
     }
   }
@@ -168,12 +170,13 @@ class RdpConnectorService extends ChangeNotifier {
     final localIps = await TelemetryService.getLocalIPs();
     try {
       grant = await _traceAwait('grant_with_mfa', () => _grantWithInlineMfa(
-        ({code, attemptId, passkey}) => api.rdpGrant(
+        ({code, attemptId, passkey, stepUpToken}) => api.rdpGrant(
           targetId: targetId,
           mode: 'rdp',
           code: code,
           attemptId: attemptId,
           passkey: passkey,
+          stepUpToken: stepUpToken,
           actionId: actionId,
           sourceInstanceId: sourceInstanceId,
           clientLocalIps: localIps,

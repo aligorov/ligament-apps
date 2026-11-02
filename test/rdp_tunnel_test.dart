@@ -447,6 +447,7 @@ class _FakeApi extends ApiClient {
     String? attemptId,
     bool? passkey,
     List<String>? clientLocalIps,
+    String? stepUpToken,
   }) =>
       _behavior(targetId);
 

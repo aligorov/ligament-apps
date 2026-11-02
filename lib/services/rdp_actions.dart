@@ -115,6 +115,7 @@ class RdpActions {
         String? code;
         String? attemptId;
         bool? passkey;
+        String? stepUpToken;
         while (true) {
           try {
             grant = await _traceAwait('owner_screen_grant', () => api.rdpGrant(
@@ -123,6 +124,7 @@ class RdpActions {
               code: code,
               attemptId: attemptId,
               passkey: passkey,
+              stepUpToken: stepUpToken,
               actionId: actionId,
               sourceInstanceId: auth.instanceId,
               clientLocalIps: localIps,
@@ -145,7 +147,8 @@ class RdpActions {
             code = res.code;
             attemptId = res.attemptId;
             passkey = res.passkey ? true : null;
-            if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty) && passkey != true) break;
+            stepUpToken = res.stepUpToken;
+            if ((code == null || code.isEmpty) && (attemptId == null || attemptId.isEmpty) && passkey != true && (stepUpToken == null || stepUpToken.isEmpty)) break;
 
             if (!context.mounted) return;
             unawaited(_showOwnerScreenProgress(context, s.ownerScreenProgress(targetName)));

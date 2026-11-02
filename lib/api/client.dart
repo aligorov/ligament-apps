@@ -1564,6 +1564,7 @@ class ApiClient {
     String? attemptId,
     bool? passkey,
     List<String>? clientLocalIps,
+    String? stepUpToken,
   }) async {
     final payload = <String, dynamic>{
       'target_id': targetId,
@@ -1574,6 +1575,7 @@ class ApiClient {
         'source_instance_id': sourceInstanceId,
       if (attemptId != null && attemptId.isNotEmpty) 'attempt_id': attemptId,
       if (passkey == true) 'passkey': true,
+      if (stepUpToken != null && stepUpToken.isNotEmpty) 'stepup_token': stepUpToken,
       if (clientLocalIps != null && clientLocalIps.isNotEmpty)
         'client_local_ips': clientLocalIps,
     };

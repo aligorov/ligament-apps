@@ -2,12 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 
-/// Результат подтверждения доступа: проверенный 6-значный TOTP код или attemptId passkey
+import 'step_up_auth_dialog.dart';
+
+/// Результат подтверждения доступа: проверенный 6-значный TOTP код, attemptId passkey или stepUpToken
 class RdpMfaResult {
   final bool passkey;
   final String? code;
   final String? attemptId;
-  const RdpMfaResult({this.passkey = false, this.code, this.attemptId});
+  final String? stepUpToken;
+
+  const RdpMfaResult({
+    this.passkey = false,
+    this.code,
+    this.attemptId,
+    this.stepUpToken,
+  });
 }
 
 /// Диалог инлайн-подтверждения RDP-действия (MFA):
@@ -230,22 +239,27 @@ class _RdpMfaDialogState extends State<RdpMfaDialog> {
 }
 
 /// Диалог инлайн-подтверждения RDP-действия (MFA):
-/// сервер ответил 428 mfa_required — запрашиваем Passkey или 6-значный TOTP код.
+/// сервер ответил 428 mfa_required — отображает единый стандартный диалог StepUpVerificationDialog
+/// с выбором Push на доверенные устройства (Number Matching), Passkey / Биометрии или TOTP.
 Future<RdpMfaResult?> showRdpMfaDialog(
   BuildContext context, {
   required bool isRu,
   bool wrongCode = false,
   dynamic localAuth,
-}) {
-  return showDialog<RdpMfaResult>(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => RdpMfaDialog(
-      isRu: isRu,
-      wrongCode: wrongCode,
-      localAuth: localAuth,
-    ),
+}) async {
+  final token = await StepUpVerificationDialog.show(
+    context,
+    title: isRu ? 'Подтверждение доступа (2FA)' : 'Access confirmation (2FA)',
+    message: isRu
+        ? 'Для подключения к рабочему месту требуется подтверждение личности. Выберите способ:'
+        : 'Workstation connection requires identity confirmation. Choose a verification method:',
+    initialError: wrongCode
+        ? (isRu ? 'Неверный код или подтверждение отклонено' : 'Invalid code or confirmation rejected')
+        : null,
+    localAuth: localAuth,
   );
+  if (token == null || token.isEmpty) return null;
+  return RdpMfaResult(stepUpToken: token, passkey: true);
 }
 
 /// Обратная совместимость для вызова чисто кодом

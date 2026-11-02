@@ -272,15 +272,15 @@ void main() {
       await tester.tap(find.text('Открыть'));
       await tester.pumpAndSettle();
 
-      expect(find.text('🔑 Подтвердить через Passkey'), findsOneWidget);
-      expect(find.text('Подтвердить кодом'), findsOneWidget);
+      expect(find.text('Passkey / Биометрия'), findsOneWidget);
+      expect(find.text('Код Authenticator (TOTP)'), findsOneWidget);
 
-      await tester.tap(find.text('🔑 Подтвердить через Passkey'));
+      await tester.tap(find.text('Passkey / Биометрия'));
       await tester.pumpAndSettle();
 
       expect(fakeAuth.authenticateCalled, isTrue);
       expect(result?.passkey, isTrue);
-      expect(result?.code, isNull);
+      expect(result?.stepUpToken, isNotNull);
     });
 
     testWidgets('RdpMfaDialog: позволяет ввести 6-значный TOTP код',
@@ -308,13 +308,16 @@ void main() {
       await tester.tap(find.text('Открыть'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Код Authenticator (TOTP)'), findsOneWidget);
+      await tester.tap(find.text('Код Authenticator (TOTP)'));
+      await tester.pumpAndSettle();
+
       await tester.enterText(find.byType(TextField), '654321');
       await tester.tap(find.text('Подтвердить кодом'));
       await tester.pumpAndSettle();
 
       expect(fakeAuth.authenticateCalled, isFalse);
-      expect(result?.passkey, isFalse);
-      expect(result?.code, equals('654321'));
+      expect(result?.stepUpToken, isNotNull);
     });
   });
 }
