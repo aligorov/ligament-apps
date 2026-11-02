@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
+import '../widgets/window_caption_controls.dart';
 import 'notification_popup_dialog.dart';
 
 /// Полноэкранный раздел «Сообщения и уведомления» (Inbox)
@@ -143,6 +144,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             tooltip: s.refresh,
             onPressed: () => auth.loadNotifications(),
           ),
+          if (WindowCaptionControls.isSupported)
+            const WindowCaptionControls(),
         ],
         bottom: AppUpdateBanner.maybeFromAuth(auth),
       ),

@@ -95,19 +95,23 @@ class GPOService {
     return false;
   }
 
-  /// Всплывать поверх всех окон при входящем push
-  bool get alwaysOnTop {
+  /// Настроена ли политика AlwaysOnTop на уровне ОС (GPO/MDM).
+  /// Возвращает null, если явная политика в реестре/профиле не задана.
+  bool? get alwaysOnTopPolicy {
     if (isWindows) {
       final val = _readWindowsDword(_alertsKeyPath, 'AlwaysOnTop');
       if (val != null) return val == 1;
-      return true;
     }
     if (isMacOS) {
       final val = _readMacBool('AlwaysOnTop');
       if (val != null) return val;
-      return true;
     }
-    return true; // по умолчанию включено
+    return null;
+  }
+
+  /// Всплывать поверх всех окон при входящем push (по умолчанию строго false)
+  bool get alwaysOnTop {
+    return alwaysOnTopPolicy ?? false; // по умолчанию выключено
   }
 
   /// Мигать кнопкой на панели задач (только Windows)

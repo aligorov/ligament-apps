@@ -232,6 +232,9 @@ void main(List<String> args) async {
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.setMinimumSize(const Size(580, 720));
+      await windowManager.setMinimizable(true);
+      await windowManager.setMaximizable(true);
+      await windowManager.setClosable(true);
       if (startMinimized) {
         // Остаемся скрытыми в трее; окно открывается из трея или по push-алерту
         // (AlertService.triggerAlert сам вызывает windowManager.show()).
@@ -277,6 +280,48 @@ void main(List<String> args) async {
   WidgetsBinding.instance.addPostFrameCallback((_) {
     DebugLogService.instance.record('app.ui.first_frame');
   });
+}
+
+ThemeData _buildAppTheme(String themeName) {
+  switch (themeName) {
+    case 'deep_cyber':
+      return ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF22D3EE),
+          secondary: Color(0xFF818CF8),
+          surface: Color(0xFF0F172A),
+          error: Color(0xFFEF4444),
+        ),
+        scaffoldBackgroundColor: const Color(0xFF060913),
+        useMaterial3: true,
+      );
+    case 'nordic_frost':
+      return ThemeData(
+        brightness: Brightness.light,
+        colorScheme: const ColorScheme.light(
+          primary: Color(0xFF0284C7),
+          secondary: Color(0xFF38BDF8),
+          surface: Color(0xFFFFFFFF),
+          error: Color(0xFFDC2626),
+        ),
+        scaffoldBackgroundColor: const Color(0xFFF8FAFC),
+        useMaterial3: true,
+      );
+    case 'slate_minimal':
+    default:
+      return ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF38BDF8),
+          secondary: Color(0xFF0284C7),
+          surface: Color(0xFF1E293B),
+          error: Color(0xFFEF4444),
+        ),
+        scaffoldBackgroundColor: const Color(0xFF0F172A),
+        useMaterial3: true,
+      );
+  }
 }
 
 class LigamentApp extends StatefulWidget {
@@ -560,16 +605,7 @@ class _LigamentAppState extends State<LigamentApp>
         GlobalCupertinoLocalizations.delegate,
       ],
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF38BDF8),
-          secondary: Color(0xFF0284C7),
-          surface: Color(0xFF1E293B),
-        ),
-        scaffoldBackgroundColor: const Color(0xFF090D1A),
-        useMaterial3: true,
-      ),
+      theme: _buildAppTheme(auth.appTheme),
       home: AnimatedSwitcher(
         duration: const Duration(milliseconds: 350),
         switchInCurve: Curves.easeOut,

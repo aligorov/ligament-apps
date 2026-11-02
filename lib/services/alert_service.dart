@@ -4,8 +4,9 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:window_manager/window_manager.dart';
 import 'gpo_service.dart';
+import 'web_platform.dart';
 
-/// Сервис оповещений и форсированного вывода окна при входящих push-запросах.
+/// Сервис оповещений и вывода окна при входящих push-запросах.
 class AlertService {
   final GPOService _gpo = GPOService();
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -47,28 +48,35 @@ class AlertService {
   }
 
   /// Сигнализация о входящем запросе авторизации:
-  /// 1. Вывод окна на передний план (AlwaysOnTop + Focus).
-  /// 2. Мигание на панели задач (FlashWindow).
-  /// 3. Звуковой сигнал оповещения.
-  /// 4. Мобильный Full-Screen Intent / High Priority Notification.
+  /// 1. Вывод окна на передний план (только если разрешено bringToFront, без кражи фокуса по умолчанию).
+  /// 2. AlwaysOnTop (только если включено настройкой/GPO, по умолчанию false).
+  /// 3. Мигание на панели задач (FlashWindow).
+  /// 4. Звуковой сигнал оповещения.
+  /// 5. Системные уведомления (macOS, PWA, Android/iOS).
   Future<void> triggerAlert({
     required String title,
     required String body,
     String? challengeId,
+    bool? alwaysOnTop,
+    bool? bringToFront,
   }) async {
     await init();
 
+    final shouldBringToFront = bringToFront ?? false;
+    final shouldAlwaysOnTop = alwaysOnTop ?? _gpo.alwaysOnTop;
+
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
-        // Показываем окно и разворачиваем, если было скрыто/минимизировано в трей
-        if (await windowManager.isMinimized()) {
-          await windowManager.restore();
-        }
-        await windowManager.show();
-        await windowManager.focus();
+        if (shouldBringToFront) {
+          if (await windowManager.isMinimized()) {
+            await windowManager.restore();
+          }
+          await windowManager.show();
+          await windowManager.focus();
 
-        if (_gpo.alwaysOnTop) {
-          await windowManager.setAlwaysOnTop(true);
+          if (shouldAlwaysOnTop) {
+            await windowManager.setAlwaysOnTop(true);
+          }
         }
 
         if (_gpo.flashTaskbar && Platform.isWindows) {
@@ -91,6 +99,8 @@ class AlertService {
       if (Platform.isMacOS) {
         await _showDarwinNotification(title, body, challengeId);
       }
+    } else if (kIsWeb) {
+      showWebNotification(title, body);
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       const androidDetails = AndroidNotificationDetails(
         'push_challenges_channel',
@@ -143,11 +153,19 @@ class AlertService {
   Future<void> triggerChatNotification({
     required String sender,
     required String message,
+    bool? bringToFront,
   }) async {
     await init();
 
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
+        if (bringToFront == true) {
+          if (await windowManager.isMinimized()) {
+            await windowManager.restore();
+          }
+          await windowManager.show();
+          await windowManager.focus();
+        }
         if (Platform.isWindows) {
           await windowManager.setProgressBar(1.0);
         }
@@ -156,6 +174,19 @@ class AlertService {
       try {
         await _audioPlayer.play(AssetSource('sounds/alert.mp3'));
       } catch (_) {}
+
+      if (Platform.isMacOS) {
+        await _showDarwinNotification(
+          sender.isNotEmpty ? 'Сообщение: $sender' : 'Новое сообщение в чате',
+          message,
+          null,
+        );
+      }
+    } else if (kIsWeb) {
+      showWebNotification(
+        sender.isNotEmpty ? 'Сообщение: $sender' : 'Новое сообщение в чате',
+        message,
+      );
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       const androidDetails = AndroidNotificationDetails(
         'chat_messages_channel',

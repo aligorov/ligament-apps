@@ -6,7 +6,7 @@ import '../i18n/app_strings.dart';
 /// Плитка RDP-цели «Мой ПК»: современная премиальная тёмная карточка
 /// с мягким неоновым свечением, аккуратными градиентами, чёткой типографикой
 /// и адаптивными кнопками действий без обрезания текста ("Под...").
-class RdpTargetTile extends StatelessWidget {
+class RdpTargetTile extends StatefulWidget {
   const RdpTargetTile({
     super.key,
     required this.target,
@@ -28,8 +28,21 @@ class RdpTargetTile extends StatelessWidget {
           defaultTargetPlatform == TargetPlatform.macOS);
 
   @override
+  State<RdpTargetTile> createState() => _RdpTargetTileState();
+}
+
+class _RdpTargetTileState extends State<RdpTargetTile> {
+  bool _isHovered = false;
+
+  @override
   Widget build(BuildContext context) {
     final s = context.stringsRead;
+    final target = widget.target;
+    final isRu = widget.isRu;
+    final onConnect = widget.onConnect;
+    final connecting = widget.connecting;
+    final margin = widget.margin;
+
     final name = target['name']?.toString() ?? '';
     final kind = target['kind']?.toString() ?? 'pc';
     final isTs = kind == 'terminal_server' || kind == 'ts';
@@ -43,199 +56,214 @@ class RdpTargetTile extends StatelessWidget {
 
     final effectiveOnline = online;
 
-    return Container(
-      margin: margin ?? const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF131B2B),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.08),
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.35),
-            blurRadius: 14,
-            offset: const Offset(0, 4),
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutCubic,
+        transform: Matrix4.translationValues(0, _isHovered ? -2.0 : 0.0, 0),
+        margin: margin ?? const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF131B2B),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: _isHovered
+                ? (isTs
+                    ? const Color(0xFFF59E0B).withValues(alpha: 0.45)
+                    : const Color(0xFF38BDF8).withValues(alpha: 0.45))
+                : Colors.white.withValues(alpha: 0.08),
+            width: _isHovered ? 1.2 : 1,
           ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          // Верхняя часть: Иконка + Имя + Бейджи
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: isTs
-                        ? [const Color(0xFFF59E0B).withValues(alpha: 0.18), const Color(0xFFB45309).withValues(alpha: 0.08)]
-                        : [const Color(0xFF0284C7).withValues(alpha: 0.22), const Color(0xFF0369A1).withValues(alpha: 0.06)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isTs
-                        ? const Color(0xFFF59E0B).withValues(alpha: 0.35)
-                        : const Color(0xFF38BDF8).withValues(alpha: 0.35),
-                    width: 1,
-                  ),
-                ),
-                child: Icon(
-                  isTs ? Icons.dns_rounded : Icons.desktop_windows_rounded,
-                  size: 22,
-                  color: isTs ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        // Неоновый индикатор статуса
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: effectiveOnline ? const Color(0xFF10B981) : const Color(0xFF64748B),
-                            boxShadow: effectiveOnline
-                                ? [
-                                    BoxShadow(
-                                      color: const Color(0xFF10B981).withValues(alpha: 0.6),
-                                      blurRadius: 6,
-                                      spreadRadius: 1,
-                                    ),
-                                  ]
-                                : null,
-                          ),
-                        ),
-                        const SizedBox(width: 7),
-                        Expanded(
-                          child: Text(
-                            name,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: -0.2,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
+          boxShadow: [
+            BoxShadow(
+              color: _isHovered
+                  ? (isTs
+                      ? const Color(0xFFF59E0B).withValues(alpha: 0.18)
+                      : const Color(0xFF0284C7).withValues(alpha: 0.18))
+                  : Colors.black.withValues(alpha: 0.35),
+              blurRadius: _isHovered ? 20 : 14,
+              offset: Offset(0, _isHovered ? 8 : 4),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            // Верхняя часть: Иконка + Имя + Бейджи
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: isTs
+                          ? [const Color(0xFFF59E0B).withValues(alpha: 0.18), const Color(0xFFB45309).withValues(alpha: 0.08)]
+                          : [const Color(0xFF0284C7).withValues(alpha: 0.22), const Color(0xFF0369A1).withValues(alpha: 0.06)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                    const SizedBox(height: 5),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        // Бейдж типа устройства
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: (isTs ? const Color(0xFFF59E0B) : const Color(0xFF0284C7))
-                                .withValues(alpha: 0.14),
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                              color: (isTs ? const Color(0xFFF59E0B) : const Color(0xFF0284C7))
-                                  .withValues(alpha: 0.3),
-                              width: 0.8,
-                            ),
-                          ),
-                          child: Text(
-                            isTs ? s.rdpKindTerminal : s.rdpKindPc,
-                            style: TextStyle(
-                              color: isTs ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8),
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        if (isSelf)
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isTs
+                          ? const Color(0xFFF59E0B).withValues(alpha: 0.35)
+                          : const Color(0xFF38BDF8).withValues(alpha: 0.35),
+                      width: 1,
+                    ),
+                  ),
+                  child: Icon(
+                    isTs ? Icons.dns_rounded : Icons.desktop_windows_rounded,
+                    size: 22,
+                    color: isTs ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          // Неоновый индикатор статуса
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            width: 8,
+                            height: 8,
                             decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.06),
+                              shape: BoxShape.circle,
+                              color: effectiveOnline ? const Color(0xFF10B981) : const Color(0xFF64748B),
+                              boxShadow: effectiveOnline
+                                  ? [
+                                      BoxShadow(
+                                        color: const Color(0xFF10B981).withValues(alpha: 0.6),
+                                        blurRadius: 6,
+                                        spreadRadius: 1,
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                          ),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.2,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 5),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          // Бейдж типа устройства
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: (isTs ? const Color(0xFFF59E0B) : const Color(0xFF0284C7))
+                                  .withValues(alpha: 0.14),
                               borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                              border: Border.all(
+                                color: (isTs ? const Color(0xFFF59E0B) : const Color(0xFF0284C7))
+                                    .withValues(alpha: 0.3),
+                                width: 0.8,
+                              ),
                             ),
                             child: Text(
-                              s.rdpSelfBadge,
-                              style: const TextStyle(
-                                color: Color(0xFF94A3B8),
+                              isTs ? s.rdpKindTerminal : s.rdpKindPc,
+                              style: TextStyle(
+                                color: isTs ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8),
                                 fontSize: 10,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
-                        if (isTs && maxSessions > 1)
-                          Text(
-                            s.rdpParallelSessions(maxSessions),
-                            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 10),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        if (route.isNotEmpty)
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.04),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              route,
-                              style: const TextStyle(
-                                color: Color(0xFF64748B),
-                                fontSize: 9,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 0.2,
+                          if (isSelf)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                              ),
+                              child: Text(
+                                s.rdpSelfBadge,
+                                style: const TextStyle(
+                                  color: Color(0xFF94A3B8),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
-                          ),
-                      ],
-                    ),
-                  ],
+                          if (isTs && maxSessions > 1)
+                            Text(
+                              s.rdpParallelSessions(maxSessions),
+                              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 10),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          if (route.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.04),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                route,
+                                style: const TextStyle(
+                                  color: Color(0xFF64748B),
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-
-          if (endpoint.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6, bottom: 2),
-              child: Text(
-                endpoint,
-                style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
-                overflow: TextOverflow.ellipsis,
-              ),
+              ],
             ),
 
-          const SizedBox(height: 10),
+            if (endpoint.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, bottom: 2),
+                child: Text(
+                  endpoint,
+                  style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
 
-          // Нижняя часть: Кнопка действия (RDP)
-          SizedBox(
-            width: double.infinity,
-            height: 38,
-            child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs),
-          ),
-        ],
+            const SizedBox(height: 10),
+
+            // Нижняя часть: Кнопка действия (RDP)
+            SizedBox(
+              width: double.infinity,
+              height: 38,
+              child: _connectControl(s, online, isSelf, rdpAvailable, rdpReason, route, isTs, target, isRu, connecting, onConnect),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   /// Кнопка подключения (RDP)
-  Widget _connectControl(AppStrings s, bool online, bool isSelf, bool rdpAvailable, String rdpReason, String route, bool isTs) {
-    if (!canLaunchRdp) {
+  Widget _connectControl(AppStrings s, bool online, bool isSelf, bool rdpAvailable, String rdpReason, String route, bool isTs, Map<String, dynamic> target, bool isRu, bool connecting, VoidCallback? onConnect) {
+    if (!RdpTargetTile.canLaunchRdp) {
       return Container(
         padding: const EdgeInsets.symmetric(vertical: 8),
         alignment: Alignment.center,

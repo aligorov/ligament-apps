@@ -2,10 +2,101 @@ import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 
-/// Лёгкий анимированный фон «Кибер-Созвездие» (Neural Mesh, 42 узла)
-/// Обеспечивает плавный 60 FPS дрейф частиц с лазерными нитями связей
-/// при минимальной нагрузке на процессор и батарею (<0.5% CPU).
+import '../services/auth_state.dart';
+
+/// Конфигурация темы фона «Созвездие»
+class _ThemeMeshConfig {
+  final Color backgroundColor;
+  final RadialGradient gradient;
+  final Color cyanColor;
+  final Color indigoColor;
+  final Color lineColor;
+  final double lineOpacityMultiplier;
+
+  const _ThemeMeshConfig({
+    required this.backgroundColor,
+    required this.gradient,
+    required this.cyanColor,
+    required this.indigoColor,
+    required this.lineColor,
+    required this.lineOpacityMultiplier,
+  });
+
+  static const slateMinimal = _ThemeMeshConfig(
+    backgroundColor: Color(0xFF0F172A),
+    gradient: RadialGradient(
+      center: Alignment(0.2, -0.4),
+      radius: 1.2,
+      colors: [
+        Color(0x1F38BDF8),
+        Color(0x0F1E293B),
+        Color(0xFF0F172A),
+      ],
+      stops: [0.0, 0.5, 1.0],
+    ),
+    cyanColor: Color(0xFF38BDF8),
+    indigoColor: Color(0xFF64748B),
+    lineColor: Color(0xFF38BDF8),
+    lineOpacityMultiplier: 0.22,
+  );
+
+  static const deepCyber = _ThemeMeshConfig(
+    backgroundColor: Color(0xFF060913),
+    gradient: RadialGradient(
+      center: Alignment(0.3, -0.5),
+      radius: 1.15,
+      colors: [
+        Color(0x286366F1),
+        Color(0x1822D3EE),
+        Color(0xFF060913),
+      ],
+      stops: [0.0, 0.45, 1.0],
+    ),
+    cyanColor: Color(0xFF22D3EE),
+    indigoColor: Color(0xFF818CF8),
+    lineColor: Color(0xFF22D3EE),
+    lineOpacityMultiplier: 0.40,
+  );
+
+  static const nordicFrost = _ThemeMeshConfig(
+    backgroundColor: Color(0xFFF8FAFC),
+    gradient: RadialGradient(
+      center: Alignment(0.2, -0.4),
+      radius: 1.2,
+      colors: [
+        Color(0x143B82F6),
+        Color(0x0CE2E8F0),
+        Color(0xFFF8FAFC),
+      ],
+      stops: [0.0, 0.5, 1.0],
+    ),
+    cyanColor: Color(0xFF3B82F6),
+    indigoColor: Color(0xFF64748B),
+    lineColor: Color(0xFF60A5FA),
+    lineOpacityMultiplier: 0.20,
+  );
+
+  static _ThemeMeshConfig fromTheme(String theme) {
+    switch (theme) {
+      case 'deep_cyber':
+        return deepCyber;
+      case 'nordic_frost':
+        return nordicFrost;
+      case 'slate_minimal':
+      default:
+        return slateMinimal;
+    }
+  }
+}
+
+/// Адаптивный фон со стилями тем оформления (Slate Minimal, Deep Cyber, Nordic Frost)
+/// и режимами энергосбережения:
+/// - animated: плавная фоновая динамика с автоматической паузой при потере фокуса / минимизации
+/// - static: статичное фиксированное созвездие (0% CPU / без таймеров и нагрузки на VDI)
+/// - off: лаконичный градиент без частиц
 class NeuralMeshBackground extends StatefulWidget {
   final Widget child;
   final int particleCount;
@@ -21,27 +112,110 @@ class NeuralMeshBackground extends StatefulWidget {
 }
 
 class _NeuralMeshBackgroundState extends State<NeuralMeshBackground>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WindowListener, WidgetsBindingObserver {
   late final AnimationController _controller;
   final List<_MeshParticle> _particles = [];
   final math.Random _rng = math.Random();
   Size _lastSize = Size.zero;
+  String _activeAnimationMode = 'static';
+  bool _isWindowFocused = true;
+
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
   @override
   void initState() {
     super.initState();
-    final isTesting = !kIsWeb && Platform.environment.containsKey('FLUTTER_TEST');
+    WidgetsBinding.instance.addObserver(this);
+    if (_isDesktop) {
+      windowManager.addListener(this);
+    }
+
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 10),
+      duration: const Duration(seconds: 12),
     );
-    if (!isTesting) {
-      _controller.repeat();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimationState();
+  }
+
+  void _syncAnimationState() {
+    AuthState? auth;
+    try {
+      auth = context.watch<AuthState?>();
+    } catch (_) {
+      try {
+        auth = context.watch<AuthState>();
+      } catch (_) {}
+    }
+
+    String mode = 'static';
+    try {
+      mode = auth?.bgAnimation ?? 'static';
+    } catch (_) {
+      mode = 'static';
+    }
+    _activeAnimationMode = mode;
+
+    final isTesting =
+        !kIsWeb && Platform.environment.containsKey('FLUTTER_TEST');
+
+    if (isTesting || mode != 'animated' || !_isWindowFocused) {
+      if (_controller.isAnimating) {
+        _controller.stop();
+      }
+    } else {
+      if (!_controller.isAnimating) {
+        _controller.repeat();
+      }
+    }
+  }
+
+  @override
+  void onWindowMinimize() {
+    _isWindowFocused = false;
+    if (_controller.isAnimating) _controller.stop();
+  }
+
+  @override
+  void onWindowRestore() {
+    _isWindowFocused = true;
+    _syncAnimationState();
+  }
+
+  @override
+  void onWindowFocus() {
+    _isWindowFocused = true;
+    _syncAnimationState();
+  }
+
+  @override
+  void onWindowBlur() {
+    _isWindowFocused = false;
+    if (_controller.isAnimating) _controller.stop();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _isWindowFocused = true;
+      _syncAnimationState();
+    } else {
+      _isWindowFocused = false;
+      if (_controller.isAnimating) _controller.stop();
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    if (_isDesktop) {
+      windowManager.removeListener(this);
+    }
     _controller.dispose();
     super.dispose();
   }
@@ -50,16 +224,16 @@ class _NeuralMeshBackgroundState extends State<NeuralMeshBackground>
     if (size == _lastSize || size.isEmpty) return;
     _lastSize = size;
     _particles.clear();
-    final count = math.max(45, (size.width * size.height / 11000).round());
+    final count = math.max(36, (size.width * size.height / 12500).round());
     for (int i = 0; i < count; i++) {
       _particles.add(
         _MeshParticle(
           x: _rng.nextDouble() * size.width,
           y: _rng.nextDouble() * size.height,
-          vx: (_rng.nextDouble() - 0.5) * 0.5,
-          vy: (_rng.nextDouble() - 0.5) * 0.5,
-          radius: _rng.nextDouble() * 2.0 + 1.6,
-          alpha: _rng.nextDouble() * 0.35 + 0.6,
+          vx: (_rng.nextDouble() - 0.5) * 0.4,
+          vy: (_rng.nextDouble() - 0.5) * 0.4,
+          radius: _rng.nextDouble() * 1.8 + 1.4,
+          alpha: _rng.nextDouble() * 0.35 + 0.55,
           isCyan: _rng.nextBool(),
         ),
       );
@@ -68,50 +242,79 @@ class _NeuralMeshBackgroundState extends State<NeuralMeshBackground>
 
   @override
   Widget build(BuildContext context) {
+    AuthState? auth;
+    try {
+      auth = context.watch<AuthState?>();
+    } catch (_) {
+      try {
+        auth = context.watch<AuthState>();
+      } catch (_) {}
+    }
+
+    String themeName = 'slate_minimal';
+    try {
+      themeName = auth?.appTheme ?? 'slate_minimal';
+    } catch (_) {
+      themeName = 'slate_minimal';
+    }
+    final config = _ThemeMeshConfig.fromTheme(themeName);
+    String animMode = _activeAnimationMode;
+    try {
+      animMode = auth?.bgAnimation ?? _activeAnimationMode;
+    } catch (_) {
+      animMode = _activeAnimationMode;
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        _initParticles(size);
+        if (animMode != 'off') {
+          _initParticles(size);
+        }
 
         return Stack(
           fit: StackFit.expand,
           children: [
-            // 1. Базовый фон с лёгкими неоновыми радиальными переливами
-            const Positioned.fill(
+            // 1. Тематический градиент
+            Positioned.fill(
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: Color(0xFF090D1A),
-                  gradient: RadialGradient(
-                    center: Alignment(0.3, -0.5),
-                    radius: 1.15,
-                    colors: [
-                      Color(0x286366F1),
-                      Color(0x1822D3EE),
-                      Color(0xFF090D1A),
-                    ],
-                    stops: [0.0, 0.45, 1.0],
-                  ),
+                  color: config.backgroundColor,
+                  gradient: config.gradient,
                 ),
               ),
             ),
-            // 2. Изолированный слой анимированных частиц (RepaintBoundary)
-            if (_particles.isNotEmpty)
+
+            // 2. Слой частиц со связями (если не отключен)
+            if (animMode != 'off' && _particles.isNotEmpty)
               Positioned.fill(
                 child: RepaintBoundary(
-                  child: AnimatedBuilder(
-                    animation: _controller,
-                    builder: (context, _) {
-                      return CustomPaint(
-                        painter: _MeshPainter(
-                          particles: _particles,
-                          size: size,
+                  child: animMode == 'animated'
+                      ? AnimatedBuilder(
+                          animation: _controller,
+                          builder: (context, _) {
+                            return CustomPaint(
+                              painter: _MeshPainter(
+                                particles: _particles,
+                                size: size,
+                                config: config,
+                                animatePositions: true,
+                              ),
+                            );
+                          },
+                        )
+                      : CustomPaint(
+                          painter: _MeshPainter(
+                            particles: _particles,
+                            size: size,
+                            config: config,
+                            animatePositions: false,
+                          ),
                         ),
-                      );
-                    },
-                  ),
                 ),
               ),
-            // 3. Контент экрана поверх анимированного фона
+
+            // 3. Контент экрана
             Positioned.fill(child: widget.child),
           ],
         );
@@ -150,21 +353,28 @@ class _MeshParticle {
 class _MeshPainter extends CustomPainter {
   final List<_MeshParticle> particles;
   final Size size;
+  final _ThemeMeshConfig config;
+  final bool animatePositions;
 
   static final Paint _cyanNodePaint = Paint()..style = PaintingStyle.fill;
   static final Paint _indigoNodePaint = Paint()..style = PaintingStyle.fill;
   static final Paint _linePaint = Paint()
-    ..strokeWidth = 1.1
+    ..strokeWidth = 1.0
     ..style = PaintingStyle.stroke;
 
-  _MeshPainter({required this.particles, required this.size});
+  _MeshPainter({
+    required this.particles,
+    required this.size,
+    required this.config,
+    required this.animatePositions,
+  });
 
   @override
   void paint(Canvas canvas, Size canvasSize) {
-    const maxDist = 165.0;
+    const maxDist = 160.0;
     const maxDistSq = maxDist * maxDist;
 
-    // 1. Соединительные лазерные линии между близкими узлами
+    // 1. Соединительные линии
     for (int i = 0; i < particles.length; i++) {
       final p1 = particles[i];
       for (int j = i + 1; j < particles.length; j++) {
@@ -175,8 +385,9 @@ class _MeshPainter extends CustomPainter {
 
         if (distSq < maxDistSq) {
           final dist = math.sqrt(distSq);
-          final opacity = (1.0 - dist / maxDist) * 0.42;
-          _linePaint.color = const Color(0xFF22D3EE).withValues(alpha: opacity);
+          final opacity =
+              (1.0 - dist / maxDist) * config.lineOpacityMultiplier;
+          _linePaint.color = config.lineColor.withValues(alpha: opacity);
           canvas.drawLine(Offset(p1.x, p1.y), Offset(p2.x, p2.y), _linePaint);
         }
       }
@@ -185,18 +396,24 @@ class _MeshPainter extends CustomPainter {
     // 2. Светящиеся микро-узлы
     for (int i = 0; i < particles.length; i++) {
       final p = particles[i];
-      p.update(size);
+      if (animatePositions) {
+        p.update(size);
+      }
 
       if (p.isCyan) {
-        _cyanNodePaint.color = const Color(0xFF22D3EE).withValues(alpha: p.alpha);
+        _cyanNodePaint.color =
+            config.cyanColor.withValues(alpha: p.alpha);
         canvas.drawCircle(Offset(p.x, p.y), p.radius, _cyanNodePaint);
       } else {
-        _indigoNodePaint.color = const Color(0xFF818CF8).withValues(alpha: p.alpha);
+        _indigoNodePaint.color =
+            config.indigoColor.withValues(alpha: p.alpha);
         canvas.drawCircle(Offset(p.x, p.y), p.radius, _indigoNodePaint);
       }
     }
   }
 
   @override
-  bool shouldRepaint(covariant _MeshPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _MeshPainter oldDelegate) {
+    return animatePositions || oldDelegate.config != config;
+  }
 }

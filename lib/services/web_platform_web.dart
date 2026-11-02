@@ -17,3 +17,29 @@ int webMaxTouchPoints() {
     return 0;
   }
 }
+
+/// Показ системного уведомления в браузере (PWA / Web Notification API)
+void showWebNotification(String title, String body) {
+  try {
+    if (html.Notification.permission == 'granted') {
+      html.Notification(title, body: body, icon: '/icons/icon-192.png');
+    } else if (html.Notification.permission != 'denied') {
+      html.Notification.requestPermission().then((perm) {
+        if (perm == 'granted') {
+          html.Notification(title, body: body, icon: '/icons/icon-192.png');
+        }
+      });
+    }
+  } catch (_) {}
+}
+
+/// Запрос разрешения на браузерные уведомления (PWA / Web Notification API)
+Future<bool> requestWebNotificationPermission() async {
+  try {
+    if (html.Notification.permission == 'granted') return true;
+    final perm = await html.Notification.requestPermission();
+    return perm == 'granted';
+  } catch (_) {
+    return false;
+  }
+}

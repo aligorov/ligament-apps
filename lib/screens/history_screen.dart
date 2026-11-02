@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
+import '../widgets/window_caption_controls.dart';
 import 'connect_screen.dart';
 
 class HistoryScreen extends StatelessWidget {
@@ -241,6 +242,8 @@ class HistoryScreen extends StatelessWidget {
             onPressed: () => auth.loadHistory(),
             tooltip: s.refresh,
           ),
+          if (WindowCaptionControls.isSupported)
+            const WindowCaptionControls(),
         ],
         bottom: AppUpdateBanner.maybeFromAuth(auth),
       ),

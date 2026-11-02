@@ -11,6 +11,7 @@ import '../services/debug_log_service.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/app_update_dialog.dart';
+import '../widgets/window_caption_controls.dart';
 import '../app_version.dart';
 import 'connect_screen.dart';
 
@@ -133,6 +134,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           bottom: BorderSide(color: Color(0x1AFFFFFF), width: 1),
         ),
         title: Text(s.settingsTitle, style: const TextStyle(color: Colors.white, fontSize: 18)),
+        actions: [
+          if (WindowCaptionControls.isSupported)
+            const WindowCaptionControls(),
+        ],
         bottom: AppUpdateBanner.maybeFromAuth(auth, _appUpdate),
       ),
       body: ListView(
@@ -491,6 +496,162 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 16),
+
+          // Карточка оформления и фоновых эффектов
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFF334155)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.palette_outlined, color: Color(0xFF38BDF8), size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      auth.isRu ? 'Оформление и фоновые эффекты' : 'Appearance & Visual Effects',
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  auth.isRu ? 'Тема оформления' : 'Theme style',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF94A3B8)),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _themeChip(
+                      label: auth.isRu ? 'Slate Dark' : 'Slate Dark',
+                      themeKey: 'slate_minimal',
+                      activeTheme: auth.appTheme,
+                      color: const Color(0xFF0F172A),
+                      icon: Icons.nightlight_round,
+                      onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
+                    ),
+                    const SizedBox(width: 8),
+                    _themeChip(
+                      label: auth.isRu ? 'Cyber Neon' : 'Cyber Neon',
+                      themeKey: 'deep_cyber',
+                      activeTheme: auth.appTheme,
+                      color: const Color(0xFF060913),
+                      icon: Icons.auto_awesome,
+                      onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
+                    ),
+                    const SizedBox(width: 8),
+                    _themeChip(
+                      label: auth.isRu ? 'Nordic Light' : 'Nordic Light',
+                      themeKey: 'nordic_frost',
+                      activeTheme: auth.appTheme,
+                      color: const Color(0xFFF8FAFC),
+                      icon: Icons.wb_sunny_outlined,
+                      onSelected: (t) => _traceAction('theme', () => auth.setAppTheme(t), state: t),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  auth.isRu ? 'Фоновое созвездие (Neural Mesh)' : 'Background constellation mode',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF94A3B8)),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _animationModeChip(
+                      label: auth.isRu ? 'Анимация' : 'Animated',
+                      modeKey: 'animated',
+                      activeMode: auth.bgAnimation,
+                      icon: Icons.motion_photos_on_outlined,
+                      onSelected: (m) => _traceAction('bg_animation', () => auth.setBgAnimation(m), state: m),
+                    ),
+                    const SizedBox(width: 8),
+                    _animationModeChip(
+                      label: auth.isRu ? 'Статично' : 'Static (0%)',
+                      modeKey: 'static',
+                      activeMode: auth.bgAnimation,
+                      icon: Icons.pause_circle_outline_rounded,
+                      onSelected: (m) => _traceAction('bg_animation', () => auth.setBgAnimation(m), state: m),
+                    ),
+                    const SizedBox(width: 8),
+                    _animationModeChip(
+                      label: auth.isRu ? 'Отключено' : 'Off',
+                      modeKey: 'off',
+                      activeMode: auth.bgAnimation,
+                      icon: Icons.visibility_off_outlined,
+                      onSelected: (m) => _traceAction('bg_animation', () => auth.setBgAnimation(m), state: m),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Карточка поведения окна и фокуса
+          if (!kIsWeb) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF334155)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.picture_in_picture_alt_outlined, color: Color(0xFF38BDF8), size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        auth.isRu ? 'Поведение окна и фокус' : 'Window Behavior & Focus',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _switchTile(
+                    title: auth.isRu ? 'Поверх всех окон' : 'Always on top',
+                    subtitle: auth.isAlwaysOnTopEnforced
+                        ? (auth.isRu
+                            ? 'Заблокировано групповой политикой GPO'
+                            : 'Enforced by Enterprise Group Policy (GPO)')
+                        : (auth.isRu
+                            ? 'Отображать окно поверх других приложений (по умолчанию выключено)'
+                            : 'Keep window above other applications (default: OFF)'),
+                    value: auth.alwaysOnTop,
+                    onChanged: auth.isAlwaysOnTopEnforced
+                        ? null
+                        : (val) => _traceAction('always_on_top', () => auth.setAlwaysOnTop(val), state: val ? 'enabled' : 'disabled'),
+                  ),
+                  const Divider(color: Color(0xFF334155), height: 20),
+                  _switchTile(
+                    title: auth.isRu ? 'Вызов окна при запросе 2FA' : 'Bring to front on 2FA prompt',
+                    subtitle: auth.isRu
+                        ? 'Автоматически активировать окно при новом запросе подтверждения (выключено для защиты от кражи фокуса)'
+                        : 'Automatically raise window on new 2FA prompt (OFF prevents focus hijacking)',
+                    value: auth.bringToFrontOnPrompt,
+                    onChanged: (val) => _traceAction('bring_to_front_prompt', () => auth.setBringToFrontOnPrompt(val), state: val ? 'enabled' : 'disabled'),
+                  ),
+                  const Divider(color: Color(0xFF334155), height: 20),
+                  _switchTile(
+                    title: auth.isRu ? 'Вызов окна при сообщении в чате' : 'Bring to front on chat message',
+                    subtitle: auth.isRu
+                        ? 'Разворачивать окно при новом сообщении от службы поддержки'
+                        : 'Restore and focus window when support message arrives',
+                    value: auth.bringToFrontOnMessage,
+                    onChanged: (val) => _traceAction('bring_to_front_message', () => auth.setBringToFrontOnMessage(val), state: val ? 'enabled' : 'disabled'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
 
           // Карточка переключения языка интерфейса
           Container(
@@ -1199,6 +1360,114 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _themeChip({
+    required String label,
+    required String themeKey,
+    required String activeTheme,
+    required Color color,
+    required IconData icon,
+    required ValueChanged<String> onSelected,
+  }) {
+    final selected = activeTheme == themeKey;
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => onSelected(themeKey),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? const Color(0xFF38BDF8).withValues(alpha: 0.18)
+                : const Color(0xFF0F172A).withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected ? const Color(0xFF38BDF8) : const Color(0xFF334155),
+              width: selected ? 1.5 : 1.0,
+            ),
+          ),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white24, width: 1),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(icon, size: 14, color: selected ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                  color: selected ? Colors.white : const Color(0xFF94A3B8),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _animationModeChip({
+    required String label,
+    required String modeKey,
+    required String activeMode,
+    required IconData icon,
+    required ValueChanged<String> onSelected,
+  }) {
+    final selected = activeMode == modeKey;
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => onSelected(modeKey),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? const Color(0xFF38BDF8).withValues(alpha: 0.18)
+                : const Color(0xFF0F172A).withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected ? const Color(0xFF38BDF8) : const Color(0xFF334155),
+              width: selected ? 1.5 : 1.0,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 14, color: selected ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8)),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                    color: selected ? Colors.white : const Color(0xFF94A3B8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

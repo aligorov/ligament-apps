@@ -19,6 +19,7 @@ import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/app_update_dialog.dart';
 import '../widgets/neural_mesh_background.dart';
+import '../widgets/window_caption_controls.dart';
 import 'approval_modal.dart';
 import 'browser_sso_dialog.dart';
 import 'identity_mismatch_banner.dart';
@@ -599,9 +600,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final badgeCount = auth.pendingChallenges.length + (auth.isEngineer ? auth.supportQueue.length : 0);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF090D1A),
+      backgroundColor: Colors.transparent,
       body: NeuralMeshBackground(
-        child: pages[_currentIndex],
+        child: IndexedStack(
+          index: _currentIndex,
+          children: pages,
+        ),
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
@@ -828,16 +832,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         ),
                       ),
-                      // Сворачивание в трей (десктоп)
+                      // Кнопки управления окном (Свернуть / Развернуть / Закрыть)
                       if (_isDesktop) ...[
-                        const SizedBox(width: 6),
-                        IconButton(
-                          icon: const Icon(Icons.minimize, color: Colors.white, size: 21),
-                          tooltip: s.trayMinimize,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-                          onPressed: () => _traceAction('minimize', windowManager.hide),
-                        ),
+                        const SizedBox(width: 8),
+                        const WindowCaptionControls(),
                       ],
                     ],
                   ),

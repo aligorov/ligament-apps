@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../api/client.dart';
 import '../app_version.dart';
@@ -132,6 +133,69 @@ class AuthState extends ChangeNotifier {
   static const String _tokenKey = 'auth_token';
   static const String _logoutMarkerKey = 'auth_logged_out';
   static const String _localeKey = 'app_locale';
+  static const String _alwaysOnTopKey = 'settings_always_on_top';
+  static const String _bringToFrontPromptKey = 'settings_bring_to_front_on_prompt';
+  static const String _bringToFrontMessageKey = 'settings_bring_to_front_on_message';
+  static const String _appThemeKey = 'settings_app_theme';
+  static const String _bgAnimationKey = 'settings_bg_animation';
+
+  bool _userAlwaysOnTop = false;
+  bool _bringToFrontOnPrompt = false;
+  bool _bringToFrontOnMessage = false;
+  String _appTheme = 'slate_minimal';
+  String _bgAnimation = 'static';
+
+  bool get isAlwaysOnTopEnforced => gpo.alwaysOnTopPolicy != null;
+  bool get alwaysOnTop => gpo.alwaysOnTopPolicy ?? _userAlwaysOnTop;
+  bool get bringToFrontOnPrompt => _bringToFrontOnPrompt;
+  bool get bringToFrontOnMessage => _bringToFrontOnMessage;
+  String get appTheme => _appTheme;
+  String get bgAnimation => _bgAnimation;
+
+  Future<void> setAlwaysOnTop(bool val) async {
+    if (_userAlwaysOnTop == val) return;
+    _userAlwaysOnTop = val;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_alwaysOnTopKey, val);
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        await windowManager.setAlwaysOnTop(alwaysOnTop);
+      } catch (_) {}
+    }
+    notifyListeners();
+  }
+
+  Future<void> setBringToFrontOnPrompt(bool val) async {
+    if (_bringToFrontOnPrompt == val) return;
+    _bringToFrontOnPrompt = val;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_bringToFrontPromptKey, val);
+    notifyListeners();
+  }
+
+  Future<void> setBringToFrontOnMessage(bool val) async {
+    if (_bringToFrontOnMessage == val) return;
+    _bringToFrontOnMessage = val;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_bringToFrontMessageKey, val);
+    notifyListeners();
+  }
+
+  Future<void> setAppTheme(String theme) async {
+    if (_appTheme == theme) return;
+    _appTheme = theme;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_appThemeKey, theme);
+    notifyListeners();
+  }
+
+  Future<void> setBgAnimation(String mode) async {
+    if (_bgAnimation == mode) return;
+    _bgAnimation = mode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_bgAnimationKey, mode);
+    notifyListeners();
+  }
 
   // Named business/init awaits only; no payloads or credential identifiers.
   Future<T> _traceAwait<T>(String operation, String phase,
@@ -601,6 +665,8 @@ class AuthState extends ChangeNotifier {
           ? 'Подтвердите вход по Windows-билету в приложении'
           : 'Confirm Windows-ticket sign-in in the app',
       challengeId: id,
+      alwaysOnTop: alwaysOnTop,
+      bringToFront: _bringToFrontOnPrompt,
     );
     notifyListeners();
   }
@@ -811,6 +877,18 @@ class AuthState extends ChangeNotifier {
       _localeCode = sysLang.startsWith('en') ? 'en' : 'ru';
     }
 
+    _userAlwaysOnTop = prefs.getBool(_alwaysOnTopKey) ?? false;
+    _bringToFrontOnPrompt = prefs.getBool(_bringToFrontPromptKey) ?? false;
+    _bringToFrontOnMessage = prefs.getBool(_bringToFrontMessageKey) ?? false;
+    _appTheme = prefs.getString(_appThemeKey) ?? 'slate_minimal';
+    _bgAnimation = prefs.getString(_bgAnimationKey) ?? 'static';
+
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        await windowManager.setAlwaysOnTop(alwaysOnTop);
+      } catch (_) {}
+    }
+
     // Если GPO принудительно задает ServerURL, используем его — но только
     // после централизованной валидации (VULN-27): GPO-значение никто не
     // перепроверял, а по этому каналу уходят пароль и Bearer-токен.
@@ -1000,6 +1078,8 @@ class AuthState extends ChangeNotifier {
         title: isRu ? 'Запрос на вход: $sName' : 'Login Request: $sName',
         body: '$who$pcPart (IP: $ipText)',
         challengeId: cid,
+        alwaysOnTop: alwaysOnTop,
+        bringToFront: _bringToFrontOnPrompt,
       );
     }
     notifyListeners();
@@ -1052,6 +1132,8 @@ class AuthState extends ChangeNotifier {
         title: title,
         body: body,
         challengeId: notifId,
+        alwaysOnTop: alwaysOnTop,
+        bringToFront: _bringToFrontOnPrompt,
       );
       loadNotifications();
       notifyListeners();
@@ -1081,6 +1163,8 @@ class AuthState extends ChangeNotifier {
             ? 'Инженер готов подключиться к экрану. Подтвердите контрольное число.'
             : 'Engineer is ready to connect. Confirm the number match.',
         challengeId: prompt['session_id']?.toString(),
+        alwaysOnTop: alwaysOnTop,
+        bringToFront: _bringToFrontOnPrompt,
       );
       notifyListeners();
     };
@@ -1104,6 +1188,7 @@ class AuthState extends ChangeNotifier {
       alert.triggerChatNotification(
         sender: msg.senderName,
         message: msg.text,
+        bringToFront: _bringToFrontOnMessage,
       );
       notifyListeners();
     };
@@ -1146,6 +1231,8 @@ class AuthState extends ChangeNotifier {
               : 'New SOS Ticket: $catTitle',
           body: '$clientName: $problemSummary',
           challengeId: sessionId?.toString(),
+          alwaysOnTop: alwaysOnTop,
+          bringToFront: _bringToFrontOnPrompt,
         );
       }
     };
@@ -2766,6 +2853,8 @@ class AuthState extends ChangeNotifier {
                   ? 'Инженер готов подключиться к экрану. Подтвердите контрольное число.'
                   : 'Engineer is ready to connect. Confirm the number match.',
               challengeId: sessionId,
+              alwaysOnTop: alwaysOnTop,
+              bringToFront: _bringToFrontOnPrompt,
             );
             notifyListeners();
           }

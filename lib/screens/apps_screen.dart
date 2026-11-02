@@ -8,6 +8,7 @@ import '../services/debug_log_service.dart';
 import '../services/rdp_actions.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/rdp_target_tile.dart';
+import '../widgets/window_caption_controls.dart';
 import 'link_catalog_screen.dart';
 
 class AppsScreen extends StatefulWidget {
@@ -17,25 +18,44 @@ class AppsScreen extends StatefulWidget {
   State<AppsScreen> createState() => _AppsScreenState();
 }
 
-class _AppsScreenState extends State<AppsScreen> {
+class _AppsScreenState extends State<AppsScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
+  late final AnimationController _refreshController;
   String _query = '';
   String _selectedFilter = 'all'; // all | workstations | apps
 
   @override
   void initState() {
     super.initState();
+    _refreshController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _refresh(context.read<AuthState>());
+        _handleRefresh(context.read<AuthState>());
       }
     });
   }
 
   @override
   void dispose() {
+    _refreshController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleRefresh(AuthState auth) async {
+    _refreshController.repeat();
+    try {
+      await _refresh(auth);
+    } finally {
+      if (mounted) {
+        _refreshController.stop();
+        _refreshController.reset();
+      }
+    }
   }
 
   Future<void> _refresh(AuthState auth) async {
@@ -149,10 +169,15 @@ class _AppsScreenState extends State<AppsScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8)),
-            onPressed: () => _refresh(auth),
+            icon: RotationTransition(
+              turns: _refreshController,
+              child: const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8)),
+            ),
+            onPressed: () => _handleRefresh(auth),
             tooltip: s.appsRefresh,
           ),
+          if (WindowCaptionControls.isSupported)
+            const WindowCaptionControls(),
         ],
         bottom: AppUpdateBanner.maybeFromAuth(auth),
       ),
@@ -252,17 +277,27 @@ class _AppsScreenState extends State<AppsScreen> {
                           color: Color(0xFF64748B), fontSize: 13),
                       prefixIcon: const Icon(Icons.search_rounded,
                           color: Color(0xFF38BDF8), size: 20),
-                      suffixIcon: _query.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear_rounded,
-                                  color: Color(0xFF94A3B8), size: 18),
-                              onPressed: () {
-                                DebugLogService.instance.record('ui.apps.search.clear');
-                                _searchController.clear();
-                                setState(() => _query = '');
-                              },
-                            )
-                          : null,
+                      suffixIcon: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        transitionBuilder: (child, anim) => FadeTransition(
+                          opacity: anim,
+                          child: ScaleTransition(scale: anim, child: child),
+                        ),
+                        child: _query.isNotEmpty
+                            ? IconButton(
+                                key: const ValueKey('clear_search_btn'),
+                                icon: const Icon(Icons.clear_rounded,
+                                    color: Color(0xFF94A3B8), size: 18),
+                                onPressed: () {
+                                  DebugLogService.instance
+                                      .record('ui.apps.search.clear');
+                                  _searchController.clear();
+                                  setState(() => _query = '');
+                                },
+                              )
+                            : const SizedBox.shrink(
+                                key: ValueKey('empty_search_btn')),
+                      ),
                       filled: true,
                       fillColor: const Color(0xFF131B2B).withValues(alpha: 0.85),
                       isDense: true,
@@ -466,154 +501,14 @@ class _AppsScreenState extends State<AppsScreen> {
                               delegate: SliverChildBuilderDelegate(
                                 (context, index) {
                                   final app = apps[index];
-                                  final name = app['name']?.toString() ??
-                                      (isRu ? 'Сервис' : 'Service');
                                   final launchUrl =
                                       app['launch_url']?.toString() ?? '';
-                                  final icon = _getAppIcon(name, launchUrl);
-                                  final sub =
-                                      _getAppSubtitle(name, launchUrl, isRu);
-
-                                  return Container(
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF131B2B),
-                                      borderRadius: BorderRadius.circular(16),
-                                      border: Border.all(
-                                        color: Colors.white
-                                            .withValues(alpha: 0.08),
-                                        width: 1,
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black
-                                              .withValues(alpha: 0.35),
-                                          blurRadius: 14,
-                                          offset: const Offset(0, 4),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Material(
-                                      color: Colors.transparent,
-                                      child: InkWell(
-                                        onTap: launchUrl.isNotEmpty
-                                            ? () =>
-                                                _launchApp(context, launchUrl)
-                                            : null,
-                                        borderRadius: BorderRadius.circular(16),
-                                        child: Padding(
-                                          padding: const EdgeInsets.all(14),
-                                          child: Column(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.center,
-                                            children: [
-                                              Container(
-                                                width: 48,
-                                                height: 48,
-                                                decoration: BoxDecoration(
-                                                  shape: BoxShape.circle,
-                                                  gradient: LinearGradient(
-                                                    colors: [
-                                                      const Color(0xFF0284C7)
-                                                          .withValues(
-                                                              alpha: 0.22),
-                                                      const Color(0xFF0369A1)
-                                                          .withValues(
-                                                              alpha: 0.08),
-                                                    ],
-                                                    begin: Alignment.topLeft,
-                                                    end: Alignment.bottomRight,
-                                                  ),
-                                                  border: Border.all(
-                                                    color:
-                                                        const Color(0xFF38BDF8)
-                                                            .withValues(
-                                                                alpha: 0.35),
-                                                    width: 1,
-                                                  ),
-                                                ),
-                                                child: Icon(icon,
-                                                    size: 24,
-                                                    color: const Color(
-                                                        0xFF38BDF8)),
-                                              ),
-                                              const SizedBox(height: 10),
-                                              Text(
-                                                name,
-                                                textAlign: TextAlign.center,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontWeight: FontWeight.w700,
-                                                  fontSize: 14,
-                                                  color: Colors.white,
-                                                  letterSpacing: -0.2,
-                                                ),
-                                              ),
-                                              const SizedBox(height: 2),
-                                              Text(
-                                                sub,
-                                                textAlign: TextAlign.center,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontSize: 10,
-                                                  color: Color(0xFF64748B),
-                                                ),
-                                              ),
-                                              const Spacer(),
-                                              Container(
-                                                width: double.infinity,
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                        vertical: 7),
-                                                decoration: BoxDecoration(
-                                                  color: const Color(0xFF0284C7)
-                                                      .withValues(alpha: 0.12),
-                                                  borderRadius:
-                                                      BorderRadius.circular(9),
-                                                  border: Border.all(
-                                                    color:
-                                                        const Color(0xFF0284C7)
-                                                            .withValues(
-                                                                alpha: 0.45),
-                                                    width: 1,
-                                                  ),
-                                                ),
-                                                child: FittedBox(
-                                                  fit: BoxFit.scaleDown,
-                                                  child: Row(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment
-                                                            .center,
-                                                    children: [
-                                                      Text(
-                                                        isRu
-                                                            ? 'Войти через SSO'
-                                                            : 'Open via SSO',
-                                                        style: const TextStyle(
-                                                          fontSize: 11,
-                                                          color:
-                                                              Color(0xFF38BDF8),
-                                                          fontWeight:
-                                                              FontWeight.w700,
-                                                        ),
-                                                      ),
-                                                      const SizedBox(width: 4),
-                                                      const Icon(
-                                                          Icons
-                                                              .arrow_forward_rounded,
-                                                          size: 12,
-                                                          color: Color(
-                                                              0xFF38BDF8)),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
+                                  return _SsoAppTile(
+                                    app: app,
+                                    isRu: isRu,
+                                    onLaunch: launchUrl.isNotEmpty
+                                        ? () => _launchApp(context, launchUrl)
+                                        : null,
                                   );
                                 },
                                 childCount: apps.length,
@@ -629,53 +524,6 @@ class _AppsScreenState extends State<AppsScreen> {
         ],
       ),
     );
-  }
-
-  IconData _getAppIcon(String name, String url) {
-    final lower = '$name $url'.toLowerCase();
-    if (lower.contains('pass') ||
-        lower.contains('pwd') ||
-        lower.contains('vault') ||
-        lower.contains('key')) {
-      return Icons.lock_outline_rounded;
-    }
-    if (lower.contains('wifi') ||
-        lower.contains('wi-fi') ||
-        lower.contains('net')) {
-      return Icons.wifi_rounded;
-    }
-    if (lower.contains('mail') ||
-        lower.contains('post') ||
-        lower.contains('inbox')) {
-      return Icons.mail_outline_rounded;
-    }
-    if (lower.contains('record') ||
-        lower.contains('video') ||
-        lower.contains('studio')) {
-      return Icons.videocam_rounded;
-    }
-    if (lower.contains('git') ||
-        lower.contains('repo') ||
-        lower.contains('code')) {
-      return Icons.code_rounded;
-    }
-    return Icons.shield_outlined;
-  }
-
-  String _getAppSubtitle(String name, String url, bool isRu) {
-    final lower = '$name $url'.toLowerCase();
-    if (lower.contains('record') || lower.contains('recorder')) {
-      return isRu ? 'Записи и аудит сессий' : 'Session Recording & Audit';
-    }
-    if (lower.contains('pass') ||
-        lower.contains('pwd') ||
-        lower.contains('vault')) {
-      return isRu ? 'Корпоративные пароли' : 'Corporate Vault';
-    }
-    if (lower.contains('wifi') || lower.contains('wi-fi')) {
-      return isRu ? 'Корпоративная сеть' : 'Corporate Wi-Fi';
-    }
-    return isRu ? 'SSO · Корпоративный доступ' : 'SSO Service';
   }
 
   Widget _filterChip({
@@ -801,3 +649,207 @@ class _AppsScreenState extends State<AppsScreen> {
     );
   }
 }
+
+IconData _getAppIcon(String name, String url) {
+  final lower = '$name $url'.toLowerCase();
+  if (lower.contains('pass') ||
+      lower.contains('pwd') ||
+      lower.contains('vault') ||
+      lower.contains('key')) {
+    return Icons.lock_outline_rounded;
+  }
+  if (lower.contains('wifi') ||
+      lower.contains('wi-fi') ||
+      lower.contains('net')) {
+    return Icons.wifi_rounded;
+  }
+  if (lower.contains('mail') ||
+      lower.contains('post') ||
+      lower.contains('inbox')) {
+    return Icons.mail_outline_rounded;
+  }
+  if (lower.contains('record') ||
+      lower.contains('video') ||
+      lower.contains('studio')) {
+    return Icons.videocam_rounded;
+  }
+  if (lower.contains('git') ||
+      lower.contains('repo') ||
+      lower.contains('code')) {
+    return Icons.code_rounded;
+  }
+  return Icons.shield_outlined;
+}
+
+String _getAppSubtitle(String name, String url, bool isRu) {
+  final lower = '$name $url'.toLowerCase();
+  if (lower.contains('record') || lower.contains('recorder')) {
+    return isRu ? 'Записи и аудит сессий' : 'Session Recording & Audit';
+  }
+  if (lower.contains('pass') ||
+      lower.contains('pwd') ||
+      lower.contains('vault')) {
+    return isRu ? 'Корпоративные пароли' : 'Corporate Vault';
+  }
+  if (lower.contains('wifi') || lower.contains('wi-fi')) {
+    return isRu ? 'Корпоративная сеть' : 'Corporate Wi-Fi';
+  }
+  return isRu ? 'SSO · Корпоративный доступ' : 'SSO Service';
+}
+
+
+
+class _SsoAppTile extends StatefulWidget {
+  final Map<String, dynamic> app;
+  final bool isRu;
+  final VoidCallback? onLaunch;
+
+  const _SsoAppTile({
+    required this.app,
+    required this.isRu,
+    this.onLaunch,
+  });
+
+  @override
+  State<_SsoAppTile> createState() => _SsoAppTileState();
+}
+
+class _SsoAppTileState extends State<_SsoAppTile> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = widget.app;
+    final isRu = widget.isRu;
+    final name = app['name']?.toString() ?? (isRu ? 'Сервис' : 'Service');
+    final launchUrl = app['launch_url']?.toString() ?? '';
+    final icon = _getAppIcon(name, launchUrl);
+    final sub = _getAppSubtitle(name, launchUrl, isRu);
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutCubic,
+        transform: Matrix4.translationValues(0, _isHovered ? -2.0 : 0.0, 0),
+        decoration: BoxDecoration(
+          color: const Color(0xFF131B2B),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: _isHovered
+                ? const Color(0xFF38BDF8).withValues(alpha: 0.45)
+                : Colors.white.withValues(alpha: 0.08),
+            width: _isHovered ? 1.2 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: _isHovered
+                  ? const Color(0xFF0284C7).withValues(alpha: 0.20)
+                  : Colors.black.withValues(alpha: 0.35),
+              blurRadius: _isHovered ? 20 : 14,
+              offset: Offset(0, _isHovered ? 8 : 4),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onLaunch,
+            borderRadius: BorderRadius.circular(16),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [
+                          const Color(0xFF0284C7).withValues(alpha: 0.22),
+                          const Color(0xFF0369A1).withValues(alpha: 0.08),
+                        ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      border: Border.all(
+                        color: _isHovered
+                            ? const Color(0xFF38BDF8).withValues(alpha: 0.6)
+                            : const Color(0xFF38BDF8).withValues(alpha: 0.35),
+                        width: 1,
+                      ),
+                    ),
+                    child: Icon(icon, size: 24, color: const Color(0xFF38BDF8)),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    name,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                      color: Colors.white,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    sub,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                  const Spacer(),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 7),
+                    decoration: BoxDecoration(
+                      color: _isHovered
+                          ? const Color(0xFF0284C7).withValues(alpha: 0.24)
+                          : const Color(0xFF0284C7).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(
+                        color: const Color(0xFF0284C7).withValues(alpha: 0.45),
+                        width: 1,
+                      ),
+                    ),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            isRu ? 'Войти через SSO' : 'Open via SSO',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF38BDF8),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.arrow_forward_rounded,
+                              size: 12, color: Color(0xFF38BDF8)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
