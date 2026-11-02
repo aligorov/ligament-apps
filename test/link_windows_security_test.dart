@@ -8,11 +8,5 @@ void main() {
       // On non-Windows platforms (like macOS runner), it safely returns false.
       expect(isSensitive, isA<bool>());
     });
-
-    test('findActiveUserProfile does not throw on current platform', () {
-      final profile = LinkWindowsSecurity.findActiveUserProfile();
-      // On non-Windows, returns null; on Windows returns null or profile path.
-      expect(profile, anyOf(isNull, isA<String>()));
-    });
   });
 }

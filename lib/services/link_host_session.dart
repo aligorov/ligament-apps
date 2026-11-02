@@ -2826,27 +2826,15 @@ class FlutterLinkHostPeer implements LinkHostPeer {
     String targetPath = rawPath;
     if (targetPath.isEmpty) {
       if (!kIsWeb && Platform.isWindows) {
-        final activeProfile = LinkWindowsSecurity.findActiveUserProfile();
-        if (activeProfile != null && Directory(activeProfile).existsSync()) {
-          targetPath = activeProfile;
+        if (Directory(r'C:\Users').existsSync()) {
+          targetPath = r'C:\Users';
         } else {
           final sysDrive = Platform.environment['SystemDrive'] ??
               (drives.isNotEmpty ? drives.first.replaceAll('\\', '') : 'C:');
           final usersDir = '$sysDrive\\Users';
-          if (Directory(usersDir).existsSync()) {
-            targetPath = usersDir;
-          } else if (Directory('C:\\Users').existsSync()) {
-            targetPath = 'C:\\Users';
-          } else {
-            final profile = Platform.environment['USERPROFILE'];
-            if (profile != null &&
-                !profile.toLowerCase().contains('systemprofile') &&
-                Directory(profile).existsSync()) {
-              targetPath = profile;
-            } else {
-              targetPath = drives.isNotEmpty ? drives.first : 'C:\\';
-            }
-          }
+          targetPath = Directory(usersDir).existsSync()
+              ? usersDir
+              : (drives.isNotEmpty ? drives.first : r'C:\');
         }
       } else if (!kIsWeb) {
         targetPath = Platform.environment['HOME'] ?? '/';

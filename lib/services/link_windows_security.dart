@@ -2,10 +2,9 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
-import 'package:win32_registry/win32_registry.dart';
 
 /// Вспомогательный класс безопасности и интеграции с Windows для Ligament LINK.
-/// Включает DLP-фильтрацию паролей и поиск активного пользовательского профиля.
+/// Включает DLP-фильтрацию паролей.
 class LinkWindowsSecurity {
   LinkWindowsSecurity._();
 
@@ -59,73 +58,5 @@ class LinkWindowsSecurity {
       }
     }
     return false;
-  }
-
-  /// Определяет путь к профилю активного пользователя (например, C:\Users\aligorov)
-  /// из-под системной службы или интерактивного контекста.
-  static String? findActiveUserProfile() {
-    if (kIsWeb || !Platform.isWindows) return null;
-
-    // 1. Попытка через реестр ProfileList и смонтированные пользовательские кусты HKEY_USERS
-    try {
-      final profileListKey = Registry.openPath(
-        RegistryHive.localMachine,
-        path: r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList',
-      );
-      final subkeys = profileListKey.subkeyNames;
-      profileListKey.close();
-
-      // Пользовательские SID начинаются с S-1-5-21-
-      final userSids = subkeys.where((s) => s.startsWith('S-1-5-21-')).toList();
-      for (final sid in userSids) {
-        // Проверяем, смонтирован ли пользователь в HKEY_USERS (значит залогинен)
-        bool isLoaded = false;
-        try {
-          final userHive = Registry.openPath(RegistryHive.allUsers, path: sid);
-          userHive.close();
-          isLoaded = true;
-        } catch (_) {}
-
-        if (isLoaded) {
-          final sidKey = Registry.openPath(
-            RegistryHive.localMachine,
-            path: 'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\$sid',
-          );
-          final pathVal = sidKey.getValueAsString('ProfileImagePath');
-          sidKey.close();
-          if (pathVal != null &&
-              !pathVal.toLowerCase().contains('systemprofile') &&
-              Directory(pathVal).existsSync()) {
-            return pathVal;
-          }
-        }
-      }
-    } catch (_) {}
-
-    // 2. Если через HKEY_USERS не нашли, ищем единственный пользовательский каталог в C:\Users
-    try {
-      const usersRoot = 'C:\\Users';
-      final dir = Directory(usersRoot);
-      if (dir.existsSync()) {
-        final candidates = <String>[];
-        for (final entity in dir.listSync()) {
-          if (entity is Directory) {
-            final name = entity.uri.pathSegments.where((s) => s.isNotEmpty).last.toLowerCase();
-            if (name != 'public' &&
-                name != 'default' &&
-                name != 'default user' &&
-                name != 'all users' &&
-                !name.contains('systemprofile')) {
-              candidates.add(entity.path);
-            }
-          }
-        }
-        if (candidates.length == 1) {
-          return candidates.first;
-        }
-      }
-    } catch (_) {}
-
-    return null;
   }
 }
