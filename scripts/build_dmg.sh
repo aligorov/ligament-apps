@@ -41,6 +41,14 @@ fi
 
 echo "--> Найден бандл приложения: ${APP_PATH}"
 
+if [[ ! -f "${APP_PATH}/Contents/MacOS/link-worker-darwin" ]]; then
+  echo "--> Сборка и интеграция нативного Link Worker (macOS)..."
+  (cd "${CLIENT_DIR}/macos/link_worker" && swift build -c release)
+  install -m 755 "${CLIENT_DIR}/macos/link_worker/.build/release/link-worker-darwin" "${APP_PATH}/Contents/MacOS/link-worker-darwin"
+  codesign --force --sign - "${APP_PATH}/Contents/MacOS/link-worker-darwin"
+  codesign --force --deep --sign - "${APP_PATH}"
+fi
+
 # Refuse to package a bundle whose signature was invalidated by post-build
 # resource or executable injection. This checks integrity, not Gatekeeper trust:
 # public distribution still requires Developer ID signing and notarization.

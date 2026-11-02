@@ -5,6 +5,7 @@ package linkagent
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -252,4 +253,96 @@ func TestResolveUnixWorkerExecutable(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeDarwinWorkerSpawnAndHandshake(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin only")
+	}
+	workerPath := filepath.Clean("../../macos/link_worker/.build/release/link-worker-darwin")
+	if fi, err := os.Stat(workerPath); err != nil || fi.IsDir() {
+		t.Skip("link-worker-darwin release binary not built, skipping integration test")
+	}
+
+	base, err := os.MkdirTemp("/tmp", "link-handshake-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(base)
+
+	socketPath := filepath.Join(base, "worker.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	cmd := exec.Command(workerPath, "--link-host=unix:"+socketPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start worker: %v", err)
+	}
+	defer func() {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	}()
+
+	_ = listener.SetDeadline(time.Now().Add(5 * time.Second))
+	conn, err := listener.AcceptUnix()
+	if err != nil {
+		t.Fatalf("failed to accept worker connection: %v", err)
+	}
+	defer conn.Close()
+
+	offerJSON := []byte(`{
+		"type":"session_offer",
+		"session_id":"test-session-123",
+		"payload":{
+			"session_id":"test-session-123",
+			"sdp":"v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n",
+			"access_mode":"control"
+		}
+	}`)
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(offerJSON)))
+	if _, err := conn.Write(header[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(offerJSON); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var respHeader [4]byte
+	if _, err := io.ReadFull(conn, respHeader[:]); err != nil {
+		t.Fatalf("read response header: %v", err)
+	}
+	respLen := binary.BigEndian.Uint32(respHeader[:])
+	respBuf := make([]byte, respLen)
+	if _, err := io.ReadFull(conn, respBuf); err != nil {
+		t.Fatalf("read response frame: %v", err)
+	}
+
+	var answer struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+		Payload   struct {
+			SessionID string `json:"session_id"`
+			Accepted  bool   `json:"accepted"`
+			SDP       string `json:"sdp"`
+			Reason    string `json:"reason"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(respBuf, &answer); err != nil {
+		t.Fatalf("unmarshal response JSON %q: %v", string(respBuf), err)
+	}
+	if answer.Type != "session_answer" {
+		t.Fatalf("expected type session_answer, got %q", answer.Type)
+	}
+	if answer.SessionID != "test-session-123" || answer.Payload.SessionID != "test-session-123" {
+		t.Fatalf("session_id mismatch: %q / %q", answer.SessionID, answer.Payload.SessionID)
+	}
+	t.Logf("Worker answered: accepted=%v sdp_len=%d reason=%q", answer.Payload.Accepted, len(answer.Payload.SDP), answer.Payload.Reason)
+}
+
 
