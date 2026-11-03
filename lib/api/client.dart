@@ -697,6 +697,98 @@ class ApiClient {
     throw ApiException(res.statusCode, 'history_fetch_failed');
   }
 
+  /// Ligament Chat: список диалогов пользователя
+  Future<List<Map<String, dynamic>>> getChats() async {
+    final res = await _get(
+      _cleanUrl('/apps/chat/api/v1/chats'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'chats_fetch_failed');
+  }
+
+  /// Ligament Chat: темы форума
+  Future<List<Map<String, dynamic>>> getChatTopics(String chatId) async {
+    final res = await _get(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/topics'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'topics_fetch_failed');
+  }
+
+  /// Ligament Chat: список сообщений чата/топика
+  Future<List<Map<String, dynamic>>> getChatMessages(
+    String chatId, {
+    int topicId = 0,
+    int beforeId = 0,
+    int limit = 50,
+  }) async {
+    final params = <String, String>{
+      'topic_id': '$topicId',
+      'limit': '$limit',
+    };
+    if (beforeId > 0) {
+      params['before_id'] = '$beforeId';
+    }
+    final qs = Uri(queryParameters: params).query;
+    final res = await _get(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/messages?$qs'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'messages_fetch_failed');
+  }
+
+  /// Ligament Chat: отправка сообщения
+  Future<Map<String, dynamic>> sendChatMessage(
+    String chatId, {
+    int topicId = 0,
+    required String body,
+    String kind = 'text',
+    int? secretTtl,
+  }) async {
+    final payload = <String, dynamic>{
+      'topic_id': topicId,
+      'body': body,
+      'kind': kind,
+      if (secretTtl != null) 'secret_ttl_seconds': secretTtl,
+    };
+    final res = await _post(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/messages'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 201 || res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'message_send_failed');
+  }
+
+  /// Ligament Chat: сдвиг указателя прочтения High-Water Mark
+  Future<void> markChatRead(String chatId, int topicId, int lastReadId) async {
+    final res = await _post(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/read'),
+      headers: _headers(),
+      body: jsonEncode({
+        'topic_id': topicId,
+        'last_read_id': lastReadId,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'mark_read_failed');
+    }
+  }
+
   /// SOS: с Link-агентом этого ПК — очередь SOS (`sos_v2`), иначе трансляция экрана приложением.
   Future<Map<String, dynamic>> requestSupport({
     required String category,
