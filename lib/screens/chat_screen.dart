@@ -46,6 +46,7 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = context.read<AuthState>();
       if (auth.api != null) {
+        _chatService.connectWebSocket(auth.api!);
         _chatService.loadContacts(auth.api!);
         _chatService.loadChats(auth.api!).then((_) {
           if (mounted && _selectedChat == null && _chatService.chats.isNotEmpty) {
@@ -1587,10 +1588,17 @@ class _ChatScreenState extends State<ChatScreen> {
   void _startCall({required bool isVideo}) {
     if (_selectedChat == null) return;
     final chatTitle = _resolveChatTitle(_selectedChat!);
+    final auth = context.read<AuthState>();
+    final targetUser = _selectedChat!.peerUserId.isNotEmpty
+        ? _selectedChat!.peerUserId
+        : _selectedChat!.title;
+
     CallSessionManager.instance.startCall(
       chatId: _selectedChat!.id,
       chatTitle: chatTitle,
+      targetUserId: targetUser,
       isVideo: isVideo,
+      iceServers: auth.iceServers,
     );
   }
 

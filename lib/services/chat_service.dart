@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web_socket_channel/io.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import '../api/client.dart';
 import '../models/chat_models.dart';
+import 'call_session_manager.dart';
 import 'debug_log_service.dart';
 
 class ChatService extends ChangeNotifier {
@@ -349,6 +353,110 @@ class ChatService extends ChangeNotifier {
     }
   }
 
+  WebSocketChannel? _wsChannel;
+  bool _isWsConnected = false;
+  Timer? _reconnectTimer;
+  ApiClient? _lastClient;
+
+  bool get isWsConnected => _isWsConnected;
+
+  void connectWebSocket(ApiClient client) {
+    _lastClient = client;
+
+    CallSessionManager.instance.onSendSignal = (targetUserId, chatId, payload) {
+      sendWebRTCSignal(targetUserId, chatId, payload);
+    };
+
+    _connectWsInternal();
+  }
+
+  void _connectWsInternal() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+
+    final client = _lastClient;
+    if (client == null || client.baseUrl.isEmpty) return;
+
+    final wsBase = client.baseUrl
+        .replaceFirst('http://', 'ws://')
+        .replaceFirst('https://', 'wss://');
+    final token = client.token ?? '';
+    final urlStr = '$wsBase/apps/chat/api/v1/ws?token=${Uri.encodeComponent(token)}';
+
+    try {
+      final uri = Uri.parse(urlStr);
+      final headers = <String, String>{
+        if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+      };
+
+      _wsChannel?.sink.close();
+      _wsChannel = IOWebSocketChannel.connect(uri, headers: headers);
+      _isWsConnected = true;
+      notifyListeners();
+
+      _wsChannel!.stream.listen(
+        (data) {
+          try {
+            final str = data is List<int> ? utf8.decode(data) : data.toString();
+            final map = jsonDecode(str) as Map<String, dynamic>;
+            onWebSocketEvent(map);
+          } catch (e) {
+            DebugLogService.instance.record('chat.ws.parse.failed', error: e);
+          }
+        },
+        onError: (e) {
+          _isWsConnected = false;
+          notifyListeners();
+          _scheduleReconnect();
+        },
+        onDone: () {
+          _isWsConnected = false;
+          notifyListeners();
+          _scheduleReconnect();
+        },
+        cancelOnError: true,
+      );
+    } catch (e) {
+      _isWsConnected = false;
+      _scheduleReconnect();
+    }
+  }
+
+  void _scheduleReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 4), () {
+      _connectWsInternal();
+    });
+  }
+
+  void disconnectWebSocket() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _wsChannel?.sink.close();
+    _wsChannel = null;
+    _isWsConnected = false;
+    notifyListeners();
+  }
+
+  void sendWs(Map<String, dynamic> data) {
+    if (_wsChannel != null && _isWsConnected) {
+      try {
+        _wsChannel!.sink.add(jsonEncode(data));
+      } catch (e) {
+        DebugLogService.instance.record('chat.ws.send.failed', error: e);
+      }
+    }
+  }
+
+  void sendWebRTCSignal(String targetUserId, String chatId, Map<String, dynamic> payload) {
+    sendWs({
+      'type': 'webrtc.signal',
+      'chat_id': chatId,
+      'target_id': targetUserId,
+      'payload': payload,
+    });
+  }
+
   void onWebSocketEvent(Map<String, dynamic> event) {
     final type = event['type'] as String?;
     if (type == 'chat.message') {
@@ -363,6 +471,29 @@ class ChatService extends ChangeNotifier {
           SystemSound.play(SystemSoundType.alert);
         }
         notifyListeners();
+      }
+    } else if (type == 'webrtc.signal') {
+      final targetId = event['target_id'] as String? ?? '';
+      final chatId = event['chat_id'] as String? ?? '';
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final signalType = payload['type'] as String?;
+
+      if (signalType == 'offer') {
+        CallSessionManager.instance.handleIncomingOffer(
+          fromUser: targetId,
+          chatId: chatId,
+          offerPayload: payload,
+        );
+      } else if (signalType == 'answer') {
+        final sdp = payload['sdp'] as String? ?? '';
+        if (sdp.isNotEmpty) {
+          unawaited(CallSessionManager.instance.handleAnswer(sdp));
+        }
+      } else if (signalType == 'candidate') {
+        final cand = payload['candidate'] as Map<String, dynamic>? ?? {};
+        unawaited(CallSessionManager.instance.handleRemoteCandidate(cand));
+      } else if (signalType == 'hangup' || signalType == 'rejected' || signalType == 'busy') {
+        CallSessionManager.instance.endCall(notifyPeer: false);
       }
     }
   }
