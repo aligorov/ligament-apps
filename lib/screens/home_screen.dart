@@ -22,6 +22,7 @@ import '../widgets/neural_mesh_background.dart';
 import '../widgets/window_caption_controls.dart';
 import 'approval_modal.dart';
 import 'browser_sso_dialog.dart';
+import 'chat_screen.dart';
 import 'identity_mismatch_banner.dart';
 import 'apps_screen.dart';
 import 'connect_screen.dart';
@@ -804,6 +805,20 @@ class _HomeScreenState extends State<HomeScreen> {
                         onPressed: () {
                           DebugLogService.instance.record('ui.home.notifications.open');
                           setState(() => _currentIndex = 1);
+                        },
+                      ),
+                      const SizedBox(width: 6),
+                      // Кнопка перехода в корпоративный чат (нативный экран)
+                      IconButton(
+                        icon: const Icon(Icons.forum_outlined, color: Color(0xFF38BDF8), size: 21),
+                        tooltip: isRu ? 'Корпоративный чат' : 'Corporate Chat',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                        onPressed: () {
+                          DebugLogService.instance.record('ui.home.chat.open');
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const ChatScreen()),
+                          );
                         },
                       ),
                       const SizedBox(width: 6),
