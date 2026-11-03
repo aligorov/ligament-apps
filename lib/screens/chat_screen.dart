@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
+import '../api/client.dart';
 import '../models/chat_models.dart';
 import '../services/auth_state.dart';
 import '../services/chat_service.dart';
@@ -167,6 +168,44 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  void _showCreateTopicDialog(BuildContext context) {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || _selectedChat == null) return;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _CreateTopicSheet(
+        api: auth.api!,
+        chatId: _selectedChat!.id,
+        onTopicCreated: (topic) {
+          Navigator.of(ctx).pop();
+          _selectTopic(topic);
+        },
+      ),
+    );
+  }
+
+  void _showMembersDialog(BuildContext context) {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || _selectedChat == null) return;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _ChatMembersSheet(
+        api: auth.api!,
+        chat: _selectedChat!,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -295,6 +334,12 @@ class _ChatScreenState extends State<ChatScreen> {
               tooltip: 'Настройки чата',
               onPressed: _showChatSettingsDialog,
             ),
+            if (_selectedChat?.kind != 'direct')
+              IconButton(
+                icon: const Icon(Icons.people_outline_rounded),
+                tooltip: 'Участники и права',
+                onPressed: () => _showMembersDialog(context),
+              ),
             IconButton(
               icon: const Icon(Icons.delete_outline),
               tooltip: 'Удалить диалог',
@@ -482,6 +527,13 @@ class _ChatScreenState extends State<ChatScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: const Text('Темы форума', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add_rounded),
+            tooltip: 'Создать тему',
+            onPressed: () => _showCreateTopicDialog(context),
+          ),
+        ],
       ),
       body: ListView.builder(
         itemCount: topics.length,
@@ -525,9 +577,22 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text('Выберите тему форума', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Выберите тему форума', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showCreateTopicDialog(context);
+                      },
+                      icon: const Icon(Icons.add_rounded, size: 18),
+                      label: const Text('Создать'),
+                    ),
+                  ],
+                ),
               ),
               Expanded(
                 child: ListView.builder(
@@ -885,6 +950,12 @@ class _ChatScreenState extends State<ChatScreen> {
             tooltip: 'Настройки чата',
             onPressed: _showChatSettingsDialog,
           ),
+          if (_selectedChat?.kind != 'direct')
+            IconButton(
+              icon: const Icon(Icons.people_outline_rounded),
+              tooltip: 'Участники и права',
+              onPressed: () => _showMembersDialog(context),
+            ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
             tooltip: 'Удалить диалог',
@@ -1373,7 +1444,7 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 class _NewChatSheet extends StatefulWidget {
-  final dynamic api;
+  final ApiClient api;
   final ValueChanged<ChatItem> onChatSelected;
 
   const _NewChatSheet({
@@ -1584,6 +1655,384 @@ class _NewChatSheetState extends State<_NewChatSheet> with SingleTickerProviderS
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _CreateTopicSheet extends StatefulWidget {
+  final ApiClient api;
+  final String chatId;
+  final ValueChanged<TopicItem> onTopicCreated;
+
+  const _CreateTopicSheet({
+    required this.api,
+    required this.chatId,
+    required this.onTopicCreated,
+  });
+
+  @override
+  State<_CreateTopicSheet> createState() => _CreateTopicSheetState();
+}
+
+class _CreateTopicSheetState extends State<_CreateTopicSheet> {
+  final _titleController = TextEditingController();
+  String _selectedEmoji = '💬';
+  bool _isLoading = false;
+
+  final _emojis = const ['💬', '🚀', '💡', '📢', '⚙️', '📁', '🛠️', '📌'];
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final title = _titleController.text.trim();
+    if (title.isEmpty) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final topic = await ChatService.instance.createTopic(
+        widget.api,
+        widget.chatId,
+        title: title,
+        iconEmoji: _selectedEmoji,
+      );
+      widget.onTopicCreated(topic);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка создания темы: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Container(
+        height: 340,
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '➕ Новая тема форума',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _titleController,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: 'Название темы *',
+                hintText: 'Например: Обсуждение релизов',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Иконка темы:',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: _emojis.map((emoji) {
+                final isSelected = _selectedEmoji == emoji;
+                return ChoiceChip(
+                  label: Text(emoji, style: const TextStyle(fontSize: 18)),
+                  selected: isSelected,
+                  onSelected: (selected) {
+                    if (selected) setState(() => _selectedEmoji = emoji);
+                  },
+                );
+              }).toList(),
+            ),
+            const Spacer(),
+            FilledButton(
+              onPressed: _isLoading ? null : _submit,
+              child: _isLoading
+                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Создать тему'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ChatMembersSheet extends StatefulWidget {
+  final ApiClient api;
+  final ChatItem chat;
+
+  const _ChatMembersSheet({
+    required this.api,
+    required this.chat,
+  });
+
+  @override
+  State<_ChatMembersSheet> createState() => _ChatMembersSheetState();
+}
+
+class _ChatMembersSheetState extends State<_ChatMembersSheet> {
+  bool _isLoading = true;
+  List<Map<String, dynamic>> _members = [];
+  List<Map<String, dynamic>> _contacts = [];
+  String? _selectedContactUser;
+  String _selectedRole = 'member';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+    try {
+      final members = await widget.api.getChatMembers(widget.chat.id);
+      final contacts = await widget.api.getChatContacts();
+      if (mounted) {
+        setState(() {
+          _members = members;
+          _contacts = contacts;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка загрузки участников: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _addMember() async {
+    if (_selectedContactUser == null || _selectedContactUser!.isEmpty) return;
+
+    try {
+      await widget.api.addChatMember(
+        widget.chat.id,
+        userId: _selectedContactUser!,
+        role: _selectedRole,
+      );
+      setState(() => _selectedContactUser = null);
+      await _loadData();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка добавления: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _updateRole(String userId, String newRole) async {
+    try {
+      await widget.api.updateChatMemberRole(
+        widget.chat.id,
+        userId: userId,
+        role: newRole,
+      );
+      await _loadData();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка обновления роли: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _removeMember(String userId) async {
+    try {
+      await widget.api.removeChatMember(widget.chat.id, userId);
+      await _loadData();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка удаления: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // Фильтруем контакты, которые еще не добавлены
+    final existingUserIds = _members.map((m) => (m['user_id'] as String? ?? '')).toSet();
+    final availableContacts = _contacts.where((c) => !existingUserIds.contains(c['username'] as String? ?? '')).toList();
+
+    return Container(
+      height: 520,
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '👥 Участники и права (${_members.length})',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Добавление участника
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _selectedContactUser,
+                      isDense: true,
+                      isExpanded: true,
+                      hint: const Text('Сотрудник...', style: TextStyle(fontSize: 13)),
+                      items: availableContacts.map((c) {
+                        final uname = c['username'] as String? ?? '';
+                        final dname = c['display_name'] as String? ?? uname;
+                        return DropdownMenuItem<String>(
+                          value: uname,
+                          child: Text(dname, style: const TextStyle(fontSize: 13)),
+                        );
+                      }).toList(),
+                      onChanged: (v) => setState(() => _selectedContactUser = v),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              DropdownButton<String>(
+                value: _selectedRole,
+                items: const [
+                  DropdownMenuItem(value: 'member', child: Text('Участник', style: TextStyle(fontSize: 13))),
+                  DropdownMenuItem(value: 'moderator', child: Text('Модератор', style: TextStyle(fontSize: 13))),
+                  DropdownMenuItem(value: 'read_only', child: Text('Только чтение', style: TextStyle(fontSize: 13))),
+                  DropdownMenuItem(value: 'admin', child: Text('Админ', style: TextStyle(fontSize: 13))),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() => _selectedRole = v);
+                },
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _selectedContactUser != null ? _addMember : null,
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+                child: const Text('+ Добавить'),
+              ),
+            ],
+          ),
+          const Divider(height: 24),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _members.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Нет участников',
+                          style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: _members.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (ctx, i) {
+                          final m = _members[i];
+                          final uid = m['user_id'] as String? ?? '';
+                          final role = m['role'] as String? ?? 'member';
+                          final letter = uid.isNotEmpty ? uid[0].toUpperCase() : '?';
+
+                          return ListTile(
+                            dense: true,
+                            leading: CircleAvatar(
+                              radius: 16,
+                              backgroundColor: theme.colorScheme.primaryContainer,
+                              foregroundColor: theme.colorScheme.onPrimaryContainer,
+                              child: Text(letter, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                            title: Text(uid, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                DropdownButton<String>(
+                                  value: role,
+                                  underline: const SizedBox.shrink(),
+                                  items: const [
+                                    DropdownMenuItem(value: 'admin', child: Text('Админ', style: TextStyle(fontSize: 12))),
+                                    DropdownMenuItem(value: 'moderator', child: Text('Модератор', style: TextStyle(fontSize: 12))),
+                                    DropdownMenuItem(value: 'member', child: Text('Участник', style: TextStyle(fontSize: 12))),
+                                    DropdownMenuItem(value: 'read_only', child: Text('Только чтение', style: TextStyle(fontSize: 12))),
+                                  ],
+                                  onChanged: (newRole) {
+                                    if (newRole != null && newRole != role) {
+                                      _updateRole(uid, newRole);
+                                    }
+                                  },
+                                ),
+                                IconButton(
+                                  icon: Icon(Icons.delete_outline, size: 18, color: theme.colorScheme.error),
+                                  tooltip: 'Удалить участника',
+                                  onPressed: () => _removeMember(uid),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+          ),
+        ],
       ),
     );
   }

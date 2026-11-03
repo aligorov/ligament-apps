@@ -167,6 +167,7 @@ class ChatService extends ChangeNotifier {
     String kind = 'text',
     int? secretTtl,
     Map<String, dynamic>? metadata,
+    List<String>? attachments,
   }) async {
     try {
       final res = await client.sendChatMessage(
@@ -176,6 +177,7 @@ class ChatService extends ChangeNotifier {
         kind: kind,
         secretTtl: secretTtl,
         metadata: metadata,
+        attachments: attachments,
       );
       final sent = ChatMessage.fromJson(res);
       final key = '$chatId:$topicId';
@@ -211,6 +213,7 @@ class ChatService extends ChangeNotifier {
         topicId: topicId,
         body: isImage ? '📷 $fileName' : '📎 $fileName',
         kind: isImage ? 'image' : 'file',
+        attachments: attId.isNotEmpty ? [attId] : null,
         metadata: {
           'attachments': [
             {
@@ -224,6 +227,26 @@ class ChatService extends ChangeNotifier {
       );
     } catch (e) {
       DebugLogService.instance.record('chat.attachment.failed', error: e);
+      rethrow;
+    }
+  }
+
+  /// Создание новой темы форума
+  Future<TopicItem> createTopic(
+    ApiClient client,
+    String chatId, {
+    required String title,
+    String iconEmoji = '💬',
+  }) async {
+    try {
+      final res = await client.createChatTopic(chatId, title: title, iconEmoji: iconEmoji);
+      final newTopic = TopicItem.fromJson(res);
+      final current = _topics[chatId] ?? const [];
+      _topics[chatId] = [...current, newTopic];
+      notifyListeners();
+      return newTopic;
+    } catch (e) {
+      DebugLogService.instance.record('chat.topic_create.failed', error: e);
       rethrow;
     }
   }

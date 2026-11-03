@@ -724,6 +724,88 @@ class ApiClient {
     throw ApiException(res.statusCode, 'topics_fetch_failed');
   }
 
+  /// Ligament Chat: создание темы форума
+  Future<Map<String, dynamic>> createChatTopic(
+    String chatId, {
+    required String title,
+    String iconEmoji = '💬',
+  }) async {
+    final res = await _post(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/topics'),
+      headers: _headers(),
+      body: jsonEncode({
+        'title': title,
+        'icon_emoji': iconEmoji,
+      }),
+    );
+    if (res.statusCode == 201 || res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'topic_create_failed');
+  }
+
+  /// Ligament Chat: участники чата
+  Future<List<Map<String, dynamic>>> getChatMembers(String chatId) async {
+    final res = await _get(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/members'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'members_fetch_failed');
+  }
+
+  /// Ligament Chat: добавление участника в группу/форум
+  Future<Map<String, dynamic>> addChatMember(
+    String chatId, {
+    required String userId,
+    String role = 'member',
+  }) async {
+    final res = await _post(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/members'),
+      headers: _headers(),
+      body: jsonEncode({
+        'user_id': userId,
+        'role': role,
+      }),
+    );
+    if (res.statusCode == 201 || res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'member_add_failed');
+  }
+
+  /// Ligament Chat: изменение роли участника
+  Future<void> updateChatMemberRole(
+    String chatId, {
+    required String userId,
+    required String role,
+  }) async {
+    final res = await _put(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/members/$userId'),
+      headers: _headers(),
+      body: jsonEncode({
+        'role': role,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'member_update_failed');
+    }
+  }
+
+  /// Ligament Chat: исключение участника
+  Future<void> removeChatMember(String chatId, String userId) async {
+    final res = await _delete(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/members/$userId'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200 && res.statusCode != 204) {
+      throw ApiException(res.statusCode, 'member_remove_failed');
+    }
+  }
+
   /// Ligament Chat: список сообщений чата/топика
   Future<List<Map<String, dynamic>>> getChatMessages(
     String chatId, {
@@ -758,6 +840,7 @@ class ApiClient {
     String kind = 'text',
     int? secretTtl,
     Map<String, dynamic>? metadata,
+    List<String>? attachments,
   }) async {
     final payload = <String, dynamic>{
       'topic_id': topicId,
@@ -765,6 +848,7 @@ class ApiClient {
       'kind': kind,
       if (secretTtl != null) 'secret_ttl_seconds': secretTtl,
       if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
+      if (attachments != null && attachments.isNotEmpty) 'attachments': attachments,
     };
     final res = await _post(
       _cleanUrl('/apps/chat/api/v1/chats/$chatId/messages'),
