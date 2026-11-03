@@ -10,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 import '../api/client.dart';
 import '../app_version.dart';
 import '../services/auth_state.dart';
+import '../services/chat_service.dart';
 import '../services/debug_log_service.dart';
 import '../services/deep_link_service.dart';
 import '../services/input_injector.dart';
@@ -651,10 +652,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 label: isRu ? 'Запросы' : 'Requests',
               ),
               BottomNavigationBarItem(
-                icon: Badge(
-                  isLabelVisible: auth.unreadNotificationsCount > 0,
-                  label: Text('${auth.unreadNotificationsCount}'),
-                  child: const Icon(Icons.mark_email_unread_outlined),
+                icon: ListenableBuilder(
+                  listenable: ChatService.instance,
+                  builder: (context, _) {
+                    final total = auth.unreadNotificationsCount +
+                        ChatService.instance.totalUnreadCount;
+                    return Badge(
+                      isLabelVisible: total > 0,
+                      label: Text('$total'),
+                      child: const Icon(Icons.mark_email_unread_outlined),
+                    );
+                  },
                 ),
                 label: isRu ? 'Сообщения' : 'Inbox',
               ),
@@ -809,15 +817,31 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(width: 6),
                       // Кнопка перехода в корпоративный чат (нативный экран)
-                      IconButton(
-                        icon: const Icon(Icons.forum_outlined, color: Color(0xFF38BDF8), size: 21),
-                        tooltip: isRu ? 'Корпоративный чат' : 'Corporate Chat',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-                        onPressed: () {
-                          DebugLogService.instance.record('ui.home.chat.open');
-                          Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const ChatScreen()),
+                      ListenableBuilder(
+                        listenable: ChatService.instance,
+                        builder: (context, _) {
+                          final unread = ChatService.instance.totalUnreadCount;
+                          return IconButton(
+                            icon: Badge(
+                              isLabelVisible: unread > 0,
+                              label: Text('$unread'),
+                              backgroundColor: const Color(0xFF0284C7),
+                              child: const Icon(Icons.forum_outlined,
+                                  color: Color(0xFF38BDF8), size: 21),
+                            ),
+                            tooltip:
+                                isRu ? 'Корпоративный чат' : 'Corporate Chat',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 34, minHeight: 34),
+                            onPressed: () {
+                              DebugLogService.instance
+                                  .record('ui.home.chat.open');
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                    builder: (_) => const ChatScreen()),
+                              );
+                            },
                           );
                         },
                       ),

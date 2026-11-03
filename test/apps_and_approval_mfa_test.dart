@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ligament_authenticator/api/client.dart';
 import 'package:ligament_authenticator/screens/approval_modal.dart';
 import 'package:ligament_authenticator/screens/apps_screen.dart';
+import 'package:ligament_authenticator/screens/chat_screen.dart';
 import 'package:ligament_authenticator/screens/link_catalog_screen.dart';
+import 'package:ligament_authenticator/screens/notifications_screen.dart';
 import 'package:ligament_authenticator/services/auth_state.dart';
 import 'package:ligament_authenticator/services/rdp_service.dart';
 import 'package:provider/provider.dart';
@@ -99,6 +102,18 @@ class MockAuthState extends ChangeNotifier implements AuthState {
 
   @override
   Future<void> loadLinkHosts() async {}
+
+  @override
+  List<Map<String, dynamic>> notifications = [];
+
+  @override
+  int unreadNotificationsCount = 0;
+
+  @override
+  Future<void> loadNotifications() async {}
+
+  @override
+  ApiClient? api;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -324,6 +339,55 @@ void main() {
       expect(find.text('Бухгалтерия PC-1'), findsOneWidget);
       expect(find.text('Сервер 1C Terminal'), findsNothing);
       expect(find.text('Корпоративный портал'), findsNothing);
+    });
+
+    testWidgets('скрывает плитку Корпоративный чат из каталога сервисов',
+        (tester) async {
+      final auth = MockAuthState();
+      auth.allowedApps = [
+        {
+          'name': 'Корпоративный портал',
+          'launch_url': 'https://portal.corp.local',
+        },
+        {
+          'id': 'ligament-chat',
+          'client_id': 'app:chat',
+          'name': 'Корпоративный чат',
+          'kind': 'chat',
+          'launch_url': '/me/chat',
+        },
+      ];
+
+      await tester.pumpWidget(buildTestApp(
+        child: const AppsScreen(),
+        auth: auth,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Корпоративный портал'), findsOneWidget);
+      expect(find.text('Корпоративный чат'), findsNothing);
+      expect(find.text('Приложения (1)'), findsOneWidget);
+    });
+  });
+
+  group('NotificationsScreen: Ligament Chat transition banner', () {
+    testWidgets('отображает баннер перехода в Ligament Chat и открывает ChatScreen',
+        (tester) async {
+      final auth = MockAuthState();
+
+      await tester.pumpWidget(buildTestApp(
+        child: const NotificationsScreen(),
+        auth: auth,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ligament Chat'), findsOneWidget);
+      expect(find.text('Корпоративный мессенджер и каналы'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('inbox-open-chat')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ChatScreen), findsOneWidget);
     });
   });
 }

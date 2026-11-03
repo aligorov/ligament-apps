@@ -5,6 +5,9 @@ import '../services/auth_state.dart';
 import '../i18n/app_strings.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/window_caption_controls.dart';
+import '../services/chat_service.dart';
+import '../services/debug_log_service.dart';
+import 'chat_screen.dart';
 import 'notification_popup_dialog.dart';
 
 /// Полноэкранный раздел «Сообщения и уведомления» (Inbox)
@@ -19,6 +22,17 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   String _filter = 'all'; // all, security, radius, telegram, system
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final auth = context.read<AuthState>();
+      if (auth.api != null) {
+        ChatService.instance.loadChats(auth.api!);
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -150,12 +164,140 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         bottom: AppUpdateBanner.maybeFromAuth(auth),
       ),
       body: RefreshIndicator(
-        onRefresh: () => auth.loadNotifications(),
+        onRefresh: () async {
+          await auth.loadNotifications();
+          if (auth.api != null) {
+            await ChatService.instance.loadChats(auth.api!);
+          }
+        },
         color: const Color(0xFF38BDF8),
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Material(
+                color: const Color(0xFF131B2B).withValues(alpha: 0.85),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.08),
+                    width: 1,
+                  ),
+                ),
+                child: InkWell(
+                  key: const ValueKey('inbox-open-chat'),
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () {
+                    DebugLogService.instance.record('ui.inbox.chat.open');
+                    Navigator.of(context).push(
+                      PageRouteBuilder<void>(
+                        pageBuilder: (context, animation, secondaryAnimation) =>
+                            const ChatScreen(),
+                        transitionsBuilder:
+                            (context, animation, secondaryAnimation, child) {
+                          final curve = CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeOutCubic,
+                            reverseCurve: Curves.easeInCubic,
+                          );
+                          return FadeTransition(
+                            opacity: curve,
+                            child: SlideTransition(
+                              position: Tween<Offset>(
+                                begin: const Offset(0.04, 0.0),
+                                end: Offset.zero,
+                              ).animate(curve),
+                              child: child,
+                            ),
+                          );
+                        },
+                        transitionDuration: const Duration(milliseconds: 220),
+                        reverseTransitionDuration:
+                            const Duration(milliseconds: 180),
+                      ),
+                    );
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 12),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 38,
+                          height: 38,
+                          decoration: BoxDecoration(
+                            color:
+                                const Color(0xFF0284C7).withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          child: const Icon(Icons.forum_outlined,
+                              color: Color(0xFF38BDF8), size: 22),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text(
+                                'Ligament Chat',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                isRu
+                                    ? 'Корпоративный мессенджер и каналы'
+                                    : 'Corporate messenger and channels',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Color(0xFF94A3B8), fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                        ListenableBuilder(
+                          listenable: ChatService.instance,
+                          builder: (context, _) {
+                            final chatUnread =
+                                ChatService.instance.totalUnreadCount;
+                            if (chatUnread <= 0) {
+                              return const SizedBox.shrink();
+                            }
+                            return Container(
+                              margin: const EdgeInsets.only(right: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0284C7),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                '$chatUnread',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        const Icon(Icons.arrow_forward_ios_rounded,
+                            color: Color(0xFF38BDF8), size: 16),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               child: TextField(
                 controller: _searchController,
                 onChanged: (val) => setState(() => _searchQuery = val.trim()),

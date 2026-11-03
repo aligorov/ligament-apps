@@ -9,7 +9,6 @@ import '../services/rdp_actions.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/rdp_target_tile.dart';
 import '../widgets/window_caption_controls.dart';
-import 'chat_screen.dart';
 import 'link_catalog_screen.dart';
 
 class AppsScreen extends StatefulWidget {
@@ -127,7 +126,14 @@ class _AppsScreenState extends State<AppsScreen>
     final s = context.strings;
     final isRu = auth.isRu;
 
-    final allApps = auth.allowedApps;
+    final allApps = auth.allowedApps.where((a) {
+      final isChat = a['id'] == 'ligament-chat' ||
+          a['client_id'] == 'app:chat' ||
+          a['kind'] == 'chat' ||
+          (a['name']?.toString().toLowerCase().contains('chat') ?? false) ||
+          (a['name']?.toString().toLowerCase().contains('чат') ?? false);
+      return !isChat;
+    }).toList();
     final allTargets =
         auth.rdpFeatureAvailable ? auth.rdpTargets : <Map<String, dynamic>>[];
 
@@ -528,25 +534,12 @@ class _AppsScreenState extends State<AppsScreen>
                                   final app = apps[index];
                                   final launchUrl =
                                       app['launch_url']?.toString() ?? '';
-                                  final isChat = app['id'] == 'ligament-chat' ||
-                                      app['client_id'] == 'app:chat' ||
-                                      app['kind'] == 'chat' ||
-                                      (app['name']?.toString().toLowerCase().contains('chat') ?? false) ||
-                                      (app['name']?.toString().toLowerCase().contains('чат') ?? false);
                                   return _SsoAppTile(
                                     app: app,
                                     isRu: isRu,
-                                    isNativeChat: isChat,
-                                    onLaunch: isChat
-                                        ? () {
-                                            Navigator.of(context).push(
-                                              MaterialPageRoute(
-                                                  builder: (_) => const ChatScreen()),
-                                            );
-                                          }
-                                        : (launchUrl.isNotEmpty
-                                            ? () => _launchApp(context, launchUrl)
-                                            : null),
+                                    onLaunch: launchUrl.isNotEmpty
+                                        ? () => _launchApp(context, launchUrl)
+                                        : null,
                                   );
                                 },
                                 childCount: apps.length,
@@ -749,13 +742,11 @@ String _getAppSubtitle(String name, String url, bool isRu) {
 class _SsoAppTile extends StatefulWidget {
   final Map<String, dynamic> app;
   final bool isRu;
-  final bool isNativeChat;
   final VoidCallback? onLaunch;
 
   const _SsoAppTile({
     required this.app,
     required this.isRu,
-    this.isNativeChat = false,
     this.onLaunch,
   });
 
@@ -877,9 +868,7 @@ class _SsoAppTileState extends State<_SsoAppTile> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            widget.isNativeChat
-                                ? (isRu ? 'Открыть чат' : 'Open Chat')
-                                : (isRu ? 'Войти через SSO' : 'Open via SSO'),
+                            isRu ? 'Войти через SSO' : 'Open via SSO',
                             style: const TextStyle(
                               fontSize: 11,
                               color: Color(0xFF38BDF8),
