@@ -252,6 +252,65 @@ class AlertService {
     }
   }
 
+  /// Оповещение о входящем аудио- или видеозвонке (P2P WebRTC)
+  Future<void> triggerIncomingCallNotification({
+    required String caller,
+    required bool isVideo,
+    required String chatId,
+  }) async {
+    await init();
+
+    final title = isVideo ? '📹 Входящий видеовызов' : '📞 Входящий аудиовызов';
+    final body = '$caller вызывает вас...';
+
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        if (await windowManager.isMinimized()) {
+          await windowManager.restore();
+        }
+        await windowManager.show();
+        await windowManager.focus();
+        await windowManager.setAlwaysOnTop(true);
+        if (Platform.isWindows) {
+          await windowManager.setProgressBar(1.0);
+        }
+      } catch (_) {}
+
+      try {
+        await _audioPlayer.play(AssetSource('sounds/alert.mp3'));
+      } catch (_) {}
+
+      if (Platform.isMacOS) {
+        await _showDarwinNotification(title, body, chatId);
+      }
+    } else if (kIsWeb) {
+      showWebNotification(title, body);
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      const androidDetails = AndroidNotificationDetails(
+        'incoming_calls_channel',
+        'Входящие звонки (P2P Call)',
+        channelDescription: 'Срочные входящие аудио- и видеозвонки в корпоративном чате',
+        importance: Importance.max,
+        priority: Priority.max,
+        fullScreenIntent: true,
+        category: AndroidNotificationCategory.call,
+      );
+      const iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        interruptionLevel: InterruptionLevel.critical,
+      );
+      await _localNotifications.show(
+        3001,
+        title,
+        body,
+        const NotificationDetails(android: androidDetails, iOS: iosDetails),
+        payload: chatId,
+      );
+    }
+  }
+
   /// Сброс AlwaysOnTop и индикатора на таскбаре после завершения обработки запроса
   Future<void> resetWindowPriority() async {
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
