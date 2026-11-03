@@ -789,6 +789,46 @@ class ApiClient {
     }
   }
 
+  /// Ligament Chat: список сотрудников компании для начала диалога
+  Future<List<Map<String, dynamic>>> getChatContacts() async {
+    final res = await _get(
+      _cleanUrl('/apps/chat/api/v1/contacts'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'contacts_fetch_failed');
+  }
+
+  /// Ligament Chat: создание чата (direct, group, forum)
+  Future<Map<String, dynamic>> createChat({
+    required String kind,
+    String title = '',
+    String description = '',
+    bool isForum = false,
+    String? targetUser,
+    List<String> members = const [],
+  }) async {
+    final res = await _post(
+      _cleanUrl('/apps/chat/api/v1/chats'),
+      headers: _headers(),
+      body: jsonEncode({
+        'kind': kind,
+        'title': title,
+        'description': description,
+        'is_forum': isForum,
+        if (targetUser != null) 'target_user': targetUser,
+        'members': members,
+      }),
+    );
+    if (res.statusCode == 200 || res.statusCode == 201) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'chat_create_failed');
+  }
+
   /// SOS: с Link-агентом этого ПК — очередь SOS (`sos_v2`), иначе трансляция экрана приложением.
   Future<Map<String, dynamic>> requestSupport({
     required String category,

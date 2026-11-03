@@ -9,12 +9,14 @@ class ChatService extends ChangeNotifier {
   ChatService._();
 
   List<ChatItem> _chats = const [];
+  List<ChatContact> _contacts = const [];
   final Map<String, List<TopicItem>> _topics = {};
   final Map<String, List<ChatMessage>> _messages = {}; // key: "$chatId:$topicId"
   bool _isLoadingChats = false;
   final Set<String> _loadingMessages = {};
 
   List<ChatItem> get chats => _chats;
+  List<ChatContact> get contacts => _contacts;
   bool get isLoadingChats => _isLoadingChats;
 
   int get totalUnreadCount {
@@ -44,14 +46,53 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  Future<void> loadTopics(ApiClient client, String chatId) async {
+  Future<List<TopicItem>> loadTopics(ApiClient client, String chatId) async {
     try {
       final list = await client.getChatTopics(chatId);
-      _topics[chatId] = list.map(TopicItem.fromJson).toList();
+      final topics = list.map(TopicItem.fromJson).toList();
+      _topics[chatId] = topics;
       notifyListeners();
+      return topics;
     } catch (e) {
       DebugLogService.instance.record('chat.topics.failed', error: e, fields: {'chat_id': chatId});
+      return [];
     }
+  }
+
+  Future<List<ChatContact>> loadContacts(ApiClient client) async {
+    try {
+      final list = await client.getChatContacts();
+      _contacts = list.map(ChatContact.fromJson).toList();
+      notifyListeners();
+      return _contacts;
+    } catch (e) {
+      DebugLogService.instance.record('chat.contacts.failed', error: e);
+      return [];
+    }
+  }
+
+  Future<ChatItem> createDirectChat(ApiClient client, String targetUser) async {
+    final res = await client.createChat(kind: 'direct', targetUser: targetUser);
+    final item = ChatItem.fromJson(res);
+    await loadChats(client);
+    return item;
+  }
+
+  Future<ChatItem> createGroupChat(
+    ApiClient client, {
+    required String title,
+    String description = '',
+    bool isForum = false,
+  }) async {
+    final res = await client.createChat(
+      kind: isForum ? 'forum' : 'group',
+      title: title,
+      description: description,
+      isForum: isForum,
+    );
+    final item = ChatItem.fromJson(res);
+    await loadChats(client);
+    return item;
   }
 
   Future<void> loadMessages(

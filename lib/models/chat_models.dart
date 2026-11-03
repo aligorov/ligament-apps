@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 @immutable
 class ChatItem {
   final String id;
-  final String kind; // direct, group, channel, saved
+  final String kind; // direct, group, forum, channel, saved
   final String title;
   final String description;
   final String avatarUrl;
@@ -114,7 +114,7 @@ class ChatMessage {
       id: (json['id'] as num?)?.toInt() ?? 0,
       chatId: json['chat_id'] as String? ?? '',
       topicId: (json['topic_id'] as num?)?.toInt() ?? 0,
-      senderId: json['sender_id'] as String? ?? '',
+      senderId: json['sender_username'] as String? ?? json['sender_id'] as String? ?? '',
       senderName: json['sender_name'] as String? ?? '',
       clientMsgId: json['client_msg_id'] as String? ?? '',
       replyToId: (json['reply_to_id'] as num?)?.toInt(),
@@ -128,6 +128,30 @@ class ChatMessage {
       createdAt: json['created_at'] != null
           ? DateTime.tryParse(json['created_at'] as String) ?? DateTime.now()
           : DateTime.now(),
+    );
+  }
+}
+
+@immutable
+class ChatContact {
+  final String username;
+  final String displayName;
+  final String email;
+  final String title;
+
+  const ChatContact({
+    required this.username,
+    required this.displayName,
+    this.email = '',
+    this.title = '',
+  });
+
+  factory ChatContact.fromJson(Map<String, dynamic> json) {
+    return ChatContact(
+      username: json['username'] as String? ?? '',
+      displayName: json['display_name'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+      title: json['title'] as String? ?? '',
     );
   }
 }

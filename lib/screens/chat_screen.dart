@@ -28,7 +28,14 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = context.read<AuthState>();
       if (auth.api != null) {
-        _chatService.loadChats(auth.api!);
+        _chatService.loadChats(auth.api!).then((_) {
+          if (mounted && _selectedChat == null && _chatService.chats.isNotEmpty) {
+            final isWide = MediaQuery.of(context).size.width >= 720;
+            if (isWide) {
+              _selectChat(_chatService.chats.first);
+            }
+          }
+        });
       }
     });
   }
@@ -42,7 +49,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _onScroll() {
-    // В reverse: true скролл в 0 — это самый низ экрана
     if (_scrollController.hasClients) {
       final offset = _scrollController.offset;
       if (offset > 250 && !_showScrollToBottom) {
@@ -51,7 +57,6 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _showScrollToBottom = false);
       }
 
-      // Пагинация: приближение к верхнему краю (старым сообщениям)
       if (offset >= _scrollController.position.maxScrollExtent - 150) {
         final auth = context.read<AuthState>();
         if (auth.api != null && _selectedChat != null) {
@@ -86,8 +91,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (auth.api == null) return;
 
     if (chat.isForum) {
-      _chatService.loadTopics(auth.api!, chat.id).then((_) {
-        final topics = _chatService.getTopics(chat.id);
+      _chatService.loadTopics(auth.api!, chat.id).then((topics) {
         if (topics.isNotEmpty && mounted) {
           _selectTopic(topics.first);
         }
@@ -139,6 +143,26 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _showNewChatDialog(BuildContext context) {
+    final auth = context.read<AuthState>();
+    if (auth.api == null) return;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _NewChatSheet(
+        api: auth.api!,
+        onChatSelected: (chat) {
+          Navigator.of(ctx).pop();
+          _selectChat(chat);
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -159,13 +183,13 @@ class _ChatScreenState extends State<ChatScreen> {
     return Row(
       children: [
         SizedBox(
-          width: 280,
+          width: 300,
           child: _buildChatList(theme),
         ),
         VerticalDivider(width: 1, color: theme.colorScheme.outlineVariant),
         if (_selectedChat?.isForum == true) ...[
           SizedBox(
-            width: 200,
+            width: 220,
             child: _buildTopicsList(theme),
           ),
           VerticalDivider(width: 1, color: theme.colorScheme.outlineVariant),
@@ -233,14 +257,59 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: const Text('💬 Корпоративный чат'),
         elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Обновить',
+            onPressed: () {
+              final auth = context.read<AuthState>();
+              if (auth.api != null) _chatService.loadChats(auth.api!);
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.add_comment_outlined),
+            tooltip: 'Новый чат',
+            onPressed: () => _showNewChatDialog(context),
+          ),
+        ],
       ),
       body: _chatService.isLoadingChats && chats.isEmpty
           ? const Center(child: CircularProgressIndicator())
           : chats.isEmpty
               ? Center(
-                  child: Text(
-                    'Нет доступных диалогов',
-                    style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 64,
+                          height: 64,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(Icons.forum_rounded, size: 32, color: theme.colorScheme.primary),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Корпоративный мессенджер',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Общайтесь с коллегами, обсуждайте проекты в тематических форумах и звоните через P2P.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant),
+                        ),
+                        const SizedBox(height: 20),
+                        FilledButton.icon(
+                          onPressed: () => _showNewChatDialog(context),
+                          icon: const Icon(Icons.person_add_alt_1_outlined),
+                          label: const Text('Написать коллеге'),
+                        ),
+                      ],
+                    ),
                   ),
                 )
               : ListView.separated(
@@ -287,6 +356,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     );
                   },
                 ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showNewChatDialog(context),
+        tooltip: 'Новый чат',
+        child: const Icon(Icons.edit_outlined),
+      ),
     );
   }
 
@@ -393,7 +467,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     )
                   : ListView.builder(
                       controller: _scrollController,
-                      reverse: true, // Индекс 0 внизу экрана!
+                      reverse: true, // Индекс 0 внизу экрана
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
@@ -425,18 +499,19 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildMessageBubble(ThemeData theme, ChatMessage msg, bool isMe) {
     final isSecret = msg.kind == 'secret';
+    final timeStr = '${msg.createdAt.hour.toString().padLeft(2, '0')}:${msg.createdAt.minute.toString().padLeft(2, '0')}';
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
           color: isSecret
               ? theme.colorScheme.errorContainer.withValues(alpha: 0.3)
               : isMe
-                  ? theme.colorScheme.primaryContainer
+                  ? theme.colorScheme.primary
                   : theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
@@ -453,11 +528,11 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             if (!isMe)
               Text(
-                msg.senderName,
+                msg.senderName.isNotEmpty ? msg.senderName : msg.senderId,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.bold,
-                  color: theme.colorScheme.primary,
+                  color: isMe ? Colors.white70 : theme.colorScheme.primary,
                 ),
               ),
             if (isSecret)
@@ -486,9 +561,26 @@ class _ChatScreenState extends State<ChatScreen> {
                 color: isSecret
                     ? theme.colorScheme.onErrorContainer
                     : isMe
-                        ? theme.colorScheme.onPrimaryContainer
-                        : theme.colorScheme.onSurfaceVariant,
+                        ? Colors.white
+                        : theme.colorScheme.onSurface,
               ),
+            ),
+            const SizedBox(height: 2),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  timeStr,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: isMe ? Colors.white60 : theme.colorScheme.outline,
+                  ),
+                ),
+                if (isMe) ...[
+                  const SizedBox(width: 4),
+                  const Icon(Icons.done_all, size: 12, color: Colors.white70),
+                ],
+              ],
             ),
           ],
         ),
@@ -584,6 +676,219 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _NewChatSheet extends StatefulWidget {
+  final dynamic api;
+  final ValueChanged<ChatItem> onChatSelected;
+
+  const _NewChatSheet({
+    required this.api,
+    required this.onChatSelected,
+  });
+
+  @override
+  State<_NewChatSheet> createState() => _NewChatSheetState();
+}
+
+class _NewChatSheetState extends State<_NewChatSheet> with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+  final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _groupTitleController = TextEditingController();
+  final TextEditingController _groupDescController = TextEditingController();
+  bool _isForum = false;
+  bool _isLoading = false;
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    ChatService.instance.loadContacts(widget.api);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _searchController.dispose();
+    _groupTitleController.dispose();
+    _groupDescController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final contacts = ChatService.instance.contacts.where((c) {
+      if (_searchQuery.isEmpty) return true;
+      final q = _searchQuery.toLowerCase();
+      return c.username.toLowerCase().contains(q) ||
+          c.displayName.toLowerCase().contains(q) ||
+          c.title.toLowerCase().contains(q);
+    }).toList();
+
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SizedBox(
+        height: 520,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Row(
+                children: [
+                  const Text(
+                    'Новый диалог или канал',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            TabBar(
+              controller: _tabController,
+              tabs: const [
+                Tab(icon: Icon(Icons.people_outline), text: 'Сотрудники'),
+                Tab(icon: Icon(Icons.group_add_outlined), text: 'Группа / Форум'),
+              ],
+            ),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  // Вкладка 1: Список сотрудников компании
+                  Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: TextField(
+                          controller: _searchController,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.search),
+                            hintText: 'Поиск по имени или логину...',
+                            isDense: true,
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onChanged: (v) => setState(() => _searchQuery = v),
+                        ),
+                      ),
+                      Expanded(
+                        child: contacts.isEmpty
+                            ? Center(
+                                child: Text(
+                                  'Сотрудники не найдены',
+                                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: contacts.length,
+                                separatorBuilder: (_, __) => const Divider(height: 1),
+                                itemBuilder: (ctx, i) {
+                                  final c = contacts[i];
+                                  final letter = c.displayName.isNotEmpty
+                                      ? c.displayName[0].toUpperCase()
+                                      : c.username[0].toUpperCase();
+
+                                  return ListTile(
+                                    leading: CircleAvatar(
+                                      backgroundColor: theme.colorScheme.primaryContainer,
+                                      foregroundColor: theme.colorScheme.onPrimaryContainer,
+                                      child: Text(letter),
+                                    ),
+                                    title: Text(c.displayName.isNotEmpty ? c.displayName : c.username),
+                                    subtitle: Text(
+                                      c.title.isNotEmpty ? c.title : (c.email.isNotEmpty ? c.email : '@${c.username}'),
+                                      style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
+                                    ),
+                                    trailing: const Icon(Icons.chevron_right),
+                                    onTap: () async {
+                                      setState(() => _isLoading = true);
+                                      try {
+                                        final chat = await ChatService.instance.createDirectChat(widget.api, c.username);
+                                        widget.onChatSelected(chat);
+                                      } finally {
+                                        if (mounted) setState(() => _isLoading = false);
+                                      }
+                                    },
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
+
+                  // Вкладка 2: Создать группу или форум
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextField(
+                          controller: _groupTitleController,
+                          decoration: InputDecoration(
+                            labelText: 'Название группы или канала *',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        TextField(
+                          controller: _groupDescController,
+                          maxLines: 2,
+                          decoration: InputDecoration(
+                            labelText: 'Описание (опционально)',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('🏛️ Форум с темами'),
+                          subtitle: const Text('Позволяет создавать отдельные топики (как в Telegram)'),
+                          value: _isForum,
+                          onChanged: (v) => setState(() => _isForum = v),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: _isLoading
+                              ? null
+                              : () async {
+                                  final title = _groupTitleController.text.trim();
+                                  if (title.isEmpty) return;
+
+                                  setState(() => _isLoading = true);
+                                  try {
+                                    final chat = await ChatService.instance.createGroupChat(
+                                      widget.api,
+                                      title: title,
+                                      description: _groupDescController.text.trim(),
+                                      isForum: _isForum,
+                                    );
+                                    widget.onChatSelected(chat);
+                                  } finally {
+                                    if (mounted) setState(() => _isLoading = false);
+                                  }
+                                },
+                          child: _isLoading
+                              ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Text('Создать канал'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
