@@ -838,6 +838,7 @@ class ApiClient {
     int topicId = 0,
     required String body,
     String kind = 'text',
+    int? replyToId,
     int? secretTtl,
     Map<String, dynamic>? metadata,
     List<String>? attachments,
@@ -846,6 +847,7 @@ class ApiClient {
       'topic_id': topicId,
       'body': body,
       'kind': kind,
+      if (replyToId != null) 'reply_to_id': replyToId,
       if (secretTtl != null) 'secret_ttl_seconds': secretTtl,
       if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
       if (attachments != null && attachments.isNotEmpty) ...{

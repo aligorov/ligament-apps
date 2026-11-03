@@ -40,6 +40,28 @@ class ChatService extends ChangeNotifier {
   List<ChatMessage> getMessages(String chatId, int topicId) =>
       _messages['$chatId:$topicId'] ?? const [];
 
+  /// Фильтрует список диалогов по поисковому запросу и категории.
+  static List<ChatItem> filterChatList(
+    List<ChatItem> source, {
+    String query = '',
+    String category = 'all',
+  }) {
+    final cleanQuery = query.trim().toLowerCase();
+    return source.where((c) {
+      if (category == 'direct' && c.kind != 'direct') return false;
+      if (category == 'forum' && !c.isForum) return false;
+      if (category == 'unread' && c.unreadCount <= 0) return false;
+
+      if (cleanQuery.isNotEmpty) {
+        final matchesTitle = c.title.toLowerCase().contains(cleanQuery);
+        final matchesPeer = c.peerUserId.toLowerCase().contains(cleanQuery);
+        final matchesDesc = c.description.toLowerCase().contains(cleanQuery);
+        if (!matchesTitle && !matchesPeer && !matchesDesc) return false;
+      }
+      return true;
+    }).toList();
+  }
+
   Future<void> loadChats(ApiClient client) async {
     _isLoadingChats = true;
     notifyListeners();
@@ -165,6 +187,7 @@ class ChatService extends ChangeNotifier {
     int topicId = 0,
     required String body,
     String kind = 'text',
+    int? replyToId,
     int? secretTtl,
     Map<String, dynamic>? metadata,
     List<String>? attachments,
@@ -175,6 +198,7 @@ class ChatService extends ChangeNotifier {
         topicId: topicId,
         body: body,
         kind: kind,
+        replyToId: replyToId,
         secretTtl: secretTtl,
         metadata: metadata,
         attachments: attachments,

@@ -1,12 +1,16 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../api/client.dart';
 import '../models/chat_models.dart';
 import '../services/auth_state.dart';
 import '../services/chat_service.dart';
+import '../services/call_session_manager.dart';
+import '../widgets/waveform_bubble.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -17,6 +21,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final ChatService _chatService = ChatService.instance;
 
@@ -25,6 +30,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _showScrollToBottom = false;
   bool _showEmojiBar = false;
   bool _isUploading = false;
+  String _searchQuery = '';
+  String _selectedCategory = 'all';
+  final Map<String, String> _drafts = {};
+  ChatMessage? _replyingTo;
 
   static const List<String> _quickEmojis = [
     '👍', '❤️', '🔥', '😂', '😊', '🎉', '🚀', '✅', '❌', '👋', '🤔', '🤝', '👏', '💯', '☕'
@@ -55,6 +64,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _textController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -92,9 +102,22 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _selectChat(ChatItem chat) {
+    if (_selectedChat != null) {
+      final prevKey = '${_selectedChat!.id}:${_selectedTopic?.id ?? 0}';
+      if (_textController.text.isNotEmpty) {
+        _drafts[prevKey] = _textController.text;
+      } else {
+        _drafts.remove(prevKey);
+      }
+    }
+
+    final newKey = '${chat.id}:0';
+    _textController.text = _drafts[newKey] ?? '';
+
     setState(() {
       _selectedChat = chat;
       _selectedTopic = null;
+      _replyingTo = null;
     });
 
     final auth = context.read<AuthState>();
@@ -114,7 +137,21 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _selectTopic(TopicItem topic) {
-    setState(() => _selectedTopic = topic);
+    if (_selectedChat != null) {
+      final prevKey = '${_selectedChat!.id}:${_selectedTopic?.id ?? 0}';
+      if (_textController.text.isNotEmpty) {
+        _drafts[prevKey] = _textController.text;
+      } else {
+        _drafts.remove(prevKey);
+      }
+      final newKey = '${_selectedChat!.id}:${topic.id}';
+      _textController.text = _drafts[newKey] ?? '';
+    }
+
+    setState(() {
+      _selectedTopic = topic;
+      _replyingTo = null;
+    });
     final auth = context.read<AuthState>();
     if (auth.api != null && _selectedChat != null) {
       _chatService.loadMessages(auth.api!, _selectedChat!.id, topicId: topic.id);
@@ -128,8 +165,15 @@ class _ChatScreenState extends State<ChatScreen> {
     final auth = context.read<AuthState>();
     if (auth.api == null) return;
 
+    final replyId = _replyingTo?.id;
     _textController.clear();
-    setState(() => _showEmojiBar = false);
+    final draftKey = '${_selectedChat!.id}:${_selectedTopic?.id ?? 0}';
+    _drafts.remove(draftKey);
+
+    setState(() {
+      _showEmojiBar = false;
+      _replyingTo = null;
+    });
 
     try {
       await _chatService.sendMessage(
@@ -138,6 +182,7 @@ class _ChatScreenState extends State<ChatScreen> {
         topicId: _selectedTopic?.id ?? 0,
         body: text,
         kind: 'text',
+        replyToId: replyId,
       );
       _scrollToBottom();
     } catch (e) {
@@ -359,8 +404,36 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Widget _buildCategoryChip(String category, String label, int count) {
+    final isSelected = _selectedCategory == category;
+    final theme = Theme.of(context);
+
+    return FilterChip(
+      selected: isSelected,
+      label: Text('$label ($count)'),
+      labelStyle: TextStyle(
+        fontSize: 12,
+        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        color: isSelected
+            ? theme.colorScheme.onPrimaryContainer
+            : theme.colorScheme.onSurfaceVariant,
+      ),
+      backgroundColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+      selectedColor: theme.colorScheme.primaryContainer,
+      showCheckmark: false,
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      visualDensity: VisualDensity.compact,
+      onSelected: (_) => setState(() => _selectedCategory = category),
+    );
+  }
+
   Widget _buildChatList(ThemeData theme) {
     final chats = _chatService.chats;
+    final filteredChats = ChatService.filterChatList(
+      chats,
+      query: _searchQuery,
+      category: _selectedCategory,
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -389,51 +462,122 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: _chatService.isLoadingChats && chats.isEmpty
           ? const Center(child: CircularProgressIndicator())
-          : chats.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 64,
-                          height: 64,
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.primary.withValues(alpha: 0.12),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(Icons.forum_rounded, size: 32, color: theme.colorScheme.primary),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Корпоративный мессенджер',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Общайтесь с коллегами, обсуждайте проекты в тематических форумах и звоните через P2P.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant),
-                        ),
-                        const SizedBox(height: 20),
-                        FilledButton.icon(
-                          onPressed: () => _showNewChatDialog(context),
-                          icon: const Icon(Icons.person_add_alt_1_outlined),
-                          label: const Text('Написать коллеге'),
-                        ),
-                      ],
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'Поиск диалогов...',
+                      prefixIcon: const Icon(Icons.search, size: 20),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                            )
+                          : null,
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      filled: true,
+                      fillColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
                     ),
+                    onChanged: (val) => setState(() => _searchQuery = val),
                   ),
-                )
-              : ListView.separated(
-                  itemCount: chats.length,
-                  separatorBuilder: (_, __) => Divider(
-                    height: 1,
-                    color: theme.colorScheme.outlineVariant.withValues(alpha: 0.3),
+                ),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      _buildCategoryChip('all', 'Все', chats.length),
+                      const SizedBox(width: 6),
+                      _buildCategoryChip(
+                        'direct',
+                        'Личные',
+                        chats.where((c) => c.kind == 'direct').length,
+                      ),
+                      const SizedBox(width: 6),
+                      _buildCategoryChip(
+                        'forum',
+                        'Форумы',
+                        chats.where((c) => c.isForum).length,
+                      ),
+                      const SizedBox(width: 6),
+                      _buildCategoryChip(
+                        'unread',
+                        'Непрочитанные',
+                        chats.where((c) => c.unreadCount > 0).length,
+                      ),
+                    ],
                   ),
-                  itemBuilder: (context, index) {
-                    final chat = chats[index];
+                ),
+                const SizedBox(height: 6),
+                Expanded(
+                  child: filteredChats.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 64,
+                                  height: 64,
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    _searchQuery.isNotEmpty
+                                        ? Icons.search_off_rounded
+                                        : Icons.forum_rounded,
+                                    size: 32,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  _searchQuery.isNotEmpty
+                                      ? 'Диалоги не найдены'
+                                      : 'Корпоративный мессенджер',
+                                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  _searchQuery.isNotEmpty
+                                      ? 'Попробуйте изменить поисковый запрос или фильтр.'
+                                      : 'Общайтесь с коллегами, обсуждайте проекты в тематических форумах и звоните через P2P.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                                if (_searchQuery.isEmpty) ...[
+                                  const SizedBox(height: 20),
+                                  FilledButton.icon(
+                                    onPressed: () => _showNewChatDialog(context),
+                                    icon: const Icon(Icons.person_add_alt_1_outlined),
+                                    label: const Text('Написать коллеге'),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: filteredChats.length,
+                          separatorBuilder: (_, __) => Divider(
+                            height: 1,
+                            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.3),
+                          ),
+                          itemBuilder: (context, index) {
+                            final chat = filteredChats[index];
                     final isSelected = _selectedChat?.id == chat.id;
                     final displayTitle = _resolveChatTitle(chat);
                     final initials = _getInitials(displayTitle);
@@ -510,6 +654,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     );
                   },
                 ),
+              ),
+            ],
+          ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showNewChatDialog(context),
         tooltip: 'Новый чат',
@@ -681,63 +828,106 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-        decoration: BoxDecoration(
-          color: isMe
-              ? theme.colorScheme.primary
-              : theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isMe ? 16 : 4),
-            bottomRight: Radius.circular(isMe ? 4 : 16),
+      child: GestureDetector(
+        onLongPress: () => setState(() => _replyingTo = msg),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: isMe
+                ? theme.colorScheme.primary
+                : theme.colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isMe ? 16 : 4),
+              bottomRight: Radius.circular(isMe ? 4 : 16),
+            ),
           ),
-        ),
-        child: Column(
-          crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          children: [
-            if (!isMe)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text(
-                  senderTitle,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: theme.colorScheme.primary,
+          child: Column(
+            crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              if (!isMe)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    senderTitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.primary,
+                    ),
                   ),
                 ),
-              ),
-            Text(
-              msg.body,
-              style: TextStyle(
-                fontSize: 14,
-                color: isMe ? Colors.white : theme.colorScheme.onSurface,
-              ),
-            ),
-            if (msg.hasAttachments)
-              ...msg.attachments.map((att) => _buildAttachmentCard(theme, att, isMe)),
-            const SizedBox(height: 3),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  timeStr,
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: isMe ? Colors.white70 : theme.colorScheme.outline,
+              if (msg.replyToId != null)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isMe
+                        ? Colors.white.withValues(alpha: 0.15)
+                        : theme.colorScheme.surface.withValues(alpha: 0.7),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border(
+                      left: BorderSide(
+                        color: isMe ? Colors.white : theme.colorScheme.primary,
+                        width: 3,
+                      ),
+                    ),
+                  ),
+                  child: Text(
+                    'Ответ на сообщение #${msg.replyToId}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                      color: isMe ? Colors.white70 : theme.colorScheme.outline,
+                    ),
                   ),
                 ),
-                if (isMe) ...[
-                  const SizedBox(width: 4),
-                  const Icon(Icons.done_all, size: 12, color: Colors.white70),
+              if (msg.kind == 'voice' && msg.metadata['waveform'] is String)
+                WaveformBubble.fromBase64(
+                  base64Waveform: msg.metadata['waveform'] as String,
+                )
+              else
+                Text.rich(
+                  TextSpan(
+                    children: msg.getSpans(
+                      context,
+                      onLinkTap: (url) async {
+                        final uri = Uri.tryParse(url);
+                        if (uri != null && await canLaunchUrl(uri)) {
+                          await launchUrl(uri, mode: LaunchMode.externalApplication);
+                        }
+                      },
+                    ),
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: isMe ? Colors.white : theme.colorScheme.onSurface,
+                    ),
+                  ),
+                ),
+              if (msg.hasAttachments)
+                ...msg.attachments.map((att) => _buildAttachmentCard(theme, att, isMe)),
+              const SizedBox(height: 3),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    timeStr,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: isMe ? Colors.white70 : theme.colorScheme.outline,
+                    ),
+                  ),
+                  if (isMe) ...[
+                    const SizedBox(width: 4),
+                    const Icon(Icons.done_all, size: 12, color: Colors.white70),
+                  ],
                 ],
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -794,6 +984,52 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (_replyingTo != null)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border(
+                    left: BorderSide(color: theme.colorScheme.primary, width: 3),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _resolveSenderName(_replyingTo!),
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                          Text(
+                            _replyingTo!.body,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 18),
+                      tooltip: 'Отменить ответ (Esc)',
+                      onPressed: () => setState(() => _replyingTo = null),
+                    ),
+                  ],
+                ),
+              ),
             if (_showEmojiBar)
               Container(
                 height: 44,
@@ -847,29 +1083,39 @@ class _ChatScreenState extends State<ChatScreen> {
                     onPressed: _handlePickAndSendFile,
                   ),
                 Expanded(
-                  child: TextField(
-                    controller: _textController,
-                    maxLines: 3,
-                    minLines: 1,
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _handleSend(),
-                    decoration: InputDecoration(
-                      hintText: _selectedTopic != null
-                          ? 'Сообщение в ${_selectedTopic!.title}...'
-                          : 'Напишите сообщение...',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
+                  child: CallbackShortcuts(
+                    bindings: {
+                      const SingleActivator(LogicalKeyboardKey.enter): _handleSend,
+                      const SingleActivator(LogicalKeyboardKey.escape): () {
+                        if (_replyingTo != null) {
+                          setState(() => _replyingTo = null);
+                        }
+                      },
+                    },
+                    child: TextField(
+                      controller: _textController,
+                      maxLines: 4,
+                      minLines: 1,
+                      textInputAction: TextInputAction.newline,
+                      decoration: InputDecoration(
+                        hintText: _selectedTopic != null
+                            ? 'Сообщение в ${_selectedTopic!.title}...'
+                            : 'Напишите сообщение...',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
+                        ),
+                        filled: true,
+                        fillColor: theme.colorScheme.surfaceContainerHighest,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                       ),
-                      filled: true,
-                      fillColor: theme.colorScheme.surfaceContainerHighest,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
                 IconButton.filled(
                   icon: const Icon(Icons.send),
+                  tooltip: 'Отправить (Enter)',
                   onPressed: _handleSend,
                 ),
               ],
@@ -1341,91 +1587,10 @@ class _ChatScreenState extends State<ChatScreen> {
   void _startCall({required bool isVideo}) {
     if (_selectedChat == null) return;
     final chatTitle = _resolveChatTitle(_selectedChat!);
-
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        var isMuted = false;
-        var isCameraOff = !isVideo;
-
-        return StatefulBuilder(
-          builder: (context, setCallState) {
-            final theme = Theme.of(context);
-            return AlertDialog(
-              backgroundColor: theme.colorScheme.surfaceContainerHighest,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              content: SizedBox(
-                width: 340,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircleAvatar(
-                      radius: 40,
-                      backgroundColor: theme.colorScheme.primaryContainer,
-                      foregroundColor: theme.colorScheme.onPrimaryContainer,
-                      child: Text(
-                        _getInitials(chatTitle),
-                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      chatTitle,
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      isVideo ? 'Защищённый видеозвонок' : 'Защищённый аудиозвонок',
-                      style: TextStyle(fontSize: 13, color: theme.colorScheme.outline),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const SizedBox(
-                          width: 12,
-                          height: 12,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'P2P через Ligament ICE (STUN/TURN)...',
-                          style: TextStyle(fontSize: 12, color: theme.colorScheme.primary),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        IconButton.filledTonal(
-                          icon: Icon(isMuted ? Icons.mic_off : Icons.mic),
-                          tooltip: isMuted ? 'Включить микрофон' : 'Выключить микрофон',
-                          onPressed: () => setCallState(() => isMuted = !isMuted),
-                        ),
-                        if (isVideo)
-                          IconButton.filledTonal(
-                            icon: Icon(isCameraOff ? Icons.videocam_off : Icons.videocam),
-                            tooltip: isCameraOff ? 'Включить камеру' : 'Выключить камеру',
-                            onPressed: () => setCallState(() => isCameraOff = !isCameraOff),
-                          ),
-                        IconButton.filled(
-                          style: IconButton.styleFrom(backgroundColor: theme.colorScheme.error),
-                          icon: const Icon(Icons.call_end, color: Colors.white),
-                          tooltip: 'Завершить вызов',
-                          onPressed: () => Navigator.pop(ctx),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+    CallSessionManager.instance.startCall(
+      chatId: _selectedChat!.id,
+      chatTitle: chatTitle,
+      isVideo: isVideo,
     );
   }
 

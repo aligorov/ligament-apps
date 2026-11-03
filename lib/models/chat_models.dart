@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import '../screens/chat/chat_format_tokenizer.dart';
 
 @immutable
 class ChatItem {
@@ -80,7 +81,7 @@ class TopicItem {
   }
 }
 
-@immutable
+// ignore: must_be_immutable
 class ChatMessage {
   final int id;
   final String chatId;
@@ -97,7 +98,9 @@ class ChatMessage {
   final List<Map<String, dynamic>> rawAttachments;
   final DateTime createdAt;
 
-  const ChatMessage({
+  List<InlineSpan>? _cachedSpans;
+
+  ChatMessage({
     required this.id,
     required this.chatId,
     this.topicId = 0,
@@ -153,6 +156,13 @@ class ChatMessage {
           .toList();
     }
     return const [];
+  }
+
+  /// Возвращает кэшированный список сущностей форматирования (жирный, курсив, код, ссылки).
+  List<InlineSpan> getSpans(BuildContext context, {void Function(String url)? onLinkTap}) {
+    if (_cachedSpans != null) return _cachedSpans!;
+    _cachedSpans = ChatFormatTokenizer.tokenize(body, context, onLinkTap: onLinkTap);
+    return _cachedSpans!;
   }
 }
 

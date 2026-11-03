@@ -25,6 +25,7 @@ import 'screens/splash_screen.dart';
 import 'screens/chat_screen.dart';
 import 'app_version.dart';
 import 'widgets/debug_action_scope.dart';
+import 'widgets/global_call_overlay.dart';
 
 Future<bool> _tryForwardAutoshareToRunningInstance(String sessionId) async {
   try {
@@ -624,8 +625,13 @@ class _LigamentAppState extends State<LigamentApp>
     return MaterialApp(
       navigatorKey: LigamentApp.navigatorKey,
       navigatorObservers: [_debugNavigation],
-      builder: (context, child) => DebugActionScope(
-        child: child ?? const SizedBox.shrink(),
+      builder: (context, child) => Stack(
+        children: [
+          DebugActionScope(
+            child: child ?? const SizedBox.shrink(),
+          ),
+          const GlobalCallOverlayWidget(),
+        ],
       ),
       title: 'Ligament 2FA Authenticator',
       locale: auth.locale,
