@@ -1,4 +1,6 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
 import '../models/chat_models.dart';
 import '../services/auth_state.dart';
@@ -18,8 +20,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   ChatItem? _selectedChat;
   TopicItem? _selectedTopic;
-  bool _isSecretMode = false;
   bool _showScrollToBottom = false;
+  bool _showEmojiBar = false;
+  bool _isUploading = false;
+
+  static const List<String> _quickEmojis = [
+    '👍', '❤️', '🔥', '😂', '😊', '🎉', '🚀', '✅', '❌', '👋', '🤔', '🤝', '👏', '💯', '☕'
+  ];
 
   @override
   void initState() {
@@ -28,6 +35,7 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = context.read<AuthState>();
       if (auth.api != null) {
+        _chatService.loadContacts(auth.api!);
         _chatService.loadChats(auth.api!).then((_) {
           if (mounted && _selectedChat == null && _chatService.chats.isNotEmpty) {
             final isWide = MediaQuery.of(context).size.width >= 720;
@@ -90,6 +98,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final auth = context.read<AuthState>();
     if (auth.api == null) return;
 
+    _chatService.markLocalRead(chat.id);
+
     if (chat.isForum) {
       _chatService.loadTopics(auth.api!, chat.id).then((topics) {
         if (topics.isNotEmpty && mounted) {
@@ -116,13 +126,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final auth = context.read<AuthState>();
     if (auth.api == null) return;
 
-    final kind = _isSecretMode ? 'secret' : 'text';
-    final secretTtl = _isSecretMode ? 60 : null;
-
     _textController.clear();
-    if (_isSecretMode) {
-      setState(() => _isSecretMode = false);
-    }
+    setState(() => _showEmojiBar = false);
 
     try {
       await _chatService.sendMessage(
@@ -130,8 +135,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _selectedChat!.id,
         topicId: _selectedTopic?.id ?? 0,
         body: text,
-        kind: kind,
-        secretTtl: secretTtl,
+        kind: 'text',
       );
       _scrollToBottom();
     } catch (e) {
@@ -207,6 +211,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_selectedChat == null) {
       return _buildChatList(theme);
     }
+    final displayTitle = _resolveChatTitle(_selectedChat!);
+    final initials = _getInitials(displayTitle);
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -225,18 +232,64 @@ class _ChatScreenState extends State<ChatScreen> {
               _selectedTopic = null;
             }),
           ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          titleSpacing: 0,
+          title: Row(
             children: [
-              Text(_selectedChat?.title ?? '', style: const TextStyle(fontSize: 16)),
-              if (_selectedTopic != null)
-                Text(
-                  '${_selectedTopic!.iconEmoji} ${_selectedTopic!.title}',
-                  style: TextStyle(fontSize: 12, color: theme.colorScheme.primary),
+              CircleAvatar(
+                radius: 17,
+                backgroundColor: _selectedChat?.isForum == true
+                    ? theme.colorScheme.tertiaryContainer
+                    : theme.colorScheme.primaryContainer,
+                foregroundColor: _selectedChat?.isForum == true
+                    ? theme.colorScheme.onTertiaryContainer
+                    : theme.colorScheme.onPrimaryContainer,
+                child: Text(
+                  _selectedChat?.isForum == true ? '🏛️' : initials,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
                 ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
+                    if (_selectedTopic != null)
+                      Text(
+                        '${_selectedTopic!.iconEmoji} ${_selectedTopic!.title}',
+                        style: TextStyle(fontSize: 11, color: theme.colorScheme.primary),
+                      )
+                    else
+                      Text(
+                        'В сети',
+                        style: TextStyle(fontSize: 11, color: theme.colorScheme.primary),
+                      ),
+                  ],
+                ),
+              ),
             ],
           ),
           actions: [
+            IconButton(
+              icon: const Icon(Icons.phone_outlined),
+              tooltip: 'Аудиозвонок',
+              onPressed: () => _startCall(isVideo: false),
+            ),
+            IconButton(
+              icon: const Icon(Icons.videocam_outlined),
+              tooltip: 'Видеозвонок',
+              onPressed: () => _startCall(isVideo: true),
+            ),
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: 'Настройки камеры/микрофона',
+              onPressed: _showMediaSettingsDialog,
+            ),
             if (_selectedChat?.isForum == true)
               IconButton(
                 icon: const Icon(Icons.forum_outlined),
@@ -321,16 +374,30 @@ class _ChatScreenState extends State<ChatScreen> {
                   itemBuilder: (context, index) {
                     final chat = chats[index];
                     final isSelected = _selectedChat?.id == chat.id;
+                    final displayTitle = _resolveChatTitle(chat);
+                    final initials = _getInitials(displayTitle);
 
                     return ListTile(
                       selected: isSelected,
                       selectedTileColor: theme.colorScheme.primaryContainer.withValues(alpha: 0.2),
                       leading: CircleAvatar(
-                        backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                        child: Text(chat.isForum ? '🏛️' : (chat.kind == 'direct' ? '👤' : '👥')),
+                        backgroundColor: chat.isForum
+                            ? theme.colorScheme.tertiaryContainer
+                            : (chat.kind == 'direct'
+                                ? theme.colorScheme.primaryContainer
+                                : theme.colorScheme.secondaryContainer),
+                        foregroundColor: chat.isForum
+                            ? theme.colorScheme.onTertiaryContainer
+                            : (chat.kind == 'direct'
+                                ? theme.colorScheme.onPrimaryContainer
+                                : theme.colorScheme.onSecondaryContainer),
+                        child: Text(
+                          chat.isForum ? '🏛️' : initials,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
                       ),
                       title: Text(
-                        chat.title,
+                        displayTitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
@@ -452,11 +519,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final auth = context.read<AuthState>();
     final currentUsername = auth.username;
     final currentUserId = auth.currentUser?['id']?.toString() ?? '';
+    final isWide = MediaQuery.of(context).size.width >= 720;
 
     return Stack(
       children: [
         Column(
           children: [
+            if (isWide && _selectedChat != null)
+              _buildWideChatHeader(theme),
             Expanded(
               child: messages.isEmpty
                   ? Center(
@@ -498,8 +568,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildMessageBubble(ThemeData theme, ChatMessage msg, bool isMe) {
-    final isSecret = msg.kind == 'secret';
     final timeStr = '${msg.createdAt.hour.toString().padLeft(2, '0')}:${msg.createdAt.minute.toString().padLeft(2, '0')}';
+    final senderTitle = _resolveSenderName(msg);
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -508,64 +578,41 @@ class _ChatScreenState extends State<ChatScreen> {
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
-          color: isSecret
-              ? theme.colorScheme.errorContainer.withValues(alpha: 0.3)
-              : isMe
-                  ? theme.colorScheme.primary
-                  : theme.colorScheme.surfaceContainerHighest,
+          color: isMe
+              ? theme.colorScheme.primary
+              : theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
             topRight: const Radius.circular(16),
             bottomLeft: Radius.circular(isMe ? 16 : 4),
             bottomRight: Radius.circular(isMe ? 4 : 16),
           ),
-          border: isSecret
-              ? Border.all(color: theme.colorScheme.error.withValues(alpha: 0.5))
-              : null,
         ),
         child: Column(
           crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
             if (!isMe)
-              Text(
-                msg.senderName.isNotEmpty ? msg.senderName : msg.senderId,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: isMe ? Colors.white70 : theme.colorScheme.primary,
-                ),
-              ),
-            if (isSecret)
               Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.local_fire_department, size: 14, color: theme.colorScheme.error),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Сгорающий секрет (60с)',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: theme.colorScheme.error,
-                      ),
-                    ),
-                  ],
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Text(
+                  senderTitle,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.primary,
+                  ),
                 ),
               ),
             Text(
               msg.body,
               style: TextStyle(
                 fontSize: 14,
-                color: isSecret
-                    ? theme.colorScheme.onErrorContainer
-                    : isMe
-                        ? Colors.white
-                        : theme.colorScheme.onSurface,
+                color: isMe ? Colors.white : theme.colorScheme.onSurface,
               ),
             ),
-            const SizedBox(height: 2),
+            if (msg.hasAttachments)
+              ...msg.attachments.map((att) => _buildAttachmentCard(theme, att, isMe)),
+            const SizedBox(height: 3),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -573,7 +620,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   timeStr,
                   style: TextStyle(
                     fontSize: 10,
-                    color: isMe ? Colors.white60 : theme.colorScheme.outline,
+                    color: isMe ? Colors.white70 : theme.colorScheme.outline,
                   ),
                 ),
                 if (isMe) ...[
@@ -588,6 +635,44 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  bool _isUuid(String s) {
+    return RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(s.trim());
+  }
+
+  String _resolveChatTitle(ChatItem chat) {
+    final title = chat.title.trim();
+    if (_isUuid(title)) {
+      for (final c in _chatService.contacts) {
+        if (c.username == title) {
+          return c.displayName.isNotEmpty ? c.displayName : c.username;
+        }
+      }
+      return 'Диалог с сотрудником';
+    }
+    return title.isNotEmpty ? title : 'Диалог';
+  }
+
+  String _resolveSenderName(ChatMessage msg) {
+    if (msg.senderName.isNotEmpty && !_isUuid(msg.senderName)) {
+      return msg.senderName;
+    }
+    for (final c in _chatService.contacts) {
+      if (c.username == msg.senderId || c.displayName == msg.senderName) {
+        return c.displayName.isNotEmpty ? c.displayName : c.username;
+      }
+    }
+    return msg.senderName.isNotEmpty ? msg.senderName : msg.senderId;
+  }
+
+  String _getInitials(String title) {
+    if (title.isEmpty) return 'U';
+    final parts = title.trim().split(RegExp(r'\s+'));
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return title.substring(0, title.length >= 2 ? 2 : 1).toUpperCase();
+  }
+
   Widget _buildComposer(ThemeData theme) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -599,34 +684,58 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (_isSecretMode)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  children: [
-                    Icon(Icons.lock_clock, size: 16, color: theme.colorScheme.error),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Одноразовый пароль (самоуничтожится через 60 сек)',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: theme.colorScheme.error,
-                        fontWeight: FontWeight.bold,
+            if (_showEmojiBar)
+              Container(
+                height: 44,
+                margin: const EdgeInsets.only(bottom: 6),
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _quickEmojis.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 4),
+                  itemBuilder: (context, i) {
+                    final em = _quickEmojis[i];
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () {
+                        _textController.text += em;
+                        _textController.selection = TextSelection.fromPosition(
+                          TextPosition(offset: _textController.text.length),
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        alignment: Alignment.center,
+                        child: Text(em, style: const TextStyle(fontSize: 20)),
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
               ),
             Row(
               children: [
                 IconButton(
                   icon: Icon(
-                    Icons.lock_outline,
-                    color: _isSecretMode ? theme.colorScheme.error : null,
+                    Icons.emoji_emotions_outlined,
+                    color: _showEmojiBar ? theme.colorScheme.primary : null,
                   ),
-                  tooltip: 'Сгорающий пароль',
-                  onPressed: () => setState(() => _isSecretMode = !_isSecretMode),
+                  tooltip: 'Смайлики',
+                  onPressed: () => setState(() => _showEmojiBar = !_showEmojiBar),
                 ),
+                if (_isUploading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                else
+                  IconButton(
+                    icon: const Icon(Icons.attach_file),
+                    tooltip: 'Прикрепить файл',
+                    onPressed: _handlePickAndSendFile,
+                  ),
                 Expanded(
                   child: TextField(
                     controller: _textController,
@@ -658,6 +767,417 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildWideChatHeader(ThemeData theme) {
+    if (_selectedChat == null) return const SizedBox.shrink();
+    final chatTitle = _resolveChatTitle(_selectedChat!);
+    final initials = _getInitials(chatTitle);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(bottom: BorderSide(color: theme.colorScheme.outlineVariant)),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 19,
+            backgroundColor: _selectedChat!.isForum
+                ? theme.colorScheme.tertiaryContainer
+                : theme.colorScheme.primaryContainer,
+            foregroundColor: _selectedChat!.isForum
+                ? theme.colorScheme.onTertiaryContainer
+                : theme.colorScheme.onPrimaryContainer,
+            child: Text(
+              _selectedChat!.isForum ? '🏛️' : initials,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  chatTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  _selectedTopic != null
+                      ? '${_selectedTopic!.iconEmoji} ${_selectedTopic!.title}'
+                      : 'В сети',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.phone_outlined),
+            tooltip: 'Аудиозвонок',
+            onPressed: () => _startCall(isVideo: false),
+          ),
+          IconButton(
+            icon: const Icon(Icons.videocam_outlined),
+            tooltip: 'Видеозвонок',
+            onPressed: () => _startCall(isVideo: true),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Настройки камеры/микрофона',
+            onPressed: _showMediaSettingsDialog,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAttachmentCard(ThemeData theme, Map<String, dynamic> att, bool isMe) {
+    final name = att['name']?.toString() ?? 'Файл';
+    final sizeBytes = (att['size'] as num?)?.toInt() ?? 0;
+    final attId = att['id']?.toString() ?? '';
+    final sizeStr = sizeBytes > 1024 * 1024
+        ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} МБ'
+        : '${(sizeBytes / 1024).toStringAsFixed(1)} КБ';
+    final isImg = name.toLowerCase().endsWith('.png') ||
+        name.toLowerCase().endsWith('.jpg') ||
+        name.toLowerCase().endsWith('.jpeg') ||
+        name.toLowerCase().endsWith('.webp');
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: isMe
+            ? Colors.white.withValues(alpha: 0.15)
+            : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.8),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isMe
+              ? Colors.white24
+              : theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: isMe
+                  ? Colors.white24
+                  : theme.colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              isImg ? Icons.image_outlined : Icons.insert_drive_file_outlined,
+              size: 20,
+              color: isMe ? Colors.white : theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isMe ? Colors.white : theme.colorScheme.onSurface,
+                  ),
+                ),
+                Text(
+                  sizeStr,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: isMe ? Colors.white70 : theme.colorScheme.outline,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: Icon(
+              Icons.download_rounded,
+              size: 20,
+              color: isMe ? Colors.white : theme.colorScheme.primary,
+            ),
+            tooltip: 'Скачать файл',
+            onPressed: () => _downloadAndSaveFile(attId, name),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handlePickAndSendFile() async {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || _selectedChat == null) return;
+
+    try {
+      final result = await FilePicker.platform.pickFiles(withData: true);
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.first;
+      final bytes = file.bytes;
+      if (bytes == null || bytes.isEmpty) return;
+
+      setState(() => _isUploading = true);
+      await _chatService.sendAttachment(
+        auth.api!,
+        _selectedChat!.id,
+        topicId: _selectedTopic?.id ?? 0,
+        fileName: file.name,
+        bytes: bytes,
+      );
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка отправки файла: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploading = false);
+    }
+  }
+
+  Future<void> _downloadAndSaveFile(String attId, String fileName) async {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || attId.isEmpty) return;
+
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Скачивание файла...'), duration: Duration(seconds: 1)),
+      );
+      final bytes = await auth.api!.downloadChatAttachment(attId);
+      final outputFilePath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Сохранить файл',
+        fileName: fileName,
+        bytes: bytes,
+      );
+      if (outputFilePath != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Файл сохранён: $fileName')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка скачивания: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _showMediaSettingsDialog() async {
+    List<MediaDeviceInfo> devices = [];
+    try {
+      devices = await navigator.mediaDevices.enumerateDevices();
+    } catch (_) {}
+
+    final audioInputs = devices.where((d) => d.kind == 'audioinput').toList();
+    final videoInputs = devices.where((d) => d.kind == 'videoinput').toList();
+
+    if (!mounted) return;
+
+    String? selectedAudio = audioInputs.isNotEmpty ? audioInputs.first.deviceId : null;
+    String? selectedVideo = videoInputs.isNotEmpty ? videoInputs.first.deviceId : null;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final theme = Theme.of(context);
+            return AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.settings_voice_outlined),
+                  SizedBox(width: 8),
+                  Text('Настройки звонков'),
+                ],
+              ),
+              content: SizedBox(
+                width: 400,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Микрофон', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary)),
+                    const SizedBox(height: 6),
+                    if (audioInputs.isEmpty)
+                      const Text('Микрофоны не найдены', style: TextStyle(fontSize: 13, color: Colors.grey))
+                    else
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: selectedAudio,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                        items: audioInputs.map((d) {
+                          return DropdownMenuItem(
+                            value: d.deviceId,
+                            child: Text(
+                              d.label.isNotEmpty ? d.label : 'Микрофон ${d.deviceId.substring(0, d.deviceId.length > 6 ? 6 : d.deviceId.length)}',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (val) => setDialogState(() => selectedAudio = val),
+                      ),
+                    const SizedBox(height: 16),
+                    Text('Камера', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary)),
+                    const SizedBox(height: 6),
+                    if (videoInputs.isEmpty)
+                      const Text('Камеры не найдены', style: TextStyle(fontSize: 13, color: Colors.grey))
+                    else
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: selectedVideo,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                        items: videoInputs.map((d) {
+                          return DropdownMenuItem(
+                            value: d.deviceId,
+                            child: Text(
+                              d.label.isNotEmpty ? d.label : 'Камера ${d.deviceId.substring(0, d.deviceId.length > 6 ? 6 : d.deviceId.length)}',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (val) => setDialogState(() => selectedVideo = val),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Готово'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _startCall({required bool isVideo}) {
+    if (_selectedChat == null) return;
+    final chatTitle = _resolveChatTitle(_selectedChat!);
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        var isMuted = false;
+        var isCameraOff = !isVideo;
+
+        return StatefulBuilder(
+          builder: (context, setCallState) {
+            final theme = Theme.of(context);
+            return AlertDialog(
+              backgroundColor: theme.colorScheme.surfaceContainerHighest,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              content: SizedBox(
+                width: 340,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 40,
+                      backgroundColor: theme.colorScheme.primaryContainer,
+                      foregroundColor: theme.colorScheme.onPrimaryContainer,
+                      child: Text(
+                        _getInitials(chatTitle),
+                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      chatTitle,
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      isVideo ? 'Защищённый видеозвонок' : 'Защищённый аудиозвонок',
+                      style: TextStyle(fontSize: 13, color: theme.colorScheme.outline),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Установление P2P соединения...',
+                          style: TextStyle(fontSize: 12, color: theme.colorScheme.primary),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        IconButton.filledTonal(
+                          icon: Icon(isMuted ? Icons.mic_off : Icons.mic),
+                          tooltip: isMuted ? 'Включить микрофон' : 'Выключить микрофон',
+                          onPressed: () => setCallState(() => isMuted = !isMuted),
+                        ),
+                        if (isVideo)
+                          IconButton.filledTonal(
+                            icon: Icon(isCameraOff ? Icons.videocam_off : Icons.videocam),
+                            tooltip: isCameraOff ? 'Включить камеру' : 'Выключить камеру',
+                            onPressed: () => setCallState(() => isCameraOff = !isCameraOff),
+                          ),
+                        IconButton.filled(
+                          style: IconButton.styleFrom(backgroundColor: theme.colorScheme.error),
+                          icon: const Icon(Icons.call_end, color: Colors.white),
+                          tooltip: 'Завершить вызов',
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -813,7 +1333,11 @@ class _NewChatSheetState extends State<_NewChatSheet> with SingleTickerProviderS
                                     onTap: () async {
                                       setState(() => _isLoading = true);
                                       try {
-                                        final chat = await ChatService.instance.createDirectChat(widget.api, c.username);
+                                        final chat = await ChatService.instance.createDirectChat(
+                                          widget.api,
+                                          c.username,
+                                          targetName: c.displayName,
+                                        );
                                         widget.onChatSelected(chat);
                                       } finally {
                                         if (mounted) setState(() => _isLoading = false);

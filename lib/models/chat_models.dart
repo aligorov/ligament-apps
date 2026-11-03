@@ -130,6 +130,18 @@ class ChatMessage {
           : DateTime.now(),
     );
   }
+
+  bool get hasAttachments =>
+      metadata.containsKey('attachments') &&
+      metadata['attachments'] is List &&
+      (metadata['attachments'] as List).isNotEmpty;
+
+  List<Map<String, dynamic>> get attachments {
+    if (!hasAttachments) return const [];
+    return (metadata['attachments'] as List)
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
 }
 
 @immutable

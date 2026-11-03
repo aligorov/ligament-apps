@@ -71,8 +71,12 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  Future<ChatItem> createDirectChat(ApiClient client, String targetUser) async {
-    final res = await client.createChat(kind: 'direct', targetUser: targetUser);
+  Future<ChatItem> createDirectChat(ApiClient client, String targetUser, {String targetName = ''}) async {
+    final res = await client.createChat(
+      kind: 'direct',
+      targetUser: targetUser,
+      targetName: targetName.isNotEmpty ? targetName : null,
+    );
     final item = ChatItem.fromJson(res);
     await loadChats(client);
     return item;
@@ -133,7 +137,7 @@ class ChatService extends ChangeNotifier {
         _messages[key] = reversedBatch;
       }
 
-      if (current.isEmpty && fetched.isNotEmpty) {
+      if (fetched.isNotEmpty) {
         // Сдвигаем read pointer на самое свежее сообщение
         final latest = fetched.last;
         unawaited(markRead(client, chatId, topicId, latest.id));
@@ -153,6 +157,7 @@ class ChatService extends ChangeNotifier {
     required String body,
     String kind = 'text',
     int? secretTtl,
+    Map<String, dynamic>? metadata,
   }) async {
     try {
       final res = await client.sendChatMessage(
@@ -161,6 +166,7 @@ class ChatService extends ChangeNotifier {
         body: body,
         kind: kind,
         secretTtl: secretTtl,
+        metadata: metadata,
       );
       final sent = ChatMessage.fromJson(res);
       final key = '$chatId:$topicId';
@@ -172,6 +178,50 @@ class ChatService extends ChangeNotifier {
       DebugLogService.instance.record('chat.send.failed', error: e);
       rethrow;
     }
+  }
+
+  Future<void> sendAttachment(
+    ApiClient client,
+    String chatId, {
+    int topicId = 0,
+    required String fileName,
+    required List<int> bytes,
+  }) async {
+    try {
+      final att = await client.uploadChatAttachment(chatId, bytes, fileName);
+      final attId = att['id'] as String? ?? '';
+      final isImage = fileName.toLowerCase().endsWith('.png') ||
+          fileName.toLowerCase().endsWith('.jpg') ||
+          fileName.toLowerCase().endsWith('.jpeg') ||
+          fileName.toLowerCase().endsWith('.gif') ||
+          fileName.toLowerCase().endsWith('.webp');
+
+      await sendMessage(
+        client,
+        chatId,
+        topicId: topicId,
+        body: isImage ? '📷 $fileName' : '📎 $fileName',
+        kind: isImage ? 'image' : 'file',
+        metadata: {
+          'attachments': [
+            {
+              'id': attId,
+              'name': fileName,
+              'size': bytes.length,
+              'content_type': att['content_type'] ?? 'application/octet-stream',
+            }
+          ]
+        },
+      );
+    } catch (e) {
+      DebugLogService.instance.record('chat.attachment.failed', error: e);
+      rethrow;
+    }
+  }
+
+  void markLocalRead(String chatId) {
+    _updateLocalUnread(chatId, 0);
+    notifyListeners();
   }
 
   Future<void> markRead(ApiClient client, String chatId, int topicId, int lastReadId) async {

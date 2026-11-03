@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../app_version.dart';
@@ -756,12 +757,14 @@ class ApiClient {
     required String body,
     String kind = 'text',
     int? secretTtl,
+    Map<String, dynamic>? metadata,
   }) async {
     final payload = <String, dynamic>{
       'topic_id': topicId,
       'body': body,
       'kind': kind,
       if (secretTtl != null) 'secret_ttl_seconds': secretTtl,
+      if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
     };
     final res = await _post(
       _cleanUrl('/apps/chat/api/v1/chats/$chatId/messages'),
@@ -772,6 +775,41 @@ class ApiClient {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
     throw ApiException(res.statusCode, 'message_send_failed');
+  }
+
+  /// Ligament Chat: загрузка вложения (файла или изображения)
+  Future<Map<String, dynamic>> uploadChatAttachment(
+    String chatId,
+    List<int> bytes,
+    String fileName,
+  ) async {
+    final uri = Uri.parse(_cleanUrl('/apps/chat/api/v1/attachments/upload'));
+    final req = http.MultipartRequest('POST', uri);
+    req.headers.addAll(_headers());
+    req.fields['chat_id'] = chatId;
+    req.files.add(http.MultipartFile.fromBytes(
+      'file',
+      bytes,
+      filename: fileName,
+    ));
+    final streamedResponse = await req.send();
+    final res = await http.Response.fromStream(streamedResponse);
+    if (res.statusCode == 200 || res.statusCode == 201) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'attachment_upload_failed');
+  }
+
+  /// Ligament Chat: скачивание вложения по ID
+  Future<Uint8List> downloadChatAttachment(String attachmentId) async {
+    final res = await _get(
+      _cleanUrl('/apps/chat/api/v1/attachments/$attachmentId/download'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      return res.bodyBytes;
+    }
+    throw ApiException(res.statusCode, 'attachment_download_failed');
   }
 
   /// Ligament Chat: сдвиг указателя прочтения High-Water Mark
@@ -809,6 +847,7 @@ class ApiClient {
     String description = '',
     bool isForum = false,
     String? targetUser,
+    String? targetName,
     List<String> members = const [],
   }) async {
     final res = await _post(
@@ -820,6 +859,7 @@ class ApiClient {
         'description': description,
         'is_forum': isForum,
         if (targetUser != null) 'target_user': targetUser,
+        if (targetName != null) 'target_name': targetName,
         'members': members,
       }),
     );
