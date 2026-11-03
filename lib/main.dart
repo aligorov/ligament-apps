@@ -22,6 +22,7 @@ import 'screens/link_host_overlay.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/splash_screen.dart';
+import 'screens/chat_screen.dart';
 import 'app_version.dart';
 import 'widgets/debug_action_scope.dart';
 
@@ -409,6 +410,9 @@ class _LigamentAppState extends State<LigamentApp>
         MenuItem(
             key: 'show',
             label: isRu ? 'Открыть Ligament 2FA' : 'Open Ligament 2FA'),
+        MenuItem(
+            key: 'chat',
+            label: isRu ? '💬 Корпоративный чат' : '💬 Corporate Chat'),
       ];
 
       if (hasUpdate) {
@@ -502,6 +506,11 @@ class _LigamentAppState extends State<LigamentApp>
         fields: {'operation': menuItem.key});
     if (menuItem.key == 'show') {
       _restoreWindowFromTray();
+    } else if (menuItem.key == 'chat') {
+      _restoreWindowFromTray();
+      LigamentApp.navigatorKey.currentState?.push(
+        MaterialPageRoute(builder: (_) => const ChatScreen()),
+      );
     } else if (menuItem.key == 'update') {
       final auth = context.read<AuthState>();
       final releaseUrl = auth.appUpdate?['release_url']?.toString();
