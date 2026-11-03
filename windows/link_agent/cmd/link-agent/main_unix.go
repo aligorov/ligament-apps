@@ -55,6 +55,9 @@ func readUnixHardwareModel() string {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
+	linkagent.SetWorkerLogger(func(format string, args ...any) {
+		log.Printf(format, args...)
+	})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	for {

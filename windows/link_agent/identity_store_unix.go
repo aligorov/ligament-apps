@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"time"
 
 	"github.com/go-keyring/keyring"
@@ -40,6 +42,12 @@ type unixCredentialVault interface {
 type nativeUnixCredentialVault struct{}
 
 func (nativeUnixCredentialVault) Get(service, account string) ([]byte, error) {
+	if runtime.GOOS == "darwin" {
+		out, execErr := exec.Command("security", "find-generic-password", "-s", service, "-a", account, "-w").Output()
+		if execErr == nil && len(bytes.TrimSpace(out)) > 0 {
+			return bytes.TrimSpace(out), nil
+		}
+	}
 	return keyring.Get(service, account)
 }
 

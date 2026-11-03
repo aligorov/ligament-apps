@@ -32,6 +32,7 @@ public final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         self.currentCaptureAudio = captureAudio
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        fputs("link-worker-darwin: SCShareableContent found \(content.displays.count) display(s)\n", stderr)
         
         let targetDisplay: SCDisplay
         if let displayId = displayId, let found = content.displays.first(where: { $0.displayID == displayId }) {
@@ -39,7 +40,7 @@ public final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         } else if let main = content.displays.first {
             targetDisplay = main
         } else {
-            throw NSError(domain: "ScreenCapturer", code: 1, userInfo: [NSLocalizedDescriptionKey: "No active displays found"])
+            throw NSError(domain: "ScreenCapturer", code: 1, userInfo: [NSLocalizedDescriptionKey: "No active displays found (permission denied or no displays)"])
         }
 
         self.activeDisplayBounds = targetDisplay.frame
@@ -69,11 +70,24 @@ public final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let scStream = SCStream(filter: filter, configuration: config, delegate: self)
         try scStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
         if captureAudio {
-            try scStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
+            try? scStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
         }
 
-        try await scStream.startCapture()
-        self.stream = scStream
+        do {
+            try await scStream.startCapture()
+            self.stream = scStream
+        } catch {
+            if captureAudio {
+                fputs("link-worker-darwin: startCapture with audio failed (\(error)), retrying video-only...\n", stderr)
+                config.capturesAudio = false
+                let videoOnlyStream = SCStream(filter: filter, configuration: config, delegate: self)
+                try videoOnlyStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
+                try await videoOnlyStream.startCapture()
+                self.stream = videoOnlyStream
+                return
+            }
+            throw error
+        }
     }
 
     public func stopCapture() async {

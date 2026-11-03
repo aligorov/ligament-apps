@@ -42,9 +42,12 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
 
             // Start ScreenCaptureKit (Video + System Audio)
             do {
+                fputs("link-worker-darwin: starting screen capture for session \(self.currentSessionId)...\n", stderr)
                 try await capturer.startCapture(captureAudio: true)
+                fputs("link-worker-darwin: screen capture started successfully\n", stderr)
                 webRTC.targetDisplayBounds = capturer.activeDisplayBounds
             } catch {
+                fputs("link-worker-darwin: startCapture failed: \(error)\n", stderr)
                 let answer = SessionAnswerEnvelope(
                     sessionId: self.currentSessionId,
                     accepted: false,
@@ -56,6 +59,7 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
 
             // Create WebRTC Answer SDP
             guard let offerSdp = offer.sdp, !offerSdp.isEmpty else {
+                fputs("link-worker-darwin: offer SDP is empty\n", stderr)
                 let answer = SessionAnswerEnvelope(
                     sessionId: self.currentSessionId,
                     accepted: false,
@@ -67,7 +71,9 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
             }
 
             do {
+                fputs("link-worker-darwin: creating WebRTC answer...\n", stderr)
                 let answerSdp = try await webRTC.createAnswer(for: offerSdp)
+                fputs("link-worker-darwin: WebRTC answer created successfully\n", stderr)
                 let answer = SessionAnswerEnvelope(
                     sessionId: self.currentSessionId,
                     accepted: true,
@@ -75,6 +81,7 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
                 )
                 try ipc.send(answer)
             } catch {
+                fputs("link-worker-darwin: createAnswer failed: \(error)\n", stderr)
                 let answer = SessionAnswerEnvelope(
                     sessionId: self.currentSessionId,
                     accepted: false,
