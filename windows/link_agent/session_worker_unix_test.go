@@ -294,9 +294,9 @@ func TestNativeDarwinWorkerSpawnAndHandshake(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// Real 2fa server sends session_offer without session_id at root
 	offerJSON := []byte(`{
 		"type":"session_offer",
-		"session_id":"test-session-123",
 		"payload":{
 			"session_id":"test-session-123",
 			"sdp":"v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n",

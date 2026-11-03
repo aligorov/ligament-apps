@@ -18,9 +18,21 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
             
             let initialData = try ipc.readFrame()
             let decoder = JSONDecoder()
-            let offerEnvelope = try decoder.decode(SessionOfferEnvelope.self, from: initialData)
+            let offerEnvelope: SessionOfferEnvelope
+            do {
+                offerEnvelope = try decoder.decode(SessionOfferEnvelope.self, from: initialData)
+            } catch {
+                if let raw = String(data: initialData, encoding: .utf8) {
+                    fputs("link-worker-darwin failed to decode initial offer: \(error), raw data: \(raw)\n", stderr)
+                }
+                throw error
+            }
             let offer = offerEnvelope.payload
-            self.currentSessionId = offer.sessionId
+            self.currentSessionId = offerEnvelope.effectiveSessionId
+            guard !self.currentSessionId.isEmpty else {
+                fputs("link-worker-darwin error: session_id is missing from offer payload\n", stderr)
+                exit(1)
+            }
 
             webRTC.delegate = self
             capturer.delegate = self
@@ -34,7 +46,7 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
                 webRTC.targetDisplayBounds = capturer.activeDisplayBounds
             } catch {
                 let answer = SessionAnswerEnvelope(
-                    sessionId: offer.sessionId,
+                    sessionId: self.currentSessionId,
                     accepted: false,
                     reason: "host_screen_capture_unavailable"
                 )
@@ -45,7 +57,7 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
             // Create WebRTC Answer SDP
             guard let offerSdp = offer.sdp, !offerSdp.isEmpty else {
                 let answer = SessionAnswerEnvelope(
-                    sessionId: offer.sessionId,
+                    sessionId: self.currentSessionId,
                     accepted: false,
                     reason: "invalid_offer"
                 )
@@ -57,14 +69,14 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
             do {
                 let answerSdp = try await webRTC.createAnswer(for: offerSdp)
                 let answer = SessionAnswerEnvelope(
-                    sessionId: offer.sessionId,
+                    sessionId: self.currentSessionId,
                     accepted: true,
                     sdp: answerSdp
                 )
                 try ipc.send(answer)
             } catch {
                 let answer = SessionAnswerEnvelope(
-                    sessionId: offer.sessionId,
+                    sessionId: self.currentSessionId,
                     accepted: false,
                     reason: "host_worker_failed"
                 )
@@ -79,7 +91,7 @@ final class WorkerCoordinator: WebRTCBridgeDelegate, ScreenCaptureDelegate {
             }
 
         } catch {
-            fputs("link-worker-darwin error: \(error.localizedDescription)\n", stderr)
+            fputs("link-worker-darwin error: \(error)\n", stderr)
             exit(1)
         }
     }
