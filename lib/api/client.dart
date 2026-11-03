@@ -869,6 +869,17 @@ class ApiClient {
     throw ApiException(res.statusCode, 'chat_create_failed');
   }
 
+  /// Ligament Chat: удаление диалога
+  Future<void> deleteChat(String chatId) async {
+    final res = await _delete(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId'),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'chat_delete_failed');
+    }
+  }
+
   /// SOS: с Link-агентом этого ПК — очередь SOS (`sos_v2`), иначе трансляция экрана приложением.
   Future<Map<String, dynamic>> requestSupport({
     required String category,

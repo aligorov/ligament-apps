@@ -1,12 +1,16 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../api/client.dart';
 import '../models/chat_models.dart';
 import 'debug_log_service.dart';
 
 class ChatService extends ChangeNotifier {
   static final ChatService instance = ChatService._();
-  ChatService._();
+  ChatService._() {
+    unawaited(initSettings());
+  }
 
   List<ChatItem> _chats = const [];
   List<ChatContact> _contacts = const [];
@@ -14,6 +18,11 @@ class ChatService extends ChangeNotifier {
   final Map<String, List<ChatMessage>> _messages = {}; // key: "$chatId:$topicId"
   bool _isLoadingChats = false;
   final Set<String> _loadingMessages = {};
+  bool _playSounds = true;
+  bool _showNotifications = true;
+
+  bool get playSounds => _playSounds;
+  bool get showNotifications => _showNotifications;
 
   List<ChatItem> get chats => _chats;
   List<ChatContact> get contacts => _contacts;
@@ -254,6 +263,45 @@ class ChatService extends ChangeNotifier {
     }).toList();
   }
 
+  Future<void> initSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _playSounds = prefs.getBool('chat_sound_enabled') ?? true;
+      _showNotifications = prefs.getBool('chat_notifications_enabled') ?? true;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> setPlaySounds(bool val) async {
+    _playSounds = val;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('chat_sound_enabled', val);
+    } catch (_) {}
+  }
+
+  Future<void> setShowNotifications(bool val) async {
+    _showNotifications = val;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('chat_notifications_enabled', val);
+    } catch (_) {}
+  }
+
+  Future<void> deleteChat(ApiClient client, String chatId) async {
+    try {
+      await client.deleteChat(chatId);
+      _chats = _chats.where((c) => c.id != chatId).toList();
+      _messages.removeWhere((k, _) => k.startsWith('$chatId:'));
+      notifyListeners();
+    } catch (e) {
+      DebugLogService.instance.record('chat.delete.failed', error: e, fields: {'chat_id': chatId});
+      rethrow;
+    }
+  }
+
   void onWebSocketEvent(Map<String, dynamic> event) {
     final type = event['type'] as String?;
     if (type == 'chat.message') {
@@ -264,6 +312,9 @@ class ChatService extends ChangeNotifier {
         final key = '${msg.chatId}:${msg.topicId}';
         final current = _messages[key] ?? const [];
         _messages[key] = [msg, ...current];
+        if (_playSounds) {
+          SystemSound.play(SystemSoundType.alert);
+        }
         notifyListeners();
       }
     }

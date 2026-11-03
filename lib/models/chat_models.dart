@@ -146,12 +146,14 @@ class ChatMessage {
 
 @immutable
 class ChatContact {
+  final String id;
   final String username;
   final String displayName;
   final String email;
   final String title;
 
   const ChatContact({
+    this.id = '',
     required this.username,
     required this.displayName,
     this.email = '',
@@ -160,6 +162,7 @@ class ChatContact {
 
   factory ChatContact.fromJson(Map<String, dynamic> json) {
     return ChatContact(
+      id: json['id'] as String? ?? '',
       username: json['username'] as String? ?? '',
       displayName: json['display_name'] as String? ?? '',
       email: json['email'] as String? ?? '',

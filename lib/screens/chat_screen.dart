@@ -290,6 +290,16 @@ class _ChatScreenState extends State<ChatScreen> {
               tooltip: 'Настройки камеры/микрофона',
               onPressed: _showMediaSettingsDialog,
             ),
+            IconButton(
+              icon: const Icon(Icons.tune_outlined),
+              tooltip: 'Настройки чата',
+              onPressed: _showChatSettingsDialog,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: 'Удалить диалог',
+              onPressed: _confirmDeleteChat,
+            ),
             if (_selectedChat?.isForum == true)
               IconButton(
                 icon: const Icon(Icons.forum_outlined),
@@ -311,6 +321,11 @@ class _ChatScreenState extends State<ChatScreen> {
         title: const Text('💬 Корпоративный чат'),
         elevation: 0,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.tune_outlined),
+            tooltip: 'Настройки чата',
+            onPressed: _showChatSettingsDialog,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Обновить',
@@ -413,13 +428,39 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                             )
                           : null,
-                      trailing: chat.unreadCount > 0
-                          ? Badge(
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (chat.unreadCount > 0)
+                            Badge(
                               label: Text('${chat.unreadCount}'),
                               backgroundColor: theme.colorScheme.primary,
-                            )
-                          : null,
+                            ),
+                          PopupMenuButton<String>(
+                            icon: const Icon(Icons.more_vert, size: 18),
+                            tooltip: 'Действия',
+                            onSelected: (val) {
+                              if (val == 'delete') {
+                                _confirmDeleteChat(chat);
+                              }
+                            },
+                            itemBuilder: (ctx) => [
+                              const PopupMenuItem(
+                                value: 'delete',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                                    SizedBox(width: 8),
+                                    Text('Удалить диалог', style: TextStyle(color: Colors.red)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                       onTap: () => _selectChat(chat),
+                      onLongPress: () => _confirmDeleteChat(chat),
                     );
                   },
                 ),
@@ -518,6 +559,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final messages = _chatService.getMessages(chatId, topicId);
     final auth = context.read<AuthState>();
     final currentUsername = auth.username;
+    final currentDisplayName = auth.displayName;
     final currentUserId = auth.currentUser?['id']?.toString() ?? '';
     final isWide = MediaQuery.of(context).size.width >= 720;
 
@@ -542,9 +584,9 @@ class _ChatScreenState extends State<ChatScreen> {
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
                         final msg = messages[index];
-                        final isMe = msg.senderId == currentUserId ||
-                            msg.senderName == currentUsername ||
-                            msg.senderId == currentUsername;
+                        final isMe = (currentUserId.isNotEmpty && msg.senderId == currentUserId) ||
+                            (currentDisplayName.isNotEmpty && msg.senderName == currentDisplayName) ||
+                            (currentUsername.isNotEmpty && (msg.senderName == currentUsername || msg.senderId == currentUsername));
                         return _buildMessageBubble(theme, msg, isMe);
                       },
                     ),
@@ -641,27 +683,29 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _resolveChatTitle(ChatItem chat) {
     final title = chat.title.trim();
-    if (_isUuid(title)) {
-      for (final c in _chatService.contacts) {
-        if (c.username == title) {
-          return c.displayName.isNotEmpty ? c.displayName : c.username;
-        }
+    for (final c in _chatService.contacts) {
+      if (c.id == title || c.username.toLowerCase() == title.toLowerCase()) {
+        return c.displayName.isNotEmpty ? c.displayName : c.username;
       }
+    }
+    if (_isUuid(title)) {
       return 'Диалог с сотрудником';
     }
     return title.isNotEmpty ? title : 'Диалог';
   }
 
   String _resolveSenderName(ChatMessage msg) {
-    if (msg.senderName.isNotEmpty && !_isUuid(msg.senderName)) {
-      return msg.senderName;
-    }
     for (final c in _chatService.contacts) {
-      if (c.username == msg.senderId || c.displayName == msg.senderName) {
+      if ((c.id.isNotEmpty && c.id == msg.senderId) ||
+          (c.username.isNotEmpty && (c.username.toLowerCase() == msg.senderId.toLowerCase() || c.username.toLowerCase() == msg.senderName.toLowerCase())) ||
+          (c.displayName.isNotEmpty && c.displayName == msg.senderName)) {
         return c.displayName.isNotEmpty ? c.displayName : c.username;
       }
     }
-    return msg.senderName.isNotEmpty ? msg.senderName : msg.senderId;
+    if (msg.senderName.isNotEmpty && !_isUuid(msg.senderName)) {
+      return msg.senderName;
+    }
+    return msg.senderName.isNotEmpty ? msg.senderName : (msg.senderId.isNotEmpty ? msg.senderId : 'Сотрудник');
   }
 
   String _getInitials(String title) {
@@ -832,9 +876,19 @@ class _ChatScreenState extends State<ChatScreen> {
             onPressed: () => _startCall(isVideo: true),
           ),
           IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Настройки камеры/микрофона',
+            icon: const Icon(Icons.settings_voice_outlined),
+            tooltip: 'Настройки звонков',
             onPressed: _showMediaSettingsDialog,
+          ),
+          IconButton(
+            icon: const Icon(Icons.tune_outlined),
+            tooltip: 'Настройки чата',
+            onPressed: _showChatSettingsDialog,
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: 'Удалить диалог',
+            onPressed: _confirmDeleteChat,
           ),
         ],
       ),
@@ -987,6 +1041,123 @@ class _ChatScreenState extends State<ChatScreen> {
             backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
+      }
+    }
+  }
+
+  Future<void> _showChatSettingsDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.tune_outlined),
+                  SizedBox(width: 8),
+                  Text('Настройки чата'),
+                ],
+              ),
+              content: SizedBox(
+                width: 380,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SwitchListTile(
+                      title: const Text('Звуковые оповещения'),
+                      subtitle: const Text('Воспроизводить звук при входящих сообщениях'),
+                      value: _chatService.playSounds,
+                      onChanged: (val) async {
+                        await _chatService.setPlaySounds(val);
+                        setDialogState(() {});
+                      },
+                    ),
+                    SwitchListTile(
+                      title: const Text('Всплывающие уведомления'),
+                      subtitle: const Text('Системные уведомления о новых сообщениях'),
+                      value: _chatService.showNotifications,
+                      onChanged: (val) async {
+                        await _chatService.setShowNotifications(val);
+                        setDialogState(() {});
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Закрыть'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmDeleteChat([ChatItem? targetChat]) async {
+    final chat = targetChat ?? _selectedChat;
+    if (chat == null) return;
+    final chatTitle = _resolveChatTitle(chat);
+    final auth = context.read<AuthState>();
+    final api = auth.api;
+    if (api == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_outline, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Удалить диалог?'),
+          ],
+        ),
+        content: Text(
+          'Вы уверены, что хотите удалить диалог с «$chatTitle»? Все сообщения и история переписки будут удалены навсегда.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      try {
+        await _chatService.deleteChat(api, chat.id);
+        if (_selectedChat?.id == chat.id) {
+          setState(() {
+            _selectedChat = null;
+          });
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Диалог успешно удален')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Ошибка удаления диалога: $e'),
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+          );
+        }
       }
     }
   }
