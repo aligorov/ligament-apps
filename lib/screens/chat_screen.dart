@@ -1385,7 +1385,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          'Установление P2P соединения...',
+                          'P2P через Ligament ICE (STUN/TURN)...',
                           style: TextStyle(fontSize: 12, color: theme.colorScheme.primary),
                         ),
                       ],

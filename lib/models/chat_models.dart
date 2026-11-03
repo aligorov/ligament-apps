@@ -11,6 +11,7 @@ class ChatItem {
   final bool isArchived;
   final int unreadCount;
   final DateTime updatedAt;
+  final String peerUserId;
 
   const ChatItem({
     required this.id,
@@ -22,6 +23,7 @@ class ChatItem {
     this.isArchived = false,
     this.unreadCount = 0,
     required this.updatedAt,
+    this.peerUserId = '',
   });
 
   factory ChatItem.fromJson(Map<String, dynamic> json) {
@@ -37,6 +39,7 @@ class ChatItem {
       updatedAt: json['updated_at'] != null
           ? DateTime.tryParse(json['updated_at'] as String) ?? DateTime.now()
           : DateTime.now(),
+      peerUserId: json['peer_user_id'] as String? ?? '',
     );
   }
 }
