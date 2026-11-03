@@ -848,7 +848,10 @@ class ApiClient {
       'kind': kind,
       if (secretTtl != null) 'secret_ttl_seconds': secretTtl,
       if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
-      if (attachments != null && attachments.isNotEmpty) 'attachments': attachments,
+      if (attachments != null && attachments.isNotEmpty) ...{
+        'attachments': attachments,
+        'attachment_ids': attachments,
+      },
     };
     final res = await _post(
       _cleanUrl('/apps/chat/api/v1/chats/$chatId/messages'),
@@ -869,7 +872,13 @@ class ApiClient {
   ) async {
     final uri = Uri.parse(_cleanUrl('/apps/chat/api/v1/attachments/upload'));
     final req = http.MultipartRequest('POST', uri);
-    req.headers.addAll(_headers());
+    if (token != null && token!.isNotEmpty) {
+      req.headers['Authorization'] = 'Bearer $token';
+    }
+    if (appVersion.isNotEmpty) {
+      req.headers['X-App-Version'] = appVersion;
+    }
+    req.headers['Accept'] = 'application/json';
     req.fields['chat_id'] = chatId;
     req.files.add(http.MultipartFile.fromBytes(
       'file',
@@ -881,7 +890,14 @@ class ApiClient {
     if (res.statusCode == 200 || res.statusCode == 201) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
-    throw ApiException(res.statusCode, 'attachment_upload_failed');
+    var errMsg = 'attachment_upload_failed';
+    try {
+      final body = jsonDecode(utf8.decode(res.bodyBytes));
+      if (body is Map && body['error'] != null) {
+        errMsg = body['error'].toString();
+      }
+    } catch (_) {}
+    throw ApiException(res.statusCode, errMsg);
   }
 
   /// Ligament Chat: скачивание вложения по ID

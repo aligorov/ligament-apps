@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -967,8 +968,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildAttachmentCard(ThemeData theme, Map<String, dynamic> att, bool isMe) {
-    final name = att['name']?.toString() ?? 'Файл';
-    final sizeBytes = (att['size'] as num?)?.toInt() ?? 0;
+    final name = att['name']?.toString() ?? att['file_name']?.toString() ?? 'Файл';
+    final sizeBytes = (att['size'] as num?)?.toInt() ?? (att['file_size'] as num?)?.toInt() ?? 0;
     final attId = att['id']?.toString() ?? '';
     final sizeStr = sizeBytes > 1024 * 1024
         ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} МБ'
@@ -1059,7 +1060,12 @@ class _ChatScreenState extends State<ChatScreen> {
       final result = await FilePicker.platform.pickFiles(withData: true);
       if (result == null || result.files.isEmpty) return;
       final file = result.files.first;
-      final bytes = file.bytes;
+      var bytes = file.bytes;
+      if ((bytes == null || bytes.isEmpty) && file.path != null && file.path!.isNotEmpty) {
+        try {
+          bytes = await File(file.path!).readAsBytes();
+        } catch (_) {}
+      }
       if (bytes == null || bytes.isEmpty) return;
 
       setState(() => _isUploading = true);

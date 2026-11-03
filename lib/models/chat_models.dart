@@ -94,6 +94,7 @@ class ChatMessage {
   final int? secretTtlSeconds;
   final DateTime? secretReadAt;
   final Map<String, dynamic> metadata;
+  final List<Map<String, dynamic>> rawAttachments;
   final DateTime createdAt;
 
   const ChatMessage({
@@ -109,10 +110,15 @@ class ChatMessage {
     this.secretTtlSeconds,
     this.secretReadAt,
     this.metadata = const {},
+    this.rawAttachments = const [],
     required this.createdAt,
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    var rawAtts = const <Map<String, dynamic>>[];
+    if (json['attachments'] is List) {
+      rawAtts = (json['attachments'] as List).whereType<Map<String, dynamic>>().toList();
+    }
     return ChatMessage(
       id: (json['id'] as num?)?.toInt() ?? 0,
       chatId: json['chat_id'] as String? ?? '',
@@ -128,22 +134,25 @@ class ChatMessage {
           ? DateTime.tryParse(json['secret_read_at'] as String)
           : null,
       metadata: json['metadata'] as Map<String, dynamic>? ?? const {},
+      rawAttachments: rawAtts,
       createdAt: json['created_at'] != null
           ? DateTime.tryParse(json['created_at'] as String) ?? DateTime.now()
           : DateTime.now(),
     );
   }
 
-  bool get hasAttachments =>
-      metadata.containsKey('attachments') &&
-      metadata['attachments'] is List &&
-      (metadata['attachments'] as List).isNotEmpty;
+  bool get hasAttachments => attachments.isNotEmpty;
 
   List<Map<String, dynamic>> get attachments {
-    if (!hasAttachments) return const [];
-    return (metadata['attachments'] as List)
-        .whereType<Map<String, dynamic>>()
-        .toList();
+    if (rawAttachments.isNotEmpty) return rawAttachments;
+    if (metadata.containsKey('attachments') &&
+        metadata['attachments'] is List &&
+        (metadata['attachments'] as List).isNotEmpty) {
+      return (metadata['attachments'] as List)
+          .whereType<Map<String, dynamic>>()
+          .toList();
+    }
+    return const [];
   }
 }
 
