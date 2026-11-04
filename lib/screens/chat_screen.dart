@@ -1555,7 +1555,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (body == name ||
           body == '📷 $name' ||
           body == '📎 $name' ||
-          body == 'Вложение') {
+          body == '🎥 $name' ||
+          body == '📹 $name' ||
+          body == '▶️ $name' ||
+          body == 'Вложение' ||
+          body == 'Видео') {
         return true;
       }
     }
@@ -1575,6 +1579,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         name.endsWith('.heic') ||
         name.endsWith('.heif') ||
         name.endsWith('.ico');
+  }
+
+  bool _isVideoAttachment(Map<String, dynamic> att) {
+    final contentType = (att['content_type'] ?? att['contentType'] ?? '').toString().toLowerCase();
+    if (contentType.startsWith('video/')) return true;
+    final name = (att['name'] ?? att['file_name'] ?? '').toString().toLowerCase();
+    return name.endsWith('.mp4') ||
+        name.endsWith('.mov') ||
+        name.endsWith('.webm') ||
+        name.endsWith('.mkv') ||
+        name.endsWith('.avi') ||
+        name.endsWith('.m4v') ||
+        name.endsWith('.3gp') ||
+        name.endsWith('.ts');
   }
 
   IconData _getFileIcon(String name) {
@@ -1683,9 +1701,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildAttachmentItem(ThemeData theme, Map<String, dynamic> att, bool isMe) {
+    final auth = context.read<AuthState>();
     if (_isImageAttachment(att)) {
-      final auth = context.read<AuthState>();
       return _ChatImageAttachmentPreview(
+        attachment: att,
+        isMe: isMe,
+        apiClient: auth.api,
+        ensureCached: (attId, name, {initialBytes}) =>
+            _ensureAttachmentCached(auth.api!, attId, name, initialBytes: initialBytes),
+        onPreview: (attId, name) => _previewAttachmentNatively(attId, name),
+        onSave: (attId, name) => _downloadAndSaveFile(attId, name),
+      );
+    }
+    if (_isVideoAttachment(att)) {
+      return _ChatVideoAttachmentPreview(
         attachment: att,
         isMe: isMe,
         apiClient: auth.api,
@@ -3292,6 +3321,224 @@ class _ChatImageAttachmentPreviewState extends State<_ChatImageAttachmentPreview
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _ChatVideoAttachmentPreview extends StatefulWidget {
+  final Map<String, dynamic> attachment;
+  final bool isMe;
+  final ApiClient? apiClient;
+  final Future<File?> Function(String attId, String fileName, {List<int>? initialBytes}) ensureCached;
+  final void Function(String attId, String fileName) onPreview;
+  final void Function(String attId, String fileName) onSave;
+
+  const _ChatVideoAttachmentPreview({
+    required this.attachment,
+    required this.isMe,
+    required this.apiClient,
+    required this.ensureCached,
+    required this.onPreview,
+    required this.onSave,
+  });
+
+  @override
+  State<_ChatVideoAttachmentPreview> createState() => _ChatVideoAttachmentPreviewState();
+}
+
+class _ChatVideoAttachmentPreviewState extends State<_ChatVideoAttachmentPreview> {
+  void _handlePlay() {
+    final attId = (widget.attachment['id'] ?? widget.attachment['attachment_id'] ?? '').toString();
+    final name = (widget.attachment['name'] ?? widget.attachment['file_name'] ?? 'video.mp4').toString();
+    widget.onPreview(attId, name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = (widget.attachment['name'] ?? widget.attachment['file_name'] ?? 'Видео').toString();
+    final attId = (widget.attachment['id'] ?? widget.attachment['attachment_id'] ?? '').toString();
+    final sizeBytes = (widget.attachment['size'] as num?)?.toInt() ??
+        (widget.attachment['file_size'] as num?)?.toInt() ?? 0;
+    final sizeStr = sizeBytes > 1024 * 1024
+        ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} МБ'
+        : '${(sizeBytes / 1024).toStringAsFixed(1)} КБ';
+
+    final ext = name.contains('.') ? name.split('.').last.toUpperCase() : 'VIDEO';
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      constraints: const BoxConstraints(
+        maxWidth: 320,
+        minWidth: 220,
+        maxHeight: 180,
+        minHeight: 130,
+      ),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: widget.isMe
+              ? [const Color(0xFF1E3A5F), const Color(0xFF122338)]
+              : [const Color(0xFF1F2430), const Color(0xFF131720)],
+        ),
+        border: Border.all(
+          color: widget.isMe
+              ? Colors.white24
+              : theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.25),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(11),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: _handlePlay,
+            child: Stack(
+              children: [
+                const Positioned.fill(
+                  child: Opacity(
+                    opacity: 0.08,
+                    child: Center(
+                      child: Icon(
+                        Icons.videocam_rounded,
+                        size: 110,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 8,
+                  left: 10,
+                  right: 10,
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: Colors.white24, width: 0.5),
+                        ),
+                        child: Text(
+                          ext,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Center(
+                  child: Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.black.withValues(alpha: 0.6),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.8), width: 2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.4),
+                          blurRadius: 10,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow_rounded,
+                      size: 34,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.bottomCenter,
+                        end: Alignment.topCenter,
+                        colors: [Colors.black87, Colors.transparent],
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.movie_outlined, size: 14, color: Colors.white70),
+                            const SizedBox(width: 4),
+                            Text(
+                              sizeStr,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                              icon: const Icon(Icons.fullscreen_rounded, size: 20, color: Colors.white),
+                              tooltip: 'Смотреть нативно',
+                              onPressed: _handlePlay,
+                            ),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                              icon: const Icon(Icons.download_rounded, size: 20, color: Colors.white),
+                              tooltip: 'Скачать файл',
+                              onPressed: () => widget.onSave(attId, name),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

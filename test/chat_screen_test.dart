@@ -205,5 +205,37 @@ void main() {
       expect(msg.attachments.first['size'], 1363148);
       expect(msg.attachments.first['content_type'], 'image/png');
     });
+
+    test('ChatMessage deserialization with video attachment', () {
+      final jsonVideo = {
+        'id': 1003,
+        'chat_id': 'chat-123',
+        'topic_id': 0,
+        'sender_id': 'usr-alex',
+        'sender_name': 'Алексей',
+        'client_msg_id': 'c-3',
+        'body': '🎥 screencast.mp4',
+        'kind': 'video',
+        'metadata': {
+          'attachments': [
+            {
+              'id': 'att-video-999',
+              'name': 'screencast.mp4',
+              'size': 14890000,
+              'content_type': 'video/mp4',
+            }
+          ]
+        },
+        'created_at': '2026-11-04T16:15:00Z',
+      };
+
+      final msg = ChatMessage.fromJson(jsonVideo);
+      expect(msg.hasAttachments, isTrue);
+      expect(msg.kind, 'video');
+      expect(msg.attachments.first['id'], 'att-video-999');
+      expect(msg.attachments.first['name'], 'screencast.mp4');
+      expect(msg.attachments.first['size'], 14890000);
+      expect(msg.attachments.first['content_type'], 'video/mp4');
+    });
   });
 }

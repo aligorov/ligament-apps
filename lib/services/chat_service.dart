@@ -273,18 +273,28 @@ class ChatService extends ChangeNotifier {
     try {
       final att = await client.uploadChatAttachment(chatId, bytes, fileName);
       final attId = att['id'] as String? ?? '';
-      final isImage = fileName.toLowerCase().endsWith('.png') ||
-          fileName.toLowerCase().endsWith('.jpg') ||
-          fileName.toLowerCase().endsWith('.jpeg') ||
-          fileName.toLowerCase().endsWith('.gif') ||
-          fileName.toLowerCase().endsWith('.webp');
+      final lowerName = fileName.toLowerCase();
+      final isImage = lowerName.endsWith('.png') ||
+          lowerName.endsWith('.jpg') ||
+          lowerName.endsWith('.jpeg') ||
+          lowerName.endsWith('.gif') ||
+          lowerName.endsWith('.webp');
+      final isVideo = lowerName.endsWith('.mp4') ||
+          lowerName.endsWith('.mov') ||
+          lowerName.endsWith('.webm') ||
+          lowerName.endsWith('.mkv') ||
+          lowerName.endsWith('.avi') ||
+          lowerName.endsWith('.m4v');
+
+      final kind = isImage ? 'image' : (isVideo ? 'video' : 'file');
+      final body = isImage ? '📷 $fileName' : (isVideo ? '🎥 $fileName' : '📎 $fileName');
 
       await sendMessage(
         client,
         chatId,
         topicId: topicId,
-        body: isImage ? '📷 $fileName' : '📎 $fileName',
-        kind: isImage ? 'image' : 'file',
+        body: body,
+        kind: kind,
         attachments: attId.isNotEmpty ? [attId] : null,
         metadata: {
           'attachments': [
@@ -292,7 +302,7 @@ class ChatService extends ChangeNotifier {
               'id': attId,
               'name': fileName,
               'size': bytes.length,
-              'content_type': att['content_type'] ?? 'application/octet-stream',
+              'content_type': att['content_type'] ?? (isVideo ? 'video/mp4' : 'application/octet-stream'),
             }
           ]
         },
