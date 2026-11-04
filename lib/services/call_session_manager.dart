@@ -6,8 +6,10 @@ import 'debug_log_service.dart';
 enum CallStatus {
   idle,
   calling,
+  ringing,
   incoming,
   connected,
+  offline,
   ended,
 }
 
@@ -148,7 +150,7 @@ class CallSessionManager extends ChangeNotifier {
                     'turn:remote.grando.app:3478?transport=tcp',
                   ],
                   'username': 'ligament',
-                  'credential': 'ligament-secret-turn-key',
+                  'credential': 'TurnSecretPass2026!',
                 }
               ],
         'sdpSemantics': 'unified-plan',
@@ -224,6 +226,9 @@ class CallSessionManager extends ChangeNotifier {
       return;
     }
 
+    // Сообщаем звонящему, что вызов доставлен и играет рингтон
+    onSendSignal?.call(fromUser, chatId, {'type': 'ringing'});
+
     _status = CallStatus.incoming;
     _chatId = chatId;
     _targetUserId = fromUser;
@@ -292,7 +297,7 @@ class CallSessionManager extends ChangeNotifier {
                     'turn:remote.grando.app:3478?transport=tcp',
                   ],
                   'username': 'ligament',
-                  'credential': 'ligament-secret-turn-key',
+                  'credential': 'TurnSecretPass2026!',
                 }
               ],
         'sdpSemantics': 'unified-plan',
@@ -370,6 +375,38 @@ class CallSessionManager extends ChangeNotifier {
       onSendSignal?.call(_targetUserId, _chatId, {'type': 'rejected'});
     }
     endCall(notifyPeer: false);
+  }
+
+  /// Подтверждение доставки вызова (абонент найден, на устройстве идут гудки)
+  void handleRinging() {
+    if (_status == CallStatus.calling) {
+      _status = CallStatus.ringing;
+      notifyListeners();
+    }
+  }
+
+  /// Абонент не в сети / не подключен к серверу
+  void handleOffline() {
+    _ringTimeout?.cancel();
+    _ringTimeout = null;
+    _status = CallStatus.offline;
+    notifyListeners();
+    Timer(const Duration(seconds: 3), () {
+      if (_status == CallStatus.offline) {
+        endCall(notifyPeer: false);
+      }
+    });
+  }
+
+  /// Абонент занят
+  void handleBusy() {
+    _ringTimeout?.cancel();
+    _ringTimeout = null;
+    _status = CallStatus.ended;
+    notifyListeners();
+    Timer(const Duration(seconds: 2), () {
+      endCall(notifyPeer: false);
+    });
   }
 
   /// Получение SDP answer от вызываемого абонента

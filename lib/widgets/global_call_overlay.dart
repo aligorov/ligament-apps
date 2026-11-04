@@ -56,6 +56,8 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
 
     final isIncoming = _call.status == CallStatus.incoming;
     final isCalling = _call.status == CallStatus.calling;
+    final isRinging = _call.status == CallStatus.ringing;
+    final isOffline = _call.status == CallStatus.offline;
     final isConnected = _call.status == CallStatus.connected;
 
     final hasRemoteVideo = isConnected &&
@@ -226,14 +228,23 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                                       ? (_call.isVideo
                                           ? '📹 Входящий видеовызов'
                                           : '📞 Входящий аудиовызов')
-                                      : (_call.isVideo
-                                          ? '📹 Защищённый видеозвонок'
-                                          : '📞 Защищённый аудиозвонок'),
+                                      : isOffline
+                                          ? '❌ Абонент не в сети'
+                                          : isRinging
+                                              ? '📞 Идут гудки (вызов доставлен)...'
+                                              : isCalling
+                                                  ? '📞 Вызов абонента...'
+                                                  : (_call.isVideo
+                                                      ? '📹 Защищённый видеозвонок'
+                                                      : '📞 Защищённый аудиозвонок'),
                                   style: TextStyle(
-                                    fontSize: 14,
-                                    color: isIncoming
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    color: isIncoming || isRinging
                                         ? Colors.green
-                                        : theme.colorScheme.outline,
+                                        : isOffline
+                                            ? theme.colorScheme.error
+                                            : theme.colorScheme.outline,
                                   ),
                                 ),
                                 const SizedBox(height: 16),

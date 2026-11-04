@@ -484,6 +484,12 @@ class ChatService extends ChangeNotifier {
           chatId: chatId,
           offerPayload: payload,
         );
+      } else if (signalType == 'ringing') {
+        CallSessionManager.instance.handleRinging();
+      } else if (signalType == 'offline') {
+        CallSessionManager.instance.handleOffline();
+      } else if (signalType == 'busy') {
+        CallSessionManager.instance.handleBusy();
       } else if (signalType == 'answer') {
         final sdp = payload['sdp'] as String? ?? '';
         if (sdp.isNotEmpty) {
@@ -492,7 +498,7 @@ class ChatService extends ChangeNotifier {
       } else if (signalType == 'candidate') {
         final cand = payload['candidate'] as Map<String, dynamic>? ?? {};
         unawaited(CallSessionManager.instance.handleRemoteCandidate(cand));
-      } else if (signalType == 'hangup' || signalType == 'rejected' || signalType == 'busy') {
+      } else if (signalType == 'hangup' || signalType == 'rejected') {
         CallSessionManager.instance.endCall(notifyPeer: false);
       }
     }
