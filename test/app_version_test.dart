@@ -29,7 +29,7 @@ void main() {
   });
 
   test('kAppVersion fallback is set to current release', () {
-    expect(kAppVersion, '1.1.229+255');
+    expect(kAppVersion, '1.1.230+256');
   });
 
   testWidgets('AppUpdateDialog renders versions and launches download url',
