@@ -115,7 +115,7 @@ class AlertService {
 
       if (_gpo.playSound) {
         try {
-          await _getAudioPlayer().play(AssetSource('sounds/alert.mp3'));
+          await _getAudioPlayer().play(AssetSource('sounds/alert.wav'));
         } catch (_) {
           // Если файл звука недоступен, продолжаем без краша
         }
@@ -198,7 +198,7 @@ class AlertService {
       } catch (_) {}
 
       try {
-        await _getAudioPlayer().play(AssetSource('sounds/alert.mp3'));
+        await _getAudioPlayer().play(AssetSource('sounds/alert.wav'));
       } catch (_) {}
 
       if (Platform.isMacOS) {
@@ -316,7 +316,7 @@ class AlertService {
         await SystemSound.play(SystemSoundType.alert);
       } catch (_) {}
       try {
-        await _getAudioPlayer().play(AssetSource('sounds/alert.mp3'));
+        await _getAudioPlayer().play(AssetSource('sounds/alert.wav'));
       } catch (_) {}
 
       if (Platform.isMacOS) {

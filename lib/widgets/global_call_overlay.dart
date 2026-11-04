@@ -16,24 +16,52 @@ class GlobalCallOverlayWidget extends StatefulWidget {
   State<GlobalCallOverlayWidget> createState() => _GlobalCallOverlayWidgetState();
 }
 
-class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
+class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
+    with SingleTickerProviderStateMixin {
   final CallSessionManager _call = CallSessionManager.instance;
   Offset _pipPosition = const Offset(20, 40);
+  late final AnimationController _rippleController;
 
   @override
   void initState() {
     super.initState();
     _call.addListener(_onCallStateChanged);
+    _rippleController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    );
+    _syncAnimation();
   }
 
   @override
   void dispose() {
+    _rippleController.dispose();
     _call.removeListener(_onCallStateChanged);
     super.dispose();
   }
 
+  void _syncAnimation() {
+    final shouldAnimate = _call.displayMode == CallDisplayMode.fullscreen &&
+        (_call.status == CallStatus.calling ||
+            _call.status == CallStatus.ringing ||
+            _call.status == CallStatus.incoming);
+    if (shouldAnimate) {
+      if (!_rippleController.isAnimating) {
+        _rippleController.repeat();
+      }
+    } else {
+      if (_rippleController.isAnimating) {
+        _rippleController.stop();
+        _rippleController.reset();
+      }
+    }
+  }
+
   void _onCallStateChanged() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      _syncAnimation();
+      setState(() {});
+    }
   }
 
   @override
@@ -160,18 +188,26 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                               Text(
                                 isIncoming
                                     ? 'Входящий вызов (Ligament ICE)...'
-                                    : isCalling
-                                        ? 'Гудки (ожидание ответа)...'
-                                        : 'Разговор • ${_call.formattedDuration}',
+                                    : isRinging
+                                        ? '🔔 Идут гудки (вызов доставлен)...'
+                                        : isCalling
+                                            ? '📞 Вызов абонента...'
+                                            : isConnected
+                                                ? 'Разговор • ${_call.formattedDuration}'
+                                                : isOffline
+                                                    ? '❌ Абонент не в сети'
+                                                    : 'Завершение вызова...',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: isIncoming
+                                  color: isIncoming || isRinging
                                       ? Colors.green
                                       : isCalling
                                           ? theme.colorScheme.primary
-                                          : (hasRemoteVideo
-                                              ? Colors.white70
-                                              : theme.colorScheme.outline),
+                                          : isOffline
+                                              ? theme.colorScheme.error
+                                              : (hasRemoteVideo
+                                                  ? Colors.white70
+                                                  : theme.colorScheme.outline),
                                 ),
                               ),
                             ],
@@ -220,18 +256,11 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                CircleAvatar(
-                                  radius: 54,
-                                  backgroundColor: isIncoming
-                                      ? Colors.green.withValues(alpha: 0.15)
-                                      : theme.colorScheme.primaryContainer,
-                                  foregroundColor: isIncoming
-                                      ? Colors.green
-                                      : theme.colorScheme.onPrimaryContainer,
-                                  child: Text(
-                                    initials,
-                                    style: const TextStyle(fontSize: 44, fontWeight: FontWeight.bold),
-                                  ),
+                                _buildPulsingAvatar(
+                                  theme: theme,
+                                  initials: initials,
+                                  isIncoming: isIncoming,
+                                  isPulsing: isCalling || isRinging || isIncoming,
                                 ),
                                 const SizedBox(height: 20),
                                 Text(
@@ -247,9 +276,9 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                                       : isOffline
                                           ? '❌ Абонент не в сети'
                                           : isRinging
-                                              ? '📞 Идут гудки (вызов доставлен)...'
+                                              ? '🔔 Идут гудки (вызов доставлен)...'
                                               : isCalling
-                                                  ? '📞 Вызов абонента...'
+                                                  ? '📞 Соединение и вызов...'
                                                   : (_call.isVideo
                                                       ? '📹 Защищённый видеозвонок'
                                                       : '📞 Защищённый аудиозвонок'),
@@ -342,6 +371,22 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          if (_call.isMobileRoutingSupported) ...[
+                            IconButton.filledTonal(
+                              style: _call.isSpeakerphoneOn
+                                  ? IconButton.styleFrom(
+                                      backgroundColor: theme.colorScheme.primaryContainer,
+                                      foregroundColor: theme.colorScheme.onPrimaryContainer,
+                                    )
+                                  : null,
+                              icon: Icon(_call.isSpeakerphoneOn ? Icons.volume_up : Icons.phone_in_talk),
+                              tooltip: _call.isSpeakerphoneOn
+                                  ? 'Переключить на динамик уха'
+                                  : 'Включить громкую связь',
+                              onPressed: _call.toggleSpeakerphone,
+                            ),
+                            const SizedBox(width: 12),
+                          ],
                           if (isConnected) ...[
                             IconButton.filledTonal(
                               icon: Icon(_call.isMuted ? Icons.mic_off : Icons.mic),
@@ -473,6 +518,21 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (_call.isMobileRoutingSupported) ...[
+                          InkWell(
+                            onTap: _call.toggleSpeakerphone,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Padding(
+                              padding: const EdgeInsets.all(4),
+                              child: Icon(
+                                _call.isSpeakerphoneOn ? Icons.volume_up : Icons.phone_in_talk,
+                                size: 16,
+                                color: _call.isSpeakerphoneOn ? theme.colorScheme.primary : null,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
                         InkWell(
                           onTap: _call.toggleMute,
                           borderRadius: BorderRadius.circular(12),
@@ -507,6 +567,78 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildPulsingAvatar({
+    required ThemeData theme,
+    required String initials,
+    required bool isIncoming,
+    required bool isPulsing,
+  }) {
+    final avatarColor = isIncoming ? Colors.green : theme.colorScheme.primary;
+
+    if (!isPulsing) {
+      return CircleAvatar(
+        radius: 54,
+        backgroundColor: isIncoming
+            ? Colors.green.withValues(alpha: 0.15)
+            : theme.colorScheme.primaryContainer,
+        foregroundColor: isIncoming ? Colors.green : theme.colorScheme.onPrimaryContainer,
+        child: Text(
+          initials,
+          style: const TextStyle(fontSize: 44, fontWeight: FontWeight.bold),
+        ),
+      );
+    }
+
+    return AnimatedBuilder(
+      animation: _rippleController,
+      builder: (context, child) {
+        return SizedBox(
+          width: 200,
+          height: 200,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              for (int i = 0; i < 3; i++) ...[
+                Builder(
+                  builder: (_) {
+                    final progress = (_rippleController.value + (i * 0.33)) % 1.0;
+                    final scale = 1.0 + (progress * 0.85);
+                    final opacity = (1.0 - progress).clamp(0.0, 1.0) * 0.35;
+                    return Transform.scale(
+                      scale: scale,
+                      child: Container(
+                        width: 108,
+                        height: 108,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: avatarColor.withValues(alpha: opacity),
+                            width: 2.0,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+              CircleAvatar(
+                radius: 54,
+                backgroundColor: isIncoming
+                    ? Colors.green.withValues(alpha: 0.15)
+                    : theme.colorScheme.primaryContainer,
+                foregroundColor: isIncoming ? Colors.green : theme.colorScheme.onPrimaryContainer,
+                child: Text(
+                  initials,
+                  style: const TextStyle(fontSize: 44, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

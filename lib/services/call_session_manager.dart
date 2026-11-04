@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'alert_service.dart';
+import 'call_audio_route_service.dart';
+import 'call_sound_player.dart';
 import 'debug_log_service.dart';
 
 enum CallStatus {
@@ -49,7 +51,10 @@ class CallSessionManager extends ChangeNotifier {
   int _durationSeconds = 0;
   Timer? _callTimer;
   Timer? _ringTimeout;
-  Timer? _ringSoundTimer;
+  Timer? _reconnectTimer;
+
+  final CallAudioRouteService _audioRoute = CallAudioRouteService.instance;
+  final CallSoundPlayer _sound = CallSoundPlayer.instance;
 
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
@@ -77,6 +82,14 @@ class CallSessionManager extends ChangeNotifier {
   int get durationSeconds => _durationSeconds;
   RTCVideoRenderer? get localRenderer => _localRenderer;
   RTCVideoRenderer? get remoteRenderer => _remoteRenderer;
+
+  bool get isSpeakerphoneOn => _audioRoute.isSpeaker;
+  bool get isMobileRoutingSupported => _audioRoute.isMobileRoutingSupported;
+
+  Future<void> toggleSpeakerphone() async {
+    await _audioRoute.toggleSpeaker(isVideo: _isVideo);
+    notifyListeners();
+  }
 
   String get formattedDuration {
     final m = (_durationSeconds ~/ 60).toString().padLeft(2, '0');
@@ -106,9 +119,17 @@ class CallSessionManager extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
 
+    // Запуск звуковых гудков дозвона (КПВ) в безопасном AudioContext
+    unawaited(_sound.startRingback(isVideo: isVideo));
+
+    // Настройка аппаратного аудио-маршрута: видео -> громкая связь, аудио -> ухо
+    unawaited(_audioRoute.configureSession(isVideo: isVideo));
+    unawaited(_audioRoute.applyRouting(isVideo: isVideo));
+
     _ringTimeout?.cancel();
-    _ringTimeout = Timer(const Duration(seconds: 45), () {
-      if (_status == CallStatus.calling) {
+    // Стандарт индустрии: 55 секунд дозвона (с учетом Doze mode и push-пробуждения)
+    _ringTimeout = Timer(const Duration(seconds: 55), () {
+      if (_status == CallStatus.calling || _status == CallStatus.ringing) {
         endCall(notifyPeer: true);
       }
     });
@@ -200,14 +221,36 @@ class CallSessionManager extends ChangeNotifier {
 
       _peerConnection!.onConnectionState = (state) {
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
           _ringTimeout?.cancel();
           _ringTimeout = null;
+          unawaited(_sound.stopRingback());
+          unawaited(_sound.stopRingtone());
+          unawaited(_sound.playConnect());
+          try {
+            HapticFeedback.mediumImpact();
+          } catch (_) {}
           _status = CallStatus.connected;
           _startDurationTimer();
           notifyListeners();
-        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-            state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           endCall(notifyPeer: true);
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+          // Graceful ICE restart / recovery period (15s) вместо мгновенного разрыва звонка
+          if (_status == CallStatus.connected) {
+            _reconnectTimer?.cancel();
+            _reconnectTimer = Timer(const Duration(seconds: 15), () {
+              if (_status != CallStatus.idle) {
+                endCall(notifyPeer: true);
+              }
+            });
+            try {
+              _peerConnection?.restartIce();
+            } catch (_) {}
+          } else {
+            endCall(notifyPeer: true);
+          }
         }
       };
 
@@ -226,28 +269,16 @@ class CallSessionManager extends ChangeNotifier {
   }
 
   void _startRingingAlert() {
-    _ringSoundTimer?.cancel();
     unawaited(AlertService.instance.triggerIncomingCallNotification(
       caller: _callerName,
       isVideo: _isVideo,
       chatId: _chatId,
     ));
-
-    _ringSoundTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (_status != CallStatus.incoming) {
-        timer.cancel();
-        _ringSoundTimer = null;
-        return;
-      }
-      try {
-        SystemSound.play(SystemSoundType.alert);
-      } catch (_) {}
-    });
+    unawaited(_sound.startRingtone());
   }
 
   void _stopRingingAlert() {
-    _ringSoundTimer?.cancel();
-    _ringSoundTimer = null;
+    unawaited(_sound.stopRingtone());
     unawaited(AlertService.instance.resetWindowPriority());
   }
 
@@ -283,7 +314,7 @@ class CallSessionManager extends ChangeNotifier {
     _startRingingAlert();
 
     _ringTimeout?.cancel();
-    _ringTimeout = Timer(const Duration(seconds: 45), () {
+    _ringTimeout = Timer(const Duration(seconds: 55), () {
       if (_status == CallStatus.incoming) {
         rejectIncomingCall();
       }
@@ -301,6 +332,10 @@ class CallSessionManager extends ChangeNotifier {
     _ringTimeout = null;
     _status = CallStatus.calling;
     notifyListeners();
+
+    // Настройка аудиосессии и маршрута: видео -> громкая связь, аудио -> ухо
+    unawaited(_audioRoute.configureSession(isVideo: _isVideo));
+    unawaited(_audioRoute.applyRouting(isVideo: _isVideo));
 
     await initRenderers();
 
@@ -374,12 +409,32 @@ class CallSessionManager extends ChangeNotifier {
 
       _peerConnection!.onConnectionState = (state) {
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
           _status = CallStatus.connected;
           _startDurationTimer();
+          unawaited(_sound.stopRingtone());
+          unawaited(_sound.playConnect());
+          try {
+            HapticFeedback.mediumImpact();
+          } catch (_) {}
           notifyListeners();
-        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-            state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           endCall(notifyPeer: true);
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+          if (_status == CallStatus.connected) {
+            _reconnectTimer?.cancel();
+            _reconnectTimer = Timer(const Duration(seconds: 15), () {
+              if (_status != CallStatus.idle) {
+                endCall(notifyPeer: true);
+              }
+            });
+            try {
+              _peerConnection?.restartIce();
+            } catch (_) {}
+          } else {
+            endCall(notifyPeer: true);
+          }
         }
       };
 
@@ -421,6 +476,7 @@ class CallSessionManager extends ChangeNotifier {
   void handleRinging() {
     if (_status == CallStatus.calling) {
       _status = CallStatus.ringing;
+      unawaited(_sound.startRingback(isVideo: _isVideo));
       notifyListeners();
     }
   }
@@ -430,6 +486,8 @@ class CallSessionManager extends ChangeNotifier {
     _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
+    unawaited(_sound.stopRingback());
+    unawaited(_sound.playEnd());
     _status = CallStatus.offline;
     notifyListeners();
     Timer(const Duration(seconds: 3), () {
@@ -444,9 +502,14 @@ class CallSessionManager extends ChangeNotifier {
     _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
+    unawaited(_sound.stopRingback());
+    unawaited(_sound.playBusy());
+    try {
+      HapticFeedback.heavyImpact();
+    } catch (_) {}
     _status = CallStatus.ended;
     notifyListeners();
-    Timer(const Duration(seconds: 2), () {
+    Timer(const Duration(milliseconds: 2500), () {
       endCall(notifyPeer: false);
     });
   }
@@ -553,11 +616,24 @@ class CallSessionManager extends ChangeNotifier {
   }
 
   void endCall({bool notifyPeer = true}) {
+    final wasActive = _status == CallStatus.connected ||
+        _status == CallStatus.calling ||
+        _status == CallStatus.ringing;
+
     _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _callTimer?.cancel();
     _callTimer = null;
+
+    unawaited(_sound.stopRingback());
+    unawaited(_sound.stopRingtone());
+    if (wasActive) {
+      unawaited(_sound.playEnd());
+    }
+    unawaited(_audioRoute.reset());
 
     if (notifyPeer && _targetUserId.isNotEmpty) {
       onSendSignal?.call(_targetUserId, _chatId, {'type': 'hangup'});

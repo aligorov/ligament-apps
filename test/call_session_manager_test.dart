@@ -75,5 +75,63 @@ void main() {
       manager.toggleCamera();
       expect(manager.isCameraOff, isTrue);
     });
+
+    test('audio routing defaults and toggle behavior', () async {
+      final manager = CallSessionManager();
+      manager.startCall(
+        chatId: 'c-audio',
+        chatTitle: 'Аудио Тест',
+        isVideo: false,
+      );
+
+      // Для аудиозвонка по умолчанию спикерфон выключен (слуховой динамик у уха)
+      expect(manager.isSpeakerphoneOn, isFalse);
+      await manager.toggleSpeakerphone();
+      expect(manager.isSpeakerphoneOn, isTrue);
+      await manager.toggleSpeakerphone();
+      expect(manager.isSpeakerphoneOn, isFalse);
+
+      manager.endCall();
+
+      // Для видеозвонка по умолчанию громкая связь
+      manager.startCall(
+        chatId: 'c-video',
+        chatTitle: 'Видео Тест',
+        isVideo: true,
+      );
+      expect(manager.isSpeakerphoneOn, isTrue);
+      manager.endCall();
+    });
+
+    test('signaling transitions for ringing, offline, and busy', () {
+      final manager = CallSessionManager();
+      manager.startCall(
+        chatId: 'c-signals',
+        chatTitle: 'Сигналинг',
+        isVideo: false,
+      );
+
+      expect(manager.status, CallStatus.calling);
+
+      // Доставка вызова абоненту
+      manager.handleRinging();
+      expect(manager.status, CallStatus.ringing);
+
+      // Абонент занят
+      manager.handleBusy();
+      expect(manager.status, CallStatus.ended);
+
+      // Новый звонок: абонент оффлайн
+      manager.startCall(
+        chatId: 'c-offline',
+        chatTitle: 'Оффлайн',
+        isVideo: false,
+      );
+      manager.handleOffline();
+      expect(manager.status, CallStatus.offline);
+
+      manager.endCall();
+      expect(manager.status, CallStatus.idle);
+    });
   });
 }
