@@ -20,6 +20,7 @@ class ChatService extends ChangeNotifier {
   List<ChatContact> _contacts = const [];
   final Map<String, List<TopicItem>> _topics = {};
   final Map<String, List<ChatMessage>> _messages = {}; // key: "$chatId:$topicId"
+  final Map<String, UserPresence> _presences = {};
   bool _isLoadingChats = false;
   final Set<String> _loadingMessages = {};
   bool _playSounds = true;
@@ -30,7 +31,50 @@ class ChatService extends ChangeNotifier {
 
   List<ChatItem> get chats => _chats;
   List<ChatContact> get contacts => _contacts;
+  Map<String, UserPresence> get presences => _presences;
   bool get isLoadingChats => _isLoadingChats;
+
+  UserPresence getPresence(String userId) {
+    return _presences[userId] ??
+        UserPresence(
+          userId: userId,
+          status: 'offline',
+          isOnline: false,
+          updatedAt: DateTime.now(),
+        );
+  }
+
+  Future<void> loadPresences(ApiClient client) async {
+    try {
+      final list = await client.getChatPresences();
+      for (final raw in list) {
+        final p = UserPresence.fromJson(raw);
+        _presences[p.userId] = p;
+      }
+      notifyListeners();
+    } catch (e) {
+      DebugLogService.instance.record('chat.presences.failed', error: e);
+    }
+  }
+
+  Future<void> setMyStatus(ApiClient client, String status, {String statusText = ''}) async {
+    try {
+      sendWs({
+        'type': 'presence.set',
+        'payload': {
+          'status': status,
+          'status_text': statusText,
+        },
+      });
+      final res = await client.setChatPresence(status: status, statusText: statusText);
+      final p = UserPresence.fromJson(res);
+      _presences[p.userId] = p;
+      notifyListeners();
+    } catch (e) {
+      DebugLogService.instance.record('chat.presence_set.failed', error: e);
+      rethrow;
+    }
+  }
 
   int get totalUnreadCount {
     var count = 0;
@@ -367,6 +411,7 @@ class ChatService extends ChangeNotifier {
       sendWebRTCSignal(targetUserId, chatId, payload);
     };
 
+    unawaited(loadPresences(client));
     _connectWsInternal();
   }
 
@@ -459,7 +504,27 @@ class ChatService extends ChangeNotifier {
 
   void onWebSocketEvent(Map<String, dynamic> event) {
     final type = event['type'] as String?;
-    if (type == 'chat.message') {
+    if (type == 'presence.snapshot') {
+      final payload = event['payload'] as Map<String, dynamic>?;
+      final rawList = payload?['presences'] as List<dynamic>?;
+      if (rawList != null) {
+        for (final raw in rawList) {
+          if (raw is Map<String, dynamic>) {
+            final p = UserPresence.fromJson(raw);
+            _presences[p.userId] = p;
+          }
+        }
+        notifyListeners();
+      }
+    } else if (type == 'presence.update') {
+      final payload = event['payload'] as Map<String, dynamic>?;
+      final rawPresence = payload?['presence'] as Map<String, dynamic>?;
+      if (rawPresence != null) {
+        final p = UserPresence.fromJson(rawPresence);
+        _presences[p.userId] = p;
+        notifyListeners();
+      }
+    } else if (type == 'chat.message') {
       final payload = event['payload'] as Map<String, dynamic>?;
       final rawMsg = payload?['message'] as Map<String, dynamic>?;
       if (rawMsg != null) {

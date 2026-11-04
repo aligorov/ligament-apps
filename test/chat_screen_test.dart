@@ -60,5 +60,59 @@ void main() {
       expect(msg.secretTtlSeconds, 60);
       expect(msg.body, 'Секретный пароль базы данных');
     });
+
+    test('UserPresence deserialization and computed properties', () {
+      final jsonVacation = {
+        'user_id': 'usr-petr',
+        'is_online': false,
+        'status': 'vacation',
+        'status_text': 'до 20 ноября',
+        'updated_at': '2026-11-04T08:00:00Z',
+      };
+      final presenceVacation = UserPresence.fromJson(jsonVacation);
+      expect(presenceVacation.userId, 'usr-petr');
+      expect(presenceVacation.status, 'vacation');
+      expect(presenceVacation.statusLabel, 'В отпуске');
+      expect(presenceVacation.statusEmoji, '🌴');
+      expect(presenceVacation.fullStatusDisplay, '🌴 В отпуске (до 20 ноября)');
+      expect(presenceVacation.isOnline, isFalse);
+
+      final jsonBusy = {
+        'user_id': 'usr-anna',
+        'is_online': true,
+        'status': 'busy',
+        'status_text': 'встреча',
+      };
+      final presenceBusy = UserPresence.fromJson(jsonBusy);
+      expect(presenceBusy.statusLabel, 'Занят');
+      expect(presenceBusy.isBusyOrDnd, isTrue);
+      expect(presenceBusy.fullStatusDisplay, '🔴 Занят (встреча)');
+
+      final jsonOffline = {
+        'user_id': 'usr-offline',
+        'is_online': false,
+        'status': 'online',
+      };
+      final presenceOffline = UserPresence.fromJson(jsonOffline);
+      // When socket is disconnected and status was 'online', statusLabel is 'Не в сети'
+      expect(presenceOffline.statusLabel, 'Не в сети');
+      expect(presenceOffline.fullStatusDisplay, 'Не в сети');
+    });
+
+    test('ChatContact deserialization with presence status', () {
+      final json = {
+        'user_id': 'usr-ivan',
+        'username': 'ivan_dev',
+        'display_name': 'Иван Иванов',
+        'email': 'ivan@example.com',
+        'department': 'Отдел разработки',
+        'status': 'away',
+        'status_text': 'Обед',
+      };
+      final contact = ChatContact.fromJson(json);
+      expect(contact.userId, 'usr-ivan');
+      expect(contact.status, 'away');
+      expect(contact.statusText, 'Обед');
+    });
   });
 }

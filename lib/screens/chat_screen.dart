@@ -19,7 +19,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -42,6 +42,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = context.read<AuthState>();
@@ -62,11 +63,27 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _chatService.disconnectWebSocket();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _textController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      _chatService.disconnectWebSocket();
+    } else if (state == AppLifecycleState.resumed) {
+      final auth = context.read<AuthState>();
+      if (auth.api != null) {
+        _chatService.connectWebSocket(auth.api!);
+      }
+    }
   }
 
   void _onScroll() {
@@ -253,6 +270,124 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Widget _buildChatSubtitle(ThemeData theme, ChatItem chat) {
+    if (chat.isForum && _selectedTopic != null) {
+      return Text(
+        '${_selectedTopic!.iconEmoji} ${_selectedTopic!.title}',
+        style: TextStyle(
+          fontSize: 11,
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.w500,
+        ),
+      );
+    }
+
+    if (chat.kind == 'direct') {
+      final peer = chat.peerUserId.isNotEmpty ? chat.peerUserId : chat.title;
+      final p = _chatService.getPresence(peer);
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+              color: p.statusColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              p.fullStatusDisplay,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: p.isOnline || p.status == 'vacation'
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Text(
+      chat.description.isNotEmpty ? chat.description : 'Групповой чат',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant),
+    );
+  }
+
+  Widget _buildMyStatusAction(ThemeData theme) {
+    final auth = context.watch<AuthState>();
+    final myPresence = _chatService.getPresence(auth.username);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () => _showPresenceStatusDialog(context),
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: myPresence.statusColor.withValues(alpha: 0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: myPresence.statusColor,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              myPresence.statusLabel,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showPresenceStatusDialog(BuildContext context) {
+    final auth = context.read<AuthState>();
+    if (auth.api == null) return;
+    final currentUsername = auth.username;
+    final myPresence = _chatService.getPresence(currentUsername);
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _PresenceStatusSheet(
+        api: auth.api!,
+        initialStatus: myPresence.status,
+        initialStatusText: myPresence.statusText,
+        onStatusChanged: (status, statusText) async {
+          Navigator.of(ctx).pop();
+          await _chatService.setMyStatus(auth.api!, status, statusText: statusText);
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -345,16 +480,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                     ),
-                    if (_selectedTopic != null)
-                      Text(
-                        '${_selectedTopic!.iconEmoji} ${_selectedTopic!.title}',
-                        style: TextStyle(fontSize: 11, color: theme.colorScheme.primary),
-                      )
-                    else
-                      Text(
-                        'В сети',
-                        style: TextStyle(fontSize: 11, color: theme.colorScheme.primary),
-                      ),
+                    if (_selectedChat != null)
+                      _buildChatSubtitle(theme, _selectedChat!),
                   ],
                 ),
               ),
@@ -441,6 +568,7 @@ class _ChatScreenState extends State<ChatScreen> {
         title: const Text('💬 Корпоративный чат'),
         elevation: 0,
         actions: [
+          _buildMyStatusAction(theme),
           IconButton(
             icon: const Icon(Icons.tune_outlined),
             tooltip: 'Настройки чата',
@@ -586,21 +714,50 @@ class _ChatScreenState extends State<ChatScreen> {
                     return ListTile(
                       selected: isSelected,
                       selectedTileColor: theme.colorScheme.primaryContainer.withValues(alpha: 0.2),
-                      leading: CircleAvatar(
-                        backgroundColor: chat.isForum
-                            ? theme.colorScheme.tertiaryContainer
-                            : (chat.kind == 'direct'
-                                ? theme.colorScheme.primaryContainer
-                                : theme.colorScheme.secondaryContainer),
-                        foregroundColor: chat.isForum
-                            ? theme.colorScheme.onTertiaryContainer
-                            : (chat.kind == 'direct'
-                                ? theme.colorScheme.onPrimaryContainer
-                                : theme.colorScheme.onSecondaryContainer),
-                        child: Text(
-                          chat.isForum ? '🏛️' : initials,
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                        ),
+                      leading: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: chat.isForum
+                                ? theme.colorScheme.tertiaryContainer
+                                : (chat.kind == 'direct'
+                                    ? theme.colorScheme.primaryContainer
+                                    : theme.colorScheme.secondaryContainer),
+                            foregroundColor: chat.isForum
+                                ? theme.colorScheme.onTertiaryContainer
+                                : (chat.kind == 'direct'
+                                    ? theme.colorScheme.onPrimaryContainer
+                                    : theme.colorScheme.onSecondaryContainer),
+                            child: Text(
+                              chat.isForum ? '🏛️' : initials,
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                          ),
+                          if (chat.kind == 'direct') ...[
+                            Builder(
+                              builder: (_) {
+                                final peer = chat.peerUserId.isNotEmpty ? chat.peerUserId : chat.title;
+                                final p = _chatService.getPresence(peer);
+                                return Positioned(
+                                  right: -1,
+                                  bottom: -1,
+                                  child: Container(
+                                    width: 10,
+                                    height: 10,
+                                    decoration: BoxDecoration(
+                                      color: p.statusColor,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: theme.colorScheme.surface,
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ],
                       ),
                       title: Text(
                         displayTitle,
@@ -1165,16 +1322,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
-                Text(
-                  _selectedTopic != null
-                      ? '${_selectedTopic!.iconEmoji} ${_selectedTopic!.title}'
-                      : 'В сети',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
+                _buildChatSubtitle(theme, _selectedChat!),
               ],
             ),
           ),
@@ -1739,16 +1887,61 @@ class _NewChatSheetState extends State<_NewChatSheet> with SingleTickerProviderS
                                       ? c.displayName[0].toUpperCase()
                                       : c.username[0].toUpperCase();
 
+                                  final p = ChatService.instance.getPresence(c.username);
                                   return ListTile(
-                                    leading: CircleAvatar(
-                                      backgroundColor: theme.colorScheme.primaryContainer,
-                                      foregroundColor: theme.colorScheme.onPrimaryContainer,
-                                      child: Text(letter),
+                                    leading: Stack(
+                                      clipBehavior: Clip.none,
+                                      children: [
+                                        CircleAvatar(
+                                          backgroundColor: theme.colorScheme.primaryContainer,
+                                          foregroundColor: theme.colorScheme.onPrimaryContainer,
+                                          child: Text(letter),
+                                        ),
+                                        Positioned(
+                                          right: -1,
+                                          bottom: -1,
+                                          child: Container(
+                                            width: 10,
+                                            height: 10,
+                                            decoration: BoxDecoration(
+                                              color: p.statusColor,
+                                              shape: BoxShape.circle,
+                                              border: Border.all(
+                                                color: theme.colorScheme.surface,
+                                                width: 1.5,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                    title: Text(c.displayName.isNotEmpty ? c.displayName : c.username),
+                                    title: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            c.displayName.isNotEmpty ? c.displayName : c.username,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                        Text(
+                                          p.statusLabel,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: p.statusColor,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                     subtitle: Text(
-                                      c.title.isNotEmpty ? c.title : (c.email.isNotEmpty ? c.email : '@${c.username}'),
+                                      p.statusText.isNotEmpty
+                                          ? '${p.statusText} · ${c.title.isNotEmpty ? c.title : (c.email.isNotEmpty ? c.email : '@${c.username}')}'
+                                          : (c.title.isNotEmpty ? c.title : (c.email.isNotEmpty ? c.email : '@${c.username}')),
                                       style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
                                     trailing: const Icon(Icons.chevron_right),
                                     onTap: () async {
@@ -2212,6 +2405,187 @@ class _ChatMembersSheetState extends State<_ChatMembersSheet> {
                       ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PresenceStatusSheet extends StatefulWidget {
+  final ApiClient api;
+  final String initialStatus;
+  final String initialStatusText;
+  final Future<void> Function(String status, String statusText) onStatusChanged;
+
+  const _PresenceStatusSheet({
+    required this.api,
+    required this.initialStatus,
+    required this.initialStatusText,
+    required this.onStatusChanged,
+  });
+
+  @override
+  State<_PresenceStatusSheet> createState() => _PresenceStatusSheetState();
+}
+
+class _PresenceStatusSheetState extends State<_PresenceStatusSheet> {
+  late String _selectedStatus;
+  late final TextEditingController _textController;
+  bool _isLoading = false;
+
+  static const List<Map<String, String>> _statusOptions = [
+    {
+      'id': 'online',
+      'label': 'В сети',
+      'emoji': '🟢',
+      'desc': 'Обычный статус, активен при открытом чате',
+    },
+    {
+      'id': 'busy',
+      'label': 'Занят',
+      'emoji': '🔴',
+      'desc': 'Не беспокоить звонками и сообщениями',
+    },
+    {
+      'id': 'vacation',
+      'label': 'В отпуске',
+      'emoji': '🏖️',
+      'desc': 'Отображается постоянно, даже если чат закрыт',
+    },
+    {
+      'id': 'away',
+      'label': 'Отошёл',
+      'emoji': '🟡',
+      'desc': 'Временное отсутствие на рабочем месте',
+    },
+    {
+      'id': 'dnd',
+      'label': 'Не беспокоить',
+      'emoji': '⛔',
+      'desc': 'Фокусировка на срочной задаче',
+    },
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedStatus = widget.initialStatus.isNotEmpty ? widget.initialStatus : 'online';
+    _textController = TextEditingController(text: widget.initialStatusText);
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _isLoading = true);
+    try {
+      await widget.onStatusChanged(_selectedStatus, _textController.text.trim());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+        left: 16,
+        right: 16,
+        top: 16,
+      ),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    'Статус в корпоративном чате',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '«В сети» означает только открытый чат. Статусы видны коллегам в списке диалогов и контактов.',
+                style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 12),
+              ..._statusOptions.map((opt) {
+                final isSelected = _selectedStatus == opt['id'];
+                return Container(
+                  margin: const EdgeInsets.symmetric(vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isSelected
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.outlineVariant.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: ListTile(
+                    dense: true,
+                    leading: Text(opt['emoji']!, style: const TextStyle(fontSize: 20)),
+                    title: Text(
+                      opt['label']!,
+                      style: TextStyle(
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+                    subtitle: Text(
+                      opt['desc']!,
+                      style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant),
+                    ),
+                    trailing: isSelected
+                        ? Icon(Icons.check_circle, color: theme.colorScheme.primary, size: 20)
+                        : null,
+                    onTap: () => setState(() => _selectedStatus = opt['id']!),
+                  ),
+                );
+              }),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _textController,
+                decoration: InputDecoration(
+                  labelText: 'Комментарий к статусу',
+                  hintText: 'например: до 15 ноября, на встрече...',
+                  isDense: true,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  prefixIcon: const Icon(Icons.edit_note_outlined),
+                ),
+                maxLength: 100,
+              ),
+              const SizedBox(height: 8),
+              FilledButton(
+                onPressed: _isLoading ? null : _save,
+                child: _isLoading
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Сохранить статус'),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -173,6 +173,8 @@ class ChatContact {
   final String displayName;
   final String email;
   final String title;
+  final String status;
+  final String statusText;
 
   const ChatContact({
     this.id = '',
@@ -180,15 +182,116 @@ class ChatContact {
     required this.displayName,
     this.email = '',
     this.title = '',
+    this.status = '',
+    this.statusText = '',
   });
+
+  String get userId => id;
 
   factory ChatContact.fromJson(Map<String, dynamic> json) {
     return ChatContact(
-      id: json['id'] as String? ?? '',
+      id: json['id'] as String? ?? json['user_id'] as String? ?? '',
       username: json['username'] as String? ?? '',
       displayName: json['display_name'] as String? ?? '',
       email: json['email'] as String? ?? '',
-      title: json['title'] as String? ?? '',
+      title: json['title'] as String? ?? json['department'] as String? ?? '',
+      status: json['status'] as String? ?? '',
+      statusText: json['status_text'] as String? ?? '',
     );
+  }
+}
+
+@immutable
+class UserPresence {
+  final String userId;
+  final String status; // online, busy, vacation, away, dnd, offline
+  final String statusText;
+  final bool isOnline;
+  final DateTime updatedAt;
+
+  const UserPresence({
+    required this.userId,
+    this.status = 'offline',
+    this.statusText = '',
+    this.isOnline = false,
+    required this.updatedAt,
+  });
+
+  factory UserPresence.fromJson(Map<String, dynamic> json) {
+    return UserPresence(
+      userId: json['user_id'] as String? ?? '',
+      status: json['status'] as String? ?? (json['is_online'] == true ? 'online' : 'offline'),
+      statusText: json['status_text'] as String? ?? '',
+      isOnline: json['is_online'] as bool? ?? false,
+      updatedAt: json['updated_at'] != null
+          ? DateTime.tryParse(json['updated_at'] as String) ?? DateTime.now()
+          : DateTime.now(),
+    );
+  }
+
+  /// Читаемое название статуса
+  String get statusLabel {
+    switch (status) {
+      case 'busy':
+        return 'Занят';
+      case 'vacation':
+        return 'В отпуске';
+      case 'away':
+        return 'Отошёл';
+      case 'dnd':
+        return 'Не беспокоить';
+      case 'online':
+        return isOnline ? 'В сети' : 'Не в сети';
+      default:
+        return isOnline ? 'В сети' : 'Не в сети';
+    }
+  }
+
+  /// Эмодзи статуса
+  String get statusEmoji {
+    switch (status) {
+      case 'busy':
+        return '🔴';
+      case 'vacation':
+        return '🌴';
+      case 'away':
+        return '🟡';
+      case 'dnd':
+        return '⛔';
+      case 'online':
+        return isOnline ? '🟢' : '⚫';
+      default:
+        return isOnline ? '🟢' : '⚫';
+    }
+  }
+
+  /// Семантический цвет индикатора
+  Color get statusColor {
+    switch (status) {
+      case 'busy':
+      case 'dnd':
+        return const Color(0xFFEF4444);
+      case 'vacation':
+        return const Color(0xFF06B6D4);
+      case 'away':
+        return const Color(0xFFF59E0B);
+      case 'online':
+        return isOnline ? const Color(0xFF10B981) : const Color(0xFF94A3B8);
+      default:
+        return isOnline ? const Color(0xFF10B981) : const Color(0xFF94A3B8);
+    }
+  }
+
+  bool get isBusyOrDnd => status == 'busy' || status == 'dnd';
+
+  String get fullStatusDisplay {
+    if (!isOnline && (status == 'online' || status == 'offline')) {
+      return statusLabel;
+    }
+    final prefix = (status == 'online' || status == 'offline') ? '' : '$statusEmoji ';
+    if (statusText.trim().isNotEmpty) {
+      return '$prefix$statusLabel (${statusText.trim()})';
+    }
+    return '$prefix$statusLabel';
   }
 }

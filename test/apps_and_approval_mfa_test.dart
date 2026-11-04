@@ -19,6 +19,15 @@ class MockAuthState extends ChangeNotifier implements AuthState {
   bool isRu = true;
 
   @override
+  String get username => 'testuser';
+
+  @override
+  String get displayName => 'Test User';
+
+  @override
+  Map<String, dynamic>? get currentUser => const {'username': 'testuser', 'display_name': 'Test User'};
+
+  @override
   final RdpConnectorService rdp = RdpConnectorService();
 
   @override

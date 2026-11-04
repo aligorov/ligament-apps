@@ -942,6 +942,39 @@ class ApiClient {
     throw ApiException(res.statusCode, 'contacts_fetch_failed');
   }
 
+  /// Ligament Chat: снимок онлайн-присутствия и статусов сотрудников
+  Future<List<Map<String, dynamic>>> getChatPresences() async {
+    final res = await _get(
+      _cleanUrl('/apps/chat/api/v1/presence'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final list = data['presences'] as List<dynamic>? ?? const [];
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'presences_fetch_failed');
+  }
+
+  /// Ligament Chat: установка статуса присутствия текущего пользователя (в сети, занят, в отпуске и др.)
+  Future<Map<String, dynamic>> setChatPresence({
+    required String status,
+    String statusText = '',
+  }) async {
+    final res = await _put(
+      _cleanUrl('/apps/chat/api/v1/presence'),
+      headers: _headers(),
+      body: jsonEncode({
+        'status': status,
+        'status_text': statusText,
+      }),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'presence_update_failed');
+  }
+
   /// Ligament Chat: создание чата (direct, group, forum)
   Future<Map<String, dynamic>> createChat({
     required String kind,
