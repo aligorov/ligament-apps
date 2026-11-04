@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api/client.dart';
@@ -36,6 +39,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String _selectedCategory = 'all';
   final Map<String, String> _drafts = {};
   ChatMessage? _replyingTo;
+  final Set<String> _downloadingPreviews = {};
 
   static const List<String> _quickEmojis = [
     '👍', '❤️', '🔥', '😂', '😊', '🎉', '🚀', '✅', '❌', '👋', '🤔', '🤝', '👏', '💯', '☕'
@@ -1199,7 +1203,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 WaveformBubble.fromBase64(
                   base64Waveform: msg.metadata['waveform'] as String,
                 )
-              else
+              else if (msg.body.isNotEmpty && !_isDefaultAttachmentBody(msg))
                 Text.rich(
                   TextSpan(
                     children: msg.getSpans(
@@ -1218,7 +1222,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   ),
                 ),
               if (msg.hasAttachments)
-                ...msg.attachments.map((att) => _buildAttachmentCard(theme, att, isMe)),
+                ...msg.attachments.map((att) => _buildAttachmentItem(theme, att, isMe)),
               const SizedBox(height: 3),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -1542,21 +1546,169 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildAttachmentCard(ThemeData theme, Map<String, dynamic> att, bool isMe) {
+  bool _isDefaultAttachmentBody(ChatMessage msg) {
+    if (!msg.hasAttachments) return false;
+    final body = msg.body.trim();
+    for (final att in msg.attachments) {
+      final name = (att['name'] ?? att['file_name'] ?? '').toString().trim();
+      if (name.isEmpty) continue;
+      if (body == name ||
+          body == '📷 $name' ||
+          body == '📎 $name' ||
+          body == 'Вложение') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _isImageAttachment(Map<String, dynamic> att) {
+    final contentType = (att['content_type'] ?? att['contentType'] ?? '').toString().toLowerCase();
+    if (contentType.startsWith('image/')) return true;
+    final name = (att['name'] ?? att['file_name'] ?? '').toString().toLowerCase();
+    return name.endsWith('.png') ||
+        name.endsWith('.jpg') ||
+        name.endsWith('.jpeg') ||
+        name.endsWith('.webp') ||
+        name.endsWith('.gif') ||
+        name.endsWith('.bmp') ||
+        name.endsWith('.heic') ||
+        name.endsWith('.heif') ||
+        name.endsWith('.ico');
+  }
+
+  IconData _getFileIcon(String name) {
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.pdf')) return Icons.picture_as_pdf_outlined;
+    if (lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.m4a') || lower.endsWith('.ogg')) {
+      return Icons.audiotrack_outlined;
+    }
+    if (lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.avi') || lower.endsWith('.mkv')) {
+      return Icons.video_file_outlined;
+    }
+    if (lower.endsWith('.zip') || lower.endsWith('.rar') || lower.endsWith('.7z') || lower.endsWith('.tar') || lower.endsWith('.gz')) {
+      return Icons.folder_zip_outlined;
+    }
+    if (lower.endsWith('.doc') || lower.endsWith('.docx') || lower.endsWith('.txt') || lower.endsWith('.rtf') || lower.endsWith('.md')) {
+      return Icons.description_outlined;
+    }
+    if (lower.endsWith('.xls') || lower.endsWith('.xlsx') || lower.endsWith('.csv')) {
+      return Icons.table_chart_outlined;
+    }
+    if (lower.endsWith('.ppt') || lower.endsWith('.pptx')) {
+      return Icons.slideshow_outlined;
+    }
+    return Icons.insert_drive_file_outlined;
+  }
+
+  Future<File?> _ensureAttachmentCached(
+    ApiClient api,
+    String attId,
+    String fileName, {
+    List<int>? initialBytes,
+  }) async {
+    if (attId.isEmpty) return null;
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final cacheDir = Directory('${tempDir.path}/ligament_chat_cache');
+      if (!await cacheDir.exists()) {
+        await cacheDir.create(recursive: true);
+      }
+      final safeName = fileName.replaceAll(RegExp(r'[^\w\.\-\(\) ]'), '_');
+      final targetFile = File('${cacheDir.path}/${attId}_$safeName');
+      if (await targetFile.exists() && await targetFile.length() > 0) {
+        return targetFile;
+      }
+      final List<int> bytes;
+      if (initialBytes != null && initialBytes.isNotEmpty) {
+        bytes = initialBytes;
+      } else {
+        bytes = await api.downloadChatAttachment(attId);
+      }
+      await targetFile.writeAsBytes(bytes, flush: true);
+      return targetFile;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Future<void> _previewAttachmentNatively(String attId, String fileName) async {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || attId.isEmpty) return;
+
+    if (mounted) {
+      setState(() => _downloadingPreviews.add(attId));
+    }
+
+    try {
+      final file = await _ensureAttachmentCached(auth.api!, attId, fileName);
+      if (file == null || !await file.exists()) {
+        throw Exception('Не удалось загрузить файл');
+      }
+
+      final result = await OpenFilex.open(file.path);
+      if (result.type != ResultType.done && mounted) {
+        if (result.type == ResultType.noAppToOpen) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Нет приложения для открытия данного типа файла')),
+          );
+        } else if (result.type == ResultType.permissionDenied) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Отказано в доступе к файлу')),
+          );
+        } else if (result.type == ResultType.fileNotFound) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Файл не найден на устройстве')),
+          );
+        } else if (result.message.isNotEmpty && result.message != 'done') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Ошибка открытия: ${result.message}')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка предпросмотра: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _downloadingPreviews.remove(attId));
+      }
+    }
+  }
+
+  Widget _buildAttachmentItem(ThemeData theme, Map<String, dynamic> att, bool isMe) {
+    if (_isImageAttachment(att)) {
+      final auth = context.read<AuthState>();
+      return _ChatImageAttachmentPreview(
+        attachment: att,
+        isMe: isMe,
+        apiClient: auth.api,
+        ensureCached: (attId, name, {initialBytes}) =>
+            _ensureAttachmentCached(auth.api!, attId, name, initialBytes: initialBytes),
+        onPreview: (attId, name) => _previewAttachmentNatively(attId, name),
+        onSave: (attId, name) => _downloadAndSaveFile(attId, name),
+      );
+    }
+    return _buildFileAttachmentCard(theme, att, isMe);
+  }
+
+  Widget _buildFileAttachmentCard(ThemeData theme, Map<String, dynamic> att, bool isMe) {
     final name = att['name']?.toString() ?? att['file_name']?.toString() ?? 'Файл';
     final sizeBytes = (att['size'] as num?)?.toInt() ?? (att['file_size'] as num?)?.toInt() ?? 0;
-    final attId = att['id']?.toString() ?? '';
+    final attId = att['id']?.toString() ?? att['attachment_id']?.toString() ?? '';
     final sizeStr = sizeBytes > 1024 * 1024
         ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} МБ'
         : '${(sizeBytes / 1024).toStringAsFixed(1)} КБ';
-    final isImg = name.toLowerCase().endsWith('.png') ||
-        name.toLowerCase().endsWith('.jpg') ||
-        name.toLowerCase().endsWith('.jpeg') ||
-        name.toLowerCase().endsWith('.webp');
+    final isDownloading = _downloadingPreviews.contains(attId);
 
     return Container(
       margin: const EdgeInsets.only(top: 6),
-      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: isMe
             ? Colors.white.withValues(alpha: 0.15)
@@ -1568,61 +1720,95 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               : theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
         ),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: isMe
-                  ? Colors.white24
-                  : theme.colorScheme.primaryContainer,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              isImg ? Icons.image_outlined : Icons.insert_drive_file_outlined,
-              size: 20,
-              color: isMe ? Colors.white : theme.colorScheme.primary,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => _previewAttachmentNatively(attId, name),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: isMe ? Colors.white : theme.colorScheme.onSurface,
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: isMe
+                        ? Colors.white24
+                        : theme.colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    _getFileIcon(name),
+                    size: 20,
+                    color: isMe ? Colors.white : theme.colorScheme.primary,
                   ),
                 ),
-                Text(
-                  sizeStr,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: isMe ? Colors.white70 : theme.colorScheme.outline,
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: isMe ? Colors.white : theme.colorScheme.onSurface,
+                        ),
+                      ),
+                      Text(
+                        '$sizeStr • Просмотр',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isMe ? Colors.white70 : theme.colorScheme.outline,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
+                const SizedBox(width: 6),
+                if (isDownloading)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: isMe ? Colors.white : theme.colorScheme.primary,
+                      ),
+                    ),
+                  )
+                else ...[
+                  IconButton(
+                    icon: Icon(
+                      Icons.visibility_outlined,
+                      size: 20,
+                      color: isMe ? Colors.white : theme.colorScheme.primary,
+                    ),
+                    tooltip: 'Просмотр нативно',
+                    onPressed: () => _previewAttachmentNatively(attId, name),
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      Icons.download_rounded,
+                      size: 20,
+                      color: isMe ? Colors.white : theme.colorScheme.primary,
+                    ),
+                    tooltip: 'Скачать файл',
+                    onPressed: () => _downloadAndSaveFile(attId, name),
+                  ),
+                ],
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          IconButton(
-            icon: Icon(
-              Icons.download_rounded,
-              size: 20,
-              color: isMe ? Colors.white : theme.colorScheme.primary,
-            ),
-            tooltip: 'Скачать файл',
-            onPressed: () => _downloadAndSaveFile(attId, name),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1644,13 +1830,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (bytes == null || bytes.isEmpty) return;
 
       setState(() => _isUploading = true);
-      await _chatService.sendAttachment(
+      final attId = await _chatService.sendAttachment(
         auth.api!,
         _selectedChat!.id,
         topicId: _selectedTopic?.id ?? 0,
         fileName: file.name,
         bytes: bytes,
       );
+      if (attId.isNotEmpty) {
+        unawaited(_ensureAttachmentCached(auth.api!, attId, file.name, initialBytes: bytes));
+      }
       _scrollToBottom();
     } catch (e) {
       if (mounted) {
@@ -1671,10 +1860,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (auth.api == null || attId.isEmpty) return;
 
     try {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Скачивание файла...'), duration: Duration(seconds: 1)),
-      );
-      final bytes = await auth.api!.downloadChatAttachment(attId);
+      final cached = await _ensureAttachmentCached(auth.api!, attId, fileName);
+      final Uint8List bytes;
+      if (cached != null && await cached.exists()) {
+        bytes = await cached.readAsBytes();
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Скачивание файла...'), duration: Duration(seconds: 1)),
+          );
+        }
+        bytes = await auth.api!.downloadChatAttachment(attId);
+      }
       final outputFilePath = await FilePicker.platform.saveFile(
         dialogTitle: 'Сохранить файл',
         fileName: fileName,
@@ -2766,6 +2963,335 @@ class _PresenceStatusSheetState extends State<_PresenceStatusSheet> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ChatImageAttachmentPreview extends StatefulWidget {
+  final Map<String, dynamic> attachment;
+  final bool isMe;
+  final ApiClient? apiClient;
+  final Future<File?> Function(String attId, String fileName, {List<int>? initialBytes}) ensureCached;
+  final void Function(String attId, String fileName) onPreview;
+  final void Function(String attId, String fileName) onSave;
+
+  const _ChatImageAttachmentPreview({
+    required this.attachment,
+    required this.isMe,
+    required this.apiClient,
+    required this.ensureCached,
+    required this.onPreview,
+    required this.onSave,
+  });
+
+  @override
+  State<_ChatImageAttachmentPreview> createState() => _ChatImageAttachmentPreviewState();
+}
+
+class _ChatImageAttachmentPreviewState extends State<_ChatImageAttachmentPreview> {
+  File? _file;
+  bool _isLoading = true;
+  bool _hasError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFile();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatImageAttachmentPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldId = (oldWidget.attachment['id'] ?? oldWidget.attachment['attachment_id'] ?? '').toString();
+    final newId = (widget.attachment['id'] ?? widget.attachment['attachment_id'] ?? '').toString();
+    if (oldId != newId) {
+      _loadFile();
+    }
+  }
+
+  Future<void> _loadFile() async {
+    final attId = (widget.attachment['id'] ?? widget.attachment['attachment_id'] ?? '').toString();
+    final name = (widget.attachment['name'] ?? widget.attachment['file_name'] ?? 'image.png').toString();
+    if (attId.isEmpty) {
+      if (mounted) setState(() { _isLoading = false; _hasError = true; });
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+    try {
+      final file = await widget.ensureCached(attId, name);
+      if (!mounted) return;
+      if (file != null && await file.exists()) {
+        setState(() {
+          _file = file;
+          _isLoading = false;
+          _hasError = false;
+        });
+      } else {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = (widget.attachment['name'] ?? widget.attachment['file_name'] ?? 'image.png').toString();
+    final attId = (widget.attachment['id'] ?? widget.attachment['attachment_id'] ?? '').toString();
+    final sizeBytes = (widget.attachment['size'] as num?)?.toInt() ??
+        (widget.attachment['file_size'] as num?)?.toInt() ?? 0;
+    final sizeStr = sizeBytes > 1024 * 1024
+        ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} МБ'
+        : '${(sizeBytes / 1024).toStringAsFixed(1)} КБ';
+
+    if (_file != null) {
+      return Container(
+        margin: const EdgeInsets.only(top: 6),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: widget.isMe
+                ? Colors.white24
+                : theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+          ),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(11),
+          child: Stack(
+            children: [
+              GestureDetector(
+                onTap: () => widget.onPreview(attId, name),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxHeight: 280,
+                    maxWidth: 320,
+                    minWidth: 160,
+                  ),
+                  child: Image.file(
+                    _file!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _buildFallback(theme, name, sizeStr, attId),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [Colors.black87, Colors.transparent],
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        sizeStr,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                          shadows: [Shadow(color: Colors.black54, blurRadius: 4)],
+                        ),
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                            icon: const Icon(Icons.fullscreen_rounded, size: 20, color: Colors.white),
+                            tooltip: 'Открыть нативно',
+                            onPressed: () => widget.onPreview(attId, name),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                            icon: const Icon(Icons.download_rounded, size: 20, color: Colors.white),
+                            tooltip: 'Скачать файл',
+                            onPressed: () => widget.onSave(attId, name),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_isLoading) {
+      return Container(
+        margin: const EdgeInsets.only(top: 6),
+        width: 220,
+        height: 140,
+        decoration: BoxDecoration(
+          color: widget.isMe
+              ? Colors.white.withValues(alpha: 0.15)
+              : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.8),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: widget.isMe
+                ? Colors.white24
+                : theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 26,
+              height: 26,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: widget.isMe ? Colors.white : theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: widget.isMe ? Colors.white : theme.colorScheme.onSurface,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              sizeStr,
+              style: TextStyle(
+                fontSize: 11,
+                color: widget.isMe ? Colors.white70 : theme.colorScheme.outline,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return _buildFallback(theme, name, sizeStr, attId);
+  }
+
+  Widget _buildFallback(ThemeData theme, String name, String sizeStr, String attId) {
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: widget.isMe
+            ? Colors.white.withValues(alpha: 0.15)
+            : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.8),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: widget.isMe
+              ? Colors.white24
+              : theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: widget.isMe
+                  ? Colors.white24
+                  : theme.colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.image_outlined,
+              size: 20,
+              color: widget.isMe ? Colors.white : theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: widget.isMe ? Colors.white : theme.colorScheme.onSurface,
+                  ),
+                ),
+                Text(
+                  _hasError ? 'Ошибка загрузки • Нажмите для повтора' : sizeStr,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: _hasError
+                        ? theme.colorScheme.error
+                        : (widget.isMe ? Colors.white70 : theme.colorScheme.outline),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          if (_hasError)
+            IconButton(
+              icon: Icon(
+                Icons.refresh_rounded,
+                size: 20,
+                color: widget.isMe ? Colors.white : theme.colorScheme.primary,
+              ),
+              tooltip: 'Повторить загрузку',
+              onPressed: _loadFile,
+            )
+          else ...[
+            IconButton(
+              icon: Icon(
+                Icons.visibility_outlined,
+                size: 20,
+                color: widget.isMe ? Colors.white : theme.colorScheme.primary,
+              ),
+              tooltip: 'Просмотр нативно',
+              onPressed: () => widget.onPreview(attId, name),
+            ),
+            IconButton(
+              icon: Icon(
+                Icons.download_rounded,
+                size: 20,
+                color: widget.isMe ? Colors.white : theme.colorScheme.primary,
+              ),
+              tooltip: 'Скачать файл',
+              onPressed: () => widget.onSave(attId, name),
+            ),
+          ],
+        ],
       ),
     );
   }

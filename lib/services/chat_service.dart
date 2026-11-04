@@ -263,7 +263,7 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  Future<void> sendAttachment(
+  Future<String> sendAttachment(
     ApiClient client,
     String chatId, {
     int topicId = 0,
@@ -297,6 +297,7 @@ class ChatService extends ChangeNotifier {
           ]
         },
       );
+      return attId;
     } catch (e) {
       DebugLogService.instance.record('chat.attachment.failed', error: e);
       rethrow;

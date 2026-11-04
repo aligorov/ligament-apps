@@ -173,5 +173,37 @@ void main() {
       expect(call.status, CallStatus.idle);
       expect(call.displayMode, CallDisplayMode.hidden);
     });
+
+    test('ChatMessage deserialization with attachments metadata and fallback', () {
+      final jsonWithMeta = {
+        'id': 1002,
+        'chat_id': 'chat-123',
+        'topic_id': 0,
+        'sender_id': 'usr-alex',
+        'sender_name': 'Алексей',
+        'client_msg_id': 'c-2',
+        'body': '📷 Изображение.png',
+        'kind': 'image',
+        'metadata': {
+          'attachments': [
+            {
+              'id': 'att-12345',
+              'name': 'Изображение.png',
+              'size': 1363148,
+              'content_type': 'image/png',
+            }
+          ]
+        },
+        'created_at': '2026-11-04T16:09:00Z',
+      };
+
+      final msg = ChatMessage.fromJson(jsonWithMeta);
+      expect(msg.hasAttachments, isTrue);
+      expect(msg.attachments.length, 1);
+      expect(msg.attachments.first['id'], 'att-12345');
+      expect(msg.attachments.first['name'], 'Изображение.png');
+      expect(msg.attachments.first['size'], 1363148);
+      expect(msg.attachments.first['content_type'], 'image/png');
+    });
   });
 }

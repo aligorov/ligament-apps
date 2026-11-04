@@ -35,6 +35,7 @@ dependencies:
   path_provider: ^2.1.0
   wakelock_plus: ^1.2.5
   file_picker: ^8.1.2
+  open_filex: ^5.0.0
 
 dev_dependencies:
   flutter_test:
