@@ -2,10 +2,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Сервис нативной интеграции Apple CallKit для iOS.
-/// На iOS выводит входящие и исходящие звонки в системный интерфейс Apple Phone / Lock Screen
-/// с нативными кнопками ответа/отклонения, рингтоном системы и историей вызовов в Recents.
-/// На остальных платформах (Android, macOS, Windows, Linux, Web) работает как no-op.
+/// Сервис нативной интеграции телефонных вызовов (Apple CallKit на iOS и CallStyle/FGS на Android).
+/// - На iOS: выводит вызовы в системный Apple CallKit (Lock Screen, Recents, Dynamic Island).
+/// - На Android: выводит вызовы поверх экрана блокировки (FullScreenIntent, CallStyle, Foreground Service).
+/// На остальных платформах (macOS, Windows, Linux, Web) работает как no-op.
 class CallKitService {
   static final CallKitService instance = CallKitService._();
   factory CallKitService() => instance;
@@ -18,16 +18,19 @@ class CallKitService {
 
   static const MethodChannel _channel = MethodChannel('ligament/callkit');
 
-  /// Callback при ответе на звонок через системный экран iOS CallKit
+  /// Callback при ответе на звонок через системный экран (iOS CallKit / Android CallStyle)
   void Function(String uuid)? onCallAccepted;
 
-  /// Callback при отклонении или завершении звонка через системный экран iOS CallKit
+  /// Callback при отклонении или завершении звонка через системный экран
   void Function(String uuid)? onCallEnded;
 
-  /// Callback при переключении микрофона на системном экране iOS CallKit
+  /// Callback при переключении микрофона на системном экране
   void Function(bool muted)? onCallMuted;
 
-  bool get isSupported => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+  bool get isSupported =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android);
 
   Future<void> _handleMethodCall(MethodCall call) async {
     switch (call.method) {
@@ -109,13 +112,34 @@ class CallKitService {
     }
   }
 
-  /// Синхронизировать статус mute с CallKit
+  /// Синхронизировать статус mute с CallKit / Android CallStyle
   Future<void> setMuted({required String uuid, required bool muted}) async {
     if (!isSupported) return;
     try {
       await _channel.invokeMethod('setMuted', {'uuid': uuid, 'muted': muted});
     } catch (e) {
       debugPrint('[CallKitService] setMuted error: $e');
+    }
+  }
+
+  /// Проверка доступности полноэкранных уведомлений поверх экрана блокировки (Android 14+ FSI)
+  Future<bool> canUseFullScreenIntent() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      final res = await _channel.invokeMethod<bool>('canUseFullScreenIntent');
+      return res ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// Переход в системные настройки для предоставления доступа к полноэкранным уведомлениям (Android 14+)
+  Future<void> requestFullScreenIntentPermission() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await _channel.invokeMethod('requestFullScreenIntentPermission');
+    } catch (e) {
+      debugPrint('[CallKitService] requestFullScreenIntentPermission error: $e');
     }
   }
 }

@@ -314,7 +314,9 @@ class CallSessionManager extends ChangeNotifier {
       isVideo: _isVideo,
       chatId: _chatId,
     ));
-    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) {
+    if (kIsWeb ||
+        (defaultTargetPlatform != TargetPlatform.iOS &&
+            defaultTargetPlatform != TargetPlatform.android)) {
       unawaited(_sound.startRingtone());
     }
   }

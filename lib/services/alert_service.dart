@@ -324,41 +324,9 @@ class AlertService {
       }
     } else if (kIsWeb) {
       showWebNotification(title, body);
-    } else if (!kIsWeb && Platform.isIOS) {
-      // На iOS входящий звонок отображается через нативный системный экран Apple CallKit
+    } else if (!kIsWeb && (Platform.isIOS || Platform.isAndroid)) {
+      // На iOS и Android входящий звонок отображается через нативный системный экран CallKit / CallStyle
       return;
-    } else if (!kIsWeb && Platform.isAndroid) {
-      const androidDetails = AndroidNotificationDetails(
-        'incoming_calls_channel',
-        'Входящие звонки (P2P Call)',
-        channelDescription: 'Срочные входящие аудио- и видеозвонки в корпоративном чате',
-        importance: Importance.max,
-        priority: Priority.max,
-        fullScreenIntent: true,
-        category: AndroidNotificationCategory.call,
-        audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
-        actions: [
-          AndroidNotificationAction(
-            'accept_call',
-            'Ответить',
-            showsUserInterface: true,
-            cancelNotification: true,
-          ),
-          AndroidNotificationAction(
-            'decline_call',
-            'Отклонить',
-            showsUserInterface: false,
-            cancelNotification: true,
-          ),
-        ],
-      );
-      await _localNotifications.show(
-        3001,
-        title,
-        body,
-        const NotificationDetails(android: androidDetails),
-        payload: chatId,
-      );
     }
   }
 
