@@ -27,6 +27,8 @@ import 'windows_identity.dart';
 import 'sso/sso_ticket.dart';
 import 'sso/sso_ticket_flow.dart';
 import 'ws_service.dart';
+import 'chat_service.dart';
+import 'call_session_manager.dart';
 
 /// Нормализация browser_sso-челленджа из WS-сообщения или pending-записи:
 /// поля {id, sp_name, username, machine, auto_allowed, expires_at}, при этом
@@ -1336,6 +1338,9 @@ class AuthState extends ChangeNotifier {
       fallbackUrls: fallbackRelayUrls,
     );
 
+    // Подключение к WebSocket корпоративного чата и WebRTC-сигналинга
+    ChatService.instance.connectWebSocket(client);
+
     // 2. Телеметрия и контроль комплаенса
     telemetry.startReporting(client);
 
@@ -1702,7 +1707,11 @@ class AuthState extends ChangeNotifier {
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();
+    ChatService.instance.disconnectWebSocket();
+    CallSessionManager.instance.endCall(notifyPeer: false);
     support.clearChat();
+    ChatService.instance.disconnectWebSocket();
+    CallSessionManager.instance.endCall(notifyPeer: false);
 
     // Этап 2: активный RDP-туннель не переживает разлогин — режем сразу
     // (грант закроется сервером по разрыву трубы, повторный /rdp/close не
@@ -3020,6 +3029,8 @@ class AuthState extends ChangeNotifier {
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();
+    ChatService.instance.disconnectWebSocket();
+    CallSessionManager.instance.endCall(notifyPeer: false);
     // Этап 2: выход из приложения = обрыв туннеля = конец RDP-сессии
     // (дизайн §2.2); грант на сервере закрывается по разрыву WS.
     rdp.dispose();

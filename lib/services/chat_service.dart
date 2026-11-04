@@ -405,11 +405,16 @@ class ChatService extends ChangeNotifier {
   bool get isWsConnected => _isWsConnected;
 
   void connectWebSocket(ApiClient client) {
-    _lastClient = client;
-
     CallSessionManager.instance.onSendSignal = (targetUserId, chatId, payload) {
       sendWebRTCSignal(targetUserId, chatId, payload);
     };
+
+    if (_isWsConnected &&
+        _lastClient?.token == client.token &&
+        _lastClient?.baseUrl == client.baseUrl) {
+      return;
+    }
+    _lastClient = client;
 
     unawaited(loadPresences(client));
     _connectWsInternal();
