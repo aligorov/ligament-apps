@@ -1121,6 +1121,20 @@ class AuthState extends ChangeNotifier {
     };
 
     ws.onNotification = (msg) {
+      final data = msg['data'];
+      if (data is Map && data['type'] == 'incoming_call') {
+        final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
+        final isVideo = data['is_video'] == 'true';
+        final chatId = data['chat_id']?.toString() ?? '';
+        alert.triggerIncomingCallNotification(
+          caller: caller,
+          isVideo: isVideo,
+          chatId: chatId,
+        );
+        notifyListeners();
+        return;
+      }
+
       final title =
           msg['title']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
       final body = msg['body']?.toString() ?? '';
@@ -1158,10 +1172,31 @@ class AuthState extends ChangeNotifier {
       push.onPushToken!(push.pushToken!);
     }
     push.onRemoteNotification = (prompt) {
+      final data = prompt['data'];
+      if (data is Map && data['type'] == 'incoming_call') {
+        final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
+        final isVideo = data['is_video'] == 'true';
+        final chatId = data['chat_id']?.toString() ?? '';
+        alert.triggerIncomingCallNotification(
+          caller: caller,
+          isVideo: isVideo,
+          chatId: chatId,
+        );
+        return;
+      }
       _surfacePrompt(prompt);
       loadPendingChallenges();
     };
     push.onNotificationAction = (action, cid, payload) async {
+      if (action == 'accept_call') {
+        AlertService.instance.cancelIncomingCallNotification();
+        CallSessionManager.instance.acceptIncomingCall();
+        return;
+      } else if (action == 'decline_call') {
+        AlertService.instance.cancelIncomingCallNotification();
+        CallSessionManager.instance.rejectIncomingCall();
+        return;
+      }
       if (cid != null && cid.isNotEmpty) {
         if (action == 'APPROVE') {
           await submitDecision(challengeId: cid, approve: true);
