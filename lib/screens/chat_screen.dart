@@ -64,7 +64,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _chatService.disconnectWebSocket();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _textController.dispose();
@@ -74,11 +73,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.detached) {
-      _chatService.disconnectWebSocket();
-    } else if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed) {
       final auth = context.read<AuthState>();
       if (auth.api != null) {
         _chatService.connectWebSocket(auth.api!);

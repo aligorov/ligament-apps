@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
+import '../main.dart';
+import '../screens/chat_screen.dart';
 import '../services/auth_state.dart';
 import '../services/call_session_manager.dart';
 
@@ -117,7 +119,7 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     child: Row(
                       children: [
-                        if (!isIncoming)
+                        if (!isIncoming) ...[
                           IconButton(
                             icon: Icon(
                               Icons.picture_in_picture_alt,
@@ -126,6 +128,20 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                             tooltip: 'Свернуть в мини-окно (PiP)',
                             onPressed: () => _call.setPip(true),
                           ),
+                          IconButton(
+                            icon: Icon(
+                              Icons.chat_bubble_outline,
+                              color: hasRemoteVideo ? Colors.white : null,
+                            ),
+                            tooltip: 'Открыть чат',
+                            onPressed: () {
+                              _call.setPip(true);
+                              LigamentApp.navigatorKey.currentState?.push(
+                                MaterialPageRoute(builder: (_) => const ChatScreen()),
+                              );
+                            },
+                          ),
+                        ],
                         const SizedBox(width: 8),
                         Expanded(
                           child: Column(
@@ -419,6 +435,19 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    InkWell(
+                      onTap: () {
+                        LigamentApp.navigatorKey.currentState?.push(
+                          MaterialPageRoute(builder: (_) => const ChatScreen()),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(12),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.chat_bubble_outline, size: 16),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
                     InkWell(
                       onTap: () => _call.setPip(false),
                       borderRadius: BorderRadius.circular(12),
