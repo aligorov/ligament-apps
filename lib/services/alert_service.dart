@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:window_manager/window_manager.dart';
@@ -8,6 +9,10 @@ import 'web_platform.dart';
 
 /// Сервис оповещений и вывода окна при входящих push-запросах.
 class AlertService {
+  static final AlertService instance = AlertService._();
+  AlertService._();
+  factory AlertService() => instance;
+
   final GPOService _gpo = GPOService();
   final AudioPlayer _audioPlayer = AudioPlayer();
   final FlutterLocalNotificationsPlugin _localNotifications =
@@ -29,6 +34,17 @@ class AlertService {
       );
       await _localNotifications.initialize(
         const InitializationSettings(android: androidInit, iOS: darwinInit, macOS: darwinInit),
+        onDidReceiveNotificationResponse: (response) async {
+          if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+            try {
+              if (await windowManager.isMinimized()) {
+                await windowManager.restore();
+              }
+              await windowManager.show();
+              await windowManager.focus();
+            } catch (_) {}
+          }
+        },
       );
 
       // Android 13+ (API 33): POST_NOTIFICATIONS — runtime-разрешение (M-7).
@@ -274,8 +290,21 @@ class AlertService {
         if (Platform.isWindows) {
           await windowManager.setProgressBar(1.0);
         }
-      } catch (_) {}
+        if (Platform.isMacOS) {
+          try {
+            final sz = await windowManager.getSize();
+            await windowManager.setSize(Size(sz.width + 1, sz.height));
+            await Future.delayed(const Duration(milliseconds: 50));
+            await windowManager.setSize(sz);
+          } catch (_) {}
+        }
+      } catch (e) {
+        debugPrint('alert_service: error waking window for incoming call: $e');
+      }
 
+      try {
+        await SystemSound.play(SystemSoundType.alert);
+      } catch (_) {}
       try {
         await _audioPlayer.play(AssetSource('sounds/alert.mp3'));
       } catch (_) {}

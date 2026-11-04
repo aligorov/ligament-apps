@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'alert_service.dart';
 import 'debug_log_service.dart';
 
 enum CallStatus {
@@ -40,6 +42,7 @@ class CallSessionManager extends ChangeNotifier {
   int _durationSeconds = 0;
   Timer? _callTimer;
   Timer? _ringTimeout;
+  Timer? _ringSoundTimer;
 
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
@@ -215,6 +218,32 @@ class CallSessionManager extends ChangeNotifier {
     }
   }
 
+  void _startRingingAlert() {
+    _ringSoundTimer?.cancel();
+    unawaited(AlertService.instance.triggerIncomingCallNotification(
+      caller: _callerName,
+      isVideo: _isVideo,
+      chatId: _chatId,
+    ));
+
+    _ringSoundTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (_status != CallStatus.incoming) {
+        timer.cancel();
+        _ringSoundTimer = null;
+        return;
+      }
+      try {
+        SystemSound.play(SystemSoundType.alert);
+      } catch (_) {}
+    });
+  }
+
+  void _stopRingingAlert() {
+    _ringSoundTimer?.cancel();
+    _ringSoundTimer = null;
+    unawaited(AlertService.instance.resetWindowPriority());
+  }
+
   /// Обработка входящего вызова (offer)
   void handleIncomingOffer({
     required String fromUser,
@@ -244,6 +273,8 @@ class CallSessionManager extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
 
+    _startRingingAlert();
+
     _ringTimeout?.cancel();
     _ringTimeout = Timer(const Duration(seconds: 45), () {
       if (_status == CallStatus.incoming) {
@@ -258,6 +289,7 @@ class CallSessionManager extends ChangeNotifier {
   Future<void> acceptIncomingCall({List<Map<String, dynamic>> iceServers = const []}) async {
     if (_status != CallStatus.incoming || _pendingOfferSdp.isEmpty) return;
 
+    _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
     _status = CallStatus.calling;
@@ -369,6 +401,7 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Отклонить входящий вызов
   void rejectIncomingCall() {
+    _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
     if (_targetUserId.isNotEmpty) {
@@ -387,6 +420,7 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Абонент не в сети / не подключен к серверу
   void handleOffline() {
+    _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
     _status = CallStatus.offline;
@@ -400,6 +434,7 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Абонент занят
   void handleBusy() {
+    _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
     _status = CallStatus.ended;
@@ -511,6 +546,7 @@ class CallSessionManager extends ChangeNotifier {
   }
 
   void endCall({bool notifyPeer = true}) {
+    _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
     _callTimer?.cancel();
