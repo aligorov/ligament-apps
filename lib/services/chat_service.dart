@@ -440,11 +440,19 @@ class ChatService extends ChangeNotifier {
       };
 
       _wsChannel?.sink.close();
-      _wsChannel = IOWebSocketChannel.connect(uri, headers: headers);
-      _isWsConnected = true;
-      notifyListeners();
+      final ch = IOWebSocketChannel.connect(uri, headers: headers);
+      _wsChannel = ch;
 
-      _wsChannel!.stream.listen(
+      unawaited(ch.ready.then((_) {
+        _isWsConnected = true;
+        notifyListeners();
+      }).catchError((e) {
+        _isWsConnected = false;
+        notifyListeners();
+        _scheduleReconnect();
+      }));
+
+      ch.stream.listen(
         (data) {
           try {
             final str = data is List<int> ? utf8.decode(data) : data.toString();

@@ -14,7 +14,8 @@ class AlertService {
   factory AlertService() => instance;
 
   final GPOService _gpo = GPOService();
-  final AudioPlayer _audioPlayer = AudioPlayer();
+  AudioPlayer? _audioPlayer;
+  AudioPlayer _getAudioPlayer() => _audioPlayer ??= AudioPlayer();
   final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
 
@@ -105,7 +106,7 @@ class AlertService {
 
       if (_gpo.playSound) {
         try {
-          await _audioPlayer.play(AssetSource('sounds/alert.mp3'));
+          await _getAudioPlayer().play(AssetSource('sounds/alert.mp3'));
         } catch (_) {
           // Если файл звука недоступен, продолжаем без краша
         }
@@ -188,7 +189,7 @@ class AlertService {
       } catch (_) {}
 
       try {
-        await _audioPlayer.play(AssetSource('sounds/alert.mp3'));
+        await _getAudioPlayer().play(AssetSource('sounds/alert.mp3'));
       } catch (_) {}
 
       if (Platform.isMacOS) {
@@ -306,7 +307,7 @@ class AlertService {
         await SystemSound.play(SystemSoundType.alert);
       } catch (_) {}
       try {
-        await _audioPlayer.play(AssetSource('sounds/alert.mp3'));
+        await _getAudioPlayer().play(AssetSource('sounds/alert.mp3'));
       } catch (_) {}
 
       if (Platform.isMacOS) {

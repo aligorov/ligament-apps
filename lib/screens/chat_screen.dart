@@ -11,6 +11,8 @@ import '../services/auth_state.dart';
 import '../services/chat_service.dart';
 import '../services/call_session_manager.dart';
 import '../widgets/waveform_bubble.dart';
+import '../widgets/neural_mesh_background.dart';
+import '../widgets/window_caption_controls.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -386,33 +388,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isWide = MediaQuery.of(context).size.width >= 720;
+    final width = MediaQuery.of(context).size.width;
+    final isWide = width >= 600;
 
-    return AnimatedBuilder(
-      animation: _chatService,
-      builder: (context, _) {
-        if (isWide) {
-          return _buildWideLayout(theme);
-        }
-        return _buildMobileLayout(theme);
-      },
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: NeuralMeshBackground(
+        child: AnimatedBuilder(
+          animation: _chatService,
+          builder: (context, _) {
+            if (isWide) {
+              return _buildWideLayout(theme, width);
+            }
+            return _buildMobileLayout(theme);
+          },
+        ),
+      ),
     );
   }
 
-  Widget _buildWideLayout(ThemeData theme) {
+  Widget _buildWideLayout(ThemeData theme, double width) {
+    final showTopicsSidebar = width >= 850 && _selectedChat?.isForum == true;
+
     return Row(
       children: [
         SizedBox(
-          width: 300,
+          width: 290,
           child: _buildChatList(theme),
         ),
-        VerticalDivider(width: 1, color: theme.colorScheme.outlineVariant),
-        if (_selectedChat?.isForum == true) ...[
+        VerticalDivider(width: 1, color: Colors.white.withValues(alpha: 0.08)),
+        if (showTopicsSidebar) ...[
           SizedBox(
-            width: 220,
+            width: 210,
             child: _buildTopicsList(theme),
           ),
-          VerticalDivider(width: 1, color: theme.colorScheme.outlineVariant),
+          VerticalDivider(width: 1, color: Colors.white.withValues(alpha: 0.08)),
         ],
         Expanded(
           child: _selectedChat != null
@@ -440,7 +450,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         });
       },
       child: Scaffold(
+        backgroundColor: Colors.transparent,
         appBar: AppBar(
+          backgroundColor: const Color(0xEB0B0F19).withValues(alpha: 0.85),
+          elevation: 0,
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () => setState(() {
@@ -454,10 +467,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               CircleAvatar(
                 radius: 17,
                 backgroundColor: _selectedChat?.isForum == true
-                    ? theme.colorScheme.tertiaryContainer
+                    ? const Color(0xFF0284C7).withValues(alpha: 0.25)
                     : theme.colorScheme.primaryContainer,
                 foregroundColor: _selectedChat?.isForum == true
-                    ? theme.colorScheme.onTertiaryContainer
+                    ? const Color(0xFF38BDF8)
                     : theme.colorScheme.onPrimaryContainer,
                 child: Text(
                   _selectedChat?.isForum == true ? '🏛️' : initials,
@@ -469,11 +482,39 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      displayTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            displayTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (_selectedChat?.isForum == true) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0284C7).withValues(alpha: 0.25),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.5)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(_selectedTopic?.iconEmoji ?? '💬', style: const TextStyle(fontSize: 10)),
+                                const SizedBox(width: 3),
+                                Text(
+                                  _selectedTopic?.title ?? 'Общий',
+                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF38BDF8)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     if (_selectedChat != null)
                       _buildChatSubtitle(theme, _selectedChat!),
@@ -520,6 +561,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 tooltip: 'Темы форума',
                 onPressed: () => _showTopicsBottomSheet(theme),
               ),
+            if (WindowCaptionControls.isSupported)
+              const WindowCaptionControls(),
           ],
         ),
         body: _buildChatArea(theme),
@@ -559,28 +602,58 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
 
     return Scaffold(
+      backgroundColor: const Color(0xEB0B0F19).withValues(alpha: 0.75),
       appBar: AppBar(
-        title: const Text('💬 Корпоративный чат'),
+        backgroundColor: Colors.transparent,
         elevation: 0,
+        leading: Navigator.of(context).canPop()
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Назад',
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
+        title: const Text('Диалоги', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
         actions: [
-          _buildMyStatusAction(theme),
           IconButton(
-            icon: const Icon(Icons.tune_outlined),
-            tooltip: 'Настройки чата',
-            onPressed: _showChatSettingsDialog,
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Обновить',
-            onPressed: () {
-              final auth = context.read<AuthState>();
-              if (auth.api != null) _chatService.loadChats(auth.api!);
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.add_comment_outlined),
+            icon: const Icon(Icons.add_comment_outlined, size: 20),
             tooltip: 'Новый чат',
             onPressed: () => _showNewChatDialog(context),
+          ),
+          _buildMyStatusAction(theme),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, size: 20),
+            tooltip: 'Ещё',
+            onSelected: (val) {
+              if (val == 'settings') {
+                _showChatSettingsDialog();
+              } else if (val == 'refresh') {
+                final auth = context.read<AuthState>();
+                if (auth.api != null) _chatService.loadChats(auth.api!);
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'refresh',
+                child: Row(
+                  children: [
+                    Icon(Icons.refresh, size: 18),
+                    SizedBox(width: 8),
+                    Text('Обновить'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'settings',
+                child: Row(
+                  children: [
+                    Icon(Icons.tune_outlined, size: 18),
+                    SizedBox(width: 8),
+                    Text('Настройки'),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -607,7 +680,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       isDense: true,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       filled: true,
-                      fillColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                      fillColor: const Color(0xFF1E293B).withValues(alpha: 0.6),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
@@ -823,7 +896,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final topics = _chatService.getTopics(_selectedChat!.id);
 
     return Scaffold(
-      backgroundColor: theme.colorScheme.surfaceContainerLowest,
+      backgroundColor: const Color(0xEB0B0F19).withValues(alpha: 0.75),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -845,19 +918,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           return ListTile(
             dense: true,
             selected: isSelected,
-            selectedTileColor: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+            selectedTileColor: const Color(0xFF0284C7).withValues(alpha: 0.25),
             leading: Text(topic.iconEmoji, style: const TextStyle(fontSize: 16)),
             title: Text(
               topic.title,
               style: TextStyle(
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                 fontSize: 13,
+                color: isSelected ? const Color(0xFF38BDF8) : null,
               ),
             ),
             trailing: topic.unreadCount > 0
                 ? Badge(
                     label: Text('${topic.unreadCount}'),
-                    backgroundColor: theme.colorScheme.primary,
+                    backgroundColor: const Color(0xFF0284C7),
                   )
                 : null,
             onTap: () => _selectTopic(topic),
@@ -919,6 +993,82 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildHorizontalTopicsBar(ThemeData theme) {
+    if (_selectedChat == null || !_selectedChat!.isForum) return const SizedBox.shrink();
+    final topics = _chatService.getTopics(_selectedChat!.id);
+
+    return Container(
+      height: 46,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xEB0B0F19).withValues(alpha: 0.65),
+        border: Border(
+          bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.forum_outlined, size: 16, color: Color(0xFF38BDF8)),
+          const SizedBox(width: 8),
+          const Text(
+            'Темы:',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF94A3B8),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: topics.length + 1,
+              separatorBuilder: (_, __) => const SizedBox(width: 6),
+              itemBuilder: (context, index) {
+                if (index == topics.length) {
+                  return ActionChip(
+                    avatar: const Icon(Icons.add, size: 14, color: Color(0xFF38BDF8)),
+                    label: const Text('Тема', style: TextStyle(fontSize: 12, color: Color(0xFF38BDF8))),
+                    backgroundColor: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                    side: BorderSide(color: const Color(0xFF0284C7).withValues(alpha: 0.4)),
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _showCreateTopicDialog(context),
+                  );
+                }
+                final topic = topics[index];
+                final isSelected = _selectedTopic?.id == topic.id;
+                return ChoiceChip(
+                  avatar: Text(topic.iconEmoji, style: const TextStyle(fontSize: 13)),
+                  label: Text(
+                    topic.title + (topic.unreadCount > 0 ? ' (${topic.unreadCount})' : ''),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      color: isSelected ? Colors.white : const Color(0xFFCBD5E1),
+                    ),
+                  ),
+                  selected: isSelected,
+                  selectedColor: const Color(0xFF0284C7),
+                  backgroundColor: const Color(0xFF1E293B).withValues(alpha: 0.7),
+                  side: BorderSide(
+                    color: isSelected
+                        ? const Color(0xFF38BDF8)
+                        : Colors.white.withValues(alpha: 0.12),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  visualDensity: VisualDensity.compact,
+                  showCheckmark: false,
+                  onSelected: (_) => _selectTopic(topic),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildChatArea(ThemeData theme) {
     final chatId = _selectedChat?.id ?? '';
     final topicId = _selectedTopic?.id ?? 0;
@@ -927,7 +1077,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final currentUsername = auth.username;
     final currentDisplayName = auth.displayName;
     final currentUserId = auth.currentUser?['id']?.toString() ?? '';
-    final isWide = MediaQuery.of(context).size.width >= 720;
+    final isWide = MediaQuery.of(context).size.width >= 600;
 
     return Stack(
       children: [
@@ -935,6 +1085,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           children: [
             if (isWide && _selectedChat != null)
               _buildWideChatHeader(theme),
+            if (_selectedChat?.isForum == true)
+              _buildHorizontalTopicsBar(theme),
             Expanded(
               child: messages.isEmpty
                   ? Center(
@@ -989,8 +1141,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
           decoration: BoxDecoration(
             color: isMe
-                ? theme.colorScheme.primary
-                : theme.colorScheme.surfaceContainerHighest,
+                ? const Color(0xFF0284C7)
+                : const Color(0xFF1E293B).withValues(alpha: 0.85),
+            border: Border.all(
+              color: isMe
+                  ? const Color(0xFF38BDF8).withValues(alpha: 0.3)
+                  : Colors.white.withValues(alpha: 0.08),
+            ),
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(16),
               topRight: const Radius.circular(16),
@@ -1130,8 +1287,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
+        color: const Color(0xEB0B0F19).withValues(alpha: 0.85),
+        border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
       ),
       child: SafeArea(
         child: Column(
@@ -1142,10 +1299,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
+                  color: const Color(0xFF1E293B).withValues(alpha: 0.8),
                   borderRadius: BorderRadius.circular(10),
-                  border: Border(
-                    left: BorderSide(color: theme.colorScheme.primary, width: 3),
+                  border: const Border(
+                    left: BorderSide(color: Color(0xFF38BDF8), width: 3),
                   ),
                 ),
                 child: Row(
@@ -1259,7 +1416,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           borderSide: BorderSide.none,
                         ),
                         filled: true,
-                        fillColor: theme.colorScheme.surfaceContainerHighest,
+                        fillColor: const Color(0xFF1E293B).withValues(alpha: 0.7),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                       ),
                     ),
@@ -1287,19 +1444,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(bottom: BorderSide(color: theme.colorScheme.outlineVariant)),
+        color: const Color(0xEB0B0F19).withValues(alpha: 0.85),
+        border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
       ),
       child: Row(
         children: [
           CircleAvatar(
             radius: 19,
             backgroundColor: _selectedChat!.isForum
-                ? theme.colorScheme.tertiaryContainer
-                : theme.colorScheme.primaryContainer,
-            foregroundColor: _selectedChat!.isForum
-                ? theme.colorScheme.onTertiaryContainer
-                : theme.colorScheme.onPrimaryContainer,
+                ? const Color(0xFF0284C7).withValues(alpha: 0.25)
+                : const Color(0xFF38BDF8).withValues(alpha: 0.25),
+            foregroundColor: const Color(0xFF38BDF8),
             child: Text(
               _selectedChat!.isForum ? '🏛️' : initials,
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
@@ -1311,11 +1466,39 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  chatTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        chatTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    if (_selectedChat!.isForum) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0284C7).withValues(alpha: 0.25),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.5)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(_selectedTopic?.iconEmoji ?? '💬', style: const TextStyle(fontSize: 11)),
+                            const SizedBox(width: 4),
+                            Text(
+                              _selectedTopic?.title ?? 'Общий',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF38BDF8)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 _buildChatSubtitle(theme, _selectedChat!),
               ],
@@ -1352,6 +1535,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             tooltip: 'Удалить диалог',
             onPressed: _confirmDeleteChat,
           ),
+          if (WindowCaptionControls.isSupported)
+            const WindowCaptionControls(),
         ],
       ),
     );
