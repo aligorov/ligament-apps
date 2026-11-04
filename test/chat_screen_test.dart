@@ -1,7 +1,38 @@
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ligament_authenticator/models/chat_models.dart';
+import 'package:ligament_authenticator/services/call_session_manager.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('xyz.luan/audioplayers'),
+      (call) async => call.method == 'create' ? 'test-player' : null,
+    );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('xyz.luan/audioplayers.global'),
+      (call) async => null,
+    );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('dexterous.com/flutter/local_notifications'),
+      (call) async => true,
+    );
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('xyz.luan/audioplayers'), null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('xyz.luan/audioplayers.global'), null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('dexterous.com/flutter/local_notifications'), null);
+  });
+
   group('ChatModels Unit Tests', () {
     test('ChatItem deserialization and defaults', () {
       final json = {
@@ -113,6 +144,34 @@ void main() {
       expect(contact.userId, 'usr-ivan');
       expect(contact.status, 'away');
       expect(contact.statusText, 'Обед');
+    });
+
+    test('CallSessionManager incoming call transition and reject', () {
+      final call = CallSessionManager.instance;
+      expect(call.status, CallStatus.idle);
+      expect(call.displayMode, CallDisplayMode.hidden);
+
+      // Симуляция входящего звонка
+      call.handleIncomingOffer(
+        fromUser: 'user_alex',
+        chatId: 'chat_123',
+        offerPayload: {
+          'caller_name': 'Алексей',
+          'is_video': true,
+          'sdp': 'v=0\r\no=mock...',
+        },
+      );
+
+      expect(call.status, CallStatus.incoming);
+      expect(call.displayMode, CallDisplayMode.fullscreen);
+      expect(call.callerName, 'Алексей');
+      expect(call.isVideo, isTrue);
+      expect(call.chatId, 'chat_123');
+
+      // Отклонение вызова возвращает в idle и скрывает оверлей
+      call.rejectIncomingCall();
+      expect(call.status, CallStatus.idle);
+      expect(call.displayMode, CallDisplayMode.hidden);
     });
   });
 }
