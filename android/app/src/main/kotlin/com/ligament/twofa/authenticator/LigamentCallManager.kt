@@ -237,7 +237,8 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
     }
 
     fun handleIntent(intent: Intent?) {
-        val action = intent?.getStringExtra("action") ?: intent?.action ?: return
+        if (intent == null) return
+        val action = intent.getStringExtra("action") ?: intent.action ?: return
         val uuid = intent.getStringExtra("uuid") ?: currentCallUuid ?: ""
 
         if (action == CallActionReceiver.ACTION_ACCEPT_CALL) {

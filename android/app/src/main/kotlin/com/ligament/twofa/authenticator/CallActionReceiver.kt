@@ -47,7 +47,8 @@ class CallActionReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
-        val action = intent?.action ?: return
+        if (intent == null) return
+        val action = intent.action ?: return
         val uuid = intent.getStringExtra(EXTRA_UUID) ?: ""
 
         // Снимаем уведомление входящего вызова
