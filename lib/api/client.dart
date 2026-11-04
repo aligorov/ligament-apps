@@ -1015,6 +1015,61 @@ class ApiClient {
     }
   }
 
+  /// Ligament Ticket: список активных быстрых заявок (пресетов)
+  Future<List<Map<String, dynamic>>> getTicketPresets() async {
+    final res = await _get(
+      _cleanUrl('/apps/tickets/api/v1/presets'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'presets_fetch_failed');
+  }
+
+  /// Ligament Ticket: список заявок пользователя
+  Future<List<Map<String, dynamic>>> getTickets({String? status, String? authorId}) async {
+    final q = <String>[];
+    if (status != null && status.isNotEmpty) q.add('status=${Uri.encodeComponent(status)}');
+    if (authorId != null && authorId.isNotEmpty) q.add('author_id=${Uri.encodeComponent(authorId)}');
+    final queryStr = q.isNotEmpty ? '?${q.join('&')}' : '';
+    final res = await _get(
+      _cleanUrl('/apps/tickets/api/v1/tickets$queryStr'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'tickets_fetch_failed');
+  }
+
+  /// Ligament Ticket: подача быстрой заявки (1-клик из трея или приложения)
+  Future<Map<String, dynamic>> createTicket({
+    String? presetCode,
+    String? title,
+    String? description,
+    String? locationRoom,
+    String? deviceName,
+  }) async {
+    final res = await _post(
+      _cleanUrl('/apps/tickets/api/v1/tickets'),
+      headers: _headers(),
+      body: jsonEncode({
+        if (presetCode != null) 'preset_code': presetCode,
+        if (title != null) 'title': title,
+        if (description != null) 'description': description,
+        if (locationRoom != null) 'location_room': locationRoom,
+        if (deviceName != null) 'device_name': deviceName,
+      }),
+    );
+    if (res.statusCode == 200 || res.statusCode == 201) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'ticket_create_failed');
+  }
+
   /// SOS: с Link-агентом этого ПК — очередь SOS (`sos_v2`), иначе трансляция экрана приложением.
   Future<Map<String, dynamic>> requestSupport({
     required String category,

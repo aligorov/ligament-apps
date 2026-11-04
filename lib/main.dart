@@ -18,6 +18,7 @@ import 'services/local_detect_service.dart';
 import 'services/support_service.dart';
 import 'services/link_host_session.dart';
 import 'services/link_spool_storage.dart';
+import 'services/ticket_service.dart';
 import 'screens/link_host_overlay.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
@@ -274,8 +275,11 @@ void main(List<String> args) async {
 
   DebugLogService.instance.record('app.ui.attach');
   runApp(
-    ChangeNotifierProvider.value(
-      value: authState,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: authState),
+        ChangeNotifierProvider.value(value: TicketService.instance),
+      ],
       child: LigamentApp(showSplash: !startMinimized),
     ),
   );
