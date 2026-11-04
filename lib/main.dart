@@ -551,15 +551,11 @@ class _LigamentAppState extends State<LigamentApp>
       await auth.endSupport();
     }
 
-    // При закрытии окна не убиваем процесс, а сворачиваем в системный трей
-    final isPreventExit = !auth.gpo.allowExit;
-    if (isPreventExit) {
-      DebugLogService.instance.record('app.window.hide');
-      await windowManager.hide();
-    } else {
-      DebugLogService.instance.record('app.window.destroy');
-      await windowManager.destroy();
-    }
+    // При закрытии окна крестиком сворачиваем в системный трей (поведение по аналогии с Telegram),
+    // чтобы фоновый WebSocket оставался активным для приёма входящих вызовов и сообщений.
+    // Полный выход из приложения выполняется через пункт «Выход» контекстного меню трея.
+    DebugLogService.instance.record('app.window.hide');
+    await windowManager.hide();
   }
 
   /// Диалог подтверждения закрытия при активной SOS-сессии (m-8).

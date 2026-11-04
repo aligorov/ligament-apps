@@ -19,6 +19,9 @@ class AlertService {
   final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
 
+  VoidCallback? onAcceptCall;
+  VoidCallback? onDeclineCall;
+
   bool _initialized = false;
 
   Future<void> init() async {
@@ -36,6 +39,12 @@ class AlertService {
       await _localNotifications.initialize(
         const InitializationSettings(android: androidInit, iOS: darwinInit, macOS: darwinInit),
         onDidReceiveNotificationResponse: (response) async {
+          if (response.actionId == 'accept_call') {
+            onAcceptCall?.call();
+          } else if (response.actionId == 'decline_call') {
+            onDeclineCall?.call();
+          }
+
           if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
             try {
               if (await windowManager.isMinimized()) {
@@ -324,6 +333,21 @@ class AlertService {
         priority: Priority.max,
         fullScreenIntent: true,
         category: AndroidNotificationCategory.call,
+        audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
+        actions: [
+          AndroidNotificationAction(
+            'accept_call',
+            'Ответить',
+            showsUserInterface: true,
+            cancelNotification: true,
+          ),
+          AndroidNotificationAction(
+            'decline_call',
+            'Отклонить',
+            showsUserInterface: false,
+            cancelNotification: true,
+          ),
+        ],
       );
       const iosDetails = DarwinNotificationDetails(
         presentAlert: true,
@@ -341,8 +365,16 @@ class AlertService {
     }
   }
 
+  /// Отмена системного уведомления о входящем звонке
+  Future<void> cancelIncomingCallNotification() async {
+    try {
+      await _localNotifications.cancel(3001);
+    } catch (_) {}
+  }
+
   /// Сброс AlwaysOnTop и индикатора на таскбаре после завершения обработки запроса
   Future<void> resetWindowPriority() async {
+    await cancelIncomingCallNotification();
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         await windowManager.setAlwaysOnTop(false);

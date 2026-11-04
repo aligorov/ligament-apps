@@ -26,7 +26,14 @@ enum CallDisplayMode {
 class CallSessionManager extends ChangeNotifier {
   static final CallSessionManager instance = CallSessionManager._();
 
-  CallSessionManager._();
+  CallSessionManager._() {
+    AlertService.instance.onAcceptCall = () {
+      acceptIncomingCall();
+    };
+    AlertService.instance.onDeclineCall = () {
+      rejectIncomingCall();
+    };
+  }
   factory CallSessionManager() => instance;
 
   CallStatus _status = CallStatus.idle;
