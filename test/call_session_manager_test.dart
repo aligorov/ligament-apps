@@ -133,5 +133,31 @@ void main() {
       manager.endCall();
       expect(manager.status, CallStatus.idle);
     });
+
+    test('CallKit UUID lifecycle and incoming offer handling', () {
+      final manager = CallSessionManager();
+      expect(manager.currentCallId, isEmpty);
+
+      // Incoming offer generates call UUID
+      manager.handleIncomingOffer(
+        fromUser: 'u-alice',
+        chatId: 'c-100',
+        offerPayload: {
+          'caller_name': 'Алиса',
+          'is_video': true,
+          'sdp': 'v=0\r\no=alice 123 456 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n',
+        },
+      );
+
+      expect(manager.status, CallStatus.incoming);
+      expect(manager.currentCallId, isNotEmpty);
+      expect(manager.callerName, 'Алиса');
+      expect(manager.isVideo, isTrue);
+
+      // Rejection clears call
+      manager.rejectIncomingCall();
+      expect(manager.status, CallStatus.idle);
+      expect(manager.currentCallId, isEmpty);
+    });
   });
 }

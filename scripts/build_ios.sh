@@ -16,10 +16,9 @@ echo "========================================================"
 echo " Сборка iOS пакета: Ligament 2FA (.ipa)"
 echo "========================================================"
 
-if [[ ! -d "${APP_SRC}" ]]; then
-  echo "--> Компиляция Flutter iOS Release (device)..."
-  (cd "${CLIENT_DIR}" && flutter build ios --release --no-codesign)
-fi
+echo "--> Компиляция Flutter iOS Release (device)..."
+rm -rf "${APP_SRC}"
+(cd "${CLIENT_DIR}" && flutter build ios --release --no-codesign --no-tree-shake-icons --obfuscate --split-debug-info=build/ios_symbols)
 
 if [[ ! -d "${APP_SRC}" ]]; then
   echo "ОШИБКА: Бандл ${APP_SRC} не найден после сборки."

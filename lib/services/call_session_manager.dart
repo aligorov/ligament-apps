@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'alert_service.dart';
 import 'call_audio_route_service.dart';
+import 'call_kit_service.dart';
 import 'call_sound_player.dart';
 import 'debug_log_service.dart';
 
@@ -35,8 +37,36 @@ class CallSessionManager extends ChangeNotifier {
     AlertService.instance.onDeclineCall = () {
       rejectIncomingCall();
     };
+
+    CallKitService.instance.onCallAccepted = (uuid) {
+      acceptIncomingCall();
+    };
+    CallKitService.instance.onCallEnded = (uuid) {
+      if (_status == CallStatus.incoming) {
+        rejectIncomingCall();
+      } else if (_status != CallStatus.idle) {
+        endCall(notifyPeer: true);
+      }
+    };
+    CallKitService.instance.onCallMuted = (muted) {
+      if (_isMuted != muted) {
+        toggleMute();
+      }
+    };
   }
   factory CallSessionManager() => instance;
+
+  String _currentCallId = '';
+  String get currentCallId => _currentCallId;
+
+  String _generateCallId() {
+    final rnd = math.Random.secure();
+    final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // v4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20, 32)}';
+  }
 
   CallStatus _status = CallStatus.idle;
   CallDisplayMode _displayMode = CallDisplayMode.hidden;
@@ -118,6 +148,13 @@ class CallSessionManager extends ChangeNotifier {
     _displayMode = CallDisplayMode.fullscreen;
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
+
+    _currentCallId = _generateCallId();
+    unawaited(CallKitService.instance.startOutgoingCall(
+      uuid: _currentCallId,
+      recipientName: _callerName,
+      hasVideo: isVideo,
+    ));
 
     // Запуск звуковых гудков дозвона (КПВ) в безопасном AudioContext
     unawaited(_sound.startRingback(isVideo: isVideo));
@@ -232,6 +269,9 @@ class CallSessionManager extends ChangeNotifier {
             HapticFeedback.mediumImpact();
           } catch (_) {}
           _status = CallStatus.connected;
+          if (_currentCallId.isNotEmpty) {
+            unawaited(CallKitService.instance.reportConnected(uuid: _currentCallId));
+          }
           _startDurationTimer();
           notifyListeners();
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
@@ -274,7 +314,9 @@ class CallSessionManager extends ChangeNotifier {
       isVideo: _isVideo,
       chatId: _chatId,
     ));
-    unawaited(_sound.startRingtone());
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) {
+      unawaited(_sound.startRingtone());
+    }
   }
 
   void _stopRingingAlert() {
@@ -311,7 +353,13 @@ class CallSessionManager extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
 
+    _currentCallId = _generateCallId();
     _startRingingAlert();
+    unawaited(CallKitService.instance.reportIncomingCall(
+      uuid: _currentCallId,
+      callerName: _callerName,
+      hasVideo: _isVideo,
+    ));
 
     _ringTimeout?.cancel();
     _ringTimeout = Timer(const Duration(seconds: 55), () {
@@ -453,6 +501,9 @@ class CallSessionManager extends ChangeNotifier {
       });
 
       _status = CallStatus.connected;
+      if (_currentCallId.isNotEmpty) {
+        unawaited(CallKitService.instance.reportConnected(uuid: _currentCallId));
+      }
       _startDurationTimer();
       notifyListeners();
     } catch (e) {
@@ -463,6 +514,9 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Отклонить входящий вызов
   void rejectIncomingCall() {
+    if (_currentCallId.isNotEmpty) {
+      unawaited(CallKitService.instance.endCall(uuid: _currentCallId));
+    }
     _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
@@ -587,6 +641,9 @@ class CallSessionManager extends ChangeNotifier {
         track.enabled = !_isMuted;
       }
     }
+    if (_currentCallId.isNotEmpty) {
+      unawaited(CallKitService.instance.setMuted(uuid: _currentCallId, muted: _isMuted));
+    }
     notifyListeners();
   }
 
@@ -616,6 +673,11 @@ class CallSessionManager extends ChangeNotifier {
   }
 
   void endCall({bool notifyPeer = true}) {
+    if (_currentCallId.isNotEmpty) {
+      unawaited(CallKitService.instance.endCall(uuid: _currentCallId));
+      _currentCallId = '';
+    }
+
     final wasActive = _status == CallStatus.connected ||
         _status == CallStatus.calling ||
         _status == CallStatus.ringing;

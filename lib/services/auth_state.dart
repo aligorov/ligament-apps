@@ -29,6 +29,7 @@ import 'sso/sso_ticket_flow.dart';
 import 'ws_service.dart';
 import 'chat_service.dart';
 import 'call_session_manager.dart';
+import 'call_kit_service.dart';
 
 /// Нормализация browser_sso-челленджа из WS-сообщения или pending-записи:
 /// поля {id, sp_name, username, machine, auto_allowed, expires_at}, при этом
@@ -1182,6 +1183,14 @@ class AuthState extends ChangeNotifier {
           isVideo: isVideo,
           chatId: chatId,
         );
+        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+          final callUuid = generateUuidV4();
+          CallKitService.instance.reportIncomingCall(
+            uuid: callUuid,
+            callerName: caller,
+            hasVideo: isVideo,
+          );
+        }
         return;
       }
       _surfacePrompt(prompt);

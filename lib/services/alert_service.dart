@@ -324,7 +324,10 @@ class AlertService {
       }
     } else if (kIsWeb) {
       showWebNotification(title, body);
-    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    } else if (!kIsWeb && Platform.isIOS) {
+      // На iOS входящий звонок отображается через нативный системный экран Apple CallKit
+      return;
+    } else if (!kIsWeb && Platform.isAndroid) {
       const androidDetails = AndroidNotificationDetails(
         'incoming_calls_channel',
         'Входящие звонки (P2P Call)',
@@ -349,17 +352,11 @@ class AlertService {
           ),
         ],
       );
-      const iosDetails = DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: true,
-        interruptionLevel: InterruptionLevel.critical,
-      );
       await _localNotifications.show(
         3001,
         title,
         body,
-        const NotificationDetails(android: androidDetails, iOS: iosDetails),
+        const NotificationDetails(android: androidDetails),
         payload: chatId,
       );
     }
