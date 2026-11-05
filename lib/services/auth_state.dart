@@ -1141,13 +1141,26 @@ class AuthState extends ChangeNotifier {
       final data = msg['data'];
       if (data is Map && data['type'] == 'incoming_call') {
         final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
-        final isVideo = data['is_video'] == 'true';
+        final isVideo = data['is_video'] == true || data['is_video'] == 'true';
         final chatId = data['chat_id']?.toString() ?? '';
         alert.triggerIncomingCallNotification(
           caller: caller,
           isVideo: isVideo,
           chatId: chatId,
         );
+        if (CallKitService.instance.isSupported &&
+            CallSessionManager.instance.status == CallStatus.idle) {
+          final callUuid = CallSessionManager.instance.prepareIncomingCall(
+            chatId: chatId,
+            callerName: caller,
+            isVideo: isVideo,
+          );
+          CallKitService.instance.reportIncomingCall(
+            uuid: callUuid,
+            callerName: caller,
+            hasVideo: isVideo,
+          );
+        }
         notifyListeners();
         return;
       }
@@ -1210,15 +1223,20 @@ class AuthState extends ChangeNotifier {
       final data = prompt['data'];
       if (data is Map && data['type'] == 'incoming_call') {
         final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
-        final isVideo = data['is_video'] == 'true';
+        final isVideo = data['is_video'] == true || data['is_video'] == 'true';
         final chatId = data['chat_id']?.toString() ?? '';
         alert.triggerIncomingCallNotification(
           caller: caller,
           isVideo: isVideo,
           chatId: chatId,
         );
-        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-          final callUuid = generateUuidV4();
+        if (CallKitService.instance.isSupported &&
+            CallSessionManager.instance.status == CallStatus.idle) {
+          final callUuid = CallSessionManager.instance.prepareIncomingCall(
+            chatId: chatId,
+            callerName: caller,
+            isVideo: isVideo,
+          );
           CallKitService.instance.reportIncomingCall(
             uuid: callUuid,
             callerName: caller,

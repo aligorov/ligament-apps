@@ -159,5 +159,51 @@ void main() {
       expect(manager.status, CallStatus.idle);
       expect(manager.currentCallId, isEmpty);
     });
+
+    test('optimizeOpusSdp injects in-band FEC and DTX into SDP', () {
+      const rawSdp = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10\r\n';
+      final optimized = CallSessionManager.optimizeOpusSdp(rawSdp);
+
+      expect(optimized, contains('useinbandfec=1'));
+      expect(optimized, contains('usedtx=1'));
+      expect(optimized, contains('maxaveragebitrate=24000'));
+      expect(optimized, contains('stereo=0'));
+
+      // Идемпотентность: повторный вызов не дублирует флаги
+      final doubleOptimized = CallSessionManager.optimizeOpusSdp(optimized);
+      expect('useinbandfec=1'.allMatches(doubleOptimized).length, 1);
+      expect('usedtx=1'.allMatches(doubleOptimized).length, 1);
+    });
+
+    test('optimizeOpusSdp handles SDP with existing useinbandfec=1 without skipping usedtx', () {
+      const webrtcDefaultSdp = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n';
+      final optimized = CallSessionManager.optimizeOpusSdp(webrtcDefaultSdp);
+
+      expect(optimized, contains('useinbandfec=1'));
+      expect(optimized, contains('usedtx=1'));
+      expect(optimized, contains('maxaveragebitrate=24000'));
+      expect(optimized, contains('stereo=0'));
+      expect('useinbandfec=1'.allMatches(optimized).length, 1);
+    });
+
+    test('callFingerprintEmojis generates symmetric 4-emoji fingerprint from DTLS', () {
+      final manager = CallSessionManager();
+      const sdpAlice = 'v=0\r\na=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\r\n';
+      const sdpBob = 'v=0\r\na=fingerprint:sha-256 99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA:99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA\r\n';
+
+      // 1. При отсутствии SDP список эмодзи пуст
+      manager.setSdpForTesting(local: '', remote: '');
+      expect(manager.callFingerprintEmojis, isEmpty);
+
+      // 2. С установленными SDP формируются 4 эмодзи
+      manager.setSdpForTesting(local: sdpAlice, remote: sdpBob);
+      final emojisAlice = manager.callFingerprintEmojis;
+      expect(emojisAlice.length, 4);
+
+      // 3. Симметрия: у Боба (обратный порядок local/remote) получается ровно тот же набор 4 эмодзи
+      manager.setSdpForTesting(local: sdpBob, remote: sdpAlice);
+      final emojisBob = manager.callFingerprintEmojis;
+      expect(emojisBob, equals(emojisAlice));
+    });
   });
 }

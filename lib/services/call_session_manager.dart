@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -95,6 +97,187 @@ class CallSessionManager extends ChangeNotifier {
 
   RTCVideoRenderer? _localRenderer;
   RTCVideoRenderer? _remoteRenderer;
+
+  static const List<Map<String, dynamic>> defaultStunServers = [
+    {
+      'urls': [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun.cloudflare.com:3478',
+      ],
+    },
+  ];
+
+  bool _pendingAcceptOnOffer = false;
+  String _localSdp = '';
+  String _remoteSdp = '';
+  String get localSdp => _localSdp;
+  String get remoteSdp => _remoteSdp;
+
+  @visibleForTesting
+  void setSdpForTesting({required String local, required String remote}) {
+    _localSdp = local;
+    _remoteSdp = remote;
+  }
+
+  /// Набор из 12 легко различимых эмодзи для E2E верификации безопасности (SAS fingerprint как в Telegram)
+  static const List<String> fingerprintEmojiPalette = [
+    '🐱', '🚀', '🍕', '🎸', '🌟', '💎', '🔥', '🏆', '🎯', '⚡', '☕', '🍀',
+  ];
+
+  static String? extractDtlsFingerprint(String sdp) {
+    if (sdp.isEmpty) return null;
+    final match = RegExp(
+      r'a=fingerprint:\s*sha-256\s+([0-9a-fA-F:]+)',
+      caseSensitive: false,
+    ).firstMatch(sdp);
+    return match?.group(1)?.trim();
+  }
+
+  /// Возвращает 4 эмодзи-верификатора соединения на основе SHA-256 хэша взаимных DTLS-фингерпринтов
+  List<String> get callFingerprintEmojis {
+    final localFp = extractDtlsFingerprint(_localSdp);
+    final remoteFp = extractDtlsFingerprint(_remoteSdp);
+    if (localFp == null || remoteFp == null) return const [];
+
+    final sorted = [localFp.toLowerCase(), remoteFp.toLowerCase()]..sort();
+    final combined = '${sorted[0]}:${sorted[1]}';
+    final hashBytes = sha256.convert(utf8.encode(combined)).bytes;
+
+    return [
+      fingerprintEmojiPalette[hashBytes[0] % fingerprintEmojiPalette.length],
+      fingerprintEmojiPalette[hashBytes[1] % fingerprintEmojiPalette.length],
+      fingerprintEmojiPalette[hashBytes[2] % fingerprintEmojiPalette.length],
+      fingerprintEmojiPalette[hashBytes[3] % fingerprintEmojiPalette.length],
+    ];
+  }
+
+  final List<Map<String, dynamic>> _outgoingCandidateBatch = [];
+  Timer? _candidateBatchTimer;
+  bool _isRestartingIce = false;
+
+  void _queueOutgoingCandidate(RTCIceCandidate candidate) {
+    if (candidate.candidate == null || _targetUserId.isEmpty) return;
+    _outgoingCandidateBatch.add({
+      'candidate': candidate.candidate,
+      'sdpMid': candidate.sdpMid,
+      'sdpMLineIndex': candidate.sdpMLineIndex,
+    });
+    _candidateBatchTimer?.cancel();
+    _candidateBatchTimer = Timer(const Duration(milliseconds: 60), _flushOutgoingCandidates);
+  }
+
+  void _flushOutgoingCandidates() {
+    _candidateBatchTimer?.cancel();
+    _candidateBatchTimer = null;
+    if (_outgoingCandidateBatch.isEmpty || _targetUserId.isEmpty) return;
+
+    final candidates = List<Map<String, dynamic>>.from(_outgoingCandidateBatch);
+    _outgoingCandidateBatch.clear();
+
+    if (candidates.length == 1) {
+      onSendSignal?.call(_targetUserId, _chatId, {
+        'type': 'candidate',
+        'candidate': candidates[0],
+      });
+    } else {
+      onSendSignal?.call(_targetUserId, _chatId, {
+        'type': 'candidates',
+        'candidates': candidates,
+      });
+    }
+  }
+
+  /// Оптимизация параметров кодека Opus в SDP (In-band Forward Error Correction и DTX)
+  /// для устойчивости к потерям пакетов до 25% в нестабильных мобильных сетях.
+  static String optimizeOpusSdp(String sdp) {
+    if (sdp.isEmpty) return sdp;
+
+    // Находим payload type кодека Opus в SDP (по умолчанию 111)
+    final opusPtMatches = RegExp(r'a=rtpmap:(\d+)\s+opus/48000', caseSensitive: false).allMatches(sdp);
+    final opusPts = opusPtMatches.map((m) => m.group(1)!).toSet();
+
+    return sdp.replaceAllMapped(
+      RegExp(r'(a=fmtp:(\d+)\s+)(.*?)(?=\r\n|\n|$)', caseSensitive: false),
+      (match) {
+        final prefix = match.group(1)!;
+        final pt = match.group(2)!;
+        final params = match.group(3)!;
+
+        final isOpus = opusPts.contains(pt) ||
+            (opusPts.isEmpty && (params.contains('useinbandfec') || params.contains('minptime')));
+        if (!isOpus) return match.group(0)!;
+
+        var updated = params;
+
+        // 1. useinbandfec=1
+        if (!updated.contains('useinbandfec=')) {
+          updated += ';useinbandfec=1';
+        } else if (updated.contains('useinbandfec=0')) {
+          updated = updated.replaceAll('useinbandfec=0', 'useinbandfec=1');
+        }
+
+        // 2. usedtx=1
+        if (!updated.contains('usedtx=')) {
+          updated += ';usedtx=1';
+        } else if (updated.contains('usedtx=0')) {
+          updated = updated.replaceAll('usedtx=0', 'usedtx=1');
+        }
+
+        // 3. maxaveragebitrate=24000
+        if (!updated.contains('maxaveragebitrate=')) {
+          updated += ';maxaveragebitrate=24000';
+        }
+
+        // 4. stereo=0
+        if (!updated.contains('stereo=')) {
+          updated += ';stereo=0';
+        }
+
+        return '$prefix$updated';
+      },
+    );
+  }
+
+  /// Подготовка входящего вызова при push-оповещении или CallKit
+  String prepareIncomingCall({
+    required String chatId,
+    required String callerName,
+    required bool isVideo,
+  }) {
+    if (_status == CallStatus.idle) {
+      _currentCallId = _generateCallId();
+      _chatId = chatId;
+      _chatTitle = callerName;
+      _callerName = callerName;
+      _isVideo = isVideo;
+      _isCameraOff = !isVideo;
+      _status = CallStatus.incoming;
+      notifyListeners();
+    }
+    return _currentCallId;
+  }
+
+  List<Map<String, dynamic>> _buildEffectiveIceServers(List<Map<String, dynamic>> passedServers) {
+    final effectiveServers = List<Map<String, dynamic>>.from(
+      passedServers.isNotEmpty ? passedServers : _configuredIceServers,
+    );
+
+    final hasStun = effectiveServers.any((s) {
+      final urls = s['urls'];
+      if (urls is List) {
+        return urls.any((u) => u.toString().startsWith('stun:'));
+      } else if (urls is String) {
+        return urls.startsWith('stun:');
+      }
+      return false;
+    });
+
+    if (!hasStun) {
+      effectiveServers.addAll(defaultStunServers);
+    }
+    return effectiveServers;
+  }
 
   /// Callback для отправки WebRTC сигналинга (offer, answer, candidate, hangup, rejected, busy)
   void Function(String targetUserId, String chatId, Map<String, dynamic> payload)? onSendSignal;
@@ -223,22 +406,20 @@ class CallSessionManager extends ChangeNotifier {
         } catch (_) {}
       }
 
-      var effectiveServers = iceServers.isNotEmpty
-          ? iceServers
-          : _configuredIceServers;
+      var effectiveServers = _buildEffectiveIceServers(iceServers);
 
-      if (effectiveServers.isEmpty && onFetchIceServers != null) {
+      if (effectiveServers.length == defaultStunServers.length && onFetchIceServers != null) {
         try {
           final fetched = await onFetchIceServers!();
           if (fetched.isNotEmpty) {
-            effectiveServers = fetched;
             _configuredIceServers = List<Map<String, dynamic>>.from(fetched);
+            effectiveServers = _buildEffectiveIceServers(fetched);
           }
         } catch (_) {}
       }
 
       final configuration = <String, dynamic>{
-        if (effectiveServers.isNotEmpty) 'iceServers': effectiveServers,
+        'iceServers': effectiveServers,
         'sdpSemantics': 'unified-plan',
         'bundlePolicy': 'max-bundle',
       };
@@ -250,28 +431,55 @@ class CallSessionManager extends ChangeNotifier {
       }
 
       _peerConnection!.onIceCandidate = (candidate) {
-        if (candidate.candidate != null && _targetUserId.isNotEmpty) {
-          onSendSignal?.call(_targetUserId, _chatId, {
-            'type': 'candidate',
-            'candidate': {
-              'candidate': candidate.candidate,
-              'sdpMid': candidate.sdpMid,
-              'sdpMLineIndex': candidate.sdpMLineIndex,
-            },
-          });
-        }
+        _queueOutgoingCandidate(candidate);
       };
 
-      _peerConnection!.onTrack = (event) {
+      _peerConnection!.onTrack = (event) async {
+        MediaStream? stream;
         if (event.streams.isNotEmpty) {
-          _remoteStream = event.streams[0];
+          stream = event.streams[0];
+        } else {
+          _remoteStream ??= await createLocalMediaStream('remote_stream');
+          stream = _remoteStream;
         }
-        if (_remoteRenderer != null && _remoteStream != null) {
-          try {
-            _remoteRenderer!.srcObject = _remoteStream;
-          } catch (_) {}
+
+        if (event.track.kind == 'video') {
+          if (stream != null && !stream.getVideoTracks().any((t) => t.id == event.track.id)) {
+            try {
+              await stream.addTrack(event.track);
+            } catch (_) {}
+          }
+          _remoteStream = stream;
+          if (_remoteRenderer != null) {
+            try {
+              _remoteRenderer!.srcObject = null;
+              _remoteRenderer!.srcObject = _remoteStream;
+            } catch (_) {}
+          }
+        } else if (event.track.kind == 'audio') {
+          if (stream != null && !stream.getAudioTracks().any((t) => t.id == event.track.id)) {
+            try {
+              await stream.addTrack(event.track);
+            } catch (_) {}
+          }
+          _remoteStream = stream;
+          if (_remoteRenderer != null && _remoteRenderer!.srcObject == null) {
+            try {
+              _remoteRenderer!.srcObject = _remoteStream;
+            } catch (_) {}
+          }
         }
         notifyListeners();
+      };
+
+      _peerConnection!.onIceConnectionState = (state) {
+        if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+            state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
+        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          DebugLogService.instance.record('webrtc.ice.failed');
+        }
       };
 
       _peerConnection!.onConnectionState = (state) {
@@ -295,17 +503,15 @@ class CallSessionManager extends ChangeNotifier {
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           endCall(notifyPeer: true);
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
-          // Graceful ICE restart / recovery period (15s) вместо мгновенного разрыва звонка
+          // Graceful ICE restart / recovery period (25s) вместо мгновенного разрыва звонка
           if (_status == CallStatus.connected) {
             _reconnectTimer?.cancel();
-            _reconnectTimer = Timer(const Duration(seconds: 15), () {
+            _reconnectTimer = Timer(const Duration(seconds: 25), () {
               if (_status != CallStatus.idle) {
                 endCall(notifyPeer: true);
               }
             });
-            try {
-              _peerConnection?.restartIce();
-            } catch (_) {}
+            unawaited(performIceRestart());
           } else {
             endCall(notifyPeer: true);
           }
@@ -313,11 +519,14 @@ class CallSessionManager extends ChangeNotifier {
       };
 
       final offer = await _peerConnection!.createOffer();
-      await _peerConnection!.setLocalDescription(offer);
+      final optimizedSdp = optimizeOpusSdp(offer.sdp ?? '');
+      final optimizedOffer = RTCSessionDescription(optimizedSdp, offer.type);
+      await _peerConnection!.setLocalDescription(optimizedOffer);
+      _localSdp = optimizedSdp;
 
       onSendSignal?.call(_targetUserId, _chatId, {
         'type': 'offer',
-        'sdp': offer.sdp,
+        'sdp': optimizedSdp,
         'is_video': isVideo,
         'caller_name': _callerName,
       });
@@ -326,12 +535,71 @@ class CallSessionManager extends ChangeNotifier {
     }
   }
 
+  /// Выполняет полноценный ICE Restart с генерацией нового SDP Offer и отправкой пиру
+  Future<void> performIceRestart() async {
+    if (_peerConnection == null || _status != CallStatus.connected || _isRestartingIce) return;
+    _isRestartingIce = true;
+    try {
+      final offer = await _peerConnection!.createOffer({'iceRestart': true});
+      final optimizedSdp = optimizeOpusSdp(offer.sdp ?? '');
+      final optimizedOffer = RTCSessionDescription(optimizedSdp, offer.type);
+      await _peerConnection!.setLocalDescription(optimizedOffer);
+      _localSdp = optimizedSdp;
+
+      if (_targetUserId.isNotEmpty) {
+        onSendSignal?.call(_targetUserId, _chatId, {
+          'type': 'offer',
+          'sdp': optimizedSdp,
+          'ice_restart': true,
+          'caller_name': _callerName,
+          'is_video': _isVideo,
+        });
+      }
+    } catch (e) {
+      DebugLogService.instance.record('webrtc.ice_restart.failed', error: e);
+    } finally {
+      _isRestartingIce = false;
+    }
+  }
+
+  /// Обработка renegotiation / ICE restart оффера во время активного соединения
+  Future<void> _handleOfferRenegotiation(Map<String, dynamic> offerPayload) async {
+    final sdp = offerPayload['sdp'] as String? ?? '';
+    if (sdp.isEmpty || _peerConnection == null) return;
+    try {
+      _remoteSdp = sdp;
+      await _peerConnection!.setRemoteDescription(
+        RTCSessionDescription(sdp, 'offer'),
+      );
+      _remoteDescriptionSet = true;
+      await _flushRemoteCandidates();
+
+      final answer = await _peerConnection!.createAnswer();
+      final optimizedSdp = optimizeOpusSdp(answer.sdp ?? '');
+      final optimizedAnswer = RTCSessionDescription(optimizedSdp, answer.type);
+      await _peerConnection!.setLocalDescription(optimizedAnswer);
+      _localSdp = optimizedSdp;
+
+      if (_targetUserId.isNotEmpty) {
+        onSendSignal?.call(_targetUserId, _chatId, {
+          'type': 'answer',
+          'sdp': optimizedSdp,
+          'ice_restart': true,
+        });
+      }
+    } catch (e) {
+      DebugLogService.instance.record('webrtc.renegotiation.failed', error: e);
+    }
+  }
+
   void _startRingingAlert() {
-    unawaited(AlertService.instance.triggerIncomingCallNotification(
-      caller: _callerName,
-      isVideo: _isVideo,
-      chatId: _chatId,
-    ));
+    try {
+      AlertService.instance.triggerIncomingCallNotification(
+        caller: _callerName,
+        isVideo: _isVideo,
+        chatId: _chatId,
+      ).catchError((_) {});
+    } catch (_) {}
     if (kIsWeb ||
         (defaultTargetPlatform != TargetPlatform.iOS &&
             defaultTargetPlatform != TargetPlatform.android)) {
@@ -341,7 +609,9 @@ class CallSessionManager extends ChangeNotifier {
 
   void _stopRingingAlert() {
     unawaited(_sound.stopRingtone());
-    unawaited(AlertService.instance.resetWindowPriority());
+    try {
+      AlertService.instance.resetWindowPriority().catchError((_) {});
+    } catch (_) {}
   }
 
   /// Обработка входящего вызова (offer)
@@ -350,7 +620,12 @@ class CallSessionManager extends ChangeNotifier {
     required String chatId,
     required Map<String, dynamic> offerPayload,
   }) {
-    if (_status != CallStatus.idle) {
+    if (_status != CallStatus.idle && _status != CallStatus.incoming && _status != CallStatus.calling) {
+      if (_status == CallStatus.connected && (_targetUserId == fromUser || offerPayload['ice_restart'] == true)) {
+        // Это renegotiation / ICE restart в рамках активного звонка
+        unawaited(_handleOfferRenegotiation(offerPayload));
+        return;
+      }
       onSendSignal?.call(fromUser, chatId, {'type': 'busy', 'device_busy': true});
       return;
     }
@@ -358,13 +633,14 @@ class CallSessionManager extends ChangeNotifier {
     // Сообщаем звонящему, что вызов доставлен и играет рингтон
     onSendSignal?.call(fromUser, chatId, {'type': 'ringing'});
 
-    _status = CallStatus.incoming;
     _chatId = chatId;
     _targetUserId = fromUser;
     final caller = offerPayload['caller_name'] as String?;
     _callerName = (caller != null && caller.trim().isNotEmpty) ? caller.trim() : fromUser;
     _chatTitle = _callerName;
-    _isVideo = offerPayload['is_video'] == true;
+    _isVideo = offerPayload['is_video'] == true ||
+        offerPayload['is_video'] == 'true' ||
+        offerPayload['is_video'] == 1;
     _isMuted = false;
     _isCameraOff = !_isVideo;
     _isScreenSharing = false;
@@ -373,7 +649,18 @@ class CallSessionManager extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
 
-    _currentCallId = _generateCallId();
+    if (_currentCallId.isEmpty) {
+      _currentCallId = _generateCallId();
+    }
+
+    // Если пользователь уже ответил с нативного экрана CallKit до получения offer
+    if (_pendingAcceptOnOffer) {
+      _pendingAcceptOnOffer = false;
+      unawaited(acceptIncomingCall());
+      return;
+    }
+
+    _status = CallStatus.incoming;
     _startRingingAlert();
     unawaited(CallKitService.instance.reportIncomingCall(
       uuid: _currentCallId,
@@ -393,7 +680,13 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Принять входящий вызов
   Future<void> acceptIncomingCall({List<Map<String, dynamic>> iceServers = const []}) async {
-    if (_status != CallStatus.incoming || _pendingOfferSdp.isEmpty) return;
+    if (_pendingOfferSdp.isEmpty) {
+      _pendingAcceptOnOffer = true;
+      _status = CallStatus.calling;
+      notifyListeners();
+      return;
+    }
+    _pendingAcceptOnOffer = false;
 
     _stopRingingAlert();
     _ringTimeout?.cancel();
@@ -432,22 +725,20 @@ class CallSessionManager extends ChangeNotifier {
         _localRenderer!.srcObject = _localStream;
       }
 
-      var effectiveServers = iceServers.isNotEmpty
-          ? iceServers
-          : _configuredIceServers;
+      var effectiveServers = _buildEffectiveIceServers(iceServers);
 
-      if (effectiveServers.isEmpty && onFetchIceServers != null) {
+      if (effectiveServers.length == defaultStunServers.length && onFetchIceServers != null) {
         try {
           final fetched = await onFetchIceServers!();
           if (fetched.isNotEmpty) {
-            effectiveServers = fetched;
             _configuredIceServers = List<Map<String, dynamic>>.from(fetched);
+            effectiveServers = _buildEffectiveIceServers(fetched);
           }
         } catch (_) {}
       }
 
       final configuration = <String, dynamic>{
-        if (effectiveServers.isNotEmpty) 'iceServers': effectiveServers,
+        'iceServers': effectiveServers,
         'sdpSemantics': 'unified-plan',
         'bundlePolicy': 'max-bundle',
       };
@@ -459,28 +750,55 @@ class CallSessionManager extends ChangeNotifier {
       }
 
       _peerConnection!.onIceCandidate = (candidate) {
-        if (candidate.candidate != null && _targetUserId.isNotEmpty) {
-          onSendSignal?.call(_targetUserId, _chatId, {
-            'type': 'candidate',
-            'candidate': {
-              'candidate': candidate.candidate,
-              'sdpMid': candidate.sdpMid,
-              'sdpMLineIndex': candidate.sdpMLineIndex,
-            },
-          });
-        }
+        _queueOutgoingCandidate(candidate);
       };
 
-      _peerConnection!.onTrack = (event) {
+      _peerConnection!.onTrack = (event) async {
+        MediaStream? stream;
         if (event.streams.isNotEmpty) {
-          _remoteStream = event.streams[0];
+          stream = event.streams[0];
+        } else {
+          _remoteStream ??= await createLocalMediaStream('remote_stream');
+          stream = _remoteStream;
         }
-        if (_remoteRenderer != null && _remoteStream != null) {
-          try {
-            _remoteRenderer!.srcObject = _remoteStream;
-          } catch (_) {}
+
+        if (event.track.kind == 'video') {
+          if (stream != null && !stream.getVideoTracks().any((t) => t.id == event.track.id)) {
+            try {
+              await stream.addTrack(event.track);
+            } catch (_) {}
+          }
+          _remoteStream = stream;
+          if (_remoteRenderer != null) {
+            try {
+              _remoteRenderer!.srcObject = null;
+              _remoteRenderer!.srcObject = _remoteStream;
+            } catch (_) {}
+          }
+        } else if (event.track.kind == 'audio') {
+          if (stream != null && !stream.getAudioTracks().any((t) => t.id == event.track.id)) {
+            try {
+              await stream.addTrack(event.track);
+            } catch (_) {}
+          }
+          _remoteStream = stream;
+          if (_remoteRenderer != null && _remoteRenderer!.srcObject == null) {
+            try {
+              _remoteRenderer!.srcObject = _remoteStream;
+            } catch (_) {}
+          }
         }
         notifyListeners();
+      };
+
+      _peerConnection!.onIceConnectionState = (state) {
+        if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+            state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
+        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          DebugLogService.instance.record('webrtc.ice.failed');
+        }
       };
 
       _peerConnection!.onConnectionState = (state) {
@@ -488,6 +806,9 @@ class CallSessionManager extends ChangeNotifier {
           _reconnectTimer?.cancel();
           _reconnectTimer = null;
           _status = CallStatus.connected;
+          if (_currentCallId.isNotEmpty) {
+            unawaited(CallKitService.instance.reportConnected(uuid: _currentCallId));
+          }
           _startDurationTimer();
           unawaited(_sound.stopRingtone());
           unawaited(_sound.playConnect());
@@ -500,20 +821,19 @@ class CallSessionManager extends ChangeNotifier {
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
           if (_status == CallStatus.connected) {
             _reconnectTimer?.cancel();
-            _reconnectTimer = Timer(const Duration(seconds: 15), () {
+            _reconnectTimer = Timer(const Duration(seconds: 25), () {
               if (_status != CallStatus.idle) {
                 endCall(notifyPeer: true);
               }
             });
-            try {
-              _peerConnection?.restartIce();
-            } catch (_) {}
+            unawaited(performIceRestart());
           } else {
             endCall(notifyPeer: true);
           }
         }
       };
 
+      _remoteSdp = _pendingOfferSdp;
       await _peerConnection!.setRemoteDescription(
         RTCSessionDescription(_pendingOfferSdp, 'offer'),
       );
@@ -521,18 +841,17 @@ class CallSessionManager extends ChangeNotifier {
       await _flushRemoteCandidates();
 
       final answer = await _peerConnection!.createAnswer();
-      await _peerConnection!.setLocalDescription(answer);
+      final optimizedSdp = optimizeOpusSdp(answer.sdp ?? '');
+      final optimizedAnswer = RTCSessionDescription(optimizedSdp, answer.type);
+      await _peerConnection!.setLocalDescription(optimizedAnswer);
+      _localSdp = optimizedSdp;
 
       onSendSignal?.call(_targetUserId, _chatId, {
         'type': 'answer',
-        'sdp': answer.sdp,
+        'sdp': optimizedSdp,
       });
 
-      _status = CallStatus.connected;
-      if (_currentCallId.isNotEmpty) {
-        unawaited(CallKitService.instance.reportConnected(uuid: _currentCallId));
-      }
-      _startDurationTimer();
+      _status = CallStatus.calling;
       notifyListeners();
     } catch (e) {
       DebugLogService.instance.record('webrtc.accept.failed', error: e);
@@ -614,6 +933,10 @@ class CallSessionManager extends ChangeNotifier {
     _reconnectTimer = null;
     _callTimer?.cancel();
     _callTimer = null;
+    _candidateBatchTimer?.cancel();
+    _candidateBatchTimer = null;
+    _outgoingCandidateBatch.clear();
+    _isRestartingIce = false;
 
     unawaited(_sound.stopRingback());
     unawaited(_sound.stopRingtone());
@@ -647,6 +970,9 @@ class CallSessionManager extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
     _pendingOfferSdp = '';
+    _pendingAcceptOnOffer = false;
+    _localSdp = '';
+    _remoteSdp = '';
     _status = CallStatus.idle;
     _displayMode = CallDisplayMode.fullscreen;
     _targetUserId = '';
@@ -664,6 +990,7 @@ class CallSessionManager extends ChangeNotifier {
   Future<void> handleAnswer(String sdp) async {
     if (_peerConnection == null) return;
     try {
+      _remoteSdp = sdp;
       await _peerConnection!.setRemoteDescription(
         RTCSessionDescription(sdp, 'answer'),
       );
@@ -671,8 +998,9 @@ class CallSessionManager extends ChangeNotifier {
       await _flushRemoteCandidates();
       _ringTimeout?.cancel();
       _ringTimeout = null;
-      _status = CallStatus.connected;
-      _startDurationTimer();
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      unawaited(_sound.stopRingback());
       notifyListeners();
     } catch (e) {
       DebugLogService.instance.record('webrtc.answer.failed', error: e);
@@ -687,7 +1015,7 @@ class CallSessionManager extends ChangeNotifier {
     final candidate = RTCIceCandidate(
       candStr,
       candMap['sdpMid'] as String? ?? '',
-      candMap['sdpMLineIndex'] as int? ?? 0,
+      (candMap['sdpMLineIndex'] as num?)?.toInt() ?? 0,
     );
 
     if (_peerConnection != null && _remoteDescriptionSet) {
@@ -703,12 +1031,13 @@ class CallSessionManager extends ChangeNotifier {
 
   Future<void> _flushRemoteCandidates() async {
     if (_peerConnection == null || !_remoteDescriptionSet) return;
-    for (final cand in _remoteIceCandidateQueue) {
+    final candidates = List<RTCIceCandidate>.from(_remoteIceCandidateQueue);
+    _remoteIceCandidateQueue.clear();
+    for (final cand in candidates) {
       try {
         await _peerConnection!.addCandidate(cand);
       } catch (_) {}
     }
-    _remoteIceCandidateQueue.clear();
   }
 
   void _startDurationTimer() {
@@ -781,6 +1110,10 @@ class CallSessionManager extends ChangeNotifier {
     _reconnectTimer = null;
     _callTimer?.cancel();
     _callTimer = null;
+    _candidateBatchTimer?.cancel();
+    _candidateBatchTimer = null;
+    _outgoingCandidateBatch.clear();
+    _isRestartingIce = false;
 
     unawaited(_sound.stopRingback());
     unawaited(_sound.stopRingtone());
@@ -828,6 +1161,9 @@ class CallSessionManager extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
     _pendingOfferSdp = '';
+    _pendingAcceptOnOffer = false;
+    _localSdp = '';
+    _remoteSdp = '';
 
     notifyListeners();
   }

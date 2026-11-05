@@ -551,8 +551,13 @@ class ChatService extends ChangeNotifier {
         (data) {
           try {
             final str = data is List<int> ? utf8.decode(data) : data.toString();
-            final map = jsonDecode(str) as Map<String, dynamic>;
-            onWebSocketEvent(map);
+            final lines = str.split('\n');
+            for (final line in lines) {
+              final trimmed = line.trim();
+              if (trimmed.isEmpty) continue;
+              final map = jsonDecode(trimmed) as Map<String, dynamic>;
+              onWebSocketEvent(map);
+            }
           } catch (e) {
             DebugLogService.instance.record('chat.ws.parse.failed', error: e);
           }
@@ -716,6 +721,15 @@ class ChatService extends ChangeNotifier {
       } else if (signalType == 'candidate') {
         final cand = payload['candidate'] as Map<String, dynamic>? ?? {};
         unawaited(CallSessionManager.instance.handleRemoteCandidate(cand));
+      } else if (signalType == 'candidates') {
+        final cands = payload['candidates'] as List<dynamic>? ?? [];
+        for (final c in cands) {
+          if (c is Map<String, dynamic>) {
+            unawaited(CallSessionManager.instance.handleRemoteCandidate(c));
+          } else if (c is Map) {
+            unawaited(CallSessionManager.instance.handleRemoteCandidate(Map<String, dynamic>.from(c)));
+          }
+        }
       } else if (signalType == 'cancel') {
         final reason = payload['reason'] as String? ?? '';
         CallSessionManager.instance.handleCancel(reason: reason);
