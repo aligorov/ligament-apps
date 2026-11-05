@@ -24,6 +24,7 @@ import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/chat_screen.dart';
+import 'screens/ticket_screen.dart';
 import 'app_version.dart';
 import 'widgets/debug_action_scope.dart';
 import 'widgets/global_call_overlay.dart';
@@ -418,6 +419,9 @@ class _LigamentAppState extends State<LigamentApp>
         MenuItem(
             key: 'chat',
             label: isRu ? '💬 Корпоративный чат' : '💬 Corporate Chat'),
+        MenuItem(
+            key: 'tickets',
+            label: isRu ? '🎫 Заявки и наряды' : '🎫 Tickets & Orders'),
       ];
 
       if (hasUpdate) {
@@ -515,6 +519,11 @@ class _LigamentAppState extends State<LigamentApp>
       _restoreWindowFromTray();
       LigamentApp.navigatorKey.currentState?.push(
         MaterialPageRoute(builder: (_) => const ChatScreen()),
+      );
+    } else if (menuItem.key == 'tickets') {
+      _restoreWindowFromTray();
+      LigamentApp.navigatorKey.currentState?.push(
+        MaterialPageRoute(builder: (_) => const TicketScreen()),
       );
     } else if (menuItem.key == 'update') {
       final auth = context.read<AuthState>();

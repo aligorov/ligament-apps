@@ -1022,8 +1022,11 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
-      return list.cast<Map<String, dynamic>>();
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      if (decoded is List) {
+        return decoded.cast<Map<String, dynamic>>();
+      }
+      return <Map<String, dynamic>>[];
     }
     throw ApiException(res.statusCode, 'presets_fetch_failed');
   }
@@ -1039,8 +1042,11 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
-      return list.cast<Map<String, dynamic>>();
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      if (decoded is List) {
+        return decoded.cast<Map<String, dynamic>>();
+      }
+      return <Map<String, dynamic>>[];
     }
     throw ApiException(res.statusCode, 'tickets_fetch_failed');
   }
@@ -1050,6 +1056,7 @@ class ApiClient {
     String? presetCode,
     String? title,
     String? description,
+    String? category,
     String? locationRoom,
     String? deviceName,
   }) async {
@@ -1057,17 +1064,33 @@ class ApiClient {
       _cleanUrl('/apps/tickets/api/v1/tickets'),
       headers: _headers(),
       body: jsonEncode({
-        if (presetCode != null) 'preset_code': presetCode,
-        if (title != null) 'title': title,
-        if (description != null) 'description': description,
-        if (locationRoom != null) 'location_room': locationRoom,
-        if (deviceName != null) 'device_name': deviceName,
+        if (presetCode != null && presetCode.isNotEmpty) 'preset_code': presetCode,
+        if (title != null && title.isNotEmpty) 'title': title,
+        if (description != null && description.isNotEmpty) 'description': description,
+        if (category != null && category.isNotEmpty) 'category': category,
+        if (locationRoom != null && locationRoom.isNotEmpty) 'location_room': locationRoom,
+        if (deviceName != null && deviceName.isNotEmpty) 'device_name': deviceName,
       }),
     );
     if (res.statusCode == 200 || res.statusCode == 201) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
     throw ApiException(res.statusCode, 'ticket_create_failed');
+  }
+
+  /// Ligament Ticket: обновление статуса заявки
+  Future<void> updateTicketStatus(String ticketId, String status, {String? note}) async {
+    final res = await _patch(
+      _cleanUrl('/apps/tickets/api/v1/tickets/$ticketId/status'),
+      headers: _headers(),
+      body: jsonEncode({
+        'status': status,
+        if (note != null && note.isNotEmpty) 'note': note,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'ticket_status_update_failed');
+    }
   }
 
   /// SOS: с Link-агентом этого ПК — очередь SOS (`sos_v2`), иначе трансляция экрана приложением.
