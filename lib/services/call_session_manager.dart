@@ -99,6 +99,18 @@ class CallSessionManager extends ChangeNotifier {
   /// Callback для отправки WebRTC сигналинга (offer, answer, candidate, hangup, rejected, busy)
   void Function(String targetUserId, String chatId, Map<String, dynamic> payload)? onSendSignal;
 
+  /// Динамическая конфигурация ICE-серверов с сервера 2FA
+  List<Map<String, dynamic>> _configuredIceServers = [];
+
+  void setConfiguredIceServers(List<Map<String, dynamic>> servers) {
+    _configuredIceServers = List<Map<String, dynamic>>.from(servers);
+  }
+
+  List<Map<String, dynamic>> get configuredIceServers => _configuredIceServers;
+
+  /// Callback для динамического запроса актуальных ICE-серверов у AuthState / 2FA API
+  Future<List<Map<String, dynamic>>> Function()? onFetchIceServers;
+
   CallStatus get status => _status;
   CallDisplayMode get displayMode => _displayMode;
   String get chatId => _chatId;
@@ -207,23 +219,22 @@ class CallSessionManager extends ChangeNotifier {
         } catch (_) {}
       }
 
+      var effectiveServers = iceServers.isNotEmpty
+          ? iceServers
+          : _configuredIceServers;
+
+      if (effectiveServers.isEmpty && onFetchIceServers != null) {
+        try {
+          final fetched = await onFetchIceServers!();
+          if (fetched.isNotEmpty) {
+            effectiveServers = fetched;
+            _configuredIceServers = List<Map<String, dynamic>>.from(fetched);
+          }
+        } catch (_) {}
+      }
+
       final configuration = <String, dynamic>{
-        'iceServers': iceServers.isNotEmpty
-            ? iceServers
-            : [
-                {
-                  'urls': [
-                    'turn:remote.grando.app:443?transport=udp',
-                    'turns:remote.grando.app:443?transport=tcp',
-                    'stun:remote.grando.app:443',
-                    'turn:remote.grando.app:3478?transport=udp',
-                    'turn:remote.grando.app:3478?transport=tcp',
-                    'stun:remote.grando.app:3478',
-                  ],
-                  'username': 'ligament',
-                  'credential': 'TurnSecretPass2026!',
-                }
-              ],
+        if (effectiveServers.isNotEmpty) 'iceServers': effectiveServers,
         'sdpSemantics': 'unified-plan',
         'bundlePolicy': 'max-bundle',
       };
@@ -413,23 +424,22 @@ class CallSessionManager extends ChangeNotifier {
         _localRenderer!.srcObject = _localStream;
       }
 
+      var effectiveServers = iceServers.isNotEmpty
+          ? iceServers
+          : _configuredIceServers;
+
+      if (effectiveServers.isEmpty && onFetchIceServers != null) {
+        try {
+          final fetched = await onFetchIceServers!();
+          if (fetched.isNotEmpty) {
+            effectiveServers = fetched;
+            _configuredIceServers = List<Map<String, dynamic>>.from(fetched);
+          }
+        } catch (_) {}
+      }
+
       final configuration = <String, dynamic>{
-        'iceServers': iceServers.isNotEmpty
-            ? iceServers
-            : [
-                {
-                  'urls': [
-                    'turn:remote.grando.app:443?transport=udp',
-                    'turns:remote.grando.app:443?transport=tcp',
-                    'stun:remote.grando.app:443',
-                    'turn:remote.grando.app:3478?transport=udp',
-                    'turn:remote.grando.app:3478?transport=tcp',
-                    'stun:remote.grando.app:3478',
-                  ],
-                  'username': 'ligament',
-                  'credential': 'TurnSecretPass2026!',
-                }
-              ],
+        if (effectiveServers.isNotEmpty) 'iceServers': effectiveServers,
         'sdpSemantics': 'unified-plan',
         'bundlePolicy': 'max-bundle',
       };

@@ -291,6 +291,22 @@ class AuthState extends ChangeNotifier {
   AuthState() {
     // A-04/A-05: доставка намерения autoshare от службы или второго экземпляра
     localDetect.onAutoshare = (sessionId) => requestAutoshare(sessionId);
+    CallSessionManager.instance.onFetchIceServers = () async {
+      if (iceServers.isNotEmpty) return iceServers;
+      final client = api;
+      if (client == null) return const [];
+      try {
+        final raw = await client.getIceServers();
+        final ice = parseIceServersConfig({'ice_servers': raw});
+        if (ice.isNotEmpty) {
+          iceServers = ice;
+          support.setIceServers(ice);
+          CallSessionManager.instance.setConfiguredIceServers(ice);
+          return ice;
+        }
+      } catch (_) {}
+      return const [];
+    };
   }
 
   /// Токен сессии устройства хранится в безопасном хранилище
@@ -2122,11 +2138,12 @@ class AuthState extends ChangeNotifier {
       if (!_isCurrentAuthClient(client, expectedEpoch, expectedToken)) return;
       relays = freshRelays;
       notifyListeners();
-      // ICE-серверы (STUN/TURN) для WebRTC удаленной помощи (B-1)
+      // ICE-серверы (STUN/TURN) для WebRTC удаленной помощи и чата (B-1)
       final iceFromCfg = parseIceServersConfig(cfg);
       if (iceFromCfg.isNotEmpty) {
         iceServers = iceFromCfg;
         support.setIceServers(iceFromCfg);
+        CallSessionManager.instance.setConfiguredIceServers(iceFromCfg);
       }
       try {
         final iceRaw = await client.getIceServers();
@@ -2135,6 +2152,7 @@ class AuthState extends ChangeNotifier {
         if (ice.isNotEmpty) {
           iceServers = ice;
           support.setIceServers(ice);
+          CallSessionManager.instance.setConfiguredIceServers(ice);
         }
       } catch (e) {
         debugPrint('auth_state: ошибка получения ice-servers: $e');
