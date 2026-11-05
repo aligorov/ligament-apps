@@ -10,6 +10,7 @@ import '../widgets/app_update_banner.dart';
 import '../widgets/rdp_target_tile.dart';
 import '../widgets/window_caption_controls.dart';
 import 'link_catalog_screen.dart';
+import 'ticket_screen.dart';
 
 class AppsScreen extends StatefulWidget {
   const AppsScreen({super.key});
@@ -279,6 +280,75 @@ class _AppsScreenState extends State<AppsScreen>
                       const SizedBox(width: 8),
                       const Icon(Icons.arrow_forward_ios_rounded,
                           color: Color(0xFF38BDF8), size: 16),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Material(
+              color: const Color(0xFF131B2B).withValues(alpha: 0.85),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  width: 1,
+                ),
+              ),
+              child: InkWell(
+                key: const ValueKey('apps-open-tickets'),
+                borderRadius: BorderRadius.circular(14),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(builder: (_) => const TicketScreen()),
+                  );
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF59E0B).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: const Icon(Icons.confirmation_number_outlined,
+                            color: Color(0xFFFBBF24), size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              isRu ? 'Заявки и заказ-наряды' : 'Tickets & Work Orders',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              isRu
+                                  ? 'Техподдержка ИТ, АХО, быстрые вызовы и акты'
+                                  : 'IT & Facility support, 1-click calls & acts',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Color(0xFF94A3B8), fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.arrow_forward_ios_rounded,
+                          color: Color(0xFFFBBF24), size: 16),
                     ],
                   ),
                 ),
