@@ -213,9 +213,12 @@ class CallSessionManager extends ChangeNotifier {
             : [
                 {
                   'urls': [
-                    'stun:remote.grando.app:3478',
+                    'turn:remote.grando.app:443?transport=udp',
+                    'turns:remote.grando.app:443?transport=tcp',
+                    'stun:remote.grando.app:443',
                     'turn:remote.grando.app:3478?transport=udp',
                     'turn:remote.grando.app:3478?transport=tcp',
+                    'stun:remote.grando.app:3478',
                   ],
                   'username': 'ligament',
                   'credential': 'TurnSecretPass2026!',
@@ -416,9 +419,12 @@ class CallSessionManager extends ChangeNotifier {
             : [
                 {
                   'urls': [
-                    'stun:remote.grando.app:3478',
+                    'turn:remote.grando.app:443?transport=udp',
+                    'turns:remote.grando.app:443?transport=tcp',
+                    'stun:remote.grando.app:443',
                     'turn:remote.grando.app:3478?transport=udp',
                     'turn:remote.grando.app:3478?transport=tcp',
+                    'stun:remote.grando.app:3478',
                   ],
                   'username': 'ligament',
                   'credential': 'TurnSecretPass2026!',
