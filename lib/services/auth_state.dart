@@ -1152,6 +1152,24 @@ class AuthState extends ChangeNotifier {
         return;
       }
 
+      if (data is Map && (data['type'] == 'chat_unread' || data['type'] == 'chat_message')) {
+        final unreadCount = int.tryParse(data['total_unread']?.toString() ?? '') ?? 1;
+        final chatId = data['chat_id']?.toString() ?? '';
+        final title = msg['title']?.toString() ?? (isRu ? 'Непрочитанные сообщения' : 'Unread Messages');
+        final body = msg['body']?.toString() ?? '';
+        alert.triggerChatUnreadNotification(
+          title: title,
+          body: body,
+          chatId: chatId,
+          unreadCount: unreadCount,
+        );
+        if (api != null) {
+          ChatService.instance.loadChats(api!);
+        }
+        notifyListeners();
+        return;
+      }
+
       final title =
           msg['title']?.toString() ?? (isRu ? 'Уведомление' : 'Notification');
       final body = msg['body']?.toString() ?? '';
@@ -1207,6 +1225,24 @@ class AuthState extends ChangeNotifier {
             hasVideo: isVideo,
           );
         }
+        return;
+      }
+
+      if (data is Map && (data['type'] == 'chat_unread' || data['type'] == 'chat_message')) {
+        final unreadCount = int.tryParse(data['total_unread']?.toString() ?? '') ?? 1;
+        final chatId = data['chat_id']?.toString() ?? '';
+        final title = prompt['title']?.toString() ?? (isRu ? 'Непрочитанные сообщения' : 'Unread Messages');
+        final body = prompt['body']?.toString() ?? '';
+        alert.triggerChatUnreadNotification(
+          title: title,
+          body: body,
+          chatId: chatId,
+          unreadCount: unreadCount,
+        );
+        if (api != null) {
+          ChatService.instance.loadChats(api!);
+        }
+        notifyListeners();
         return;
       }
       _surfacePrompt(prompt);

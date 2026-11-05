@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -327,6 +328,57 @@ class AlertService {
     } else if (!kIsWeb && (Platform.isIOS || Platform.isAndroid)) {
       // На iOS и Android входящий звонок отображается через нативный системный экран CallKit / CallStyle
       return;
+    }
+  }
+
+  /// Оповещение о непрочитанных сообщениях в корпоративном чате
+  Future<void> triggerChatUnreadNotification({
+    required String title,
+    required String body,
+    required String chatId,
+    int? unreadCount,
+  }) async {
+    await init();
+
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        if (Platform.isWindows && _gpo.flashTaskbar) {
+          await windowManager.setProgressBar(1.0);
+        }
+      } catch (_) {}
+
+      if (_gpo.playSound) {
+        try {
+          await _getAudioPlayer().play(AssetSource('sounds/alert.wav'));
+        } catch (_) {}
+      }
+
+      if (Platform.isMacOS) {
+        await _showDarwinNotification(title, body, chatId);
+      }
+    } else if (kIsWeb) {
+      showWebNotification(title, body);
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      const androidDetails = AndroidNotificationDetails(
+        'chat_messages_channel',
+        'Корпоративный чат',
+        channelDescription: 'Уведомления о непрочитанных сообщениях в чатах',
+        importance: Importance.high,
+        priority: Priority.high,
+      );
+      final iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        badgeNumber: unreadCount,
+      );
+      await _localNotifications.show(
+        2001,
+        title,
+        body,
+        NotificationDetails(android: androidDetails, iOS: iosDetails),
+        payload: jsonEncode({'type': 'chat_unread', 'chat_id': chatId}),
+      );
     }
   }
 

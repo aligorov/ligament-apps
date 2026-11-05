@@ -70,6 +70,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _chatService.setActiveChat(null);
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -143,6 +144,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final auth = context.read<AuthState>();
     if (auth.api == null) return;
 
+    _chatService.setActiveChat(chat.id, 0);
     _chatService.markLocalRead(chat.id);
 
     if (chat.isForum) {

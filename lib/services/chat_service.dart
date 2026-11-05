@@ -84,6 +84,17 @@ class ChatService extends ChangeNotifier {
     return count;
   }
 
+  String? _activeChatId;
+  String? get activeChatId => _activeChatId;
+
+  void setActiveChat(String? chatId, [int? topicId]) {
+    _activeChatId = chatId;
+    if (chatId != null) {
+      _updateLocalUnread(chatId, topicId ?? 0);
+    }
+    notifyListeners();
+  }
+
   List<TopicItem> getTopics(String chatId) => _topics[chatId] ?? const [];
   List<ChatMessage> getMessages(String chatId, int topicId) =>
       _messages['$chatId:$topicId'] ?? const [];
@@ -629,6 +640,24 @@ class ChatService extends ChangeNotifier {
         final key = '${msg.chatId}:${msg.topicId}';
         final current = _messages[key] ?? const [];
         _messages[key] = [msg, ...current];
+        if (_activeChatId != msg.chatId) {
+          _chats = _chats.map((c) {
+            if (c.id == msg.chatId) {
+              return ChatItem(
+                id: c.id,
+                kind: c.kind,
+                title: c.title,
+                description: c.description,
+                avatarUrl: c.avatarUrl,
+                isForum: c.isForum,
+                isArchived: c.isArchived,
+                unreadCount: c.unreadCount + 1,
+                updatedAt: msg.createdAt,
+              );
+            }
+            return c;
+          }).toList();
+        }
         if (_playSounds) {
           SystemSound.play(SystemSoundType.alert);
         }
