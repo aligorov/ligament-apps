@@ -839,6 +839,7 @@ class ApiClient {
     required String body,
     String kind = 'text',
     int? replyToId,
+    int? forwardMessageId,
     int? secretTtl,
     Map<String, dynamic>? metadata,
     List<String>? attachments,
@@ -848,6 +849,7 @@ class ApiClient {
       'body': body,
       'kind': kind,
       if (replyToId != null) 'reply_to_id': replyToId,
+      if (forwardMessageId != null) 'forward_message_id': forwardMessageId,
       if (secretTtl != null) 'secret_ttl_seconds': secretTtl,
       if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
       if (attachments != null && attachments.isNotEmpty) ...{
@@ -864,6 +866,40 @@ class ApiClient {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
     throw ApiException(res.statusCode, 'message_send_failed');
+  }
+
+  /// Ligament Chat: удаление сообщения (для всех или только у себя)
+  Future<void> deleteChatMessage(
+    String chatId,
+    int messageId, {
+    bool forEveryone = false,
+  }) async {
+    final query = forEveryone ? '?for_everyone=true' : '?for_everyone=false';
+    final res = await _delete(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/messages/$messageId$query'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200 || res.statusCode == 204) {
+      return;
+    }
+    throw ApiException(res.statusCode, 'message_delete_failed');
+  }
+
+  /// Ligament Chat: редактирование текста сообщения
+  Future<Map<String, dynamic>> editChatMessage(
+    String chatId,
+    int messageId, {
+    required String body,
+  }) async {
+    final res = await _put(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/messages/$messageId'),
+      headers: _headers(),
+      body: jsonEncode({'body': body}),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'message_edit_failed');
   }
 
   /// Ligament Chat: загрузка вложения (файла или изображения)

@@ -39,6 +39,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String _selectedCategory = 'all';
   final Map<String, String> _drafts = {};
   ChatMessage? _replyingTo;
+  ChatMessage? _editingMessage;
   final Set<String> _downloadingPreviews = {};
 
   static const List<String> _quickEmojis = [
@@ -183,6 +184,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final auth = context.read<AuthState>();
     if (auth.api == null) return;
+
+    if (_editingMessage != null) {
+      final msgToEdit = _editingMessage!;
+      _textController.clear();
+      setState(() {
+        _editingMessage = null;
+      });
+      try {
+        await _chatService.editMessage(
+          auth.api!,
+          _selectedChat!.id,
+          msgToEdit.id,
+          topicId: _selectedTopic?.id ?? 0,
+          body: text,
+        );
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Не удалось изменить сообщение')),
+          );
+        }
+      }
+      return;
+    }
 
     final replyId = _replyingTo?.id;
     _textController.clear();
@@ -1138,7 +1163,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
-        onLongPress: () => setState(() => _replyingTo = msg),
+        onLongPress: () => _showMessageContextMenu(theme, msg, isMe),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
           constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
@@ -1174,7 +1199,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     ),
                   ),
                 ),
-              if (msg.replyToId != null)
+              if (msg.isForwarded)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 3),
+                  child: Text(
+                    '➡️ Переслано от: ${msg.forwardSenderName ?? 'Сотрудник'}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                      color: isMe ? Colors.white70 : theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              if (msg.replyTo != null || msg.replyToId != null)
                 Container(
                   margin: const EdgeInsets.only(bottom: 6),
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1190,13 +1227,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       ),
                     ),
                   ),
-                  child: Text(
-                    'Ответ на сообщение #${msg.replyToId}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontStyle: FontStyle.italic,
-                      color: isMe ? Colors.white70 : theme.colorScheme.outline,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        msg.replyTo != null && msg.replyTo!.senderName.isNotEmpty
+                            ? msg.replyTo!.senderName
+                            : (msg.replyTo?.senderId ?? 'Сообщение'),
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isMe ? Colors.white : theme.colorScheme.primary,
+                        ),
+                      ),
+                      Text(
+                        msg.replyTo != null && msg.replyTo!.body.isNotEmpty
+                            ? msg.replyTo!.body
+                            : (msg.replyToId != null ? 'Ответ на сообщение #${msg.replyToId}' : 'Вложение'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isMe ? Colors.white70 : theme.colorScheme.outline,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               if (msg.kind == 'voice' && msg.metadata['waveform'] is String)
@@ -1234,6 +1290,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       color: isMe ? Colors.white70 : theme.colorScheme.outline,
                     ),
                   ),
+                  if (msg.isEdited) ...[
+                    const SizedBox(width: 4),
+                    Text(
+                      '(изм.)',
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontStyle: FontStyle.italic,
+                        color: isMe ? Colors.white70 : theme.colorScheme.outline,
+                      ),
+                    ),
+                  ],
                   if (isMe) ...[
                     const SizedBox(width: 4),
                     const Icon(Icons.done_all, size: 12, color: Colors.white70),
@@ -1244,6 +1311,217 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         ),
       ),
+    );
+  }
+
+  void _showMessageContextMenu(ThemeData theme, ChatMessage msg, bool isMe) {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.reply),
+                title: const Text('Ответить'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  setState(() {
+                    _replyingTo = msg;
+                    _editingMessage = null;
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.forward),
+                title: const Text('Переслать'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showForwardDialog(msg);
+                },
+              ),
+              if (isMe && (msg.kind == 'text' || msg.kind == 'file'))
+                ListTile(
+                  leading: const Icon(Icons.edit_outlined),
+                  title: const Text('Редактировать'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _editingMessage = msg;
+                      _replyingTo = null;
+                      _textController.text = msg.body;
+                    });
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.copy_outlined),
+                title: const Text('Копировать текст'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Clipboard.setData(ClipboardData(text: msg.body));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Текст скопирован')),
+                  );
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+                title: Text(
+                  'Удалить',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _confirmDeleteMessage(msg, isMe);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmDeleteMessage(ChatMessage msg, bool isMe) async {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || _selectedChat == null) return;
+
+    final isAdmin = auth.isAdmin;
+    final canDeleteEveryone = isMe || isAdmin;
+    bool forEveryone = canDeleteEveryone;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Удалить сообщение?'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Выберите вариант удаления:'),
+                  const SizedBox(height: 12),
+                  if (canDeleteEveryone)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: forEveryone,
+                      title: const Text('Удалить для всех'),
+                      subtitle: const Text('Сообщение будет удалено у всех участников чата'),
+                      onChanged: (val) {
+                        setDialogState(() {
+                          forEveryone = val ?? false;
+                        });
+                      },
+                    )
+                  else
+                    const Text(
+                      'Сообщение будет скрыто только у вас.',
+                      style: TextStyle(fontSize: 13, color: Colors.grey),
+                    ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Отмена'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text(
+                    'Удалить',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (confirmed == true && mounted) {
+      try {
+        await _chatService.deleteMessage(
+          auth.api!,
+          _selectedChat!.id,
+          msg.id,
+          topicId: _selectedTopic?.id ?? 0,
+          forEveryone: forEveryone,
+        );
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Не удалось удалить сообщение')),
+          );
+        }
+      }
+    }
+  }
+
+  void _showForwardDialog(ChatMessage msg) {
+    final auth = context.read<AuthState>();
+    if (auth.api == null) return;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Переслать сообщение в...'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 300,
+            child: ListView.builder(
+              itemCount: _chatService.chats.length,
+              itemBuilder: (context, i) {
+                final chat = _chatService.chats[i];
+                final title = _resolveChatTitle(chat);
+                return ListTile(
+                  leading: CircleAvatar(
+                    child: Text(title.isNotEmpty ? title[0].toUpperCase() : '?'),
+                  ),
+                  title: Text(title),
+                  subtitle: Text(chat.isForum ? '🏛️ Форум' : (chat.kind == 'direct' ? 'Личный диалог' : 'Группа')),
+                  onTap: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    Navigator.pop(ctx);
+                    try {
+                      await _chatService.forwardMessage(
+                        auth.api!,
+                        chat.id,
+                        targetTopicId: 0,
+                        originalMessage: msg,
+                      );
+                      if (mounted) {
+                        messenger.showSnackBar(
+                          SnackBar(content: Text('Переслано в "$title"')),
+                        );
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('Ошибка пересылки сообщения')),
+                        );
+                      }
+                    }
+                  },
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Отмена'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -1298,7 +1576,60 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (_replyingTo != null)
+            if (_editingMessage != null)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B).withValues(alpha: 0.8),
+                  borderRadius: BorderRadius.circular(10),
+                  border: const Border(
+                    left: BorderSide(color: Colors.amber, width: 3),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.edit, size: 16, color: Colors.amber),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text(
+                            'Редактирование сообщения',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.amber,
+                            ),
+                          ),
+                          Text(
+                            _editingMessage!.body,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 18),
+                      tooltip: 'Отменить редактирование',
+                      onPressed: () {
+                        setState(() {
+                          _editingMessage = null;
+                          _textController.clear();
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              )
+            else if (_replyingTo != null)
               Container(
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),

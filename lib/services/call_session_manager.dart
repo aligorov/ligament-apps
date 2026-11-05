@@ -347,7 +347,7 @@ class CallSessionManager extends ChangeNotifier {
     required Map<String, dynamic> offerPayload,
   }) {
     if (_status != CallStatus.idle) {
-      onSendSignal?.call(fromUser, chatId, {'type': 'busy'});
+      onSendSignal?.call(fromUser, chatId, {'type': 'busy', 'device_busy': true});
       return;
     }
 
@@ -584,6 +584,70 @@ class CallSessionManager extends ChangeNotifier {
     Timer(const Duration(milliseconds: 2500), () {
       endCall(notifyPeer: false);
     });
+  }
+
+  /// Отмена входящего вызова (отменено звонящим, таймаут, либо отвечено на другом устройстве)
+  void handleCancel({String reason = ''}) {
+    if (_currentCallId.isNotEmpty) {
+      unawaited(CallKitService.instance.endCall(uuid: _currentCallId));
+      _currentCallId = '';
+    }
+
+    final wasActive = _status == CallStatus.connected ||
+        _status == CallStatus.calling ||
+        _status == CallStatus.ringing;
+
+    _stopRingingAlert();
+    _ringTimeout?.cancel();
+    _ringTimeout = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _callTimer?.cancel();
+    _callTimer = null;
+
+    unawaited(_sound.stopRingback());
+    unawaited(_sound.stopRingtone());
+    if (wasActive && reason != 'answered_elsewhere') {
+      unawaited(_sound.playEnd());
+    }
+    unawaited(_audioRoute.reset());
+
+    try {
+      _localStream?.getTracks().forEach((t) => t.stop());
+      _localStream?.dispose();
+      _localStream = null;
+    } catch (_) {}
+
+    try {
+      _remoteStream?.getTracks().forEach((t) => t.stop());
+      _remoteStream?.dispose();
+      _remoteStream = null;
+    } catch (_) {}
+
+    try {
+      _peerConnection?.close();
+      _peerConnection = null;
+    } catch (_) {}
+
+    try {
+      _localRenderer?.srcObject = null;
+      _remoteRenderer?.srcObject = null;
+    } catch (_) {}
+
+    _remoteDescriptionSet = false;
+    _remoteIceCandidateQueue.clear();
+    _pendingOfferSdp = '';
+    _status = CallStatus.idle;
+    _displayMode = CallDisplayMode.fullscreen;
+    _targetUserId = '';
+    _chatId = '';
+    _chatTitle = '';
+    _callerName = '';
+    _durationSeconds = 0;
+    _isMuted = false;
+    _isCameraOff = false;
+    _isScreenSharing = false;
+    notifyListeners();
   }
 
   /// Получение SDP answer от вызываемого абонента

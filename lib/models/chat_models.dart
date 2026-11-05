@@ -82,6 +82,36 @@ class TopicItem {
 }
 
 // ignore: must_be_immutable
+class ReplyPreview {
+  final int id;
+  final String senderId;
+  final String senderName;
+  final String body;
+
+  const ReplyPreview({
+    required this.id,
+    required this.senderId,
+    required this.senderName,
+    required this.body,
+  });
+
+  factory ReplyPreview.fromJson(Map<String, dynamic> json) {
+    return ReplyPreview(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      senderId: json['sender_id'] as String? ?? '',
+      senderName: json['sender_name'] as String? ?? '',
+      body: json['body'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'sender_id': senderId,
+    'sender_name': senderName,
+    'body': body,
+  };
+}
+
 class ChatMessage {
   final int id;
   final String chatId;
@@ -90,6 +120,7 @@ class ChatMessage {
   final String senderName;
   final String clientMsgId;
   final int? replyToId;
+  final ReplyPreview? replyTo;
   final String body;
   final String kind; // text, secret, action_card, link_call, system
   final int? secretTtlSeconds;
@@ -97,6 +128,8 @@ class ChatMessage {
   final Map<String, dynamic> metadata;
   final List<Map<String, dynamic>> rawAttachments;
   final DateTime createdAt;
+  final DateTime? editedAt;
+  final DateTime? deletedAt;
 
   List<InlineSpan>? _cachedSpans;
 
@@ -108,6 +141,7 @@ class ChatMessage {
     required this.senderName,
     required this.clientMsgId,
     this.replyToId,
+    this.replyTo,
     required this.body,
     this.kind = 'text',
     this.secretTtlSeconds,
@@ -115,6 +149,8 @@ class ChatMessage {
     this.metadata = const {},
     this.rawAttachments = const [],
     required this.createdAt,
+    this.editedAt,
+    this.deletedAt,
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
@@ -130,6 +166,9 @@ class ChatMessage {
       senderName: json['sender_name'] as String? ?? '',
       clientMsgId: json['client_msg_id'] as String? ?? '',
       replyToId: (json['reply_to_id'] as num?)?.toInt(),
+      replyTo: json['reply_to'] is Map<String, dynamic>
+          ? ReplyPreview.fromJson(json['reply_to'] as Map<String, dynamic>)
+          : null,
       body: json['body'] as String? ?? '',
       kind: json['kind'] as String? ?? 'text',
       secretTtlSeconds: (json['secret_ttl_seconds'] as num?)?.toInt(),
@@ -141,7 +180,21 @@ class ChatMessage {
       createdAt: json['created_at'] != null
           ? DateTime.tryParse(json['created_at'] as String) ?? DateTime.now()
           : DateTime.now(),
+      editedAt: json['edited_at'] != null
+          ? DateTime.tryParse(json['edited_at'] as String)
+          : null,
+      deletedAt: json['deleted_at'] != null
+          ? DateTime.tryParse(json['deleted_at'] as String)
+          : null,
     );
+  }
+
+  bool get isEdited => editedAt != null;
+  bool get isForwarded => metadata.containsKey('forward') && metadata['forward'] is Map;
+  String? get forwardSenderName {
+    if (!isForwarded) return null;
+    final f = metadata['forward'] as Map;
+    return f['sender_name'] as String? ?? f['sender_id'] as String?;
   }
 
   bool get hasAttachments => attachments.isNotEmpty;

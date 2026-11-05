@@ -236,6 +236,7 @@ class ChatService extends ChangeNotifier {
     required String body,
     String kind = 'text',
     int? replyToId,
+    int? forwardMessageId,
     int? secretTtl,
     Map<String, dynamic>? metadata,
     List<String>? attachments,
@@ -247,6 +248,7 @@ class ChatService extends ChangeNotifier {
         body: body,
         kind: kind,
         replyToId: replyToId,
+        forwardMessageId: forwardMessageId,
         secretTtl: secretTtl,
         metadata: metadata,
         attachments: attachments,
@@ -259,6 +261,77 @@ class ChatService extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       DebugLogService.instance.record('chat.send.failed', error: e);
+      rethrow;
+    }
+  }
+
+  /// Удаление сообщения из чата (у всех или только у себя)
+  Future<void> deleteMessage(
+    ApiClient client,
+    String chatId,
+    int messageId, {
+    int topicId = 0,
+    bool forEveryone = false,
+  }) async {
+    try {
+      await client.deleteChatMessage(chatId, messageId, forEveryone: forEveryone);
+      final key = '$chatId:$topicId';
+      final current = _messages[key];
+      if (current != null) {
+        _messages[key] = current.where((m) => m.id != messageId).toList();
+        notifyListeners();
+      }
+    } catch (e) {
+      DebugLogService.instance.record('chat.delete.failed', error: e);
+      rethrow;
+    }
+  }
+
+  /// Редактирование текста сообщения
+  Future<void> editMessage(
+    ApiClient client,
+    String chatId,
+    int messageId, {
+    int topicId = 0,
+    required String body,
+  }) async {
+    try {
+      final res = await client.editChatMessage(chatId, messageId, body: body);
+      final updated = ChatMessage.fromJson(res);
+      final key = '$chatId:$topicId';
+      final current = _messages[key];
+      if (current != null) {
+        _messages[key] = current.map((m) => m.id == messageId ? updated : m).toList();
+        notifyListeners();
+      }
+    } catch (e) {
+      DebugLogService.instance.record('chat.edit.failed', error: e);
+      rethrow;
+    }
+  }
+
+  /// Пересылка сообщения в другой чат / топик
+  Future<void> forwardMessage(
+    ApiClient client,
+    String targetChatId, {
+    int targetTopicId = 0,
+    required ChatMessage originalMessage,
+  }) async {
+    try {
+      final res = await client.sendChatMessage(
+        targetChatId,
+        topicId: targetTopicId,
+        body: originalMessage.body,
+        kind: originalMessage.kind,
+        forwardMessageId: originalMessage.id,
+      );
+      final sent = ChatMessage.fromJson(res);
+      final key = '$targetChatId:$targetTopicId';
+      final current = _messages[key] ?? const [];
+      _messages[key] = [sent, ...current];
+      notifyListeners();
+    } catch (e) {
+      DebugLogService.instance.record('chat.forward.failed', error: e);
       rethrow;
     }
   }
@@ -561,6 +634,33 @@ class ChatService extends ChangeNotifier {
         }
         notifyListeners();
       }
+    } else if (type == 'chat.message_deleted') {
+      final chatId = event['chat_id'] as String? ?? '';
+      final topicId = (event['topic_id'] as num?)?.toInt() ?? 0;
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final msgId = (payload['message_id'] as num?)?.toInt();
+      if (msgId != null) {
+        final key = '$chatId:$topicId';
+        final current = _messages[key];
+        if (current != null) {
+          _messages[key] = current.where((m) => m.id != msgId).toList();
+          notifyListeners();
+        }
+      }
+    } else if (type == 'chat.message_updated') {
+      final chatId = event['chat_id'] as String? ?? '';
+      final topicId = (event['topic_id'] as num?)?.toInt() ?? 0;
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final rawMsg = payload['message'] as Map<String, dynamic>?;
+      if (rawMsg != null) {
+        final updated = ChatMessage.fromJson(rawMsg);
+        final key = '$chatId:$topicId';
+        final current = _messages[key];
+        if (current != null) {
+          _messages[key] = current.map((m) => m.id == updated.id ? updated : m).toList();
+          notifyListeners();
+        }
+      }
     } else if (type == 'webrtc.signal') {
       final targetId = event['target_id'] as String? ?? '';
       final chatId = event['chat_id'] as String? ?? '';
@@ -587,6 +687,9 @@ class ChatService extends ChangeNotifier {
       } else if (signalType == 'candidate') {
         final cand = payload['candidate'] as Map<String, dynamic>? ?? {};
         unawaited(CallSessionManager.instance.handleRemoteCandidate(cand));
+      } else if (signalType == 'cancel') {
+        final reason = payload['reason'] as String? ?? '';
+        CallSessionManager.instance.handleCancel(reason: reason);
       } else if (signalType == 'hangup' || signalType == 'rejected') {
         CallSessionManager.instance.endCall(notifyPeer: false);
       }
