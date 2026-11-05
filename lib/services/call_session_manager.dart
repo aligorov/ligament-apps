@@ -198,16 +198,20 @@ class CallSessionManager extends ChangeNotifier {
 
     try {
       final mediaConstraints = <String, dynamic>{
-        'audio': true,
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
         'video': isVideo
             ? {
-                'mandatory': {
-                  'minWidth': '640',
-                  'minHeight': '480',
-                  'minFrameRate': '30',
-                },
+                'mandatory': {},
                 'facingMode': 'user',
-                'optional': [],
+                'optional': [
+                  {'minWidth': 640},
+                  {'minHeight': 480},
+                  {'minFrameRate': 30},
+                ],
               }
             : false,
       };
@@ -261,13 +265,13 @@ class CallSessionManager extends ChangeNotifier {
       _peerConnection!.onTrack = (event) {
         if (event.streams.isNotEmpty) {
           _remoteStream = event.streams[0];
-          if (_remoteRenderer != null) {
-            try {
-              _remoteRenderer!.srcObject = _remoteStream;
-            } catch (_) {}
-          }
-          notifyListeners();
         }
+        if (_remoteRenderer != null && _remoteStream != null) {
+          try {
+            _remoteRenderer!.srcObject = _remoteStream;
+          } catch (_) {}
+        }
+        notifyListeners();
       };
 
       _peerConnection!.onConnectionState = (state) {
@@ -405,16 +409,20 @@ class CallSessionManager extends ChangeNotifier {
 
     try {
       final mediaConstraints = <String, dynamic>{
-        'audio': true,
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
         'video': _isVideo
             ? {
-                'mandatory': {
-                  'minWidth': '640',
-                  'minHeight': '480',
-                  'minFrameRate': '30',
-                },
+                'mandatory': {},
                 'facingMode': 'user',
-                'optional': [],
+                'optional': [
+                  {'minWidth': 640},
+                  {'minHeight': 480},
+                  {'minFrameRate': 30},
+                ],
               }
             : false,
       };
@@ -466,11 +474,13 @@ class CallSessionManager extends ChangeNotifier {
       _peerConnection!.onTrack = (event) {
         if (event.streams.isNotEmpty) {
           _remoteStream = event.streams[0];
-          if (_remoteRenderer != null) {
-            _remoteRenderer!.srcObject = _remoteStream;
-          }
-          notifyListeners();
         }
+        if (_remoteRenderer != null && _remoteStream != null) {
+          try {
+            _remoteRenderer!.srcObject = _remoteStream;
+          } catch (_) {}
+        }
+        notifyListeners();
       };
 
       _peerConnection!.onConnectionState = (state) {
