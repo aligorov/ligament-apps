@@ -1,23 +1,25 @@
 package com.ligament.twofa.authenticator
 
+import android.app.ActivityManager
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import androidx.core.app.Person
 
 /**
  * Фоновая служба активного VoIP-вызова и фонового ожидания входящих вызовов/2FA.
  * Гарантирует непрерывность аудиопотока и удержание WebSocket-соединения при сворачивании
- * приложения или выключении экрана в соответствии с политиками Android 14+ FGS.
+ * приложения или выключении экрана в соответствии с политиками Android 12–15 FGS.
  */
 class CallForegroundService : Service() {
 
@@ -34,21 +36,45 @@ class CallForegroundService : Service() {
         const val EXTRA_UUID = "extra_uuid"
         const val EXTRA_CALLER_NAME = "extra_caller_name"
 
+        @Volatile
+        var isServiceRunning: Boolean = false
+
+        private fun isAppInForeground(context: Context): Boolean {
+            return try {
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+                val processes = am.runningAppProcesses ?: return false
+                val myUid = context.applicationInfo.uid
+                processes.any {
+                    it.uid == myUid &&
+                        it.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+
         fun startStandby(context: Context) {
             try {
+                // На Android 12+ (API 31+) запуск нового FGS типа dataSync из фона запрещён
+                // (ForegroundServiceStartNotAllowedException). Запускаем только если служба
+                // уже работает (перевод из звонка в standby) или приложение на переднем плане.
+                if (!isServiceRunning && !isAppInForeground(context)) {
+                    return
+                }
                 val intent = Intent(context, CallForegroundService::class.java).apply {
                     action = ACTION_START_STANDBY
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
+                if (isServiceRunning || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
                     context.startService(intent)
+                } else {
+                    context.startForegroundService(intent)
                 }
             } catch (_: Exception) {}
         }
 
         fun stopService(context: Context) {
             try {
+                if (!isServiceRunning) return
                 val intent = Intent(context, CallForegroundService::class.java).apply {
                     action = ACTION_STOP_SERVICE
                 }
@@ -63,16 +89,16 @@ class CallForegroundService : Service() {
                     putExtra(EXTRA_UUID, uuid)
                     putExtra(EXTRA_CALLER_NAME, callerName)
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
+                if (isServiceRunning || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
                     context.startService(intent)
+                } else {
+                    context.startForegroundService(intent)
                 }
             } catch (_: Exception) {}
         }
 
         fun stopCall(context: Context, keepStandby: Boolean = true) {
-            if (keepStandby) {
+            if (keepStandby && (isServiceRunning || isAppInForeground(context))) {
                 startStandby(context)
             } else {
                 stopService(context)
@@ -86,14 +112,6 @@ class CallForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = intent?.action ?: ACTION_START_STANDBY
-        if (action == ACTION_STOP_SERVICE) {
-            releaseLocks()
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        acquireLocks()
         createNotificationChannels()
 
         val mainIntent = Intent(this, MainActivity::class.java).apply {
@@ -106,85 +124,151 @@ class CallForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        if (action == ACTION_START_STANDBY || action == ACTION_STOP_CALL) {
-            val standbyNotification = NotificationCompat.Builder(this, STANDBY_CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle("Ligament 2FA")
-                .setContentText("Ожидание защищённых вызовов и уведомлений")
-                .setOngoing(true)
-                .setSilent(true)
-                .setPriority(NotificationCompat.PRIORITY_MIN)
-                .setContentIntent(mainPendingIntent)
-                .build()
+        val standbyNotification = NotificationCompat.Builder(this, STANDBY_CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Ligament 2FA")
+            .setContentText("Ожидание защищённых вызовов и уведомлений")
+            .setOngoing(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setContentIntent(mainPendingIntent)
+            .build()
 
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        standbyNotification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                    )
-                } else {
-                    startForeground(NOTIFICATION_ID, standbyNotification)
-                }
-            } catch (_: Exception) {}
-            return START_STICKY
+        val action = intent?.action ?: ACTION_START_STANDBY
+        if (action == ACTION_STOP_SERVICE) {
+            if (!isServiceRunning) {
+                startForegroundStandby(standbyNotification)
+            }
+            releaseLocks()
+            stopForegroundCompat()
+            isServiceRunning = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        acquireLocks()
+
+        if (action == ACTION_START_STANDBY || action == ACTION_STOP_CALL) {
+            if (startForegroundStandby(standbyNotification)) {
+                isServiceRunning = true
+                return START_STICKY
+            }
+            releaseLocks()
+            isServiceRunning = false
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         val uuid = intent?.getStringExtra(EXTRA_UUID) ?: ""
-        val callerName = intent?.getStringExtra(EXTRA_CALLER_NAME) ?: "Ligament 2FA"
-
+        val callerName = intent?.getStringExtra(EXTRA_CALLER_NAME)?.takeIf { it.isNotBlank() } ?: "Ligament 2FA"
         val declinePendingIntent = CallActionReceiver.createDeclinePendingIntent(this, uuid)
 
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+        // Используем стандартный NotificationCompat.Builder без CallStyle.forOngoingCall:
+        // на Android 12–15 CallStyle для активного звонка требует строго FGS типа phoneCall
+        // с активным TelecomConnection / ROLE_DIALER, иначе NotificationManagerService
+        // выбрасывает IllegalArgumentException / SecurityException.
+        val callNotification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Идет защищенный звонок")
             .setContentText(callerName)
             .setOngoing(true)
+            .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(mainPendingIntent)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 "Завершить",
                 declinePendingIntent
             )
+            .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val person = Person.Builder().setName(callerName).setImportant(true).build()
-            builder.setStyle(NotificationCompat.CallStyle.forOngoingCall(person, declinePendingIntent))
+        if (startForegroundWithFallback(callNotification)) {
+            isServiceRunning = true
+            return START_STICKY
         }
 
-        val notification = builder.build()
+        // Если ни один тип не прошёл, пробуем базовый standby перед остановкой
+        if (startForegroundStandby(standbyNotification)) {
+            isServiceRunning = true
+            return START_STICKY
+        }
 
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        releaseLocks()
+        isServiceRunning = false
+        stopSelf()
+        return START_NOT_STICKY
+    }
+
+    private fun startForegroundStandby(notification: Notification): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
                     notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                )
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 )
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
-        } catch (_: Exception) {}
+            true
+        } catch (_: Exception) {
+            try {
+                startForeground(NOTIFICATION_ID, notification)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
 
-        return START_STICKY
+    private fun startForegroundWithFallback(notification: Notification): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return try {
+                startForeground(NOTIFICATION_ID, notification)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+        val types = mutableListOf<Int>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasMicPermission()) {
+            types.add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        }
+        types.add(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        types.add(ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+        for (t in types) {
+            try {
+                startForeground(NOTIFICATION_ID, notification, t)
+                return true
+            } catch (_: Exception) {}
+        }
+        return try {
+            startForeground(NOTIFICATION_ID, notification)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun hasMicPermission(): Boolean =
+        checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun stopForegroundCompat() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
+        isServiceRunning = false
         releaseLocks()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+        stopForegroundCompat()
         super.onDestroy()
     }
 
@@ -240,6 +324,8 @@ class CallForegroundService : Service() {
             ).apply {
                 description = "Постоянное системное уведомление во время активного разговора"
                 setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
             }
             nm.createNotificationChannel(callChannel)
 

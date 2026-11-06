@@ -68,7 +68,7 @@
         <service
             android:name=".CallForegroundService"
             android:exported="false"
-            android:foregroundServiceType="phoneCall|microphone|dataSync" />
+            android:foregroundServiceType="phoneCall|microphone|camera|mediaProjection|dataSync" />
 
         <!-- Нативный приёмник действий уведомления входящего вызова (Ответить / Отклонить) -->
         <receiver

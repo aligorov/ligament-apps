@@ -109,6 +109,10 @@ android {
 
     buildTypes {
         release {
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             // A-4 (аудит 2026-10-12): фолбэк на общеизвестный debug-ключ
             // убран — release-APK, подписанный им, подделывается при
             // sideload-«обновлении». Без секретов подписи release-сборка

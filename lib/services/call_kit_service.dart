@@ -57,6 +57,37 @@ class CallKitService {
     }
   }
 
+  /// Предварительный запрос runtime-разрешений Android (RECORD_AUDIO, CAMERA, BLUETOOTH_CONNECT, POST_NOTIFICATIONS)
+  /// до обращения к FlutterWebRTC getUserMedia.
+  Future<bool> ensurePermissions({required bool hasVideo}) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return true;
+    try {
+      final res = await _channel.invokeMethod<bool>('ensurePermissions', {
+        'hasVideo': hasVideo,
+      });
+      return res ?? true;
+    } catch (e) {
+      debugPrint('[CallKitService] ensurePermissions error: $e');
+      return true;
+    }
+  }
+
+  /// Воспроизвести нативный телефонный сигнал (Android ToneGenerator: ringback, connect, busy, end)
+  Future<void> playCallTone(String tone) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await _channel.invokeMethod('playCallTone', {'tone': tone});
+    } catch (_) {}
+  }
+
+  /// Остановить нативный телефонный сигнал (Android ToneGenerator)
+  Future<void> stopCallTone() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await _channel.invokeMethod('stopCallTone');
+    } catch (_) {}
+  }
+
   /// Отобразить нативный системный экран входящего вызова iOS (Lock Screen / Full Screen CallKit)
   Future<bool> reportIncomingCall({
     required String uuid,

@@ -13,6 +13,11 @@ class CallAudioRouteService {
   bool _isSpeaker = false;
   bool get isSpeaker => _isSpeaker;
 
+  /// Синхронная установка дефолтного маршрута при старте звонка до инициализации медиа
+  void prepareDefaultRoute({required bool isVideo}) {
+    _isSpeaker = isVideo;
+  }
+
   /// Проверка, поддерживается ли мобильное переключение динамика
   bool get isMobileRoutingSupported {
     if (kIsWeb) return false;

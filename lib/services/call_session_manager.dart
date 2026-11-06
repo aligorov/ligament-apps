@@ -67,6 +67,7 @@ class CallSessionManager extends ChangeNotifier {
 
   String _currentCallId = '';
   bool _callKitReported = false;
+  bool _isAcceptingCall = false;
   String get currentCallId => _currentCallId;
 
   String _generateCallId() {
@@ -105,6 +106,7 @@ class CallSessionManager extends ChangeNotifier {
 
   RTCVideoRenderer? _localRenderer;
   RTCVideoRenderer? _remoteRenderer;
+  Future<void>? _initializingRenderers;
 
   static const List<Map<String, dynamic>> defaultStunServers = [
     {
@@ -256,12 +258,20 @@ class CallSessionManager extends ChangeNotifier {
     if (_status == CallStatus.idle) {
       _currentCallId = _generateCallId();
       _callKitReported = false;
+      _isAcceptingCall = false;
       _chatId = chatId;
       _chatTitle = callerName;
       _callerName = callerName;
       _isVideo = isVideo;
       _isCameraOff = !isVideo;
       _status = CallStatus.incoming;
+      _displayMode = CallDisplayMode.fullscreen;
+      _ringTimeout?.cancel();
+      _ringTimeout = Timer(const Duration(seconds: 55), () {
+        if (_status == CallStatus.incoming) {
+          rejectIncomingCall();
+        }
+      });
       notifyListeners();
     }
     if (!_callKitReported && _currentCallId.isNotEmpty) {
@@ -355,6 +365,50 @@ class CallSessionManager extends ChangeNotifier {
     return '$m:$s';
   }
 
+  Future<MediaStream> _acquireUserMedia({required bool wantVideo}) async {
+    final audioConstraints = <String, dynamic>{
+      'echoCancellation': true,
+      'noiseSuppression': true,
+      'autoGainControl': true,
+    };
+    if (wantVideo) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+          'audio': audioConstraints,
+          'video': {
+            'mandatory': {},
+            'facingMode': 'user',
+            'optional': [
+              {'minWidth': 640},
+              {'minHeight': 480},
+              {'minFrameRate': 30},
+            ],
+          },
+        });
+      } catch (e) {
+        DebugLogService.instance.record('webrtc.getUserMedia.video_fallback', error: e);
+        _isVideo = false;
+        _isCameraOff = true;
+      }
+    }
+    return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+      'audio': audioConstraints,
+      'video': false,
+    });
+  }
+
+  void _disposeStreamSafe(MediaStream? stream) {
+    if (stream == null) return;
+    try {
+      for (final t in stream.getTracks()) {
+        try {
+          t.stop();
+        } catch (_) {}
+      }
+      stream.dispose();
+    } catch (_) {}
+  }
+
   /// Старт исходящего вызова
   void startCall({
     required String chatId,
@@ -363,6 +417,12 @@ class CallSessionManager extends ChangeNotifier {
     String targetUserId = '',
     List<Map<String, dynamic>> iceServers = const [],
   }) {
+    if (_status != CallStatus.idle &&
+        _status != CallStatus.ended &&
+        _status != CallStatus.offline) {
+      return;
+    }
+
     _chatId = chatId;
     _chatTitle = chatTitle;
     _targetUserId = targetUserId.isNotEmpty ? targetUserId : chatTitle;
@@ -376,68 +436,76 @@ class CallSessionManager extends ChangeNotifier {
     _displayMode = CallDisplayMode.fullscreen;
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
+    _isAcceptingCall = false;
+    _audioRoute.prepareDefaultRoute(isVideo: isVideo);
 
-    _currentCallId = _generateCallId();
+    final callId = _generateCallId();
+    _currentCallId = callId;
     unawaited(CallKitService.instance.startOutgoingCall(
-      uuid: _currentCallId,
+      uuid: callId,
       recipientName: _callerName,
       hasVideo: isVideo,
     ));
 
-    // Запуск звуковых гудков дозвона (КПВ) в безопасном AudioContext
-    unawaited(_sound.startRingback(isVideo: isVideo));
-
-    // Настройка аппаратного аудио-маршрута: видео -> громкая связь, аудио -> ухо
-    unawaited(_audioRoute.configureSession(isVideo: isVideo));
-    unawaited(_audioRoute.applyRouting(isVideo: isVideo));
-
     _ringTimeout?.cancel();
     // Стандарт индустрии: 55 секунд дозвона (с учетом Doze mode и push-пробуждения)
     _ringTimeout = Timer(const Duration(seconds: 55), () {
-      if (_status == CallStatus.calling || _status == CallStatus.ringing) {
+      if (_currentCallId == callId &&
+          (_status == CallStatus.calling || _status == CallStatus.ringing)) {
         endCall(notifyPeer: true);
       }
     });
 
     notifyListeners();
 
-    unawaited(_initAndStartWebRTC(isVideo: isVideo, iceServers: iceServers));
+    unawaited(_initAndStartWebRTC(
+      callId: callId,
+      isVideo: isVideo,
+      iceServers: iceServers,
+    ));
   }
 
   Future<void> _initAndStartWebRTC({
+    required String callId,
     required bool isVideo,
     required List<Map<String, dynamic>> iceServers,
   }) async {
-    try {
-      await initRenderers();
-    } catch (_) {}
+    bool isStillActive() => _status != CallStatus.idle && _currentCallId == callId;
 
     try {
-      final mediaConstraints = <String, dynamic>{
-        'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-        },
-        'video': isVideo
-            ? {
-                'mandatory': {},
-                'facingMode': 'user',
-                'optional': [
-                  {'minWidth': 640},
-                  {'minHeight': 480},
-                  {'minFrameRate': 30},
-                ],
-              }
-            : false,
-      };
+      final hasPerm = await CallKitService.instance.ensurePermissions(hasVideo: isVideo);
+      if (!isStillActive()) return;
+      if (!hasPerm) {
+        DebugLogService.instance.record('webrtc.start.permission_denied');
+        endCall(notifyPeer: false);
+        return;
+      }
 
-      _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
-      if (_localRenderer != null) {
+      try {
+        await initRenderers();
+      } catch (_) {}
+      if (!isStillActive()) return;
+
+      await _audioRoute.configureSession(isVideo: _isVideo);
+      if (!isStillActive()) return;
+
+      final stream = await _acquireUserMedia(wantVideo: isVideo);
+      if (!isStillActive()) {
+        _disposeStreamSafe(stream);
+        return;
+      }
+      _localStream = stream;
+
+      if (_localRenderer != null && _localRenderer!.textureId != null) {
         try {
           _localRenderer!.srcObject = _localStream;
         } catch (_) {}
       }
+
+      await _audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker);
+      if (!isStillActive()) return;
+
+      unawaited(_sound.startRingback(isVideo: _isVideo));
 
       var effectiveServers = _buildEffectiveIceServers(iceServers);
 
@@ -450,6 +518,7 @@ class CallSessionManager extends ChangeNotifier {
           }
         } catch (_) {}
       }
+      if (!isStillActive()) return;
 
       final configuration = <String, dynamic>{
         'iceServers': effectiveServers,
@@ -457,33 +526,45 @@ class CallSessionManager extends ChangeNotifier {
         'bundlePolicy': 'max-bundle',
       };
 
-      _peerConnection = await createPeerConnection(configuration);
-
-      for (final track in _localStream!.getTracks()) {
-        await _peerConnection!.addTrack(track, _localStream!);
+      final pc = await createPeerConnection(configuration);
+      if (!isStillActive()) {
+        try {
+          await pc.close();
+        } catch (_) {}
+        return;
       }
+      _peerConnection = pc;
 
-      _peerConnection!.onIceCandidate = (candidate) {
+      for (final track in stream.getTracks()) {
+        if (!isStillActive()) return;
+        await pc.addTrack(track, stream);
+      }
+      if (!isStillActive()) return;
+
+      pc.onIceCandidate = (candidate) {
+        if (!isStillActive()) return;
         _queueOutgoingCandidate(candidate);
       };
 
-      _peerConnection!.onTrack = (event) async {
-        MediaStream? stream;
+      pc.onTrack = (event) async {
+        if (!isStillActive()) return;
+        MediaStream? remote;
         if (event.streams.isNotEmpty) {
-          stream = event.streams[0];
+          remote = event.streams[0];
         } else {
           _remoteStream ??= await createLocalMediaStream('remote_stream');
-          stream = _remoteStream;
+          remote = _remoteStream;
         }
+        if (!isStillActive()) return;
 
         if (event.track.kind == 'video') {
-          if (stream != null && !stream.getVideoTracks().any((t) => t.id == event.track.id)) {
+          if (remote != null && !remote.getVideoTracks().any((t) => t.id == event.track.id)) {
             try {
-              await stream.addTrack(event.track);
+              await remote.addTrack(event.track);
             } catch (_) {}
           }
-          _remoteStream = stream;
-          if (_remoteRenderer != null) {
+          _remoteStream = remote;
+          if (_remoteRenderer != null && _remoteRenderer!.textureId != null) {
             try {
               _remoteRenderer!.srcObject = null;
               _remoteRenderer!.srcObject = _remoteStream;
@@ -494,23 +575,26 @@ class CallSessionManager extends ChangeNotifier {
           try {
             await Helper.setVolume(1.0, event.track);
           } catch (_) {}
-          if (stream != null && !stream.getAudioTracks().any((t) => t.id == event.track.id)) {
+          if (remote != null && !remote.getAudioTracks().any((t) => t.id == event.track.id)) {
             try {
-              await stream.addTrack(event.track);
+              await remote.addTrack(event.track);
             } catch (_) {}
           }
-          _remoteStream = stream;
-          if (_remoteRenderer != null && _remoteRenderer!.srcObject == null) {
+          _remoteStream = remote;
+          if (_remoteRenderer != null &&
+              _remoteRenderer!.textureId != null &&
+              _remoteRenderer!.srcObject == null) {
             try {
               _remoteRenderer!.srcObject = _remoteStream;
             } catch (_) {}
           }
-          unawaited(_audioRoute.applyRouting(isVideo: isVideo, forceSpeaker: _audioRoute.isSpeaker));
+          unawaited(_audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker));
         }
         notifyListeners();
       };
 
-      _peerConnection!.onIceConnectionState = (state) {
+      pc.onIceConnectionState = (state) {
+        if (!isStillActive()) return;
         if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
             state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
           _reconnectTimer?.cancel();
@@ -520,7 +604,8 @@ class CallSessionManager extends ChangeNotifier {
         }
       };
 
-      _peerConnection!.onConnectionState = (state) {
+      pc.onConnectionState = (state) {
+        if (!isStillActive()) return;
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           _reconnectTimer?.cancel();
           _reconnectTimer = null;
@@ -545,11 +630,10 @@ class CallSessionManager extends ChangeNotifier {
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           endCall(notifyPeer: true);
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
-          // Graceful ICE restart / recovery period (25s) вместо мгновенного разрыва звонка
           if (_status == CallStatus.connected) {
             _reconnectTimer?.cancel();
             _reconnectTimer = Timer(const Duration(seconds: 25), () {
-              if (_status != CallStatus.idle) {
+              if (isStillActive()) {
                 endCall(notifyPeer: true);
               }
             });
@@ -560,32 +644,39 @@ class CallSessionManager extends ChangeNotifier {
         }
       };
 
-      final offer = await _peerConnection!.createOffer();
+      final offer = await pc.createOffer();
+      if (!isStillActive()) return;
       final optimizedSdp = optimizeOpusSdp(offer.sdp ?? '');
       final optimizedOffer = RTCSessionDescription(optimizedSdp, offer.type);
-      await _peerConnection!.setLocalDescription(optimizedOffer);
+      await pc.setLocalDescription(optimizedOffer);
+      if (!isStillActive()) return;
       _localSdp = optimizedSdp;
 
       onSendSignal?.call(_targetUserId, _chatId, {
         'type': 'offer',
         'sdp': optimizedSdp,
-        'is_video': isVideo,
+        'is_video': _isVideo,
         'caller_name': _callerName,
       });
     } catch (e) {
       DebugLogService.instance.record('webrtc.start.failed', error: e);
+      if (isStillActive()) {
+        endCall(notifyPeer: true);
+      }
     }
   }
 
   /// Выполняет полноценный ICE Restart с генерацией нового SDP Offer и отправкой пиру
   Future<void> performIceRestart() async {
-    if (_peerConnection == null || _status != CallStatus.connected || _isRestartingIce) return;
+    final pc = _peerConnection;
+    if (pc == null || _status != CallStatus.connected || _isRestartingIce) return;
     _isRestartingIce = true;
     try {
-      final offer = await _peerConnection!.createOffer({'iceRestart': true});
+      final offer = await pc.createOffer({'iceRestart': true});
+      if (_peerConnection != pc || _status != CallStatus.connected) return;
       final optimizedSdp = optimizeOpusSdp(offer.sdp ?? '');
       final optimizedOffer = RTCSessionDescription(optimizedSdp, offer.type);
-      await _peerConnection!.setLocalDescription(optimizedOffer);
+      await pc.setLocalDescription(optimizedOffer);
       _localSdp = optimizedSdp;
 
       if (_targetUserId.isNotEmpty) {
@@ -607,19 +698,22 @@ class CallSessionManager extends ChangeNotifier {
   /// Обработка renegotiation / ICE restart оффера во время активного соединения
   Future<void> _handleOfferRenegotiation(Map<String, dynamic> offerPayload) async {
     final sdp = offerPayload['sdp'] as String? ?? '';
-    if (sdp.isEmpty || _peerConnection == null) return;
+    final pc = _peerConnection;
+    if (sdp.isEmpty || pc == null) return;
     try {
       _remoteSdp = sdp;
-      await _peerConnection!.setRemoteDescription(
+      await pc.setRemoteDescription(
         RTCSessionDescription(sdp, 'offer'),
       );
+      if (_peerConnection != pc) return;
       _remoteDescriptionSet = true;
       await _flushRemoteCandidates();
 
-      final answer = await _peerConnection!.createAnswer();
+      final answer = await pc.createAnswer();
+      if (_peerConnection != pc) return;
       final optimizedSdp = optimizeOpusSdp(answer.sdp ?? '');
       final optimizedAnswer = RTCSessionDescription(optimizedSdp, answer.type);
-      await _peerConnection!.setLocalDescription(optimizedAnswer);
+      await pc.setLocalDescription(optimizedAnswer);
       _localSdp = optimizedSdp;
 
       if (_targetUserId.isNotEmpty) {
@@ -694,6 +788,7 @@ class CallSessionManager extends ChangeNotifier {
     if (_currentCallId.isEmpty) {
       _currentCallId = _generateCallId();
       _callKitReported = false;
+      _isAcceptingCall = false;
     }
 
     // Если пользователь уже ответил с нативного экрана CallKit до получения offer
@@ -726,6 +821,10 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Принять входящий вызов
   Future<void> acceptIncomingCall({List<Map<String, dynamic>> iceServers = const []}) async {
+    if (_isAcceptingCall || _status == CallStatus.connected || _status == CallStatus.idle) {
+      return;
+    }
+
     if (_currentCallId.isNotEmpty) {
       unawaited(CallKitService.instance.answerCall(uuid: _currentCallId, hasVideo: _isVideo));
     }
@@ -738,43 +837,50 @@ class CallSessionManager extends ChangeNotifier {
       return;
     }
     _pendingAcceptOnOffer = false;
+    _isAcceptingCall = true;
+
+    final callId = _currentCallId;
+    bool isStillActive() => _status != CallStatus.idle && _currentCallId == callId;
 
     _stopRingingAlert();
     _ringTimeout?.cancel();
     _ringTimeout = null;
     _status = CallStatus.calling;
+    _audioRoute.prepareDefaultRoute(isVideo: _isVideo);
     notifyListeners();
 
-    // Настройка аудиосессии и маршрута: видео -> громкая связь, аудио -> ухо
-    unawaited(_audioRoute.configureSession(isVideo: _isVideo));
-    unawaited(_audioRoute.applyRouting(isVideo: _isVideo));
-
-    await initRenderers();
-
     try {
-      final mediaConstraints = <String, dynamic>{
-        'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-        },
-        'video': _isVideo
-            ? {
-                'mandatory': {},
-                'facingMode': 'user',
-                'optional': [
-                  {'minWidth': 640},
-                  {'minHeight': 480},
-                  {'minFrameRate': 30},
-                ],
-              }
-            : false,
-      };
-
-      _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
-      if (_localRenderer != null) {
-        _localRenderer!.srcObject = _localStream;
+      final hasPerm = await CallKitService.instance.ensurePermissions(hasVideo: _isVideo);
+      if (!isStillActive()) return;
+      if (!hasPerm) {
+        DebugLogService.instance.record('webrtc.accept.permission_denied');
+        rejectIncomingCall();
+        return;
       }
+
+      try {
+        await initRenderers();
+      } catch (_) {}
+      if (!isStillActive()) return;
+
+      await _audioRoute.configureSession(isVideo: _isVideo);
+      if (!isStillActive()) return;
+
+      final stream = await _acquireUserMedia(wantVideo: _isVideo);
+      if (!isStillActive()) {
+        _disposeStreamSafe(stream);
+        return;
+      }
+      _localStream = stream;
+
+      if (_localRenderer != null && _localRenderer!.textureId != null) {
+        try {
+          _localRenderer!.srcObject = _localStream;
+        } catch (_) {}
+      }
+
+      await _audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker);
+      if (!isStillActive()) return;
 
       var effectiveServers = _buildEffectiveIceServers(iceServers);
 
@@ -787,6 +893,7 @@ class CallSessionManager extends ChangeNotifier {
           }
         } catch (_) {}
       }
+      if (!isStillActive()) return;
 
       final configuration = <String, dynamic>{
         'iceServers': effectiveServers,
@@ -794,33 +901,45 @@ class CallSessionManager extends ChangeNotifier {
         'bundlePolicy': 'max-bundle',
       };
 
-      _peerConnection = await createPeerConnection(configuration);
-
-      for (final track in _localStream!.getTracks()) {
-        await _peerConnection!.addTrack(track, _localStream!);
+      final pc = await createPeerConnection(configuration);
+      if (!isStillActive()) {
+        try {
+          await pc.close();
+        } catch (_) {}
+        return;
       }
+      _peerConnection = pc;
 
-      _peerConnection!.onIceCandidate = (candidate) {
+      for (final track in stream.getTracks()) {
+        if (!isStillActive()) return;
+        await pc.addTrack(track, stream);
+      }
+      if (!isStillActive()) return;
+
+      pc.onIceCandidate = (candidate) {
+        if (!isStillActive()) return;
         _queueOutgoingCandidate(candidate);
       };
 
-      _peerConnection!.onTrack = (event) async {
-        MediaStream? stream;
+      pc.onTrack = (event) async {
+        if (!isStillActive()) return;
+        MediaStream? remote;
         if (event.streams.isNotEmpty) {
-          stream = event.streams[0];
+          remote = event.streams[0];
         } else {
           _remoteStream ??= await createLocalMediaStream('remote_stream');
-          stream = _remoteStream;
+          remote = _remoteStream;
         }
+        if (!isStillActive()) return;
 
         if (event.track.kind == 'video') {
-          if (stream != null && !stream.getVideoTracks().any((t) => t.id == event.track.id)) {
+          if (remote != null && !remote.getVideoTracks().any((t) => t.id == event.track.id)) {
             try {
-              await stream.addTrack(event.track);
+              await remote.addTrack(event.track);
             } catch (_) {}
           }
-          _remoteStream = stream;
-          if (_remoteRenderer != null) {
+          _remoteStream = remote;
+          if (_remoteRenderer != null && _remoteRenderer!.textureId != null) {
             try {
               _remoteRenderer!.srcObject = null;
               _remoteRenderer!.srcObject = _remoteStream;
@@ -831,13 +950,15 @@ class CallSessionManager extends ChangeNotifier {
           try {
             await Helper.setVolume(1.0, event.track);
           } catch (_) {}
-          if (stream != null && !stream.getAudioTracks().any((t) => t.id == event.track.id)) {
+          if (remote != null && !remote.getAudioTracks().any((t) => t.id == event.track.id)) {
             try {
-              await stream.addTrack(event.track);
+              await remote.addTrack(event.track);
             } catch (_) {}
           }
-          _remoteStream = stream;
-          if (_remoteRenderer != null && _remoteRenderer!.srcObject == null) {
+          _remoteStream = remote;
+          if (_remoteRenderer != null &&
+              _remoteRenderer!.textureId != null &&
+              _remoteRenderer!.srcObject == null) {
             try {
               _remoteRenderer!.srcObject = _remoteStream;
             } catch (_) {}
@@ -847,7 +968,8 @@ class CallSessionManager extends ChangeNotifier {
         notifyListeners();
       };
 
-      _peerConnection!.onIceConnectionState = (state) {
+      pc.onIceConnectionState = (state) {
+        if (!isStillActive()) return;
         if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
             state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
           _reconnectTimer?.cancel();
@@ -857,7 +979,8 @@ class CallSessionManager extends ChangeNotifier {
         }
       };
 
-      _peerConnection!.onConnectionState = (state) {
+      pc.onConnectionState = (state) {
+        if (!isStillActive()) return;
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           _reconnectTimer?.cancel();
           _reconnectTimer = null;
@@ -882,7 +1005,7 @@ class CallSessionManager extends ChangeNotifier {
           if (_status == CallStatus.connected) {
             _reconnectTimer?.cancel();
             _reconnectTimer = Timer(const Duration(seconds: 25), () {
-              if (_status != CallStatus.idle) {
+              if (isStillActive()) {
                 endCall(notifyPeer: true);
               }
             });
@@ -894,16 +1017,20 @@ class CallSessionManager extends ChangeNotifier {
       };
 
       _remoteSdp = _pendingOfferSdp;
-      await _peerConnection!.setRemoteDescription(
+      await pc.setRemoteDescription(
         RTCSessionDescription(_pendingOfferSdp, 'offer'),
       );
+      if (!isStillActive()) return;
       _remoteDescriptionSet = true;
       await _flushRemoteCandidates();
+      if (!isStillActive()) return;
 
-      final answer = await _peerConnection!.createAnswer();
+      final answer = await pc.createAnswer();
+      if (!isStillActive()) return;
       final optimizedSdp = optimizeOpusSdp(answer.sdp ?? '');
       final optimizedAnswer = RTCSessionDescription(optimizedSdp, answer.type);
-      await _peerConnection!.setLocalDescription(optimizedAnswer);
+      await pc.setLocalDescription(optimizedAnswer);
+      if (!isStillActive()) return;
       _localSdp = optimizedSdp;
 
       onSendSignal?.call(_targetUserId, _chatId, {
@@ -911,11 +1038,17 @@ class CallSessionManager extends ChangeNotifier {
         'sdp': optimizedSdp,
       });
 
-      _status = CallStatus.calling;
+      if (_status != CallStatus.connected) {
+        _status = CallStatus.calling;
+      }
       notifyListeners();
     } catch (e) {
       DebugLogService.instance.record('webrtc.accept.failed', error: e);
-      endCall(notifyPeer: true);
+      if (isStillActive()) {
+        endCall(notifyPeer: true);
+      }
+    } finally {
+      _isAcceptingCall = false;
     }
   }
 
@@ -937,7 +1070,6 @@ class CallSessionManager extends ChangeNotifier {
   void handleRinging() {
     if (_status == CallStatus.calling) {
       _status = CallStatus.ringing;
-      unawaited(_sound.startRingback(isVideo: _isVideo));
       notifyListeners();
     }
   }
@@ -948,7 +1080,7 @@ class CallSessionManager extends ChangeNotifier {
     _ringTimeout?.cancel();
     _ringTimeout = null;
     unawaited(_sound.stopRingback());
-    unawaited(_sound.playEnd());
+    unawaited(_sound.playEnd(isVideo: _isVideo));
     _status = CallStatus.offline;
     notifyListeners();
     Timer(const Duration(seconds: 3), () {
@@ -964,7 +1096,7 @@ class CallSessionManager extends ChangeNotifier {
     _ringTimeout?.cancel();
     _ringTimeout = null;
     unawaited(_sound.stopRingback());
-    unawaited(_sound.playBusy());
+    unawaited(_sound.playBusy(isVideo: _isVideo));
     try {
       HapticFeedback.heavyImpact();
     } catch (_) {}
@@ -982,6 +1114,7 @@ class CallSessionManager extends ChangeNotifier {
       _currentCallId = '';
     }
     _callKitReported = false;
+    _isAcceptingCall = false;
 
     final wasActive = _status == CallStatus.connected ||
         _status == CallStatus.calling ||
@@ -1002,21 +1135,15 @@ class CallSessionManager extends ChangeNotifier {
     unawaited(_sound.stopRingback());
     unawaited(_sound.stopRingtone());
     if (wasActive && reason != 'answered_elsewhere') {
-      unawaited(_sound.playEnd());
+      unawaited(_sound.playEnd(isVideo: _isVideo));
     }
     unawaited(_audioRoute.reset());
 
-    try {
-      _localStream?.getTracks().forEach((t) => t.stop());
-      _localStream?.dispose();
-      _localStream = null;
-    } catch (_) {}
+    _disposeStreamSafe(_localStream);
+    _localStream = null;
 
-    try {
-      _remoteStream?.getTracks().forEach((t) => t.stop());
-      _remoteStream?.dispose();
-      _remoteStream = null;
-    } catch (_) {}
+    _disposeStreamSafe(_remoteStream);
+    _remoteStream = null;
 
     try {
       _peerConnection?.close();
@@ -1024,8 +1151,14 @@ class CallSessionManager extends ChangeNotifier {
     } catch (_) {}
 
     try {
-      _localRenderer?.srcObject = null;
-      _remoteRenderer?.srcObject = null;
+      if (_localRenderer != null && _localRenderer!.textureId != null) {
+        _localRenderer!.srcObject = null;
+      }
+    } catch (_) {}
+    try {
+      if (_remoteRenderer != null && _remoteRenderer!.textureId != null) {
+        _remoteRenderer!.srcObject = null;
+      }
     } catch (_) {}
 
     _remoteDescriptionSet = false;
@@ -1035,7 +1168,7 @@ class CallSessionManager extends ChangeNotifier {
     _localSdp = '';
     _remoteSdp = '';
     _status = CallStatus.idle;
-    _displayMode = CallDisplayMode.fullscreen;
+    _displayMode = CallDisplayMode.hidden;
     _targetUserId = '';
     _chatId = '';
     _chatTitle = '';
@@ -1049,12 +1182,14 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Получение SDP answer от вызываемого абонента
   Future<void> handleAnswer(String sdp) async {
-    if (_peerConnection == null) return;
+    final pc = _peerConnection;
+    if (pc == null) return;
     try {
       _remoteSdp = sdp;
-      await _peerConnection!.setRemoteDescription(
+      await pc.setRemoteDescription(
         RTCSessionDescription(sdp, 'answer'),
       );
+      if (_peerConnection != pc) return;
       _remoteDescriptionSet = true;
       await _flushRemoteCandidates();
       _ringTimeout?.cancel();
@@ -1091,12 +1226,14 @@ class CallSessionManager extends ChangeNotifier {
   }
 
   Future<void> _flushRemoteCandidates() async {
-    if (_peerConnection == null || !_remoteDescriptionSet) return;
+    final pc = _peerConnection;
+    if (pc == null || !_remoteDescriptionSet) return;
     final candidates = List<RTCIceCandidate>.from(_remoteIceCandidateQueue);
     _remoteIceCandidateQueue.clear();
     for (final cand in candidates) {
+      if (_peerConnection != pc) return;
       try {
-        await _peerConnection!.addCandidate(cand);
+        await pc.addCandidate(cand);
       } catch (_) {}
     }
   }
@@ -1160,6 +1297,7 @@ class CallSessionManager extends ChangeNotifier {
       _currentCallId = '';
     }
     _callKitReported = false;
+    _isAcceptingCall = false;
 
     final wasActive = _status == CallStatus.connected ||
         _status == CallStatus.calling ||
@@ -1180,7 +1318,7 @@ class CallSessionManager extends ChangeNotifier {
     unawaited(_sound.stopRingback());
     unawaited(_sound.stopRingtone());
     if (wasActive) {
-      unawaited(_sound.playEnd());
+      unawaited(_sound.playEnd(isVideo: _isVideo));
     }
     unawaited(_audioRoute.reset());
 
@@ -1188,17 +1326,11 @@ class CallSessionManager extends ChangeNotifier {
       onSendSignal?.call(_targetUserId, _chatId, {'type': 'hangup'});
     }
 
-    try {
-      _localStream?.getTracks().forEach((t) => t.stop());
-      _localStream?.dispose();
-      _localStream = null;
-    } catch (_) {}
+    _disposeStreamSafe(_localStream);
+    _localStream = null;
 
-    try {
-      _remoteStream?.getTracks().forEach((t) => t.stop());
-      _remoteStream?.dispose();
-      _remoteStream = null;
-    } catch (_) {}
+    _disposeStreamSafe(_remoteStream);
+    _remoteStream = null;
 
     try {
       _peerConnection?.close();
@@ -1206,10 +1338,14 @@ class CallSessionManager extends ChangeNotifier {
     } catch (_) {}
 
     try {
-      _localRenderer?.srcObject = null;
+      if (_localRenderer != null && _localRenderer!.textureId != null) {
+        _localRenderer!.srcObject = null;
+      }
     } catch (_) {}
     try {
-      _remoteRenderer?.srcObject = null;
+      if (_remoteRenderer != null && _remoteRenderer!.textureId != null) {
+        _remoteRenderer!.srcObject = null;
+      }
     } catch (_) {}
 
     _status = CallStatus.idle;
@@ -1231,27 +1367,59 @@ class CallSessionManager extends ChangeNotifier {
   }
 
   Future<void> initRenderers() async {
-    if (_localRenderer == null) {
-      _localRenderer = RTCVideoRenderer();
-      await _localRenderer!.initialize();
+    if (_localRenderer != null &&
+        _localRenderer!.textureId != null &&
+        _remoteRenderer != null &&
+        _remoteRenderer!.textureId != null) {
+      return;
     }
-    if (_remoteRenderer == null) {
-      _remoteRenderer = RTCVideoRenderer();
-      await _remoteRenderer!.initialize();
+    if (_initializingRenderers != null) {
+      await _initializingRenderers;
+      return;
     }
-    notifyListeners();
+    final completer = Completer<void>();
+    _initializingRenderers = completer.future;
+    try {
+      if (_localRenderer == null || _localRenderer!.textureId == null) {
+        final local = RTCVideoRenderer();
+        await local.initialize();
+        _localRenderer = local;
+      }
+      if (_remoteRenderer == null || _remoteRenderer!.textureId == null) {
+        final remote = RTCVideoRenderer();
+        await remote.initialize();
+        _remoteRenderer = remote;
+      }
+      notifyListeners();
+    } finally {
+      _initializingRenderers = null;
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    }
   }
 
   Future<void> disposeRenderers() async {
-    if (_localRenderer != null) {
-      _localRenderer!.srcObject = null;
-      await _localRenderer!.dispose();
-      _localRenderer = null;
+    final local = _localRenderer;
+    _localRenderer = null;
+    if (local != null) {
+      try {
+        if (local.textureId != null) {
+          local.srcObject = null;
+        }
+        await local.dispose();
+      } catch (_) {}
     }
-    if (_remoteRenderer != null) {
-      _remoteRenderer!.srcObject = null;
-      await _remoteRenderer!.dispose();
-      _remoteRenderer = null;
+
+    final remote = _remoteRenderer;
+    _remoteRenderer = null;
+    if (remote != null) {
+      try {
+        if (remote.textureId != null) {
+          remote.srcObject = null;
+        }
+        await remote.dispose();
+      } catch (_) {}
     }
   }
 }

@@ -1,41 +1,52 @@
 package com.ligament.twofa.authenticator
 
+import android.Manifest
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
+import androidx.core.content.ContextCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.lang.ref.WeakReference
 
 /**
  * Нативный менеджер VoIP-вызовов Ligament для Android.
  * Реализует симметричный интерфейс для канала "ligament/callkit":
  * - Экран входящего вызова поверх экрана блокировки (FullScreenIntent)
- * - Нативное уведомление CallStyle с системным рингтоном
+ * - Нативное уведомление CallStyle с безопасным фолбэком на стандартный баннер
+ * - Предварительный запрос runtime-разрешений (RECORD_AUDIO, CAMERA, BLUETOOTH_CONNECT, POST_NOTIFICATIONS)
+ * - Нативный генератор телефонных сигналов (ToneGenerator) без конфликтов с WebRTC AudioSwitch
  * - Датчик приближения (экран гаснет у уха во время разговора)
- * - Интеграция с фоновой службой CallForegroundService (FGS phoneCall/microphone)
+ * - Интеграция с фоновой службой CallForegroundService
  */
 object LigamentCallManager : MethodChannel.MethodCallHandler {
 
     const val INCOMING_CHANNEL_ID = "ligament_incoming_call_channel"
     const val INCOMING_CALL_NOTIFICATION_ID = 3001
+    private const val CALL_PERMISSIONS_REQUEST_CODE = 4301
 
     private var callKitChannel: MethodChannel? = null
     private var appContext: Context? = null
+    private var activityRef: WeakReference<Activity>? = null
 
     private var currentCallUuid: String? = null
     private var currentCallerName: String = "Ligament 2FA"
@@ -44,16 +55,27 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
 
     private var ringingWakeLock: PowerManager.WakeLock? = null
     private var proximityWakeLock: PowerManager.WakeLock? = null
+    private var toneGenerator: ToneGenerator? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val pendingPermissionCallbacks = mutableListOf<(Boolean) -> Unit>()
+    private var permissionTimeoutRunnable: Runnable? = null
+
+    fun attachActivity(activity: Activity) {
+        activityRef = WeakReference(activity)
+    }
+
+    fun detachActivity(activity: Activity) {
+        if (activityRef?.get() === activity) {
+            activityRef = null
+        }
+    }
 
     fun setup(context: Context, messenger: BinaryMessenger) {
         appContext = context.applicationContext
-        if (callKitChannel == null) {
-            val channel = MethodChannel(messenger, "ligament/callkit")
-            channel.setMethodCallHandler(this)
-            callKitChannel = channel
-        }
+        val channel = MethodChannel(messenger, "ligament/callkit")
+        channel.setMethodCallHandler(this)
+        callKitChannel = channel
         createIncomingChannel()
     }
 
@@ -61,6 +83,26 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
         val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
 
         when (call.method) {
+            "ensurePermissions" -> {
+                val hasVideo = args["hasVideo"] as? Boolean ?: false
+                ensureCallPermissions(hasVideo) { granted ->
+                    try {
+                        result.success(granted)
+                    } catch (_: Exception) {}
+                }
+            }
+
+            "playCallTone" -> {
+                val tone = args["tone"] as? String ?: ""
+                playCallTone(tone)
+                result.success(true)
+            }
+
+            "stopCallTone" -> {
+                stopCallTone()
+                result.success(true)
+            }
+
             "startBackgroundKeepAlive" -> {
                 keepAliveEnabled = true
                 val ctx = appContext
@@ -94,14 +136,15 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
             }
 
             "answerCall" -> {
-                val uuid = args["uuid"] as? String ?: currentCallUuid ?: ""
                 val hasVideo = args["hasVideo"] as? Boolean ?: currentCallHasVideo
                 currentCallHasVideo = hasVideo
                 val ctx = appContext
                 if (ctx != null) {
                     releaseRingingWakeLock()
-                    val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
+                    try {
+                        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                        nm?.cancel(INCOMING_CALL_NOTIFICATION_ID)
+                    } catch (_: Exception) {}
                 }
                 activateAudio(hasVideo)
                 result.success(true)
@@ -139,7 +182,6 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
             }
 
             "setMuted" -> {
-                val muted = args["muted"] as? Boolean ?: false
                 result.success(true)
             }
 
@@ -156,6 +198,127 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
         }
     }
 
+    private fun hasPermission(ctx: Context, perm: String): Boolean {
+        return ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Запрашивает необходимые для звонка разрешения до вызова getUserMedia во FlutterWebRTC,
+     * чтобы избежать гонки устаревшего android.app.Fragment в PermissionUtils (flutter_webrtc)
+     * и получить доступ к BLUETOOTH_CONNECT (Android 12+) и POST_NOTIFICATIONS (Android 13+).
+     */
+    private fun ensureCallPermissions(hasVideo: Boolean, callback: (Boolean) -> Unit) {
+        val ctx = appContext
+        if (ctx == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            callback(true)
+            return
+        }
+
+        val needed = mutableListOf<String>()
+        if (!hasPermission(ctx, Manifest.permission.RECORD_AUDIO)) {
+            needed.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (hasVideo && !hasPermission(ctx, Manifest.permission.CAMERA)) {
+            needed.add(Manifest.permission.CAMERA)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !hasPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT)
+        ) {
+            needed.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)
+        ) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        if (needed.isEmpty()) {
+            callback(true)
+            return
+        }
+
+        val activity = activityRef?.get()
+        if (activity == null || activity.isFinishing || activity.isDestroyed) {
+            callback(hasPermission(ctx, Manifest.permission.RECORD_AUDIO))
+            return
+        }
+
+        val wasEmpty = pendingPermissionCallbacks.isEmpty()
+        pendingPermissionCallbacks.add(callback)
+
+        if (wasEmpty) {
+            val timeout = Runnable {
+                finishPermissionRequests()
+            }
+            permissionTimeoutRunnable = timeout
+            mainHandler.postDelayed(timeout, 15000L)
+
+            try {
+                ActivityCompat.requestPermissions(
+                    activity,
+                    needed.toTypedArray(),
+                    CALL_PERMISSIONS_REQUEST_CODE
+                )
+            } catch (_: Exception) {
+                finishPermissionRequests()
+            }
+        }
+    }
+
+    fun onRequestPermissionsResult(
+        requestCode: Int,
+        @Suppress("UNUSED_PARAMETER") permissions: Array<out String>,
+        @Suppress("UNUSED_PARAMETER") grantResults: IntArray
+    ): Boolean {
+        if (requestCode != CALL_PERMISSIONS_REQUEST_CODE) {
+            return false
+        }
+        finishPermissionRequests()
+        return true
+    }
+
+    private fun finishPermissionRequests() {
+        permissionTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        permissionTimeoutRunnable = null
+
+        val ctx = appContext
+        val hasAudio = ctx != null && hasPermission(ctx, Manifest.permission.RECORD_AUDIO)
+        val callbacks = pendingPermissionCallbacks.toList()
+        pendingPermissionCallbacks.clear()
+        for (cb in callbacks) {
+            try {
+                cb(hasAudio)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Генерация телефонных тонов (КПВ, соединение, занято, отбой) через системный ToneGenerator
+     * в потоке STREAM_VOICE_CALL без перехвата AudioManager у WebRTC.
+     */
+    private fun playCallTone(tone: String) {
+        try {
+            stopCallTone()
+            val tg = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 70)
+            toneGenerator = tg
+            when (tone) {
+                "ringback" -> tg.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+                "connect" -> tg.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                "busy" -> tg.startTone(ToneGenerator.TONE_SUP_BUSY, 1200)
+                "end" -> tg.startTone(ToneGenerator.TONE_PROP_PROMPT, 200)
+                else -> {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun stopCallTone() {
+        try {
+            toneGenerator?.stopTone()
+            toneGenerator?.release()
+        } catch (_: Exception) {}
+        toneGenerator = null
+    }
+
     /**
      * Отображает нативное системное уведомление входящего вызова с высоким приоритетом,
      * запуском Activity поверх экрана блокировки и системным рингтоном.
@@ -167,11 +330,12 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
         currentCallHasVideo = hasVideo
 
         acquireRingingWakeLock(ctx)
+        createIncomingChannel()
 
         val fullScreenIntent = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("action", "ACTION_INCOMING_CALL")
             putExtra("uuid", uuid)
             putExtra("callerName", callerName)
@@ -188,12 +352,13 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
         val acceptPendingIntent = CallActionReceiver.createAcceptPendingIntent(ctx, uuid)
         val declinePendingIntent = CallActionReceiver.createDeclinePendingIntent(ctx, uuid)
 
+        val safeCallerName = callerName.takeIf { it.isNotBlank() } ?: "Ligament 2FA"
         val title = if (hasVideo) "📹 Входящий видеозвонок" else "📞 Входящий звонок"
 
-        val builder = NotificationCompat.Builder(ctx, INCOMING_CHANNEL_ID)
+        val baseBuilder = NotificationCompat.Builder(ctx, INCOMING_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
-            .setContentText(callerName)
+            .setContentText(safeCallerName)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -201,34 +366,57 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
             .setAutoCancel(false)
             .setContentIntent(fullScreenPendingIntent)
             .setFullScreenIntent(fullScreenPendingIntent, true)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val person = Person.Builder()
-                .setName(callerName)
-                .setImportant(true)
-                .build()
-            builder.setStyle(
-                NotificationCompat.CallStyle.forIncomingCall(
-                    person,
-                    declinePendingIntent,
-                    acceptPendingIntent
-                )
-            )
-        } else {
-            builder.addAction(
+            .addAction(
                 android.R.drawable.ic_menu_call,
                 "Ответить",
                 acceptPendingIntent
             )
-            builder.addAction(
+            .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 "Отклонить",
                 declinePendingIntent
             )
-        }
 
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(INCOMING_CALL_NOTIFICATION_ID, builder.build())
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        if (nm != null) {
+            var notified = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    val person = Person.Builder()
+                        .setName(safeCallerName)
+                        .setImportant(true)
+                        .build()
+                    val callStyleNotification = NotificationCompat.Builder(ctx, INCOMING_CHANNEL_ID)
+                        .setSmallIcon(R.mipmap.ic_launcher)
+                        .setContentTitle(title)
+                        .setContentText(safeCallerName)
+                        .setPriority(NotificationCompat.PRIORITY_MAX)
+                        .setCategory(NotificationCompat.CATEGORY_CALL)
+                        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                        .setOngoing(true)
+                        .setAutoCancel(false)
+                        .setContentIntent(fullScreenPendingIntent)
+                        .setFullScreenIntent(fullScreenPendingIntent, true)
+                        .setStyle(
+                            NotificationCompat.CallStyle.forIncomingCall(
+                                person,
+                                declinePendingIntent,
+                                acceptPendingIntent
+                            )
+                        )
+                        .build()
+                    nm.notify(INCOMING_CALL_NOTIFICATION_ID, callStyleNotification)
+                    notified = true
+                } catch (_: Exception) {
+                    notified = false
+                }
+            }
+            if (!notified) {
+                try {
+                    nm.notify(INCOMING_CALL_NOTIFICATION_ID, baseBuilder.build())
+                } catch (_: Exception) {}
+            }
+        }
 
         try {
             ctx.startActivity(fullScreenIntent)
@@ -252,10 +440,13 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
      */
     fun reportCallConnected(uuid: String) {
         val ctx = appContext ?: return
+        stopCallTone()
         releaseRingingWakeLock()
 
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
+        try {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.cancel(INCOMING_CALL_NOTIFICATION_ID)
+        } catch (_: Exception) {}
 
         CallForegroundService.startCall(ctx, uuid, currentCallerName)
 
@@ -268,13 +459,16 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
     /**
      * Завершение звонка: снятие уведомлений, остановка фоновой службы и освобождение WakeLock.
      */
-    fun endCall(uuid: String) {
+    fun endCall(@Suppress("UNUSED_PARAMETER") uuid: String) {
         val ctx = appContext ?: return
+        stopCallTone()
         releaseRingingWakeLock()
         releaseProximityWakeLock()
 
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
+        try {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.cancel(INCOMING_CALL_NOTIFICATION_ID)
+        } catch (_: Exception) {}
 
         CallForegroundService.stopCall(ctx, keepStandby = keepAliveEnabled)
         currentCallUuid = null
@@ -285,6 +479,14 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
     }
 
     fun onCallAccepted(uuid: String) {
+        val ctx = appContext
+        if (ctx != null) {
+            releaseRingingWakeLock()
+            try {
+                val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                nm?.cancel(INCOMING_CALL_NOTIFICATION_ID)
+            } catch (_: Exception) {}
+        }
         mainHandler.post {
             callKitChannel?.invokeMethod("onCallAccepted", mapOf("uuid" to uuid))
         }
@@ -300,9 +502,16 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
     fun handleIntent(intent: Intent?) {
         if (intent == null) return
         val action = intent.getStringExtra("action") ?: intent.action ?: return
-        val uuid = intent.getStringExtra("uuid") ?: currentCallUuid ?: ""
+        val uuid = intent.getStringExtra("uuid")
+            ?: intent.getStringExtra(CallActionReceiver.EXTRA_UUID)
+            ?: currentCallUuid
+            ?: ""
 
         if (action == CallActionReceiver.ACTION_ACCEPT_CALL) {
+            intent.removeExtra("action")
+            if (intent.action == CallActionReceiver.ACTION_ACCEPT_CALL) {
+                intent.action = null
+            }
             onCallAccepted(uuid)
         }
     }
@@ -311,11 +520,12 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
         try {
             if (ringingWakeLock?.isHeld == true) return
             val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            @Suppress("DEPRECATION")
             ringingWakeLock = pm?.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                 "ligament:call_ringing"
             )
-            ringingWakeLock?.acquire(60 * 1000L) // Максимум 60 секунд на звонок
+            ringingWakeLock?.acquire(60 * 1000L)
         } catch (_: Exception) {}
     }
 
@@ -339,7 +549,7 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
                     PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
                     "ligament:proximity_lock"
                 )
-                proximityWakeLock?.acquire()
+                proximityWakeLock?.acquire(4 * 60 * 60 * 1000L)
             }
         } catch (_: Exception) {}
     }
@@ -356,25 +566,27 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
     private fun createIncomingChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ctx = appContext ?: return
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val audioAttrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
+            try {
+                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                val audioAttrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
 
-            val channel = NotificationChannel(
-                INCOMING_CHANNEL_ID,
-                "Входящие звонки",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Срочные входящие аудио- и видеозвонки"
-                setSound(ringtoneUri, audioAttrs)
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 1000, 1000, 1000)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-            }
-            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(channel)
+                val channel = NotificationChannel(
+                    INCOMING_CHANNEL_ID,
+                    "Входящие звонки",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Срочные входящие аудио- и видеозвонки"
+                    setSound(ringtoneUri, audioAttrs)
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 1000, 1000, 1000, 1000)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                }
+                val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                nm?.createNotificationChannel(channel)
+            } catch (_: Exception) {}
         }
     }
 

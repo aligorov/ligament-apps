@@ -5,6 +5,9 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('CallSessionManager State Tests', () {
+    setUp(() {
+      CallSessionManager().endCall();
+    });
     test('initial state is idle and hidden', () {
       final manager = CallSessionManager();
       expect(manager.status, CallStatus.idle);
@@ -158,6 +161,32 @@ void main() {
       manager.rejectIncomingCall();
       expect(manager.status, CallStatus.idle);
       expect(manager.currentCallId, isEmpty);
+    });
+
+    test('acceptIncomingCall is idempotent against duplicate invocations', () {
+      final manager = CallSessionManager();
+      manager.handleIncomingOffer(
+        fromUser: 'u-bob',
+        chatId: 'c-200',
+        offerPayload: {
+          'caller_name': 'Боб',
+          'is_video': true,
+          'sdp': 'v=0\r\no=bob 123 456 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n',
+        },
+      );
+
+      final callId = manager.currentCallId;
+      // Первое принятие
+      manager.acceptIncomingCall();
+      expect(manager.status, CallStatus.calling);
+      expect(manager.isSpeakerphoneOn, isTrue);
+
+      // Повторное принятие (например, дубликат из Notification + Intent) не сбрасывает вызов
+      manager.acceptIncomingCall();
+      expect(manager.currentCallId, callId);
+      expect(manager.status, CallStatus.calling);
+
+      manager.endCall();
     });
 
     test('optimizeOpusSdp injects in-band FEC and DTX into SDP', () {
