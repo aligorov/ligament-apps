@@ -494,17 +494,20 @@ class ChatService extends ChangeNotifier {
 
   WebSocketChannel? _wsChannel;
   bool _isWsConnected = false;
+  bool _isWsConnecting = false;
   Timer? _reconnectTimer;
   ApiClient? _lastClient;
+  final List<String> _pendingOutgoingWs = [];
 
   bool get isWsConnected => _isWsConnected;
 
-  void connectWebSocket(ApiClient client) {
+  void connectWebSocket(ApiClient client, {bool force = false}) {
     CallSessionManager.instance.onSendSignal = (targetUserId, chatId, payload) {
       sendWebRTCSignal(targetUserId, chatId, payload);
     };
 
-    if (_isWsConnected &&
+    if (!force &&
+        (_isWsConnected || _isWsConnecting) &&
         _lastClient?.token == client.token &&
         _lastClient?.baseUrl == client.baseUrl) {
       return;
@@ -513,6 +516,15 @@ class ChatService extends ChangeNotifier {
 
     unawaited(loadPresences(client));
     _connectWsInternal();
+  }
+
+  void ensureConnected([ApiClient? client]) {
+    if (client != null) {
+      _lastClient = client;
+    }
+    if (!_isWsConnected && !_isWsConnecting && _lastClient != null) {
+      _connectWsInternal();
+    }
   }
 
   void _connectWsInternal() {
@@ -534,14 +546,24 @@ class ChatService extends ChangeNotifier {
         if (token.isNotEmpty) 'Authorization': 'Bearer $token',
       };
 
+      _isWsConnecting = true;
       _wsChannel?.sink.close();
-      final ch = IOWebSocketChannel.connect(uri, headers: headers);
+      final ch = IOWebSocketChannel.connect(
+        uri,
+        headers: headers,
+        pingInterval: const Duration(seconds: 15),
+      );
       _wsChannel = ch;
 
       unawaited(ch.ready.then((_) {
+        if (!identical(_wsChannel, ch)) return;
+        _isWsConnecting = false;
         _isWsConnected = true;
+        _flushPendingOutgoingWs();
         notifyListeners();
       }).catchError((e) {
+        if (!identical(_wsChannel, ch)) return;
+        _isWsConnecting = false;
         _isWsConnected = false;
         notifyListeners();
         _scheduleReconnect();
@@ -563,11 +585,15 @@ class ChatService extends ChangeNotifier {
           }
         },
         onError: (e) {
+          if (!identical(_wsChannel, ch)) return;
+          _isWsConnecting = false;
           _isWsConnected = false;
           notifyListeners();
           _scheduleReconnect();
         },
         onDone: () {
+          if (!identical(_wsChannel, ch)) return;
+          _isWsConnecting = false;
           _isWsConnected = false;
           notifyListeners();
           _scheduleReconnect();
@@ -575,6 +601,7 @@ class ChatService extends ChangeNotifier {
         cancelOnError: true,
       );
     } catch (e) {
+      _isWsConnecting = false;
       _isWsConnected = false;
       _scheduleReconnect();
     }
@@ -582,7 +609,7 @@ class ChatService extends ChangeNotifier {
 
   void _scheduleReconnect() {
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 4), () {
+    _reconnectTimer = Timer(const Duration(seconds: 3), () {
       _connectWsInternal();
     });
   }
@@ -592,18 +619,41 @@ class ChatService extends ChangeNotifier {
     _reconnectTimer = null;
     _wsChannel?.sink.close();
     _wsChannel = null;
+    _isWsConnecting = false;
     _isWsConnected = false;
+    _pendingOutgoingWs.clear();
     notifyListeners();
   }
 
-  void sendWs(Map<String, dynamic> data) {
-    if (_wsChannel != null && _isWsConnected) {
+  void _flushPendingOutgoingWs() {
+    if (_wsChannel == null || !_isWsConnected || _pendingOutgoingWs.isEmpty) return;
+    final items = List<String>.from(_pendingOutgoingWs);
+    _pendingOutgoingWs.clear();
+    for (final raw in items) {
       try {
-        _wsChannel!.sink.add(jsonEncode(data));
+        _wsChannel!.sink.add(raw);
       } catch (e) {
-        DebugLogService.instance.record('chat.ws.send.failed', error: e);
+        DebugLogService.instance.record('chat.ws.flush.failed', error: e);
       }
     }
+  }
+
+  void sendWs(Map<String, dynamic> data) {
+    final encoded = jsonEncode(data);
+    if (_wsChannel != null && _isWsConnected) {
+      try {
+        _wsChannel!.sink.add(encoded);
+        return;
+      } catch (e) {
+        DebugLogService.instance.record('chat.ws.send.failed', error: e);
+        _isWsConnected = false;
+      }
+    }
+    if (_pendingOutgoingWs.length >= 64) {
+      _pendingOutgoingWs.removeAt(0);
+    }
+    _pendingOutgoingWs.add(encoded);
+    ensureConnected();
   }
 
   void sendWebRTCSignal(String targetUserId, String chatId, Map<String, dynamic> payload) {

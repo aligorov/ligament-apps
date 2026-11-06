@@ -1143,6 +1143,9 @@ class AuthState extends ChangeNotifier {
         final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
         final isVideo = data['is_video'] == true || data['is_video'] == 'true';
         final chatId = data['chat_id']?.toString() ?? '';
+        if (api != null) {
+          ChatService.instance.ensureConnected(api!);
+        }
         alert.triggerIncomingCallNotification(
           caller: caller,
           isVideo: isVideo,
@@ -1150,15 +1153,10 @@ class AuthState extends ChangeNotifier {
         );
         if (CallKitService.instance.isSupported &&
             CallSessionManager.instance.status == CallStatus.idle) {
-          final callUuid = CallSessionManager.instance.prepareIncomingCall(
+          CallSessionManager.instance.prepareIncomingCall(
             chatId: chatId,
             callerName: caller,
             isVideo: isVideo,
-          );
-          CallKitService.instance.reportIncomingCall(
-            uuid: callUuid,
-            callerName: caller,
-            hasVideo: isVideo,
           );
         }
         notifyListeners();
@@ -1225,6 +1223,9 @@ class AuthState extends ChangeNotifier {
         final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
         final isVideo = data['is_video'] == true || data['is_video'] == 'true';
         final chatId = data['chat_id']?.toString() ?? '';
+        if (api != null) {
+          ChatService.instance.ensureConnected(api!);
+        }
         alert.triggerIncomingCallNotification(
           caller: caller,
           isVideo: isVideo,
@@ -1232,15 +1233,10 @@ class AuthState extends ChangeNotifier {
         );
         if (CallKitService.instance.isSupported &&
             CallSessionManager.instance.status == CallStatus.idle) {
-          final callUuid = CallSessionManager.instance.prepareIncomingCall(
+          CallSessionManager.instance.prepareIncomingCall(
             chatId: chatId,
             callerName: caller,
             isVideo: isVideo,
-          );
-          CallKitService.instance.reportIncomingCall(
-            uuid: callUuid,
-            callerName: caller,
-            hasVideo: isVideo,
           );
         }
         return;
@@ -1454,6 +1450,7 @@ class AuthState extends ChangeNotifier {
 
     // Подключение к WebSocket корпоративного чата и WebRTC-сигналинга
     ChatService.instance.connectWebSocket(client);
+    unawaited(CallKitService.instance.startBackgroundKeepAlive());
 
     // 2. Телеметрия и контроль комплаенса
     telemetry.startReporting(client);
@@ -1467,6 +1464,7 @@ class AuthState extends ChangeNotifier {
       _isPollingInFlight = true;
       pollTicks++;
       try {
+        ChatService.instance.ensureConnected(client);
         await loadPendingChallenges();
         await checkSupportSession();
         if (isEngineer) {
@@ -1821,11 +1819,10 @@ class AuthState extends ChangeNotifier {
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();
+    unawaited(CallKitService.instance.stopBackgroundKeepAlive());
     ChatService.instance.disconnectWebSocket();
     CallSessionManager.instance.endCall(notifyPeer: false);
     support.clearChat();
-    ChatService.instance.disconnectWebSocket();
-    CallSessionManager.instance.endCall(notifyPeer: false);
 
     // Этап 2: активный RDP-туннель не переживает разлогин — режем сразу
     // (грант закроется сервером по разрыву трубы, повторный /rdp/close не

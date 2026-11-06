@@ -27,6 +27,9 @@ class CallKitService {
   /// Callback при переключении микрофона на системном экране
   void Function(bool muted)? onCallMuted;
 
+  /// Callback при активации аудиосессии CallKit (iOS)
+  void Function()? onAudioSessionActivated;
+
   bool get isSupported =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.iOS ||
@@ -47,6 +50,8 @@ class CallKitService {
         onCallMuted?.call(muted);
         break;
       case 'onAudioSessionActivated':
+        onAudioSessionActivated?.call();
+        break;
       case 'onAudioSessionDeactivated':
         break;
     }
@@ -89,6 +94,29 @@ class CallKitService {
     } catch (e) {
       debugPrint('[CallKitService] startOutgoingCall error: $e');
       return false;
+    }
+  }
+
+  /// Уведомить CallKit о принятии вызова из интерфейса приложения и активировать аудиосессию
+  Future<void> answerCall({required String uuid, required bool hasVideo}) async {
+    if (!isSupported) return;
+    try {
+      await _channel.invokeMethod('answerCall', {
+        'uuid': uuid,
+        'hasVideo': hasVideo,
+      });
+    } catch (e) {
+      debugPrint('[CallKitService] answerCall error: $e');
+    }
+  }
+
+  /// Принудительно активировать нативную аудиосессию WebRTC (iOS RTCAudioSession / Android AudioManager)
+  Future<void> activateAudio({required bool hasVideo}) async {
+    if (!isSupported) return;
+    try {
+      await _channel.invokeMethod('activateAudio', {'hasVideo': hasVideo});
+    } catch (e) {
+      debugPrint('[CallKitService] activateAudio error: $e');
     }
   }
 
@@ -140,6 +168,26 @@ class CallKitService {
       await _channel.invokeMethod('requestFullScreenIntentPermission');
     } catch (e) {
       debugPrint('[CallKitService] requestFullScreenIntentPermission error: $e');
+    }
+  }
+
+  /// Запуск фонового удержания сокета для приёма входящих вызовов в свёрнутом состоянии
+  Future<void> startBackgroundKeepAlive() async {
+    if (!isSupported) return;
+    try {
+      await _channel.invokeMethod('startBackgroundKeepAlive');
+    } catch (e) {
+      debugPrint('[CallKitService] startBackgroundKeepAlive error: $e');
+    }
+  }
+
+  /// Остановка фонового удержания сокета при выходе из аккаунта
+  Future<void> stopBackgroundKeepAlive() async {
+    if (!isSupported) return;
+    try {
+      await _channel.invokeMethod('stopBackgroundKeepAlive');
+    } catch (e) {
+      debugPrint('[CallKitService] stopBackgroundKeepAlive error: $e');
     }
   }
 }

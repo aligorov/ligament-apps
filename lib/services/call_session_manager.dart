@@ -55,10 +55,18 @@ class CallSessionManager extends ChangeNotifier {
         toggleMute();
       }
     };
+    CallKitService.instance.onAudioSessionActivated = () {
+      if (_status != CallStatus.idle) {
+        unawaited(_audioRoute.configureSession(isVideo: _isVideo));
+        unawaited(_audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker));
+        _enableAudioTracks();
+      }
+    };
   }
   factory CallSessionManager() => instance;
 
   String _currentCallId = '';
+  bool _callKitReported = false;
   String get currentCallId => _currentCallId;
 
   String _generateCallId() {
@@ -247,6 +255,7 @@ class CallSessionManager extends ChangeNotifier {
   }) {
     if (_status == CallStatus.idle) {
       _currentCallId = _generateCallId();
+      _callKitReported = false;
       _chatId = chatId;
       _chatTitle = callerName;
       _callerName = callerName;
@@ -255,7 +264,31 @@ class CallSessionManager extends ChangeNotifier {
       _status = CallStatus.incoming;
       notifyListeners();
     }
+    if (!_callKitReported && _currentCallId.isNotEmpty) {
+      _callKitReported = true;
+      unawaited(CallKitService.instance.reportIncomingCall(
+        uuid: _currentCallId,
+        callerName: _callerName.isNotEmpty ? _callerName : callerName,
+        hasVideo: _isVideo,
+      ));
+    }
     return _currentCallId;
+  }
+
+  void _enableAudioTracks() {
+    try {
+      if (_localStream != null) {
+        for (final t in _localStream!.getAudioTracks()) {
+          t.enabled = !_isMuted;
+        }
+      }
+      if (_remoteStream != null) {
+        for (final t in _remoteStream!.getAudioTracks()) {
+          t.enabled = true;
+          unawaited(Helper.setVolume(1.0, t).catchError((_) {}));
+        }
+      }
+    } catch (_) {}
   }
 
   List<Map<String, dynamic>> _buildEffectiveIceServers(List<Map<String, dynamic>> passedServers) {
@@ -457,6 +490,10 @@ class CallSessionManager extends ChangeNotifier {
             } catch (_) {}
           }
         } else if (event.track.kind == 'audio') {
+          event.track.enabled = true;
+          try {
+            await Helper.setVolume(1.0, event.track);
+          } catch (_) {}
           if (stream != null && !stream.getAudioTracks().any((t) => t.id == event.track.id)) {
             try {
               await stream.addTrack(event.track);
@@ -468,6 +505,7 @@ class CallSessionManager extends ChangeNotifier {
               _remoteRenderer!.srcObject = _remoteStream;
             } catch (_) {}
           }
+          unawaited(_audioRoute.applyRouting(isVideo: isVideo, forceSpeaker: _audioRoute.isSpeaker));
         }
         notifyListeners();
       };
@@ -490,7 +528,11 @@ class CallSessionManager extends ChangeNotifier {
           _ringTimeout = null;
           unawaited(_sound.stopRingback());
           unawaited(_sound.stopRingtone());
-          unawaited(_sound.playConnect());
+          unawaited(CallKitService.instance.activateAudio(hasVideo: _isVideo));
+          unawaited(_audioRoute.configureSession(isVideo: _isVideo));
+          unawaited(_audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker));
+          _enableAudioTracks();
+          unawaited(_sound.playConnect(isVideo: _isVideo));
           try {
             HapticFeedback.mediumImpact();
           } catch (_) {}
@@ -651,6 +693,7 @@ class CallSessionManager extends ChangeNotifier {
 
     if (_currentCallId.isEmpty) {
       _currentCallId = _generateCallId();
+      _callKitReported = false;
     }
 
     // Если пользователь уже ответил с нативного экрана CallKit до получения offer
@@ -662,11 +705,14 @@ class CallSessionManager extends ChangeNotifier {
 
     _status = CallStatus.incoming;
     _startRingingAlert();
-    unawaited(CallKitService.instance.reportIncomingCall(
-      uuid: _currentCallId,
-      callerName: _callerName,
-      hasVideo: _isVideo,
-    ));
+    if (!_callKitReported) {
+      _callKitReported = true;
+      unawaited(CallKitService.instance.reportIncomingCall(
+        uuid: _currentCallId,
+        callerName: _callerName,
+        hasVideo: _isVideo,
+      ));
+    }
 
     _ringTimeout?.cancel();
     _ringTimeout = Timer(const Duration(seconds: 55), () {
@@ -680,6 +726,11 @@ class CallSessionManager extends ChangeNotifier {
 
   /// Принять входящий вызов
   Future<void> acceptIncomingCall({List<Map<String, dynamic>> iceServers = const []}) async {
+    if (_currentCallId.isNotEmpty) {
+      unawaited(CallKitService.instance.answerCall(uuid: _currentCallId, hasVideo: _isVideo));
+    }
+    unawaited(CallKitService.instance.activateAudio(hasVideo: _isVideo));
+
     if (_pendingOfferSdp.isEmpty) {
       _pendingAcceptOnOffer = true;
       _status = CallStatus.calling;
@@ -776,6 +827,10 @@ class CallSessionManager extends ChangeNotifier {
             } catch (_) {}
           }
         } else if (event.track.kind == 'audio') {
+          event.track.enabled = true;
+          try {
+            await Helper.setVolume(1.0, event.track);
+          } catch (_) {}
           if (stream != null && !stream.getAudioTracks().any((t) => t.id == event.track.id)) {
             try {
               await stream.addTrack(event.track);
@@ -787,6 +842,7 @@ class CallSessionManager extends ChangeNotifier {
               _remoteRenderer!.srcObject = _remoteStream;
             } catch (_) {}
           }
+          unawaited(_audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker));
         }
         notifyListeners();
       };
@@ -811,7 +867,11 @@ class CallSessionManager extends ChangeNotifier {
           }
           _startDurationTimer();
           unawaited(_sound.stopRingtone());
-          unawaited(_sound.playConnect());
+          unawaited(CallKitService.instance.activateAudio(hasVideo: _isVideo));
+          unawaited(_audioRoute.configureSession(isVideo: _isVideo));
+          unawaited(_audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker));
+          _enableAudioTracks();
+          unawaited(_sound.playConnect(isVideo: _isVideo));
           try {
             HapticFeedback.mediumImpact();
           } catch (_) {}
@@ -921,6 +981,7 @@ class CallSessionManager extends ChangeNotifier {
       unawaited(CallKitService.instance.endCall(uuid: _currentCallId));
       _currentCallId = '';
     }
+    _callKitReported = false;
 
     final wasActive = _status == CallStatus.connected ||
         _status == CallStatus.calling ||
@@ -1098,6 +1159,7 @@ class CallSessionManager extends ChangeNotifier {
       unawaited(CallKitService.instance.endCall(uuid: _currentCallId));
       _currentCallId = '';
     }
+    _callKitReported = false;
 
     final wasActive = _status == CallStatus.connected ||
         _status == CallStatus.calling ||

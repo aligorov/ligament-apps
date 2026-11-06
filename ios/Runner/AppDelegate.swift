@@ -18,11 +18,6 @@ import WebRTC
     UNUserNotificationCenter.current().delegate = self
     setupNotificationCategories()
 
-    // Аудиосессией управляет CallKit: WebRTC включает аудио только в didActivate.
-    let rtcAudio = RTCAudioSession.sharedInstance()
-    rtcAudio.useManualAudio = true
-    rtcAudio.isAudioEnabled = false
-
     if let remoteNotif = launchOptions?[.remoteNotification] as? [String: Any] {
       self.pendingAction = [
         "action": UNNotificationDefaultActionIdentifier,
@@ -168,6 +163,16 @@ import WebRTC
     self.pushChannel?.invokeMethod("onNotificationAction", arguments: event)
     completionHandler()
   }
+
+  override func applicationDidEnterBackground(_ application: UIApplication) {
+    super.applicationDidEnterBackground(application)
+    LigamentCallKitManager.shared.onEnterBackground()
+  }
+
+  override func applicationWillEnterForeground(_ application: UIApplication) {
+    super.applicationWillEnterForeground(application)
+    LigamentCallKitManager.shared.onEnterForeground()
+  }
 }
 
 // MARK: - Native Apple CallKit Manager
@@ -179,6 +184,11 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
   private let callController = CXCallController()
   private var callKitChannel: FlutterMethodChannel?
   private var currentCallUUID: UUID?
+  private var currentCallHasVideo: Bool = false
+  private var isCallAnswered: Bool = false
+  private var keepAliveEnabled: Bool = true
+  private var silentPlayer: AVAudioPlayer?
+  private var bgTask: UIBackgroundTaskIdentifier = .invalid
 
   func setup(messenger: FlutterBinaryMessenger) {
     if callKitChannel == nil {
@@ -202,20 +212,149 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
     }
   }
 
+  func onEnterBackground() {
+    beginBgTask()
+    if keepAliveEnabled && currentCallUUID == nil {
+      startSilentKeepAlive()
+    }
+  }
+
+  func onEnterForeground() {
+    stopSilentKeepAlive()
+    endBgTask()
+  }
+
+  private func beginBgTask() {
+    endBgTask()
+    bgTask = UIApplication.shared.beginBackgroundTask(withName: "LigamentVoIPKeepAlive") { [weak self] in
+      self?.endBgTask()
+    }
+  }
+
+  private func endBgTask() {
+    if bgTask != .invalid {
+      UIApplication.shared.endBackgroundTask(bgTask)
+      bgTask = .invalid
+    }
+  }
+
+  private func buildSilentWavData() -> Data {
+    let sampleRate: UInt32 = 8000
+    let numSamples: UInt32 = 8000
+    let dataSize: UInt32 = numSamples * 2
+    let fileSize: UInt32 = 36 + dataSize
+    var data = Data()
+    data.append("RIFF".data(using: .ascii)!)
+    var leFileSize = fileSize.littleEndian
+    data.append(Data(bytes: &leFileSize, count: 4))
+    data.append("WAVEfmt ".data(using: .ascii)!)
+    var fmtChunkSize: UInt32 = 16.littleEndian
+    var audioFormat: UInt16 = 1.littleEndian
+    var numChannels: UInt16 = 1.littleEndian
+    var leSampleRate = sampleRate.littleEndian
+    var byteRate: UInt32 = (sampleRate * 2).littleEndian
+    var blockAlign: UInt16 = 2.littleEndian
+    var bitsPerSample: UInt16 = 16.littleEndian
+    data.append(Data(bytes: &fmtChunkSize, count: 4))
+    data.append(Data(bytes: &audioFormat, count: 2))
+    data.append(Data(bytes: &numChannels, count: 2))
+    data.append(Data(bytes: &leSampleRate, count: 4))
+    data.append(Data(bytes: &byteRate, count: 4))
+    data.append(Data(bytes: &blockAlign, count: 2))
+    data.append(Data(bytes: &bitsPerSample, count: 2))
+    data.append("data".data(using: .ascii)!)
+    var leDataSize = dataSize.littleEndian
+    data.append(Data(bytes: &leDataSize, count: 4))
+    data.append(Data(count: Int(dataSize)))
+    return data
+  }
+
+  private func startSilentKeepAlive() {
+    if silentPlayer?.isPlaying == true { return }
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      try session.setActive(true)
+      let wavData = buildSilentWavData()
+      let player = try AVAudioPlayer(data: wavData)
+      player.volume = 0.0
+      player.numberOfLoops = -1
+      player.prepareToPlay()
+      player.play()
+      silentPlayer = player
+    } catch {
+      NSLog("[CallKit] startSilentKeepAlive error: %@", error.localizedDescription)
+    }
+  }
+
+  private func stopSilentKeepAlive() {
+    if let player = silentPlayer {
+      player.stop()
+      silentPlayer = nil
+    }
+  }
+
+  private func activateWebRTCAudio(hasVideo: Bool) {
+    stopSilentKeepAlive()
+    let rtcAudio = RTCAudioSession.sharedInstance()
+    rtcAudio.lockForConfiguration()
+    do {
+      let mode: AVAudioSession.Mode = hasVideo ? .videoChat : .voiceChat
+      var options: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP]
+      if hasVideo {
+        options.insert(.defaultToSpeaker)
+      }
+      try rtcAudio.setCategory(AVAudioSession.Category.playAndRecord.rawValue, with: options)
+      try rtcAudio.setMode(mode.rawValue)
+      try rtcAudio.setActive(true)
+      if hasVideo {
+        try? rtcAudio.overrideOutputAudioPort(.speaker)
+      }
+    } catch {
+      NSLog("[CallKit] activateWebRTCAudio config error: %@", error.localizedDescription)
+    }
+    rtcAudio.unlockForConfiguration()
+    rtcAudio.useManualAudio = false
+    rtcAudio.isAudioEnabled = true
+  }
+
   private func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     let args = call.arguments as? [String: Any] ?? [:]
 
     switch call.method {
+    case "startBackgroundKeepAlive":
+      keepAliveEnabled = true
+      if UIApplication.shared.applicationState != .active && currentCallUUID == nil {
+        startSilentKeepAlive()
+      }
+      result(true)
+
+    case "stopBackgroundKeepAlive":
+      keepAliveEnabled = false
+      stopSilentKeepAlive()
+      result(true)
+
     case "reportIncomingCall":
       guard let uuidString = args["uuid"] as? String,
             let uuid = UUID(uuidString: uuidString) else {
         result(FlutterError(code: "INVALID_UUID", message: "Valid UUID is required", details: nil))
         return
       }
+      if self.currentCallUUID == uuid {
+        result(true)
+        return
+      }
       let callerName = (args["callerName"] as? String) ?? "Ligament"
       let hasVideo = (args["hasVideo"] as? Bool) ?? false
 
+      stopSilentKeepAlive()
       self.currentCallUUID = uuid
+      self.currentCallHasVideo = hasVideo
+      self.isCallAnswered = false
+
+      let rtcAudio = RTCAudioSession.sharedInstance()
+      rtcAudio.useManualAudio = true
+      rtcAudio.isAudioEnabled = false
 
       let update = CXCallUpdate()
       update.remoteHandle = CXHandle(type: .generic, value: callerName)
@@ -226,14 +365,40 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
       update.supportsUngrouping = false
       update.supportsDTMF = false
 
-      provider?.reportNewIncomingCall(with: uuid, update: update) { error in
+      provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
         if let error = error {
           NSLog("[CallKit] reportNewIncomingCall error: %@", error.localizedDescription)
+          // Если CallKit отклонён системой, сразу включаем аудио для внутриприложенческого вызова
+          self?.activateWebRTCAudio(hasVideo: hasVideo)
           result(FlutterError(code: "REPORT_FAILED", message: error.localizedDescription, details: nil))
         } else {
           result(true)
         }
       }
+
+    case "answerCall":
+      let hasVideo = (args["hasVideo"] as? Bool) ?? self.currentCallHasVideo
+      self.currentCallHasVideo = hasVideo
+      if let uuidString = args["uuid"] as? String,
+         let uuid = UUID(uuidString: uuidString),
+         !isCallAnswered {
+        isCallAnswered = true
+        let action = CXAnswerCallAction(call: uuid)
+        let transaction = CXTransaction(action: action)
+        callController.request(transaction) { [weak self] error in
+          if error != nil {
+            self?.activateWebRTCAudio(hasVideo: hasVideo)
+          }
+        }
+      }
+      activateWebRTCAudio(hasVideo: hasVideo)
+      result(true)
+
+    case "activateAudio":
+      let hasVideo = (args["hasVideo"] as? Bool) ?? self.currentCallHasVideo
+      self.currentCallHasVideo = hasVideo
+      activateWebRTCAudio(hasVideo: hasVideo)
+      result(true)
 
     case "startOutgoingCall":
       guard let uuidString = args["uuid"] as? String,
@@ -244,7 +409,11 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
       let recipientName = (args["recipientName"] as? String) ?? "Ligament"
       let hasVideo = (args["hasVideo"] as? Bool) ?? false
 
+      stopSilentKeepAlive()
       self.currentCallUUID = uuid
+      self.currentCallHasVideo = hasVideo
+      self.isCallAnswered = true
+      activateWebRTCAudio(hasVideo: hasVideo)
 
       let handle = CXHandle(type: .generic, value: recipientName)
       let action = CXStartCallAction(call: uuid, handle: handle)
@@ -267,6 +436,7 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
         return
       }
       provider?.reportOutgoingCall(with: uuid, connectedAt: Date())
+      activateWebRTCAudio(hasVideo: self.currentCallHasVideo)
       result(true)
 
     case "endCall":
@@ -298,12 +468,16 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
   private func endCallWithUUID(_ uuid: UUID, result: @escaping FlutterResult) {
     if currentCallUUID == uuid {
       currentCallUUID = nil
+      isCallAnswered = false
     }
     let action = CXEndCallAction(call: uuid)
     let transaction = CXTransaction(action: action)
     callController.request(transaction) { [weak self] error in
       if error != nil {
         self?.provider?.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+      }
+      if UIApplication.shared.applicationState != .active && self?.keepAliveEnabled == true {
+        self?.startSilentKeepAlive()
       }
       result(true)
     }
@@ -313,11 +487,14 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
 
   func providerDidReset(_ provider: CXProvider) {
     currentCallUUID = nil
+    isCallAnswered = false
     callKitChannel?.invokeMethod("onCallEnded", arguments: ["uuid": ""])
   }
 
   func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
     currentCallUUID = action.callUUID
+    isCallAnswered = true
+    activateWebRTCAudio(hasVideo: currentCallHasVideo)
     action.fulfill()
     callKitChannel?.invokeMethod("onCallAccepted", arguments: [
       "uuid": action.callUUID.uuidString
@@ -327,11 +504,15 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
     if currentCallUUID == action.callUUID {
       currentCallUUID = nil
+      isCallAnswered = false
     }
     action.fulfill()
     callKitChannel?.invokeMethod("onCallEnded", arguments: [
       "uuid": action.callUUID.uuidString
     ])
+    if UIApplication.shared.applicationState != .active && keepAliveEnabled {
+      startSilentKeepAlive()
+    }
   }
 
   func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
@@ -343,6 +524,8 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
   }
 
   func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+    isCallAnswered = true
+    activateWebRTCAudio(hasVideo: currentCallHasVideo)
     action.fulfill()
     provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
   }
@@ -351,15 +534,21 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
     NSLog("[CallKit] Audio session activated by CallKit")
     let rtcAudio = RTCAudioSession.sharedInstance()
     rtcAudio.audioSessionDidActivate(audioSession)
+    rtcAudio.useManualAudio = false
     rtcAudio.isAudioEnabled = true
+    if currentCallHasVideo {
+      try? audioSession.overrideOutputAudioPort(.speaker)
+    }
     callKitChannel?.invokeMethod("onAudioSessionActivated", arguments: nil)
   }
 
   func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     NSLog("[CallKit] Audio session deactivated by CallKit")
     let rtcAudio = RTCAudioSession.sharedInstance()
-    rtcAudio.isAudioEnabled = false
     rtcAudio.audioSessionDidDeactivate(audioSession)
     callKitChannel?.invokeMethod("onAudioSessionDeactivated", arguments: nil)
+    if UIApplication.shared.applicationState != .active && keepAliveEnabled && currentCallUUID == nil {
+      startSilentKeepAlive()
+    }
   }
 }

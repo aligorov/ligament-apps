@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 
@@ -13,6 +14,8 @@ class CallSoundPlayer {
 
   AudioPlayer? _ringPlayer;
   AudioPlayer? _fxPlayer;
+
+  bool get _isIOS => !kIsWeb && Platform.isIOS;
 
   AudioPlayer get _getRingPlayer => _ringPlayer ??= AudioPlayer();
   AudioPlayer get _getFxPlayer => _fxPlayer ??= AudioPlayer();
@@ -59,9 +62,12 @@ class CallSoundPlayer {
   }
 
   /// Запуск рингтона входящего вызова
-  Future<void> startRingtone() async {
+  Future<void> startRingtone({bool isVideo = false}) async {
+    // На iOS системный рингтон играет сам CallKit — не перебиваем его AVAudioSession
+    if (_isIOS) return;
     try {
       final player = _getRingPlayer;
+      await player.setAudioContext(_buildVoipContext(isVideo: isVideo));
       await player.setReleaseMode(ReleaseMode.loop);
       await player.play(AssetSource('sounds/ringtone.wav'));
     } catch (e) {
@@ -77,27 +83,35 @@ class CallSoundPlayer {
   }
 
   /// Звук снятия трубки / установления P2P-соединения (160 мс Connect Chime)
-  Future<void> playConnect() async {
+  Future<void> playConnect({bool isVideo = false}) async {
+    // На iOS не запускаем отдельный AVAudioPlayer в момент старта WebRTC VoiceProcessingIO,
+    // чтобы не сбить категорию playAndRecord и аппаратный маршрут динамика/микрофона.
+    if (_isIOS) return;
     try {
       final player = _getFxPlayer;
+      await player.setAudioContext(_buildVoipContext(isVideo: isVideo));
       await player.setReleaseMode(ReleaseMode.stop);
       await player.play(AssetSource('sounds/call_connect.wav'));
     } catch (_) {}
   }
 
   /// Звук "Занято" / "Вызов отклонён" (3 коротких гудка)
-  Future<void> playBusy() async {
+  Future<void> playBusy({bool isVideo = false}) async {
+    if (_isIOS) return;
     try {
       final player = _getFxPlayer;
+      await player.setAudioContext(_buildVoipContext(isVideo: isVideo));
       await player.setReleaseMode(ReleaseMode.stop);
       await player.play(AssetSource('sounds/call_busy.wav'));
     } catch (_) {}
   }
 
   /// Звук отбоя / завершения разговора (нисходящий тон)
-  Future<void> playEnd() async {
+  Future<void> playEnd({bool isVideo = false}) async {
+    if (_isIOS) return;
     try {
       final player = _getFxPlayer;
+      await player.setAudioContext(_buildVoipContext(isVideo: isVideo));
       await player.setReleaseMode(ReleaseMode.stop);
       await player.play(AssetSource('sounds/call_end.wav'));
     } catch (_) {}

@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
@@ -39,6 +40,7 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
     private var currentCallUuid: String? = null
     private var currentCallerName: String = "Ligament 2FA"
     private var currentCallHasVideo: Boolean = false
+    private var keepAliveEnabled: Boolean = true
 
     private var ringingWakeLock: PowerManager.WakeLock? = null
     private var proximityWakeLock: PowerManager.WakeLock? = null
@@ -59,6 +61,24 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
         val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
 
         when (call.method) {
+            "startBackgroundKeepAlive" -> {
+                keepAliveEnabled = true
+                val ctx = appContext
+                if (ctx != null) {
+                    CallForegroundService.startStandby(ctx)
+                }
+                result.success(true)
+            }
+
+            "stopBackgroundKeepAlive" -> {
+                keepAliveEnabled = false
+                val ctx = appContext
+                if (ctx != null && currentCallUuid == null) {
+                    CallForegroundService.stopService(ctx)
+                }
+                result.success(true)
+            }
+
             "reportIncomingCall" -> {
                 val uuid = args["uuid"] as? String ?: ""
                 val callerName = (args["callerName"] as? String)?.takeIf { it.isNotBlank() } ?: "Ligament 2FA"
@@ -73,6 +93,27 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
                 result.success(true)
             }
 
+            "answerCall" -> {
+                val uuid = args["uuid"] as? String ?: currentCallUuid ?: ""
+                val hasVideo = args["hasVideo"] as? Boolean ?: currentCallHasVideo
+                currentCallHasVideo = hasVideo
+                val ctx = appContext
+                if (ctx != null) {
+                    releaseRingingWakeLock()
+                    val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
+                }
+                activateAudio(hasVideo)
+                result.success(true)
+            }
+
+            "activateAudio" -> {
+                val hasVideo = args["hasVideo"] as? Boolean ?: currentCallHasVideo
+                currentCallHasVideo = hasVideo
+                activateAudio(hasVideo)
+                result.success(true)
+            }
+
             "startOutgoingCall" -> {
                 val uuid = args["uuid"] as? String ?: ""
                 val recipientName = (args["recipientName"] as? String)?.takeIf { it.isNotBlank() } ?: "Ligament 2FA"
@@ -81,6 +122,7 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
                 currentCallUuid = uuid
                 currentCallerName = recipientName
                 currentCallHasVideo = hasVideo
+                activateAudio(hasVideo)
                 result.success(true)
             }
 
@@ -187,6 +229,21 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
 
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(INCOMING_CALL_NOTIFICATION_ID, builder.build())
+
+        try {
+            ctx.startActivity(fullScreenIntent)
+        } catch (_: Exception) {}
+    }
+
+    private fun activateAudio(hasVideo: Boolean) {
+        val ctx = appContext ?: return
+        try {
+            val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            am.isMicrophoneMute = false
+            @Suppress("DEPRECATION")
+            am.isSpeakerphoneOn = hasVideo
+        } catch (_: Exception) {}
     }
 
     /**
@@ -219,8 +276,12 @@ object LigamentCallManager : MethodChannel.MethodCallHandler {
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
 
-        CallForegroundService.stopCall(ctx)
+        CallForegroundService.stopCall(ctx, keepStandby = keepAliveEnabled)
         currentCallUuid = null
+        try {
+            val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            am?.mode = AudioManager.MODE_NORMAL
+        } catch (_: Exception) {}
     }
 
     fun onCallAccepted(uuid: String) {

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "141441313540",
+    "project_id": "ligament2fa",
+    "storage_bucket": "ligament2fa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:141441313540:android:b2105edcbd8c67f7bc7e51",
+        "android_client_info": {
+          "package_name": "com.ligament.twofa.authenticator"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCSlfPi5JHI092HPodDPcSJpO_TB93UgoU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
