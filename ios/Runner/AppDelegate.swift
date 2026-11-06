@@ -3,6 +3,7 @@ import UIKit
 import UserNotifications
 import CallKit
 import AVFoundation
+import WebRTC
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -16,6 +17,11 @@ import AVFoundation
   ) -> Bool {
     UNUserNotificationCenter.current().delegate = self
     setupNotificationCategories()
+
+    // Аудиосессией управляет CallKit: WebRTC включает аудио только в didActivate.
+    let rtcAudio = RTCAudioSession.sharedInstance()
+    rtcAudio.useManualAudio = true
+    rtcAudio.isAudioEnabled = false
 
     if let remoteNotif = launchOptions?[.remoteNotification] as? [String: Any] {
       self.pendingAction = [
@@ -312,7 +318,6 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
 
   func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
     currentCallUUID = action.callUUID
-    configureAudioSession()
     action.fulfill()
     callKitChannel?.invokeMethod("onCallAccepted", arguments: [
       "uuid": action.callUUID.uuidString
@@ -338,32 +343,23 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
   }
 
   func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-    configureAudioSession()
     action.fulfill()
     provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
   }
 
   func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     NSLog("[CallKit] Audio session activated by CallKit")
+    let rtcAudio = RTCAudioSession.sharedInstance()
+    rtcAudio.audioSessionDidActivate(audioSession)
+    rtcAudio.isAudioEnabled = true
     callKitChannel?.invokeMethod("onAudioSessionActivated", arguments: nil)
   }
 
   func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     NSLog("[CallKit] Audio session deactivated by CallKit")
+    let rtcAudio = RTCAudioSession.sharedInstance()
+    rtcAudio.isAudioEnabled = false
+    rtcAudio.audioSessionDidDeactivate(audioSession)
     callKitChannel?.invokeMethod("onAudioSessionDeactivated", arguments: nil)
-  }
-
-  private func configureAudioSession() {
-    do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setCategory(
-        .playAndRecord,
-        mode: .voiceChat,
-        options: [.allowBluetooth, .allowBluetoothA2DP, .duckOthers]
-      )
-      try session.setActive(true)
-    } catch {
-      NSLog("[CallKit] Error configuring AVAudioSession: %@", error.localizedDescription)
-    }
   }
 }
