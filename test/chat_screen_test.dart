@@ -71,6 +71,50 @@ void main() {
       expect(topic.unreadCount, 2);
     });
 
+    test('TopicItem with isPinned, isClosed and copyWith', () {
+      final json = {
+        'id': 42,
+        'chat_id': 'chat-123',
+        'title': 'Серверы',
+        'icon_emoji': '🖥️',
+        'is_general': false,
+        'is_closed': true,
+        'is_pinned': true,
+        'unread_count': 2,
+      };
+
+      final topic = TopicItem.fromJson(json);
+      expect(topic.isClosed, isTrue);
+      expect(topic.isPinned, isTrue);
+
+      final updated = topic.copyWith(title: 'Архив серверов', isClosed: false);
+      expect(updated.title, 'Архив серверов');
+      expect(updated.isClosed, isFalse);
+      expect(updated.isPinned, isTrue);
+    });
+
+    test('ChatItem with myRole deserialization and default', () {
+      final jsonAdmin = {
+        'id': 'chat-123',
+        'kind': 'forum',
+        'title': 'ИТ-Форум',
+        'is_forum': true,
+        'my_role': 'admin',
+        'updated_at': '2026-11-03T10:00:00Z',
+      };
+      final chatAdmin = ChatItem.fromJson(jsonAdmin);
+      expect(chatAdmin.myRole, 'admin');
+
+      final jsonDefault = {
+        'id': 'chat-124',
+        'kind': 'group',
+        'title': 'Команда',
+        'updated_at': '2026-11-03T10:00:00Z',
+      };
+      final chatDefault = ChatItem.fromJson(jsonDefault);
+      expect(chatDefault.myRole, '');
+    });
+
     test('ChatMessage deserialization with secret ttl', () {
       final json = {
         'id': 1001,
