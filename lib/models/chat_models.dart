@@ -13,6 +13,7 @@ class ChatItem {
   final int unreadCount;
   final DateTime updatedAt;
   final String peerUserId;
+  final String myRole;
 
   const ChatItem({
     required this.id,
@@ -25,6 +26,7 @@ class ChatItem {
     this.unreadCount = 0,
     required this.updatedAt,
     this.peerUserId = '',
+    this.myRole = '',
   });
 
   factory ChatItem.fromJson(Map<String, dynamic> json) {
@@ -41,6 +43,7 @@ class ChatItem {
           ? DateTime.tryParse(json['updated_at'] as String) ?? DateTime.now()
           : DateTime.now(),
       peerUserId: json['peer_user_id'] as String? ?? '',
+      myRole: json['my_role'] as String? ?? '',
     );
   }
 }
@@ -77,6 +80,28 @@ class TopicItem {
       isClosed: json['is_closed'] as bool? ?? false,
       isPinned: json['is_pinned'] as bool? ?? false,
       unreadCount: (json['unread_count'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  TopicItem copyWith({
+    int? id,
+    String? chatId,
+    String? title,
+    String? iconEmoji,
+    bool? isGeneral,
+    bool? isClosed,
+    bool? isPinned,
+    int? unreadCount,
+  }) {
+    return TopicItem(
+      id: id ?? this.id,
+      chatId: chatId ?? this.chatId,
+      title: title ?? this.title,
+      iconEmoji: iconEmoji ?? this.iconEmoji,
+      isGeneral: isGeneral ?? this.isGeneral,
+      isClosed: isClosed ?? this.isClosed,
+      isPinned: isPinned ?? this.isPinned,
+      unreadCount: unreadCount ?? this.unreadCount,
     );
   }
 }

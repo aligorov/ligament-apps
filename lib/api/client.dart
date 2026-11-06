@@ -744,6 +744,44 @@ class ApiClient {
     throw ApiException(res.statusCode, 'topic_create_failed');
   }
 
+  /// Ligament Chat: обновление темы форума (название, иконка, закрепление, закрытие)
+  Future<Map<String, dynamic>> updateChatTopic(
+    String chatId,
+    int topicId, {
+    String? title,
+    String? iconEmoji,
+    bool? isPinned,
+    bool? isClosed,
+  }) async {
+    final payload = <String, dynamic>{};
+    if (title != null) payload['title'] = title;
+    if (iconEmoji != null) payload['icon_emoji'] = iconEmoji;
+    if (isPinned != null) payload['is_pinned'] = isPinned;
+    if (isClosed != null) payload['is_closed'] = isClosed;
+
+    final res = await _patch(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/topics/$topicId'),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'topic_update_failed');
+  }
+
+  /// Ligament Chat: удаление темы форума
+  Future<void> deleteChatTopic(String chatId, int topicId) async {
+    final res = await _delete(
+      _cleanUrl('/apps/chat/api/v1/chats/$chatId/topics/$topicId'),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200 || res.statusCode == 204) {
+      return;
+    }
+    throw ApiException(res.statusCode, 'topic_delete_failed');
+  }
+
   /// Ligament Chat: участники чата
   Future<List<Map<String, dynamic>>> getChatMembers(String chatId) async {
     final res = await _get(

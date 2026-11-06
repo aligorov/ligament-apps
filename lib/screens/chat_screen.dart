@@ -281,6 +281,52 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  bool _canManageTopics(AuthState auth) {
+    if (_selectedChat == null) return false;
+    final myRole = _selectedChat!.myRole.toLowerCase();
+    if (myRole == 'admin' || myRole == 'moderator') return true;
+    if (auth.isAdmin) return true;
+    final userRole = (auth.currentUser?['role']?.toString() ?? '').toLowerCase();
+    return userRole == 'admin' || userRole == 'superadmin' || userRole == 'chat_admin' || userRole == 'moderator' || userRole == 'operator';
+  }
+
+  void _showEditTopicDialog(BuildContext context, TopicItem topic) {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || _selectedChat == null) return;
+    final isManager = _canManageTopics(auth);
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _EditTopicSheet(
+        api: auth.api!,
+        chatId: _selectedChat!.id,
+        topic: topic,
+        isManager: isManager,
+        onTopicUpdated: (updated) {
+          Navigator.of(ctx).pop();
+          if (_selectedTopic?.id == updated.id) {
+            setState(() => _selectedTopic = updated);
+          }
+        },
+        onTopicDeleted: () {
+          Navigator.of(ctx).pop();
+          if (_selectedTopic?.id == topic.id) {
+            final remaining = _chatService.getTopics(_selectedChat!.id);
+            if (remaining.isNotEmpty) {
+              _selectTopic(remaining.first);
+            } else {
+              setState(() => _selectedTopic = null);
+            }
+          }
+        },
+      ),
+    );
+  }
+
   void _showMembersDialog(BuildContext context) {
     final auth = context.read<AuthState>();
     if (auth.api == null || _selectedChat == null) return;
@@ -945,6 +991,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         itemBuilder: (context, index) {
           final topic = topics[index];
           final isSelected = _selectedTopic?.id == topic.id;
+          final auth = context.read<AuthState>();
+          final canManage = _canManageTopics(auth);
+
+          String prefix = '';
+          if (topic.isPinned) prefix += '📌 ';
+          if (topic.isClosed) prefix += '🔒 ';
 
           return ListTile(
             dense: true,
@@ -952,19 +1004,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             selectedTileColor: const Color(0xFF0284C7).withValues(alpha: 0.25),
             leading: Text(topic.iconEmoji, style: const TextStyle(fontSize: 16)),
             title: Text(
-              topic.title,
+              '$prefix${topic.title}',
               style: TextStyle(
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                 fontSize: 13,
                 color: isSelected ? const Color(0xFF38BDF8) : null,
               ),
             ),
-            trailing: topic.unreadCount > 0
-                ? Badge(
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (topic.unreadCount > 0)
+                  Badge(
                     label: Text('${topic.unreadCount}'),
                     backgroundColor: const Color(0xFF0284C7),
-                  )
-                : null,
+                  ),
+                if (canManage)
+                  IconButton(
+                    icon: const Icon(Icons.more_vert, size: 16),
+                    tooltip: 'Управление темой',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () => _showEditTopicDialog(context, topic),
+                  ),
+              ],
+            ),
             onTap: () => _selectTopic(topic),
           );
         },
@@ -1006,9 +1071,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   itemCount: topics.length,
                   itemBuilder: (context, index) {
                     final t = topics[index];
+                    final auth = context.read<AuthState>();
+                    final canManage = _canManageTopics(auth);
+                    String prefix = '';
+                    if (t.isPinned) prefix += '📌 ';
+                    if (t.isClosed) prefix += '🔒 ';
                     return ListTile(
                       leading: Text(t.iconEmoji),
-                      title: Text(t.title),
+                      title: Text('$prefix${t.title}'),
+                      trailing: canManage
+                          ? IconButton(
+                              icon: const Icon(Icons.settings_outlined, size: 18),
+                              tooltip: 'Управление темой',
+                              onPressed: () {
+                                Navigator.pop(context);
+                                _showEditTopicDialog(context, t);
+                              },
+                            )
+                          : null,
                       onTap: () {
                         Navigator.pop(context);
                         _selectTopic(t);
@@ -1069,28 +1149,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 }
                 final topic = topics[index];
                 final isSelected = _selectedTopic?.id == topic.id;
-                return ChoiceChip(
-                  avatar: Text(topic.iconEmoji, style: const TextStyle(fontSize: 13)),
-                  label: Text(
-                    topic.title + (topic.unreadCount > 0 ? ' (${topic.unreadCount})' : ''),
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                      color: isSelected ? Colors.white : const Color(0xFFCBD5E1),
+                final auth = context.read<AuthState>();
+                final canManage = _canManageTopics(auth);
+                String prefix = '';
+                if (topic.isPinned) prefix += '📌 ';
+                if (topic.isClosed) prefix += '🔒 ';
+                return GestureDetector(
+                  onSecondaryTap: canManage ? () => _showEditTopicDialog(context, topic) : null,
+                  onLongPress: canManage ? () => _showEditTopicDialog(context, topic) : null,
+                  child: ChoiceChip(
+                    avatar: Text(topic.iconEmoji, style: const TextStyle(fontSize: 13)),
+                    label: Text(
+                      '$prefix${topic.title}${topic.unreadCount > 0 ? ' (${topic.unreadCount})' : ''}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        color: isSelected ? Colors.white : const Color(0xFFCBD5E1),
+                      ),
                     ),
+                    selected: isSelected,
+                    selectedColor: const Color(0xFF0284C7),
+                    backgroundColor: const Color(0xFF1E293B).withValues(alpha: 0.7),
+                    side: BorderSide(
+                      color: isSelected
+                          ? const Color(0xFF38BDF8)
+                          : Colors.white.withValues(alpha: 0.12),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    visualDensity: VisualDensity.compact,
+                    showCheckmark: false,
+                    onSelected: (_) => _selectTopic(topic),
                   ),
-                  selected: isSelected,
-                  selectedColor: const Color(0xFF0284C7),
-                  backgroundColor: const Color(0xFF1E293B).withValues(alpha: 0.7),
-                  side: BorderSide(
-                    color: isSelected
-                        ? const Color(0xFF38BDF8)
-                        : Colors.white.withValues(alpha: 0.12),
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  visualDensity: VisualDensity.compact,
-                  showCheckmark: false,
-                  onSelected: (_) => _selectTopic(topic),
                 );
               },
             ),
@@ -1568,6 +1657,45 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildComposer(ThemeData theme) {
+    final auth = context.read<AuthState>();
+    final isTopicClosed = _selectedTopic?.isClosed == true;
+    final isManager = _canManageTopics(auth);
+
+    if (isTopicClosed && !isManager) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: const Color(0xEB0B0F19).withValues(alpha: 0.85),
+          border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
+        ),
+        child: SafeArea(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.errorContainer.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: theme.colorScheme.error.withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.lock_outline_rounded, size: 18, color: theme.colorScheme.error),
+                const SizedBox(width: 8),
+                Text(
+                  'Тема закрыта для новых сообщений',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
@@ -1578,6 +1706,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (isTopicClosed)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: const Border(left: BorderSide(color: Colors.amber, width: 3)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.lock_outline_rounded, size: 16, color: Colors.amber),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Тема закрыта (вы можете писать как администратор/модератор)',
+                        style: TextStyle(fontSize: 12, color: Colors.amber, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (_editingMessage != null)
               Container(
                 margin: const EdgeInsets.only(bottom: 8),
@@ -1815,23 +1965,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     ),
                     if (_selectedChat!.isForum) ...[
                       const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF0284C7).withValues(alpha: 0.25),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.5)),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(_selectedTopic?.iconEmoji ?? '💬', style: const TextStyle(fontSize: 11)),
-                            const SizedBox(width: 4),
-                            Text(
-                              _selectedTopic?.title ?? 'Общий',
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF38BDF8)),
-                            ),
-                          ],
+                      InkWell(
+                        onTap: (_canManageTopics(context.read<AuthState>()) && _selectedTopic != null)
+                            ? () => _showEditTopicDialog(context, _selectedTopic!)
+                            : null,
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0284C7).withValues(alpha: 0.25),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.5)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_selectedTopic?.isPinned == true) ...[
+                                const Text('📌', style: TextStyle(fontSize: 10)),
+                                const SizedBox(width: 3),
+                              ],
+                              if (_selectedTopic?.isClosed == true) ...[
+                                const Text('🔒', style: TextStyle(fontSize: 10)),
+                                const SizedBox(width: 3),
+                              ],
+                              Text(_selectedTopic?.iconEmoji ?? '💬', style: const TextStyle(fontSize: 11)),
+                              const SizedBox(width: 4),
+                              Text(
+                                _selectedTopic?.title ?? 'Общий',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF38BDF8)),
+                              ),
+                              if (_canManageTopics(context.read<AuthState>()) && _selectedTopic != null) ...[
+                                const SizedBox(width: 4),
+                                const Icon(Icons.settings_outlined, size: 12, color: Color(0xFF38BDF8)),
+                              ],
+                            ],
+                          ),
                         ),
                       ),
                     ],
@@ -2889,6 +3057,232 @@ class _CreateTopicSheetState extends State<_CreateTopicSheet> {
                   : const Text('Создать тему'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EditTopicSheet extends StatefulWidget {
+  final ApiClient api;
+  final String chatId;
+  final TopicItem topic;
+  final bool isManager;
+  final ValueChanged<TopicItem> onTopicUpdated;
+  final VoidCallback onTopicDeleted;
+
+  const _EditTopicSheet({
+    required this.api,
+    required this.chatId,
+    required this.topic,
+    required this.isManager,
+    required this.onTopicUpdated,
+    required this.onTopicDeleted,
+  });
+
+  @override
+  State<_EditTopicSheet> createState() => _EditTopicSheetState();
+}
+
+class _EditTopicSheetState extends State<_EditTopicSheet> {
+  late final TextEditingController _titleController;
+  late String _selectedEmoji;
+  late bool _isPinned;
+  late bool _isClosed;
+  bool _isLoading = false;
+
+  final _emojis = const ['💬', '🚀', '💡', '📢', '⚙️', '📁', '🛠️', '📌', '🔒', '❓', '🎯'];
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.topic.title);
+    _selectedEmoji = widget.topic.iconEmoji;
+    _isPinned = widget.topic.isPinned;
+    _isClosed = widget.topic.isClosed;
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final title = _titleController.text.trim();
+    if (title.isEmpty) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final updated = await ChatService.instance.updateTopic(
+        widget.api,
+        widget.chatId,
+        widget.topic.id,
+        title: title,
+        iconEmoji: _selectedEmoji,
+        isPinned: widget.isManager ? _isPinned : null,
+        isClosed: widget.isManager ? _isClosed : null,
+      );
+      widget.onTopicUpdated(updated);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка обновления темы: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _confirmDelete() async {
+    if (widget.topic.isGeneral) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить тему?'),
+        content: Text('Тема «${widget.topic.title}» и все сообщения в ней будут удалены.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      await ChatService.instance.deleteTopic(
+        widget.api,
+        widget.chatId,
+        widget.topic.id,
+      );
+      widget.onTopicDeleted();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка удаления темы: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SingleChildScrollView(
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '⚙️ Управление темой',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _titleController,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'Название темы *',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onSubmitted: (_) => _submit(),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Иконка темы:',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: _emojis.map((emoji) {
+                  final isSelected = _selectedEmoji == emoji;
+                  return ChoiceChip(
+                    label: Text(emoji, style: const TextStyle(fontSize: 18)),
+                    selected: isSelected,
+                    onSelected: (selected) {
+                      if (selected) setState(() => _selectedEmoji = emoji);
+                    },
+                  );
+                }).toList(),
+              ),
+              if (widget.isManager) ...[
+                const SizedBox(height: 16),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Закрепить тему вверху', style: TextStyle(fontSize: 14)),
+                  secondary: const Text('📌', style: TextStyle(fontSize: 18)),
+                  value: _isPinned,
+                  onChanged: (val) => setState(() => _isPinned = val),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Закрыть тему (только чтение)', style: TextStyle(fontSize: 14)),
+                  secondary: const Text('🔒', style: TextStyle(fontSize: 18)),
+                  value: _isClosed,
+                  onChanged: (val) => setState(() => _isClosed = val),
+                ),
+              ],
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  if (widget.isManager && !widget.topic.isGeneral)
+                    TextButton.icon(
+                      style: TextButton.styleFrom(
+                        foregroundColor: theme.colorScheme.error,
+                      ),
+                      onPressed: _isLoading ? null : _confirmDelete,
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('Удалить'),
+                    ),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: _isLoading ? null : _submit,
+                    child: _isLoading
+                        ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Text('Сохранить'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

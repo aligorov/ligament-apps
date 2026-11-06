@@ -136,11 +136,22 @@ class ChatService extends ChangeNotifier {
     }
   }
 
+  void _sortTopics(String chatId) {
+    final list = _topics[chatId];
+    if (list == null || list.isEmpty) return;
+    list.sort((a, b) {
+      if (a.isPinned != b.isPinned) return b.isPinned ? 1 : -1;
+      if (a.isGeneral != b.isGeneral) return b.isGeneral ? 1 : -1;
+      return a.id.compareTo(b.id);
+    });
+  }
+
   Future<List<TopicItem>> loadTopics(ApiClient client, String chatId) async {
     try {
       final list = await client.getChatTopics(chatId);
       final topics = list.map(TopicItem.fromJson).toList();
       _topics[chatId] = topics;
+      _sortTopics(chatId);
       notifyListeners();
       return topics;
     } catch (e) {
@@ -410,10 +421,64 @@ class ChatService extends ChangeNotifier {
       final newTopic = TopicItem.fromJson(res);
       final current = _topics[chatId] ?? const [];
       _topics[chatId] = [...current, newTopic];
+      _sortTopics(chatId);
       notifyListeners();
       return newTopic;
     } catch (e) {
       DebugLogService.instance.record('chat.topic_create.failed', error: e);
+      rethrow;
+    }
+  }
+
+  /// Обновление параметров темы форума
+  Future<TopicItem> updateTopic(
+    ApiClient client,
+    String chatId,
+    int topicId, {
+    String? title,
+    String? iconEmoji,
+    bool? isPinned,
+    bool? isClosed,
+  }) async {
+    try {
+      final res = await client.updateChatTopic(
+        chatId,
+        topicId,
+        title: title,
+        iconEmoji: iconEmoji,
+        isPinned: isPinned,
+        isClosed: isClosed,
+      );
+      final updated = TopicItem.fromJson(res);
+      final current = _topics[chatId];
+      if (current != null) {
+        _topics[chatId] = current.map((t) => t.id == updated.id ? updated : t).toList();
+        _sortTopics(chatId);
+        notifyListeners();
+      }
+      return updated;
+    } catch (e) {
+      DebugLogService.instance.record('chat.topic_update.failed', error: e);
+      rethrow;
+    }
+  }
+
+  /// Удаление темы форума
+  Future<void> deleteTopic(
+    ApiClient client,
+    String chatId,
+    int topicId,
+  ) async {
+    try {
+      await client.deleteChatTopic(chatId, topicId);
+      final current = _topics[chatId];
+      if (current != null) {
+        _topics[chatId] = current.where((t) => t.id != topicId).toList();
+        _messages.remove('$chatId:$topicId');
+        notifyListeners();
+      }
+    } catch (e) {
+      DebugLogService.instance.record('chat.topic_delete.failed', error: e);
       rethrow;
     }
   }
@@ -742,6 +807,44 @@ class ChatService extends ChangeNotifier {
         final current = _messages[key];
         if (current != null) {
           _messages[key] = current.map((m) => m.id == updated.id ? updated : m).toList();
+          notifyListeners();
+        }
+      }
+    } else if (type == 'chat.topic_created') {
+      final chatId = event['chat_id'] as String? ?? '';
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final rawTopic = payload['topic'] as Map<String, dynamic>?;
+      if (chatId.isNotEmpty && rawTopic != null) {
+        final newTopic = TopicItem.fromJson(rawTopic);
+        final current = _topics[chatId] ?? const [];
+        if (!current.any((t) => t.id == newTopic.id)) {
+          _topics[chatId] = [...current, newTopic];
+          _sortTopics(chatId);
+          notifyListeners();
+        }
+      }
+    } else if (type == 'chat.topic_updated') {
+      final chatId = event['chat_id'] as String? ?? '';
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final rawTopic = payload['topic'] as Map<String, dynamic>?;
+      if (chatId.isNotEmpty && rawTopic != null) {
+        final updated = TopicItem.fromJson(rawTopic);
+        final current = _topics[chatId];
+        if (current != null) {
+          _topics[chatId] = current.map((t) => t.id == updated.id ? updated : t).toList();
+          _sortTopics(chatId);
+          notifyListeners();
+        }
+      }
+    } else if (type == 'chat.topic_deleted') {
+      final chatId = event['chat_id'] as String? ?? '';
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final deletedId = (payload['topic_id'] as num?)?.toInt() ?? (event['topic_id'] as num?)?.toInt();
+      if (chatId.isNotEmpty && deletedId != null) {
+        final current = _topics[chatId];
+        if (current != null) {
+          _topics[chatId] = current.where((t) => t.id != deletedId).toList();
+          _messages.remove('$chatId:$deletedId');
           notifyListeners();
         }
       }
