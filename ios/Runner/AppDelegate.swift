@@ -248,13 +248,13 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
     var leFileSize = fileSize.littleEndian
     data.append(Data(bytes: &leFileSize, count: 4))
     data.append("WAVEfmt ".data(using: .ascii)!)
-    var fmtChunkSize: UInt32 = 16.littleEndian
-    var audioFormat: UInt16 = 1.littleEndian
-    var numChannels: UInt16 = 1.littleEndian
+    var fmtChunkSize = UInt32(16).littleEndian
+    var audioFormat = UInt16(1).littleEndian
+    var numChannels = UInt16(1).littleEndian
     var leSampleRate = sampleRate.littleEndian
-    var byteRate: UInt32 = (sampleRate * 2).littleEndian
-    var blockAlign: UInt16 = 2.littleEndian
-    var bitsPerSample: UInt16 = 16.littleEndian
+    var byteRate = (sampleRate * 2).littleEndian
+    var blockAlign = UInt16(2).littleEndian
+    var bitsPerSample = UInt16(16).littleEndian
     data.append(Data(bytes: &fmtChunkSize, count: 4))
     data.append(Data(bytes: &audioFormat, count: 2))
     data.append(Data(bytes: &numChannels, count: 2))
@@ -304,8 +304,8 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
       if hasVideo {
         options.insert(.defaultToSpeaker)
       }
-      try rtcAudio.setCategory(AVAudioSession.Category.playAndRecord.rawValue, with: options)
-      try rtcAudio.setMode(mode.rawValue)
+      try rtcAudio.setCategory(.playAndRecord, with: options)
+      try rtcAudio.setMode(mode)
       try rtcAudio.setActive(true)
       if hasVideo {
         try? rtcAudio.overrideOutputAudioPort(.speaker)
