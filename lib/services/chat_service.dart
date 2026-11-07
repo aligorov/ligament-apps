@@ -570,6 +570,12 @@ class ChatService extends ChangeNotifier {
     CallSessionManager.instance.onSendSignal = (targetUserId, chatId, payload) {
       sendWebRTCSignal(targetUserId, chatId, payload);
     };
+    CallSessionManager.instance.onToggleRecording = (callId, {required record, bool isVideo = false}) {
+      return client.toggleCallRecording(callId, record: record, isVideo: isVideo);
+    };
+    CallSessionManager.instance.onSendRecordOffer = (callId, {required sdp, String? participantId}) {
+      return client.sendCallRecordOffer(callId, sdp: sdp, participantId: participantId);
+    };
 
     if (!force &&
         (_isWsConnected || _isWsConnecting) &&
@@ -889,6 +895,14 @@ class ChatService extends ChangeNotifier {
       } else if (signalType == 'hangup' || signalType == 'rejected') {
         CallSessionManager.instance.endCall(notifyPeer: false);
       }
+    } else if (type == 'call.recording') {
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final isRecorded = payload['is_recorded'] == true;
+      final recId = payload['recorder_session_id'] as String?;
+      CallSessionManager.instance.handleRecordingState(
+        isRecorded: isRecorded,
+        recorderSessionId: recId,
+      );
     }
   }
 }

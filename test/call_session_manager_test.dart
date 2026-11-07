@@ -234,5 +234,40 @@ void main() {
       final emojisBob = manager.callFingerprintEmojis;
       expect(emojisBob, equals(emojisAlice));
     });
+
+    test('call recording state and toggleRecording callback work properly', () async {
+      final manager = CallSessionManager();
+      manager.startCall(
+        chatId: 'c-rec',
+        chatTitle: 'Запись звонка',
+        isVideo: false,
+      );
+
+      expect(manager.isRecorded, isFalse);
+      expect(manager.recorderSessionId, isNull);
+
+      // 1. handleRecordingState updates isRecorded and recorderSessionId
+      manager.handleRecordingState(isRecorded: true, recorderSessionId: 'sess-rec-123');
+      expect(manager.isRecorded, isTrue);
+      expect(manager.recorderSessionId, 'sess-rec-123');
+
+      // 2. toggleRecording calls onToggleRecording callback
+      String? toggledCallId;
+      bool? toggledRecord;
+      manager.onToggleRecording = (callId, {required record, bool isVideo = false}) async {
+        toggledCallId = callId;
+        toggledRecord = record;
+        return {'status': 'ok'};
+      };
+
+      await manager.toggleRecording();
+      expect(toggledCallId, manager.currentCallId);
+      expect(toggledRecord, isFalse); // already true, so next is false
+
+      // 3. endCall resets recording state
+      manager.endCall();
+      expect(manager.isRecorded, isFalse);
+      expect(manager.recorderSessionId, isNull);
+    });
   });
 }

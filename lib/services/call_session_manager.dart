@@ -354,6 +354,19 @@ class CallSessionManager extends ChangeNotifier {
   bool get isSpeakerphoneOn => _audioRoute.isSpeaker;
   bool get isMobileRoutingSupported => _audioRoute.isMobileRoutingSupported;
 
+  bool _isRecorded = false;
+  String? _recorderSessionId;
+  RTCPeerConnection? _recorderPeerConnection;
+
+  bool get isRecorded => _isRecorded;
+  String? get recorderSessionId => _recorderSessionId;
+
+  /// Callback для переключения записи звонка на сервере Ligament Chat
+  Future<Map<String, dynamic>> Function(String callId, {required bool record, bool isVideo})? onToggleRecording;
+
+  /// Callback для отправки WebRTC SDP Offer в Recorder (Pion WebRTC Ingest Bot)
+  Future<Map<String, dynamic>> Function(String callId, {required String sdp, String? participantId})? onSendRecordOffer;
+
   Future<void> toggleSpeakerphone() async {
     await _audioRoute.toggleSpeaker(isVideo: _isVideo);
     notifyListeners();
@@ -626,6 +639,9 @@ class CallSessionManager extends ChangeNotifier {
             unawaited(CallKitService.instance.reportConnected(uuid: _currentCallId));
           }
           _startDurationTimer();
+          if (_isRecorded) {
+            unawaited(_startRecordingPeer());
+          }
           notifyListeners();
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
           endCall(notifyPeer: true);
@@ -654,6 +670,7 @@ class CallSessionManager extends ChangeNotifier {
 
       onSendSignal?.call(_targetUserId, _chatId, {
         'type': 'offer',
+        'call_id': callId,
         'sdp': optimizedSdp,
         'is_video': _isVideo,
         'caller_name': _callerName,
@@ -785,7 +802,10 @@ class CallSessionManager extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _remoteIceCandidateQueue.clear();
 
-    if (_currentCallId.isEmpty) {
+    final incomingCallId = offerPayload['call_id'] as String?;
+    if (incomingCallId != null && incomingCallId.isNotEmpty) {
+      _currentCallId = incomingCallId;
+    } else if (_currentCallId.isEmpty) {
       _currentCallId = _generateCallId();
       _callKitReported = false;
       _isAcceptingCall = false;
@@ -989,6 +1009,9 @@ class CallSessionManager extends ChangeNotifier {
             unawaited(CallKitService.instance.reportConnected(uuid: _currentCallId));
           }
           _startDurationTimer();
+          if (_isRecorded) {
+            unawaited(_startRecordingPeer());
+          }
           unawaited(_sound.stopRingtone());
           unawaited(CallKitService.instance.activateAudio(hasVideo: _isVideo));
           unawaited(_audioRoute.configureSession(isVideo: _isVideo));
@@ -1291,7 +1314,101 @@ class CallSessionManager extends ChangeNotifier {
     }
   }
 
+  /// Переключение записи активного разговора
+  Future<void> toggleRecording() async {
+    if (_currentCallId.isEmpty || onToggleRecording == null) return;
+    try {
+      await onToggleRecording!(_currentCallId, record: !_isRecorded, isVideo: _isVideo);
+    } catch (e) {
+      DebugLogService.instance.record('call.recording.toggle_failed', error: e);
+    }
+  }
+
+  /// Обработка события call.recording от сервера
+  void handleRecordingState({required bool isRecorded, String? recorderSessionId}) {
+    _isRecorded = isRecorded;
+    if (recorderSessionId != null && recorderSessionId.isNotEmpty) {
+      _recorderSessionId = recorderSessionId;
+    } else {
+      _recorderSessionId ??= _currentCallId;
+    }
+    notifyListeners();
+
+    if (_isRecorded && _status == CallStatus.connected) {
+      unawaited(_startRecordingPeer());
+    } else if (!_isRecorded) {
+      unawaited(_stopRecordingPeer());
+    }
+  }
+
+  Future<void> _startRecordingPeer() async {
+    if (_recorderPeerConnection != null || _localStream == null || onSendRecordOffer == null) {
+      return;
+    }
+    final sessId = _recorderSessionId ?? _currentCallId;
+    if (sessId.isEmpty) return;
+
+    final audioTracks = _localStream!.getAudioTracks();
+    if (audioTracks.isEmpty) return;
+
+    try {
+      final pc = await createPeerConnection({
+        'iceServers': defaultStunServers,
+        'bundlePolicy': 'max-bundle',
+      });
+      _recorderPeerConnection = pc;
+
+      for (final track in audioTracks) {
+        await pc.addTrack(track, _localStream!);
+      }
+
+      final offer = await pc.createOffer();
+      final optimizedSdp = optimizeOpusSdp(offer.sdp ?? '');
+      final optimizedOffer = RTCSessionDescription(optimizedSdp, offer.type);
+      await pc.setLocalDescription(optimizedOffer);
+
+      final completer = Completer<void>();
+      Timer? timeoutTimer;
+      pc.onIceGatheringState = (state) {
+        if (state == RTCIceGatheringState.RTCIceGatheringStateComplete) {
+          timeoutTimer?.cancel();
+          if (!completer.isCompleted) completer.complete();
+        }
+      };
+      timeoutTimer = Timer(const Duration(milliseconds: 1500), () {
+        if (!completer.isCompleted) completer.complete();
+      });
+      await completer.future;
+
+      final localDesc = await pc.getLocalDescription();
+      final sdpToSend = localDesc?.sdp ?? optimizedSdp;
+
+      final resp = await onSendRecordOffer!(sessId, sdp: sdpToSend);
+      final answerSdp = resp['sdp'] as String?;
+      if (answerSdp != null && answerSdp.isNotEmpty && _recorderPeerConnection == pc) {
+        await pc.setRemoteDescription(RTCSessionDescription(answerSdp, 'answer'));
+        DebugLogService.instance.record('call.recording.peer_connected', fields: {'session_id': sessId});
+      }
+    } catch (e) {
+      DebugLogService.instance.record('call.recording.start_failed', error: e);
+      await _stopRecordingPeer();
+    }
+  }
+
+  Future<void> _stopRecordingPeer() async {
+    final pc = _recorderPeerConnection;
+    _recorderPeerConnection = null;
+    if (pc != null) {
+      try {
+        await pc.close();
+      } catch (_) {}
+    }
+  }
+
   void endCall({bool notifyPeer = true}) {
+    unawaited(_stopRecordingPeer());
+    _isRecorded = false;
+    _recorderSessionId = null;
     if (_currentCallId.isNotEmpty) {
       unawaited(CallKitService.instance.endCall(uuid: _currentCallId));
       _currentCallId = '';

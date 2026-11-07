@@ -1049,6 +1049,38 @@ class ApiClient {
     throw ApiException(res.statusCode, 'presence_update_failed');
   }
 
+  /// Ligament Chat: переключение записи звонка
+  Future<Map<String, dynamic>> toggleCallRecording(String callId, {required bool record, bool isVideo = false}) async {
+    final res = await _post(
+      _cleanUrl('/apps/chat/api/v1/calls/$callId/record'),
+      headers: _headers(),
+      body: jsonEncode({
+        'record': record,
+        'is_video': isVideo,
+      }),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'toggle_call_recording_failed');
+  }
+
+  /// Ligament Chat: отправка WebRTC SDP Offer для записи аудио звонка в Recorder
+  Future<Map<String, dynamic>> sendCallRecordOffer(String callId, {required String sdp, String? participantId}) async {
+    final res = await _post(
+      _cleanUrl('/apps/chat/api/v1/calls/$callId/record/offer'),
+      headers: _headers(),
+      body: jsonEncode({
+        'sdp': sdp,
+        'participant_id': participantId ?? '',
+      }),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'send_call_record_offer_failed');
+  }
+
   /// Ligament Chat: создание чата (direct, group, forum)
   Future<Map<String, dynamic>> createChat({
     required String kind,

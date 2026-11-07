@@ -243,6 +243,32 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
                             ],
                           ),
                         ),
+                        if (_call.isRecorded) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.error,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.circle, size: 8, color: Colors.white),
+                                SizedBox(width: 4),
+                                Text(
+                                  'REC',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -408,6 +434,18 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
                               ),
                               const SizedBox(width: 12),
                             ],
+                            IconButton.filledTonal(
+                              style: _call.isRecorded
+                                  ? IconButton.styleFrom(
+                                      backgroundColor: theme.colorScheme.errorContainer,
+                                      foregroundColor: theme.colorScheme.onErrorContainer,
+                                    )
+                                  : null,
+                              icon: Icon(_call.isRecorded ? Icons.stop_circle : Icons.fiber_manual_record),
+                              tooltip: _call.isRecorded ? 'Остановить запись разговора' : 'Включить запись разговора',
+                              onPressed: _call.toggleRecording,
+                            ),
+                            const SizedBox(width: 12),
                           ],
                           IconButton.filled(
                             style: IconButton.styleFrom(backgroundColor: theme.colorScheme.error),
@@ -518,6 +556,20 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (_call.isRecorded) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.error,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              'REC',
+                              style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                        ],
                         if (_call.isMobileRoutingSupported) ...[
                           InkWell(
                             onTap: _call.toggleSpeakerphone,
