@@ -1334,7 +1334,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       ),
                       Text(
                         msg.replyTo != null && msg.replyTo!.body.isNotEmpty
-                            ? msg.replyTo!.body
+                            ? _formatReplySnippet(msg.replyTo!.body)
                             : (msg.replyToId != null ? 'Ответ на сообщение #${msg.replyToId}' : 'Вложение'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -1808,7 +1808,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                             ),
                           ),
                           Text(
-                            _replyingTo!.body,
+                            _formatReplySnippet(_replyingTo!.body, msg: _replyingTo),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -2045,6 +2045,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ],
       ),
     );
+  }
+
+  String _formatReplySnippet(String raw, {ChatMessage? msg}) {
+    final clean = raw.trim();
+    final hasImgAtt = msg != null && msg.attachments.any(_isImageAttachment);
+    final isImg = (msg != null && msg.kind == 'image') ||
+        hasImgAtt ||
+        RegExp(r'\.(png|jpe?g|gif|webp|bmp|svg)$', caseSensitive: false).hasMatch(clean);
+
+    if (isImg) {
+      final isGeneric = clean.isEmpty ||
+          clean == 'Вложение' ||
+          clean.startsWith('c-att-') ||
+          RegExp(r'^\{?[0-9a-fA-F-]{32,38}\}?\.(png|jpe?g|gif|webp)$', caseSensitive: false).hasMatch(clean) ||
+          RegExp(r'^(image|photo|screenshot|img|снимок[\s_]*экрана|безымянный)[\w\s\(\).-]*\.(png|jpe?g|gif|webp)$', caseSensitive: false).hasMatch(clean);
+      if (isGeneric) {
+        return '📷 Фотография';
+      }
+      return '📷 $clean';
+    }
+
+    final hasVideoAtt = msg != null && msg.attachments.any((a) {
+      final ct = (a['content_type'] ?? a['contentType'] ?? '').toString().toLowerCase();
+      final n = (a['name'] ?? a['file_name'] ?? '').toString().toLowerCase();
+      return ct.startsWith('video/') || RegExp(r'\.(mp4|webm|mov|mkv|m4v)$', caseSensitive: false).hasMatch(n);
+    });
+    if ((msg != null && msg.kind == 'video') || hasVideoAtt || RegExp(r'\.(mp4|webm|mov|mkv|m4v)$', caseSensitive: false).hasMatch(clean)) {
+      return '🎥 ${clean.isEmpty || clean.endsWith('.mp4') ? 'Видео' : clean}';
+    }
+
+    if (msg != null && (msg.kind == 'voice' || msg.kind == 'audio')) {
+      return '🎙️ Голосовое сообщение';
+    }
+
+    if (clean.isEmpty) return 'Вложение';
+    return clean;
   }
 
   bool _isDefaultAttachmentBody(ChatMessage msg) {
