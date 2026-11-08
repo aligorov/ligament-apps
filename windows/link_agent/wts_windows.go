@@ -4,21 +4,28 @@ package linkagent
 
 import (
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-var procWTSDisconnectSession = wtsapi.NewProc("WTSDisconnectSession")
+var (
+	procWTSDisconnectSession = wtsapi.NewProc("WTSDisconnectSession")
+	procWTSLogoffSession     = wtsapi.NewProc("WTSLogoffSession")
+)
 
 const (
-	wtsInfoUserName         = 5
-	wtsInfoWinStationName   = 6
-	wtsInfoDomainName       = 7
-	wtsInfoClientName       = 10
-	wtsInfoClientAddress    = 14
-	wtsInfoClientProtocol   = 16
+	wtsInfoUserName       = 5
+	wtsInfoWinStationName = 6
+	wtsInfoDomainName     = 7
+	wtsInfoClientName     = 10
+	wtsInfoClientAddress  = 14
+	wtsInfoClientProtocol = 16
+	wtsInfoSessionInfoEx  = 25
 )
 
 type win32WTSClientAddress struct {
@@ -78,10 +85,114 @@ func defaultEnumerateAllWTSSessions() ([]WTSSession, error) {
 			session.ProtocolType = WTSProtocolRDP
 		}
 		session.IsConsole = !session.IsRDP && session.ProtocolType == WTSProtocolConsole
+		session.IsLocked, session.LogonTime = queryWTSSessionLockAndLogon(raw.SessionID)
 
 		sessions = append(sessions, session)
 	}
 	return sessions, nil
+}
+
+// LockWTSSession locks an active workstation session without ripping GPU/DWM.
+func LockWTSSession(session WTSSession) error {
+	if session.IsRDP {
+		return DisconnectWTSSession(session.SessionID, false)
+	}
+	return LockConsoleSession(session.SessionID)
+}
+
+// LogoffWTSSession terminates a WTS session.
+func LogoffWTSSession(sessionID uint32, wait bool) error {
+	if procWTSLogoffSession.Find() != nil {
+		return errors.New("link agent: WTSLogoffSession API unavailable")
+	}
+	waitVal := uintptr(0)
+	if wait {
+		waitVal = 1
+	}
+	r, _, err := procWTSLogoffSession.Call(0, uintptr(sessionID), waitVal)
+	if r == 0 {
+		return err
+	}
+	return nil
+}
+
+// LockConsoleSession launches rundll32.exe user32.dll,LockWorkStation via CreateProcessAsUserW.
+func LockConsoleSession(sessionID uint32) error {
+	token, err := systemTokenForSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("link agent: get session token for lock: %w", err)
+	}
+	defer token.Close()
+
+	sysDir, err := windows.GetSystemDirectory()
+	if err != nil {
+		sysDir = `C:\Windows\System32`
+	}
+	appPath := filepath.Join(sysDir, "rundll32.exe")
+	app, _ := windows.UTF16PtrFromString(appPath)
+	cmd, _ := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user32.dll,LockWorkStation`, appPath))
+	desktop, _ := windows.UTF16PtrFromString(`winsta0\default`)
+	dir, _ := windows.UTF16PtrFromString(sysDir)
+
+	startup := windows.StartupInfo{
+		Cb:         uint32(unsafe.Sizeof(windows.StartupInfo{})),
+		Desktop:    desktop,
+		Flags:      windows.STARTF_USESHOWWINDOW,
+		ShowWindow: windows.SW_HIDE,
+	}
+	var created windows.ProcessInformation
+	if err := windows.CreateProcessAsUser(token, app, cmd, nil, nil, false,
+		0, nil, dir, &startup, &created); err != nil {
+		return fmt.Errorf("link agent: launch LockWorkStation: %w", err)
+	}
+	_ = windows.CloseHandle(created.Thread)
+	_ = windows.CloseHandle(created.Process)
+	return nil
+}
+
+func queryWTSSessionLockAndLogon(sessionID uint32) (bool, time.Time) {
+	if procWTSQuerySessionInformation.Find() != nil {
+		return false, time.Time{}
+	}
+	var buffer *byte
+	var bytesReturned uint32
+	result, _, _ := procWTSQuerySessionInformation.Call(
+		0, uintptr(sessionID), wtsInfoSessionInfoEx,
+		uintptr(unsafe.Pointer(&buffer)), uintptr(unsafe.Pointer(&bytesReturned)),
+	)
+	if result == 0 || buffer == nil {
+		return false, time.Time{}
+	}
+	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(buffer)))
+
+	if bytesReturned < 20 {
+		return false, time.Time{}
+	}
+
+	var sessionFlags int32 = -1
+	idAt4 := *(*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(buffer)) + 4))
+	idAt8 := *(*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(buffer)) + 8))
+	var dataOffset uintptr = 0
+	if idAt8 == sessionID {
+		dataOffset = 8
+		sessionFlags = *(*int32)(unsafe.Pointer(uintptr(unsafe.Pointer(buffer)) + 16))
+	} else if idAt4 == sessionID {
+		dataOffset = 4
+		sessionFlags = *(*int32)(unsafe.Pointer(uintptr(unsafe.Pointer(buffer)) + 12))
+	}
+
+	isLocked := (sessionFlags == 0) // WTS_SESSIONSTATE_LOCK = 0
+
+	var logonTime time.Time
+	if dataOffset > 0 && bytesReturned >= uint32(dataOffset+12+144+32) {
+		logonOffset := dataOffset + 12 + 144 + 24
+		rawFT := *(*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(buffer)) + logonOffset))
+		if rawFT > 116444736000000000 {
+			nsec := (int64(rawFT) - 116444736000000000) * 100
+			logonTime = time.Unix(0, nsec)
+		}
+	}
+	return isLocked, logonTime
 }
 
 // DisconnectWTSSession disconnects an active RDP session.

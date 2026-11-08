@@ -292,6 +292,90 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 			}()
 		}
 		return nil
+	case "host_lock":
+		var cmd struct {
+			CommandID string `json:"command_id"`
+			Username  string `json:"username"`
+			Reason    string `json:"reason"`
+		}
+		_ = json.Unmarshal(envelope.Payload, &cmd)
+		if cmd.CommandID == "" {
+			_ = json.Unmarshal(message, &cmd)
+		}
+		workerLog("[HOST LOCK] Lock requested: command_id=%s user=%s reason=%s", cmd.CommandID, cmd.Username, cmd.Reason)
+		go func() {
+			sessions, err := EnumerateAllWTSSessions()
+			if err != nil {
+				workerLog("[HOST LOCK] Enumerate sessions failed: %v", err)
+				return
+			}
+			for _, s := range sessions {
+				if cmd.Username != "" {
+					u := strings.ToLower(s.Username)
+					target := strings.ToLower(cmd.Username)
+					if u != target && !strings.HasSuffix(target, "\\"+u) && !strings.HasPrefix(target, u+"@") {
+						continue
+					}
+				} else if !s.IsConsole && !s.IsActive {
+					continue
+				}
+				if err := LockWTSSession(s); err != nil {
+					workerLog("[HOST LOCK] Failed to lock session %d (%s): %v", s.SessionID, s.Username, err)
+				} else {
+					workerLog("[HOST LOCK] Successfully locked session %d (%s)", s.SessionID, s.Username)
+				}
+			}
+		}()
+		return nil
+	case "host_logoff":
+		var cmd struct {
+			CommandID       string `json:"command_id"`
+			WTSSessionID    uint32 `json:"wts_session_id"`
+			TargetSessionID uint32 `json:"target_session_id"`
+			Username        string `json:"username"`
+		}
+		_ = json.Unmarshal(envelope.Payload, &cmd)
+		if cmd.CommandID == "" {
+			_ = json.Unmarshal(message, &cmd)
+		}
+		sessID := cmd.WTSSessionID
+		if sessID == 0 {
+			sessID = cmd.TargetSessionID
+		}
+		workerLog("[HOST LOGOFF] Logoff requested: command_id=%s wts_session_id=%d user=%s", cmd.CommandID, sessID, cmd.Username)
+		go func() {
+			if sessID > 0 {
+				_ = LogoffWTSSession(sessID, false)
+				return
+			}
+			sessions, _ := EnumerateAllWTSSessions()
+			for _, s := range sessions {
+				if cmd.Username != "" && strings.EqualFold(s.Username, cmd.Username) {
+					_ = LogoffWTSSession(s.SessionID, false)
+				}
+			}
+		}()
+		return nil
+	case "apply_policy":
+		var cmd ApplyPolicyCommand
+		_ = json.Unmarshal(envelope.Payload, &cmd)
+		if cmd.CommandID == "" {
+			_ = json.Unmarshal(message, &cmd)
+		}
+		workerLog("[HOST POLICY] Apply policy requested: command_id=%s", cmd.CommandID)
+		if err := ApplyHostPolicy(cmd); err != nil {
+			workerLog("[HOST POLICY] Apply policy error: %v", err)
+			return err
+		}
+		currentStatus := ReadHostPolicyStatus()
+		if send != nil {
+			_ = send(map[string]any{
+				"type":          "policy_status",
+				"command_id":    cmd.CommandID,
+				"policy_status": currentStatus,
+			})
+		}
+		return nil
 	default:
 		// Heartbeats and other service-level frames remain owned by RunAgent.
 		return nil

@@ -44,6 +44,8 @@ type AgentWSConfig struct {
 	Capabilities    map[string]any
 	InteractiveUser func() string
 	LocalIPs        func() []string
+	Telemetry       func() HostTelemetry
+	PolicyStatus    func() HostPolicyStatus
 	DeleteIdentity  func() error
 	OnConnected     func(send func(any) error)
 }
@@ -308,6 +310,20 @@ func agentHeartbeatMessage(config AgentWSConfig, collectInteractiveUser bool) ma
 	}
 	if collectInteractiveUser && config.InteractiveUser != nil {
 		message["interactive_user"] = config.InteractiveUser()
+	}
+	if config.Telemetry != nil {
+		t := config.Telemetry()
+		message["uptime_seconds"] = t.UptimeSeconds
+		message["cpu_usage_percent"] = t.CPUUsagePercent
+		message["ram_used_mb"] = t.RAMUsedMB
+		message["ram_total_mb"] = t.RAMTotalMB
+		message["disk_total_gb"] = t.DiskTotalGB
+		message["disk_free_gb"] = t.DiskFreeGB
+		message["is_domain_joined"] = t.IsDomainJoined
+		message["sessions"] = t.Sessions
+	}
+	if config.PolicyStatus != nil {
+		message["policy_status"] = config.PolicyStatus()
 	}
 	return message
 }

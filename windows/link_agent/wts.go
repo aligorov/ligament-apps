@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 // WTS Connection States from Win32 WTS_CONNECTSTATE_CLASS
@@ -38,9 +39,11 @@ type WTSSession struct {
 	ClientIP     string `json:"client_ip,omitempty"`
 	ClientName   string `json:"client_name,omitempty"`
 	ProtocolType uint16 `json:"protocol_type"`
-	IsRDP        bool   `json:"is_rdp"`
-	IsConsole    bool   `json:"is_console"`
-	IsActive     bool   `json:"is_active"`
+	IsRDP        bool      `json:"is_rdp"`
+	IsConsole    bool      `json:"is_console"`
+	IsActive     bool      `json:"is_active"`
+	IsLocked     bool      `json:"is_locked"`
+	LogonTime    time.Time `json:"logon_time,omitempty"`
 }
 
 // UserAccount returns DOMAIN\username or username.

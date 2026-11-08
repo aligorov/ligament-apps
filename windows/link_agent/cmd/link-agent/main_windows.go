@@ -23,6 +23,7 @@ import (
 const (
 	serviceName       = "LigamentLinkAgent"
 	serviceRegistry   = `SOFTWARE\Ligament\2FA`
+	policiesRegistry  = `SOFTWARE\Policies\Ligament\2FA`
 	windowsVersionKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion`
 	stopWaitLimit     = 15 * time.Second
 )
@@ -327,6 +328,25 @@ func (*agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 				serviceLog(logger, logErr, "WTS event=%s notification_session_id=%d active_console_session_id=%d",
 					changeName, notification.SessionID, activeConsole)
 
+				// Немедленная отправка обновления сессий на сервер при смене статуса (Logon, Lock, Unlock, Logoff)
+				go func(evtName string) {
+					time.Sleep(300 * time.Millisecond) // короткая пауза для стабилизации десктопа WTS
+					t := linkagent.CollectHostTelemetry()
+					_ = workerBroker.SendFrame(map[string]any{
+						"type":              "session_change",
+						"event":             evtName,
+						"uptime_seconds":    t.UptimeSeconds,
+						"cpu_usage_percent": t.CPUUsagePercent,
+						"ram_used_mb":       t.RAMUsedMB,
+						"ram_total_mb":      t.RAMTotalMB,
+						"disk_total_gb":     t.DiskTotalGB,
+						"disk_free_gb":      t.DiskFreeGB,
+						"is_domain_joined":  t.IsDomainJoined,
+						"sessions":          t.Sessions,
+						"local_ips":         linkagent.CurrentLocalIPs(),
+					})
+				}(changeName)
+
 				if rdsSupervisor != nil {
 					switch request.EventType {
 					case linkagent.WTSSessionLogon, linkagent.WTSRemoteConnect, linkagent.WTSSessionUnlock:
@@ -378,18 +398,23 @@ func waitForWorkers(results <-chan serviceWorkerResult, active int, timeout time
 }
 
 func readServiceConfig() (linkagent.AgentWSConfig, error) {
-	key, err := registry.OpenKey(registry.LOCAL_MACHINE, serviceRegistry, registry.QUERY_VALUE|registry.WOW64_64KEY)
-	if err != nil {
-		if !errors.Is(err, registry.ErrNotExist) {
-			return linkagent.AgentWSConfig{}, fmt.Errorf("open HKLM\\%s: %w", serviceRegistry, err)
-		}
-	}
 	var serverURL string
-	if err == nil {
-		serverURL, _, err = key.GetStringValue("ServerURL")
+	// 1. Check GPO Policies first (authoritative domain setting)
+	if key, err := registry.OpenKey(registry.LOCAL_MACHINE, policiesRegistry, registry.QUERY_VALUE|registry.WOW64_64KEY); err == nil {
+		serverURL, _, _ = key.GetStringValue("ServerURL")
 		_ = key.Close()
-		if err != nil && !errors.Is(err, registry.ErrNotExist) {
-			return linkagent.AgentWSConfig{}, fmt.Errorf("read ServerURL from HKLM\\%s: %w", serviceRegistry, err)
+	}
+	// 2. Check local service registry
+	if strings.TrimSpace(serverURL) == "" {
+		key, err := registry.OpenKey(registry.LOCAL_MACHINE, serviceRegistry, registry.QUERY_VALUE|registry.WOW64_64KEY)
+		if err == nil {
+			serverURL, _, err = key.GetStringValue("ServerURL")
+			_ = key.Close()
+			if err != nil && !errors.Is(err, registry.ErrNotExist) {
+				return linkagent.AgentWSConfig{}, fmt.Errorf("read ServerURL from HKLM\\%s: %w", serviceRegistry, err)
+			}
+		} else if !errors.Is(err, registry.ErrNotExist) {
+			return linkagent.AgentWSConfig{}, fmt.Errorf("open HKLM\\%s: %w", serviceRegistry, err)
 		}
 	}
 
@@ -404,6 +429,8 @@ func readServiceConfig() (linkagent.AgentWSConfig, error) {
 	})
 	config.InteractiveUser = linkagent.CurrentInteractiveUser
 	config.LocalIPs = linkagent.CurrentLocalIPs
+	config.Telemetry = linkagent.CollectHostTelemetry
+	config.PolicyStatus = linkagent.ReadHostPolicyStatus
 	return config, nil
 }
 
@@ -429,6 +456,15 @@ func configureBindingServerURL(configuredURL, requestedURL string) (string, erro
 }
 
 func readRegistryEnrollToken() string {
+	// 1. Check GPO policy first
+	if key, err := registry.OpenKey(registry.LOCAL_MACHINE, policiesRegistry, registry.QUERY_VALUE|registry.WOW64_64KEY); err == nil {
+		val, _, err := key.GetStringValue("EnrollToken")
+		_ = key.Close()
+		if err == nil && strings.TrimSpace(val) != "" {
+			return strings.TrimSpace(val)
+		}
+	}
+	// 2. Check local service registry
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, serviceRegistry, registry.QUERY_VALUE|registry.WOW64_64KEY)
 	if err != nil {
 		return ""
