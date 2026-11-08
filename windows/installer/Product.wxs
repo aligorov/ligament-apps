@@ -16,6 +16,19 @@
     <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Platform="x64" Description="Ligament 2FA Client Installer" />
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of Ligament 2FA is already installed." />
+
+    <!-- Взаимное обновление (Cross-grade): удаление легковесного Endpoint Agent
+         при установке полного клиента Ligament 2FA. Разделяемые компоненты
+         (DLL и служба) сохраняются без разрыва 2FA на экране входа. -->
+    <Upgrade Id="7E9B48F1-3C2D-4E1A-8506-9A7B8C2D3E4F">
+      <UpgradeVersion OnlyDetect="no"
+                      Property="ENDPOINTAGENTFOUND"
+                      Minimum="0.0.1"
+                      IncludeMinimum="yes"
+                      Maximum="99.99.99"
+                      IncludeMaximum="yes" />
+    </Upgrade>
+
     <MediaTemplate EmbedCab="yes" />
 
     <!-- ОДИН полный пакет (требование 2026-10-04): приложение + RDP
@@ -113,6 +126,22 @@
                       Name="BypassAccounts" Type="raw" />
     </Property>
 
+    <!-- Алиасы параметров для развертывания через командную строку / GPO -->
+    <Property Id="SERVER_URL" Secure="yes" />
+    <Property Id="ENROLL_TOKEN" Secure="yes" Hidden="yes" />
+    <Property Id="CONSOLE_2FA" Secure="yes" />
+    <Property Id="RDP_2FA" Secure="yes" />
+    <Property Id="ELEVATION_2FA" Secure="yes" />
+
+    <CustomAction Id="SetServerUrlFromParam" Property="SERVERURL" Value="[SERVER_URL]" />
+    <CustomAction Id="SetEnrollTokenFromParam" Property="ENROLLTOKEN" Value="[ENROLL_TOKEN]" />
+    <CustomAction Id="SetConsole2fa0" Property="CONSOLE2FAENABLED" Value="#0" />
+    <CustomAction Id="SetConsole2fa1" Property="CONSOLE2FAENABLED" Value="#1" />
+    <CustomAction Id="SetRdp2fa0" Property="RDP2FAENABLED" Value="#0" />
+    <CustomAction Id="SetRdp2fa1" Property="RDP2FAENABLED" Value="#1" />
+    <CustomAction Id="SetElev2fa0" Property="ELEVATION2FAENABLED" Value="#0" />
+    <CustomAction Id="SetElev2fa1" Property="ELEVATION2FAENABLED" Value="#1" />
+
     <!-- Завершение работающего GUI-клиента перед установкой/обновлением/удалением,
          чтобы установочник не блокировал файлы и не оставлял старый GUI-процесс в фоне -->
     <Property Id="KillRunningApp" Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM ligament_authenticator.exe /T" />
@@ -130,7 +159,26 @@
 
     <InstallExecuteSequence>
       <Custom Action="KillRunningApp" Before="InstallValidate" />
+      <Custom Action="SetServerUrlFromParam" Before="AppSearch">SERVER_URL</Custom>
+      <Custom Action="SetEnrollTokenFromParam" Before="AppSearch">ENROLL_TOKEN</Custom>
+      <Custom Action="SetConsole2fa0" After="AppSearch">CONSOLE_2FA="0"</Custom>
+      <Custom Action="SetConsole2fa1" After="AppSearch">CONSOLE_2FA="1"</Custom>
+      <Custom Action="SetRdp2fa0" After="AppSearch">RDP_2FA="0"</Custom>
+      <Custom Action="SetRdp2fa1" After="AppSearch">RDP_2FA="1"</Custom>
+      <Custom Action="SetElev2fa0" After="AppSearch">ELEVATION_2FA="0"</Custom>
+      <Custom Action="SetElev2fa1" After="AppSearch">ELEVATION_2FA="1"</Custom>
     </InstallExecuteSequence>
+
+    <InstallUISequence>
+      <Custom Action="SetServerUrlFromParam" Before="AppSearch">SERVER_URL</Custom>
+      <Custom Action="SetEnrollTokenFromParam" Before="AppSearch">ENROLL_TOKEN</Custom>
+      <Custom Action="SetConsole2fa0" After="AppSearch">CONSOLE_2FA="0"</Custom>
+      <Custom Action="SetConsole2fa1" After="AppSearch">CONSOLE_2FA="1"</Custom>
+      <Custom Action="SetRdp2fa0" After="AppSearch">RDP_2FA="0"</Custom>
+      <Custom Action="SetRdp2fa1" After="AppSearch">RDP_2FA="1"</Custom>
+      <Custom Action="SetElev2fa0" After="AppSearch">ELEVATION_2FA="0"</Custom>
+      <Custom Action="SetElev2fa1" After="AppSearch">ELEVATION_2FA="1"</Custom>
+    </InstallUISequence>
   </Product>
 
   <Fragment>

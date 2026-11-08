@@ -7,6 +7,10 @@
 #   2. CMake & MSVC (C++ Build Tools)
 #   3. WiX Toolset: winget install WiX.Toolset (или https://wixtoolset.org)
 
+param(
+    [switch]$EndpointOnly
+)
+
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -14,19 +18,24 @@ $ClientDir = Split-Path -Parent $ScriptDir
 $BuildReleaseDir = "$ClientDir\build\windows\x64\runner\Release"
 $DistDir = "$ClientDir\dist"
 $OutputMsi = "$DistDir\Ligament-2FA-Windows-x64.msi"
+$OutputEndpointMsi = "$DistDir\Ligament-Endpoint-Windows-x64.msi"
 
 Write-Host "========================================================" -ForegroundColor Cyan
-Write-Host " Сборка Windows MSI пакета и RDP 2FA: Ligament 2FA" -ForegroundColor Cyan
+Write-Host " Сборка Windows MSI пакетов: Ligament 2FA & Endpoint Agent" -ForegroundColor Cyan
 Write-Host "========================================================" -ForegroundColor Cyan
 
-# 1. Сборка релизной версии Flutter для Windows
+# 1. Сборка релизной версии Flutter для Windows (пропускается при -EndpointOnly)
 Set-Location $ClientDir
-$env:CL = "$env:CL /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
-Write-Host "`n[1/5] Компиляция Flutter Windows Release (с обфускацией AOT)..." -ForegroundColor Yellow
-flutter build windows --release --no-tree-shake-icons --obfuscate --split-debug-info=build\windows_symbols
+if (-not $EndpointOnly) {
+    $env:CL = "$env:CL /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
+    Write-Host "`n[1/5] Компиляция Flutter Windows Release (с обфускацией AOT)..." -ForegroundColor Yellow
+    flutter build windows --release --no-tree-shake-icons --obfuscate --split-debug-info=build\windows_symbols
 
-if (-not (Test-Path "$BuildReleaseDir\ligament_authenticator.exe")) {
-    Write-Error "Ошибка: Бинарный файл $BuildReleaseDir\ligament_authenticator.exe не найден!"
+    if (-not (Test-Path "$BuildReleaseDir\ligament_authenticator.exe")) {
+        Write-Error "Ошибка: Бинарный файл $BuildReleaseDir\ligament_authenticator.exe не найден!"
+    }
+} else {
+    Write-Host "`n[1/5] Пропуск сборки Flutter GUI (режим -EndpointOnly)..." -ForegroundColor Gray
 }
 
 # 2. Сборка Windows Credential Provider (RDP 2FA C++ DLL)
@@ -128,18 +137,11 @@ if (-not $wixInstalled) {
 }
 
 # 5. Упаковка через WiX Toolset
-Write-Host "`n[4/5] Анализ и сборка компонентов приложения (WiX Heat)..." -ForegroundColor Yellow
 $TempDir = [System.IO.Path]::GetTempPath() + "LigamentWix_" + [System.Guid]::NewGuid().ToString("N")
 New-Item -ItemType Directory -Path $TempDir | Out-Null
 
 try {
-    # Генерируем фрагмент с файлами релиза Flutter
-    & $heatCmd dir "$BuildReleaseDir" -cg AppFiles -dr INSTALLFOLDER -gg -scom -sreg -srd -var "var.SourceDir" -out "$TempDir\Files.wxs"
-
-    # Версия MSI = version из pubspec.yaml (1.0.10+21 -> 1.0.10.21; 4-е поле
-    # MSI информационное, в сравнениях апгрейдов участвуют первые три).
-    # Растущая версия + AllowSameVersionUpgrades гарантируют REPLACE старой
-    # установки вместо параллельной записи.
+    # Версия MSI = version из pubspec.yaml (1.0.10+21 -> 1.0.10.21)
     $pubspec = Get-Content "$ClientDir\pubspec.yaml" -Raw
     if ($pubspec -match '(?m)^version:\s*(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?') {
         $build4 = if ($Matches[4]) { $Matches[4] } else { "0" }
@@ -150,18 +152,34 @@ try {
     }
     Write-Host " Версия MSI: $msiVersion" -ForegroundColor Cyan
 
-    Write-Host "`n[5/5] Компиляция WiX XML (Candle) и линковка MSI (Light)..." -ForegroundColor Yellow
-    & $candleCmd -arch x64 -ext WixUtilExtension -dSourceDir="$BuildReleaseDir" -dProductVersion="$msiVersion" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
-    & $lightCmd -sval -ext WixUIExtension -ext WixUtilExtension "$TempDir\Product.wixobj" "$TempDir\Files.wixobj" -o "$OutputMsi"
+    if (-not $EndpointOnly) {
+        Write-Host "`n[4/5] Анализ и сборка компонентов приложения (WiX Heat)..." -ForegroundColor Yellow
+        # Генерируем фрагмент с файлами релиза Flutter
+        & $heatCmd dir "$BuildReleaseDir" -cg AppFiles -dr INSTALLFOLDER -gg -scom -sreg -srd -var "var.SourceDir" -out "$TempDir\Files.wxs"
+
+        Write-Host "`n[5/5] Компиляция WiX XML (Candle) и линковка полного MSI (Light)..." -ForegroundColor Yellow
+        & $candleCmd -arch x64 -ext WixUtilExtension -dSourceDir="$BuildReleaseDir" -dProductVersion="$msiVersion" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
+        & $lightCmd -sval -ext WixUIExtension -ext WixUtilExtension "$TempDir\Product.wixobj" "$TempDir\Files.wixobj" -o "$OutputMsi"
+
+        Write-Host "`n========================================================" -ForegroundColor Green
+        Write-Host " УСПЕШНО СОБРАН WINDOWS MSI ДИСТРИБУТИВ (APP + RDP 2FA):" -ForegroundColor Green
+        Write-Host " Файл: $OutputMsi" -ForegroundColor White
+        Write-Host " Размер: $((Get-Item $OutputMsi).Length / 1MB) МБ" -ForegroundColor White
+        Write-Host "========================================================" -ForegroundColor Green
+    }
+
+    # Сборка легковесного Ligament Endpoint Agent MSI
+    Write-Host "`n[5b/5] Компиляция Ligament Endpoint Agent MSI (Headless / GPO)..." -ForegroundColor Yellow
+    & $candleCmd -arch x64 -ext WixUtilExtension -dProductVersion="$msiVersion" "$ClientDir\windows\installer\EndpointProduct.wxs" -out "$TempDir\"
+    & $lightCmd -sval -ext WixUIExtension -ext WixUtilExtension "$TempDir\EndpointProduct.wixobj" -o "$OutputEndpointMsi"
 
     Write-Host "`n========================================================" -ForegroundColor Green
-    Write-Host " УСПЕШНО СОБРАН WINDOWS MSI ДИСТРИБУТИВ (APP + RDP 2FA):" -ForegroundColor Green
-    Write-Host " Файл: $OutputMsi" -ForegroundColor White
-    Write-Host " Размер: $((Get-Item $OutputMsi).Length / 1MB) МБ" -ForegroundColor White
+    Write-Host " УСПЕШНО СОБРАН ЛЕГКОВЕСНЫЙ ENDPOINT AGENT MSI:" -ForegroundColor Green
+    Write-Host " Файл: $OutputEndpointMsi" -ForegroundColor White
+    Write-Host " Размер: $((Get-Item $OutputEndpointMsi).Length / 1MB) МБ" -ForegroundColor White
     Write-Host "========================================================" -ForegroundColor Green
     Write-Host "Тихая установка для Active Directory GPO / SCCM / Intune:" -ForegroundColor Cyan
-    Write-Host "  msiexec /i Ligament-2FA-Windows-x64.msi /qn              (только приложение; RDP-провайдер выключен)" -ForegroundColor White
-    Write-Host "  msiexec /i Ligament-2FA-Windows-x64.msi /qn INSTALLRDP=1  (приложение + RDP Credential Provider)" -ForegroundColor White
+    Write-Host "  msiexec /i Ligament-Endpoint-Windows-x64.msi SERVER_URL=https://2fa.corp ENROLL_TOKEN=xxx CONSOLE_2FA=1 RDP_2FA=1 /qn" -ForegroundColor White
 } finally {
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
 }

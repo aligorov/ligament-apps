@@ -78,11 +78,13 @@ jobs:
           flutter pub get
           .\scripts\build_msi.ps1
 
-      - name: Upload Windows MSI Artifact
+      - name: Upload Windows MSI Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Ligament-2FA-Windows-MSI
-          path: dist/Ligament-2FA-Windows-x64.msi
+          path: |
+            dist/Ligament-2FA-Windows-x64.msi
+            dist/Ligament-Endpoint-Windows-x64.msi
 
   build-android:
     name: Build Android APK

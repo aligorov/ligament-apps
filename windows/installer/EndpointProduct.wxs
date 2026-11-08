@@ -1,0 +1,289 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <!-- Ligament Endpoint Agent: легковесный агент (~15 МБ) для рабочих станций
+       без Flutter GUI и WebRTC. Включает Windows Credential Provider DLL
+       и системную службу LigamentLinkAgent для централизованного управления 2FA,
+       телеметрии хоста и блокировки сессий при логауте в AD. -->
+  <Product Id="*"
+           Name="Ligament 2FA Endpoint Agent"
+           Language="1033"
+           Codepage="1252"
+           Version="$(var.ProductVersion)"
+           Manufacturer="Ligament Security"
+           UpgradeCode="7E9B48F1-3C2D-4E1A-8506-9A7B8C2D3E4F">
+    <Package InstallerVersion="301"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64"
+             Description="Ligament 2FA Endpoint Agent (Workstation Edition - Headless)" />
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Ligament 2FA Endpoint Agent is already installed." />
+
+    <!-- Взаимное обновление (Cross-grade): удаление полного клиента Ligament 2FA
+         или RDS Agent при переходе на легковесный Endpoint Agent. Разделяемые
+         компоненты (DLL и служба) сохраняются без разрыва 2FA на экране входа. -->
+    <Upgrade Id="4B5F3776-E1E7-44E8-BAA5-7FD81CE1B732">
+      <UpgradeVersion OnlyDetect="no"
+                      Property="FULLCLIENTFOUND"
+                      Minimum="0.0.1"
+                      IncludeMinimum="yes"
+                      Maximum="99.99.99"
+                      IncludeMaximum="yes" />
+    </Upgrade>
+    <Upgrade Id="5C7F4887-F2F8-45F9-CB0D-2FF82DE2C843">
+      <UpgradeVersion OnlyDetect="no"
+                      Property="RDSAGENTFOUND"
+                      Minimum="0.0.1"
+                      IncludeMinimum="yes"
+                      Maximum="99.99.99"
+                      IncludeMaximum="yes" />
+    </Upgrade>
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="EndpointFeature" Title="Ligament 2FA Endpoint Agent" Level="1">
+      <ComponentRef Id="AppServerUrlRegistry" />
+      <ComponentRef Id="AppEnrollTokenRegistry" />
+      <ComponentRef Id="CredentialProviderComponent" />
+      <ComponentRef Id="RdpWebAuthnPolicyComponent" />
+      <ComponentRef Id="LinkAgentServiceComponent" />
+    </Feature>
+
+    <!-- SERVERURL и алиас SERVER_URL -->
+    <Property Id="SERVERURL" Secure="yes">
+      <RegistrySearch Id="ExistingServerUrl"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="ServerURL"
+                      Type="raw" />
+    </Property>
+    <Property Id="SERVER_URL" Secure="yes" />
+
+    <!-- ENROLLTOKEN и алиас ENROLL_TOKEN -->
+    <Property Id="ENROLLTOKEN" Secure="yes" Hidden="yes">
+      <RegistrySearch Id="ExistingEnrollToken"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="EnrollToken"
+                      Type="raw" />
+    </Property>
+    <Property Id="ENROLL_TOKEN" Secure="yes" Hidden="yes" />
+
+    <Property Id="RDPAGENTKEY" Secure="yes" Hidden="yes">
+      <RegistrySearch Id="ExistingRdpAgentKey"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="RdpAgentKey"
+                      Type="raw" />
+    </Property>
+
+    <!-- Параметры 2FA: для Endpoint Agent по умолчанию включены Console2FA (#1) и RDP2FA (#1) -->
+    <Property Id="CONSOLE2FAENABLED" Value="#1" Secure="yes">
+      <RegistrySearch Id="ExistingConsole2faEnabled"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="Console2FAEnabled"
+                      Type="raw" />
+    </Property>
+    <Property Id="CONSOLE_2FA" Secure="yes" />
+
+    <Property Id="RDP2FAENABLED" Value="#1" Secure="yes">
+      <RegistrySearch Id="ExistingRdp2faEnabled"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="RDP2FAEnabled"
+                      Type="raw" />
+    </Property>
+    <Property Id="RDP_2FA" Secure="yes" />
+
+    <Property Id="ELEVATION2FAENABLED" Value="#0" Secure="yes">
+      <RegistrySearch Id="ExistingElevation2faEnabled"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="Elevation2FAEnabled"
+                      Type="raw" />
+    </Property>
+    <Property Id="ELEVATION_2FA" Secure="yes" />
+
+    <Property Id="FIDO2ENABLED" Value="#1" Secure="yes">
+      <RegistrySearch Id="ExistingFido2Enabled"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="FIDO2Enabled"
+                      Type="raw" />
+    </Property>
+    <Property Id="DEFAULTFACTOR" Value="#0" Secure="yes">
+      <RegistrySearch Id="ExistingDefaultFactor"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="DefaultFactor"
+                      Type="raw" />
+    </Property>
+    <Property Id="PUSHTIMEOUTSECONDS" Value="#45" Secure="yes">
+      <RegistrySearch Id="ExistingPushTimeoutSeconds"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="PushTimeoutSeconds"
+                      Type="raw" />
+    </Property>
+    <Property Id="FAILCLOSE" Value="#1" Secure="yes">
+      <RegistrySearch Id="ExistingFailClose"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="FailClose"
+                      Type="raw" />
+    </Property>
+    <Property Id="ALLOWSELFSIGNED" Value="#0" Secure="yes">
+      <RegistrySearch Id="ExistingAllowSelfSigned"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="AllowSelfSigned"
+                      Type="raw" />
+    </Property>
+    <Property Id="BYPASSACCOUNTS" Secure="yes">
+      <RegistrySearch Id="ExistingBypassAccounts"
+                      Root="HKLM"
+                      Key="SOFTWARE\Ligament\2FA"
+                      Name="BypassAccounts"
+                      Type="raw" />
+    </Property>
+
+    <!-- Нормализация параметров из алиасов командной строки -->
+    <CustomAction Id="SetServerUrlFromParam" Property="SERVERURL" Value="[SERVER_URL]" />
+    <CustomAction Id="SetEnrollTokenFromParam" Property="ENROLLTOKEN" Value="[ENROLL_TOKEN]" />
+    <CustomAction Id="SetConsole2fa0" Property="CONSOLE2FAENABLED" Value="#0" />
+    <CustomAction Id="SetConsole2fa1" Property="CONSOLE2FAENABLED" Value="#1" />
+    <CustomAction Id="SetRdp2fa0" Property="RDP2FAENABLED" Value="#0" />
+    <CustomAction Id="SetRdp2fa1" Property="RDP2FAENABLED" Value="#1" />
+    <CustomAction Id="SetElev2fa0" Property="ELEVATION2FAENABLED" Value="#0" />
+    <CustomAction Id="SetElev2fa1" Property="ELEVATION2FAENABLED" Value="#1" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetServerUrlFromParam" Before="AppSearch">SERVER_URL</Custom>
+      <Custom Action="SetEnrollTokenFromParam" Before="AppSearch">ENROLL_TOKEN</Custom>
+      <Custom Action="SetConsole2fa0" After="AppSearch">CONSOLE_2FA="0"</Custom>
+      <Custom Action="SetConsole2fa1" After="AppSearch">CONSOLE_2FA="1"</Custom>
+      <Custom Action="SetRdp2fa0" After="AppSearch">RDP_2FA="0"</Custom>
+      <Custom Action="SetRdp2fa1" After="AppSearch">RDP_2FA="1"</Custom>
+      <Custom Action="SetElev2fa0" After="AppSearch">ELEVATION_2FA="0"</Custom>
+      <Custom Action="SetElev2fa1" After="AppSearch">ELEVATION_2FA="1"</Custom>
+    </InstallExecuteSequence>
+
+    <InstallUISequence>
+      <Custom Action="SetServerUrlFromParam" Before="AppSearch">SERVER_URL</Custom>
+      <Custom Action="SetEnrollTokenFromParam" Before="AppSearch">ENROLL_TOKEN</Custom>
+      <Custom Action="SetConsole2fa0" After="AppSearch">CONSOLE_2FA="0"</Custom>
+      <Custom Action="SetConsole2fa1" After="AppSearch">CONSOLE_2FA="1"</Custom>
+      <Custom Action="SetRdp2fa0" After="AppSearch">RDP_2FA="0"</Custom>
+      <Custom Action="SetRdp2fa1" After="AppSearch">RDP_2FA="1"</Custom>
+      <Custom Action="SetElev2fa0" After="AppSearch">ELEVATION_2FA="0"</Custom>
+      <Custom Action="SetElev2fa1" After="AppSearch">ELEVATION_2FA="1"</Custom>
+    </InstallUISequence>
+  </Product>
+
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Ligament 2FA" />
+      </Directory>
+      <Directory Id="System64Folder" />
+    </Directory>
+  </Fragment>
+
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <!-- ServerURL в реестре HKLM\SOFTWARE\Ligament\2FA -->
+      <Component Id="AppServerUrlRegistry" Guid="ADA3283C-1B4A-4DAE-8AC6-D931728C7E3B" Win64="yes">
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\Ligament\2FA"
+                       Name="ServerURL"
+                       Type="string"
+                       Value="[SERVERURL]"
+                       KeyPath="yes" />
+      </Component>
+
+      <!-- EnrollToken в реестре HKLM\SOFTWARE\Ligament\2FA -->
+      <Component Id="AppEnrollTokenRegistry" Guid="3F8A1B2C-4D5E-6A7B-8C9D-0E1F2A3B4C5D" Win64="yes">
+        <Condition>ENROLLTOKEN</Condition>
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\Ligament\2FA"
+                       Name="EnrollToken"
+                       Type="string"
+                       Value="[ENROLLTOKEN]"
+                       KeyPath="yes" />
+      </Component>
+
+      <!-- Служба LigamentLinkAgent: системный воркер телеметрии, WSS-транспорта и 2FA-политик -->
+      <Component Id="LinkAgentServiceComponent" Guid="9A01C0A7-6B95-4D42-BE36-1EE7CB13A41D" Win64="yes">
+        <File Id="LigamentLinkAgentServiceExe"
+              Name="ligament_link_agent.exe"
+              Source="windows/link_agent/build/Release/ligament_link_agent.exe"
+              KeyPath="yes" />
+        <ServiceInstall Name="LigamentLinkAgent"
+                        DisplayName="Ligament Link Agent"
+                        Description="Ligament Link Windows host agent: protected identity, host telemetry and remote 2FA policy management"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="ignore" />
+        <ServiceControl Id="LigamentLinkAgentServiceControl"
+                        Name="LigamentLinkAgent"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="System64Folder">
+      <!-- Windows Credential Provider DLL & COM/Security регистрация.
+           Разделяемый компонент с одинаковым Guid во всех дистрибутивах Ligament. -->
+      <Component Id="CredentialProviderComponent" Guid="A3B7C9D1-5E2F-4A8B-9C0D-1E2F3A4B5C6D" Win64="yes">
+        <File Id="LigamentCPDll"
+              Name="LigamentCredentialProvider.dll"
+              Source="windows/credential_provider/build/Release/LigamentCredentialProvider.dll"
+              KeyPath="yes" />
+
+        <!-- COM InprocServer32 Registration -->
+        <RegistryKey Root="HKCR" Key="CLSID\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider" />
+          <RegistryKey Key="InprocServer32">
+            <RegistryValue Type="string" Value="[System64Folder]LigamentCredentialProvider.dll" />
+            <RegistryValue Name="ThreadingModel" Type="string" Value="Apartment" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <!-- Windows Credential Provider Registration -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider" />
+        </RegistryKey>
+
+        <!-- Windows Credential Provider Filter Registration -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Provider Filters\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider Filter" />
+        </RegistryKey>
+
+        <!-- Local Default Settings в реестре HKLM\SOFTWARE\Ligament\2FA -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Ligament\2FA">
+          <RegistryValue Name="RDP2FAEnabled" Type="string" Value="[RDP2FAENABLED]" />
+          <RegistryValue Name="Console2FAEnabled" Type="string" Value="[CONSOLE2FAENABLED]" />
+          <RegistryValue Name="Elevation2FAEnabled" Type="string" Value="[ELEVATION2FAENABLED]" />
+          <RegistryValue Name="FIDO2Enabled" Type="string" Value="[FIDO2ENABLED]" />
+          <RegistryValue Name="DefaultFactor" Type="string" Value="[DEFAULTFACTOR]" />
+          <RegistryValue Name="PushTimeoutSeconds" Type="string" Value="[PUSHTIMEOUTSECONDS]" />
+          <RegistryValue Name="FailClose" Type="string" Value="[FAILCLOSE]" />
+          <RegistryValue Name="AllowSelfSigned" Type="string" Value="[ALLOWSELFSIGNED]" />
+          <RegistryValue Name="BypassAccounts" Type="string" Value="[BYPASSACCOUNTS]" />
+          <RegistryValue Name="RdpAgentKey" Type="string" Value="[RDPAGENTKEY]" />
+        </RegistryKey>
+      </Component>
+
+      <!-- WebAuthn Redirection для RDP (FIDO2/YubiKey) -->
+      <Component Id="RdpWebAuthnPolicyComponent" Guid="B4C8D0E2-6F3A-4B9C-AD1E-2F3A4B5C6D7E" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services">
+          <RegistryValue Name="fEnableWebAuthn" Type="integer" Value="1" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
