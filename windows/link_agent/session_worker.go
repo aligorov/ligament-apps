@@ -15,6 +15,12 @@ const maxQueuedWorkerSignals = 256
 var (
 	workerLogMu sync.RWMutex
 	workerLogFn = func(format string, args ...any) {}
+
+	lockWTSSessionFn    = LockWTSSession
+	logoffWTSSessionFn  = LogoffWTSSession
+	applyHostPolicyFn   = ApplyHostPolicy
+	readHostPolicyFn    = ReadHostPolicyStatus
+	enumerateSessionsFn = EnumerateAllWTSSessions
 )
 
 // SetWorkerLogger configures a thread-safe diagnostic logger for worker lifecycle events.
@@ -304,7 +310,7 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 		}
 		workerLog("[HOST LOCK] Lock requested: command_id=%s user=%s reason=%s", cmd.CommandID, cmd.Username, cmd.Reason)
 		go func() {
-			sessions, err := EnumerateAllWTSSessions()
+			sessions, err := enumerateSessionsFn()
 			if err != nil {
 				workerLog("[HOST LOCK] Enumerate sessions failed: %v", err)
 				return
@@ -319,7 +325,7 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 				} else if !s.IsConsole && !s.IsActive {
 					continue
 				}
-				if err := LockWTSSession(s); err != nil {
+				if err := lockWTSSessionFn(s); err != nil {
 					workerLog("[HOST LOCK] Failed to lock session %d (%s): %v", s.SessionID, s.Username, err)
 				} else {
 					workerLog("[HOST LOCK] Successfully locked session %d (%s)", s.SessionID, s.Username)
@@ -345,13 +351,13 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 		workerLog("[HOST LOGOFF] Logoff requested: command_id=%s wts_session_id=%d user=%s", cmd.CommandID, sessID, cmd.Username)
 		go func() {
 			if sessID > 0 {
-				_ = LogoffWTSSession(sessID, false)
+				_ = logoffWTSSessionFn(sessID, false)
 				return
 			}
-			sessions, _ := EnumerateAllWTSSessions()
+			sessions, _ := enumerateSessionsFn()
 			for _, s := range sessions {
 				if cmd.Username != "" && strings.EqualFold(s.Username, cmd.Username) {
-					_ = LogoffWTSSession(s.SessionID, false)
+					_ = logoffWTSSessionFn(s.SessionID, false)
 				}
 			}
 		}()
@@ -363,11 +369,11 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 			_ = json.Unmarshal(message, &cmd)
 		}
 		workerLog("[HOST POLICY] Apply policy requested: command_id=%s", cmd.CommandID)
-		if err := ApplyHostPolicy(cmd); err != nil {
+		if err := applyHostPolicyFn(cmd); err != nil {
 			workerLog("[HOST POLICY] Apply policy error: %v", err)
 			return err
 		}
-		currentStatus := ReadHostPolicyStatus()
+		currentStatus := readHostPolicyFn()
 		if send != nil {
 			_ = send(map[string]any{
 				"type":          "policy_status",

@@ -32,6 +32,29 @@ func TestApplyPolicy_Serialization(t *testing.T) {
 }
 
 func TestSessionWorkerBroker_PolicyAndLockRouting(t *testing.T) {
+	origLock := lockWTSSessionFn
+	origLogoff := logoffWTSSessionFn
+	origApply := applyHostPolicyFn
+	origRead := readHostPolicyFn
+	origEnum := enumerateSessionsFn
+	defer func() {
+		lockWTSSessionFn = origLock
+		logoffWTSSessionFn = origLogoff
+		applyHostPolicyFn = origApply
+		readHostPolicyFn = origRead
+		enumerateSessionsFn = origEnum
+	}()
+
+	lockWTSSessionFn = func(s WTSSession) error { return nil }
+	logoffWTSSessionFn = func(sessionID uint32, wait bool) error { return nil }
+	applyHostPolicyFn = func(cmd ApplyPolicyCommand) error { return nil }
+	readHostPolicyFn = func() HostPolicyStatus {
+		return HostPolicyStatus{Console2FAEnabled: 1, Console2FASource: "local"}
+	}
+	enumerateSessionsFn = func() ([]WTSSession, error) {
+		return []WTSSession{{SessionID: 1, Username: "bob", IsActive: true, IsConsole: true}}, nil
+	}
+
 	broker := NewSessionWorkerBroker(nil)
 
 	sentFrames := make([][]byte, 0)
