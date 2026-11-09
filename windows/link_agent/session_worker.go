@@ -351,13 +351,32 @@ func (b *SessionWorkerBroker) Handler(ctx context.Context, message []byte, send 
 		workerLog("[HOST LOGOFF] Logoff requested: command_id=%s wts_session_id=%d user=%s", cmd.CommandID, sessID, cmd.Username)
 		go func() {
 			if sessID > 0 {
-				_ = logoffWTSSessionFn(sessID, false)
+				if err := logoffWTSSessionFn(sessID, false); err != nil {
+					workerLog("[HOST LOGOFF] Logoff session %d failed: %v", sessID, err)
+				} else {
+					workerLog("[HOST LOGOFF] Successfully logged off session %d", sessID)
+				}
 				return
 			}
-			sessions, _ := enumerateSessionsFn()
+			sessions, err := enumerateSessionsFn()
+			if err != nil {
+				workerLog("[HOST LOGOFF] Enumerate sessions failed: %v", err)
+				return
+			}
 			for _, s := range sessions {
-				if cmd.Username != "" && strings.EqualFold(s.Username, cmd.Username) {
-					_ = logoffWTSSessionFn(s.SessionID, false)
+				if cmd.Username != "" {
+					u := strings.ToLower(s.Username)
+					target := strings.ToLower(cmd.Username)
+					if u != target && !strings.HasSuffix(target, "\\"+u) && !strings.HasPrefix(target, u+"@") {
+						continue
+					}
+				} else if !s.IsConsole && !s.IsActive {
+					continue
+				}
+				if err := logoffWTSSessionFn(s.SessionID, false); err != nil {
+					workerLog("[HOST LOGOFF] Logoff session %d (%s) failed: %v", s.SessionID, s.Username, err)
+				} else {
+					workerLog("[HOST LOGOFF] Successfully logged off session %d (%s)", s.SessionID, s.Username)
 				}
 			}
 		}()
