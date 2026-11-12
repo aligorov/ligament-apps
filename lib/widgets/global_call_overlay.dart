@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
 import '../main.dart';
@@ -96,11 +97,22 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
         _call.remoteRenderer!.srcObject != null;
 
     return Positioned.fill(
-      child: Material(
-        color: hasRemoteVideo
-            ? Colors.black
-            : theme.colorScheme.surface.withValues(alpha: 0.98),
-        child: SafeArea(
+      child: Focus(
+        autofocus: true,
+        onKeyEvent: (node, event) {
+          if (event is KeyDownEvent &&
+              event.logicalKey == LogicalKeyboardKey.escape &&
+              !isIncoming) {
+            _call.endCall(notifyPeer: true);
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: Material(
+          color: hasRemoteVideo
+              ? Colors.black
+              : theme.colorScheme.surface.withValues(alpha: 0.98),
+          child: SafeArea(
           child: Stack(
             children: [
               // 1. Полноэкранный видеопоток удалённого абонента (если видео активно)
@@ -267,6 +279,26 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
                                 ),
                               ],
                             ),
+                          ),
+                        ],
+                        if (!isIncoming) ...[
+                          const SizedBox(width: 8),
+                          FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: theme.colorScheme.error,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              visualDensity: VisualDensity.compact,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
+                            icon: const Icon(Icons.call_end, size: 16),
+                            label: Text(
+                              isCalling ? 'Отменить' : 'Завершить',
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                            ),
+                            onPressed: () => _call.endCall(notifyPeer: true),
                           ),
                         ],
                       ],
@@ -447,11 +479,21 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
                             ),
                             const SizedBox(width: 12),
                           ],
-                          IconButton.filled(
-                            style: IconButton.styleFrom(backgroundColor: theme.colorScheme.error),
-                            icon: const Icon(Icons.call_end, color: Colors.white),
-                            tooltip: isCalling ? 'Отменить вызов' : 'Завершить вызов',
-                            onPressed: () => _call.endCall(notifyPeer: true),
+                          Material(
+                            color: theme.colorScheme.error,
+                            shape: const CircleBorder(),
+                            clipBehavior: Clip.antiAlias,
+                            elevation: 2,
+                            child: Tooltip(
+                              message: isCalling ? 'Отменить вызов' : 'Завершить вызов',
+                              child: InkWell(
+                                onTap: () => _call.endCall(notifyPeer: true),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(12),
+                                  child: Icon(Icons.call_end, color: Colors.white, size: 24),
+                                ),
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -463,8 +505,9 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildPipOverlay(ThemeData theme) {
     final screenSize = MediaQuery.of(context).size;

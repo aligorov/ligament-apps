@@ -178,6 +178,8 @@ void main(List<String> args) async {
   }
 
   ErrorWidget.builder = (FlutterErrorDetails details) {
+    DebugLogService.instance.record('flutter.widget_error', error: details.exception);
+    debugPrint('[ErrorWidget] Caught Flutter error: ${details.exceptionAsString()}');
     return Material(
       color: const Color(0xFF0F172A),
       child: Center(
