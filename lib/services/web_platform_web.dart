@@ -22,11 +22,11 @@ int webMaxTouchPoints() {
 void showWebNotification(String title, String body) {
   try {
     if (html.Notification.permission == 'granted') {
-      html.Notification(title, body: body, icon: '/icons/icon-192.png');
+      html.Notification(title, body: body, icon: '/static/pwa/icon-192.png');
     } else if (html.Notification.permission != 'denied') {
       html.Notification.requestPermission().then((perm) {
         if (perm == 'granted') {
-          html.Notification(title, body: body, icon: '/icons/icon-192.png');
+          html.Notification(title, body: body, icon: '/static/pwa/icon-192.png');
         }
       });
     }

@@ -1449,6 +1449,7 @@ class AuthState extends ChangeNotifier {
     );
 
     // Подключение к WebSocket корпоративного чата и WebRTC-сигналинга
+    ChatService.instance.setCurrentUser(username);
     ChatService.instance.connectWebSocket(client);
     unawaited(CallKitService.instance.startBackgroundKeepAlive());
 

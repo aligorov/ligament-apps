@@ -24,21 +24,30 @@ class AlertService {
   VoidCallback? onDeclineCall;
 
   bool _initialized = false;
+  final Map<String, ({String body, DateTime at})> _recentChatAlerts = {};
 
   Future<void> init() async {
     if (_initialized) return;
 
-    // Локальные нотификации: iOS/Android — всегда; macOS — системный баннер
+    // Локальные нотификации: iOS/Android — всегда; macOS/Linux — системный баннер
     // со звуком, когда окно скрыто в трей (фон) и вывод окна легко пропустить.
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS || Platform.isLinux)) {
       const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
       const darwinInit = DarwinInitializationSettings(
         requestAlertPermission: true,
         requestBadgePermission: true,
         requestSoundPermission: true,
       );
+      const linuxInit = LinuxInitializationSettings(
+        defaultActionName: 'Открыть',
+      );
       await _localNotifications.initialize(
-        const InitializationSettings(android: androidInit, iOS: darwinInit, macOS: darwinInit),
+        const InitializationSettings(
+          android: androidInit,
+          iOS: darwinInit,
+          macOS: darwinInit,
+          linux: linuxInit,
+        ),
         onDidReceiveNotificationResponse: (response) async {
           if (response.actionId == 'accept_call') {
             onAcceptCall?.call();
@@ -122,9 +131,9 @@ class AlertService {
         }
       }
 
-      // macOS: всегда дублируем нативным системным баннером с текстом сообщения и звуком
-      if (Platform.isMacOS) {
-        await _showDarwinNotification(title, body, challengeId);
+      // macOS / Linux: всегда дублируем нативным системным баннером с текстом сообщения и звуком
+      if (Platform.isMacOS || Platform.isLinux) {
+        await _showDesktopNotification(title, body, challengeId);
       }
     } else if (kIsWeb) {
       showWebNotification(title, body);
@@ -154,9 +163,9 @@ class AlertService {
     }
   }
 
-  /// Системная нотификация macOS (баннер + звук): срабатывает, когда окно
+  /// Системная нотификация macOS / Linux (баннер + звук): срабатывает, когда окно
   /// приложения скрыто в трей/фон и модалку не видно.
-  Future<void> _showDarwinNotification(String title, String body, String? challengeId) async {
+  Future<void> _showDesktopNotification(String title, String body, String? payload, {int id = 0}) async {
     try {
       const darwinDetails = DarwinNotificationDetails(
         presentAlert: true,
@@ -164,15 +173,16 @@ class AlertService {
         presentSound: true,
         interruptionLevel: InterruptionLevel.timeSensitive,
       );
+      const linuxDetails = LinuxNotificationDetails();
       await _localNotifications.show(
-        0,
+        id,
         title,
         body,
-        const NotificationDetails(macOS: darwinDetails),
-        payload: challengeId,
+        const NotificationDetails(macOS: darwinDetails, linux: linuxDetails),
+        payload: payload,
       );
     } catch (e) {
-      debugPrint('alert_service: ошибка локального уведомления macOS: $e');
+      debugPrint('alert_service: ошибка локального уведомления desktop: $e');
     }
   }
 
@@ -202,11 +212,12 @@ class AlertService {
         await _getAudioPlayer().play(AssetSource('sounds/alert.wav'));
       } catch (_) {}
 
-      if (Platform.isMacOS) {
-        await _showDarwinNotification(
+      if (Platform.isMacOS || Platform.isLinux) {
+        await _showDesktopNotification(
           sender.isNotEmpty ? 'Сообщение: $sender' : 'Новое сообщение в чате',
           message,
           null,
+          id: 2100,
         );
       }
     } else if (kIsWeb) {
@@ -247,8 +258,8 @@ class AlertService {
     final body = 'Доступна новая версия $latestVersion. Нажмите для загрузки.';
 
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
-      if (Platform.isMacOS) {
-        await _showDarwinNotification(title, body, releaseUrl);
+      if (Platform.isMacOS || Platform.isLinux) {
+        await _showDesktopNotification(title, body, releaseUrl, id: 2001);
       } else if (Platform.isWindows) {
         try {
           if (await windowManager.isMinimized()) {
@@ -320,8 +331,8 @@ class AlertService {
         await _getAudioPlayer().play(AssetSource('sounds/alert.wav'));
       } catch (_) {}
 
-      if (Platform.isMacOS) {
-        await _showDarwinNotification(title, body, chatId);
+      if (Platform.isMacOS || Platform.isLinux) {
+        await _showDesktopNotification(title, body, chatId, id: 2500);
       }
     } else if (kIsWeb) {
       showWebNotification(title, body);
@@ -331,6 +342,21 @@ class AlertService {
     }
   }
 
+  bool _isDuplicateChatAlert(String chatId, String body) {
+    final now = DateTime.now();
+    _recentChatAlerts.removeWhere((_, entry) => now.difference(entry.at) > const Duration(seconds: 5));
+    final prev = _recentChatAlerts[chatId];
+    final cleanBody = body.trim();
+    if (prev != null &&
+        (prev.body == cleanBody ||
+            (cleanBody.isNotEmpty && prev.body.contains(cleanBody)) ||
+            (prev.body.isNotEmpty && cleanBody.contains(prev.body)))) {
+      return true;
+    }
+    _recentChatAlerts[chatId] = (body: cleanBody, at: now);
+    return false;
+  }
+
   /// Оповещение о непрочитанных сообщениях в корпоративном чате
   Future<void> triggerChatUnreadNotification({
     required String title,
@@ -338,7 +364,12 @@ class AlertService {
     required String chatId,
     int? unreadCount,
   }) async {
+    if (_isDuplicateChatAlert(chatId, body)) {
+      return;
+    }
     await init();
+
+    final chatNotifId = 4000 + (chatId.hashCode & 0x7FFFFFFF) % 100000;
 
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
@@ -353,8 +384,8 @@ class AlertService {
         } catch (_) {}
       }
 
-      if (Platform.isMacOS) {
-        await _showDarwinNotification(title, body, chatId);
+      if (Platform.isMacOS || Platform.isLinux) {
+        await _showDesktopNotification(title, body, chatId, id: chatNotifId);
       }
     } else if (kIsWeb) {
       showWebNotification(title, body);
@@ -373,7 +404,7 @@ class AlertService {
         badgeNumber: unreadCount,
       );
       await _localNotifications.show(
-        2001,
+        chatNotifId,
         title,
         body,
         NotificationDetails(android: androidDetails, iOS: iosDetails),

@@ -7,6 +7,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../api/client.dart';
 import '../models/chat_models.dart';
+import 'alert_service.dart';
 import 'call_session_manager.dart';
 import 'debug_log_service.dart';
 
@@ -85,12 +86,51 @@ class ChatService extends ChangeNotifier {
   }
 
   String? _activeChatId;
+  int _activeTopicId = 0;
+  String? _currentUsername;
+  bool _isForeground = true;
+
   String? get activeChatId => _activeChatId;
+  bool get isForeground => _isForeground;
+
+  void setCurrentUser(String username) {
+    _currentUsername = username.trim();
+  }
+
+  void joinChatRoom(String chatId) {
+    if (chatId.isEmpty || _wsChannel == null || !_isWsConnected) return;
+    sendWs({'type': 'room.join', 'chat_id': chatId});
+  }
+
+  void leaveChatRoom(String chatId) {
+    if (chatId.isEmpty || _wsChannel == null || !_isWsConnected) return;
+    sendWs({'type': 'room.leave', 'chat_id': chatId});
+  }
+
+  void setForegroundState(bool isForeground) {
+    if (_isForeground == isForeground) return;
+    _isForeground = isForeground;
+    final activeId = _activeChatId;
+    if (activeId == null) return;
+    if (isForeground) {
+      joinChatRoom(activeId);
+    } else {
+      leaveChatRoom(activeId);
+    }
+  }
 
   void setActiveChat(String? chatId, [int? topicId]) {
+    final prevChatId = _activeChatId;
+    if (prevChatId != null && prevChatId != chatId) {
+      leaveChatRoom(prevChatId);
+    }
     _activeChatId = chatId;
+    _activeTopicId = topicId ?? 0;
     if (chatId != null) {
-      _updateLocalUnread(chatId, topicId ?? 0);
+      _updateLocalUnread(chatId, _activeTopicId);
+      if (_isForeground) {
+        joinChatRoom(chatId);
+      }
     }
     notifyListeners();
   }
@@ -631,6 +671,12 @@ class ChatService extends ChangeNotifier {
         _isWsConnecting = false;
         _isWsConnected = true;
         _flushPendingOutgoingWs();
+        if (_activeChatId != null && _isForeground) {
+          joinChatRoom(_activeChatId!);
+          if (_lastClient != null) {
+            unawaited(loadMessages(_lastClient!, _activeChatId!, topicId: _activeTopicId));
+          }
+        }
         notifyListeners();
       }).catchError((e) {
         if (!identical(_wsChannel, ch)) return;
@@ -692,6 +738,10 @@ class ChatService extends ChangeNotifier {
     _wsChannel = null;
     _isWsConnecting = false;
     _isWsConnected = false;
+    _activeChatId = null;
+    _activeTopicId = 0;
+    _currentUsername = null;
+    _isForeground = true;
     _pendingOutgoingWs.clear();
     notifyListeners();
   }
@@ -765,26 +815,54 @@ class ChatService extends ChangeNotifier {
         final msg = ChatMessage.fromJson(rawMsg);
         final key = '${msg.chatId}:${msg.topicId}';
         final current = _messages[key] ?? const [];
-        _messages[key] = [msg, ...current];
-        if (_activeChatId != msg.chatId) {
-          _chats = _chats.map((c) {
-            if (c.id == msg.chatId) {
-              return ChatItem(
-                id: c.id,
-                kind: c.kind,
-                title: c.title,
-                description: c.description,
-                avatarUrl: c.avatarUrl,
-                isForum: c.isForum,
-                isArchived: c.isArchived,
-                unreadCount: c.unreadCount + 1,
-                updatedAt: msg.createdAt,
-              );
-            }
-            return c;
-          }).toList();
+        if (msg.id > 0 && current.any((m) => m.id == msg.id)) {
+          return;
         }
-        if (_playSounds) {
+        _messages[key] = [msg, ...current];
+
+        final isMe = _currentUsername != null &&
+            _currentUsername!.isNotEmpty &&
+            msg.senderId.toLowerCase() == _currentUsername!.toLowerCase();
+        final isViewingThisChat = _activeChatId == msg.chatId && _isForeground;
+
+        if (!isViewingThisChat) {
+          final hasChat = _chats.any((c) => c.id == msg.chatId);
+          if (hasChat) {
+            _chats = _chats.map((c) {
+              if (c.id == msg.chatId) {
+                return ChatItem(
+                  id: c.id,
+                  kind: c.kind,
+                  title: c.title,
+                  description: c.description,
+                  avatarUrl: c.avatarUrl,
+                  isForum: c.isForum,
+                  isArchived: c.isArchived,
+                  unreadCount: isMe ? c.unreadCount : c.unreadCount + 1,
+                  updatedAt: msg.createdAt,
+                  peerUserId: c.peerUserId,
+                  myRole: c.myRole,
+                );
+              }
+              return c;
+            }).toList();
+          } else if (_lastClient != null) {
+            unawaited(loadChats(_lastClient!));
+          }
+
+          if (!isMe && _showNotifications) {
+            final sender = msg.senderName.isNotEmpty ? msg.senderName : msg.senderId;
+            final body = msg.body.isNotEmpty ? msg.body : 'Новое сообщение';
+            unawaited(
+              AlertService.instance.triggerChatUnreadNotification(
+                title: sender.isNotEmpty ? sender : 'Ligament Chat',
+                body: body,
+                chatId: msg.chatId,
+              ),
+            );
+          }
+        }
+        if (_playSounds && !isMe) {
           SystemSound.play(SystemSoundType.alert);
         }
         notifyListeners();
@@ -904,5 +982,20 @@ class ChatService extends ChangeNotifier {
         recorderSessionId: recId,
       );
     }
+  }
+
+  @visibleForTesting
+  void setChatsForTest(List<ChatItem> chats) {
+    _chats = chats;
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void resetForTest() {
+    disconnectWebSocket();
+    _chats = const [];
+    _messages.clear();
+    _topics.clear();
+    notifyListeners();
   }
 }

@@ -54,6 +54,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = context.read<AuthState>();
       if (auth.api != null) {
+        _chatService.setCurrentUser(auth.username);
+        _chatService.setForegroundState(true);
         _chatService.connectWebSocket(auth.api!);
         _chatService.loadContacts(auth.api!);
         _chatService.loadChats(auth.api!).then((_) {
@@ -82,10 +84,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _chatService.setForegroundState(true);
       final auth = context.read<AuthState>();
       if (auth.api != null) {
+        _chatService.setCurrentUser(auth.username);
         _chatService.connectWebSocket(auth.api!);
+        if (_selectedChat != null) {
+          _chatService.loadMessages(
+            auth.api!,
+            _selectedChat!.id,
+            topicId: _selectedTopic?.id ?? 0,
+          );
+        }
       }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _chatService.setForegroundState(false);
     }
   }
 
@@ -176,6 +192,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
     final auth = context.read<AuthState>();
     if (auth.api != null && _selectedChat != null) {
+      _chatService.setActiveChat(_selectedChat!.id, topic.id);
       _chatService.loadMessages(auth.api!, _selectedChat!.id, topicId: topic.id);
     }
   }
@@ -521,6 +538,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
+        _chatService.setActiveChat(null);
         setState(() {
           _selectedChat = null;
           _selectedTopic = null;
@@ -533,10 +551,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           elevation: 0,
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
-            onPressed: () => setState(() {
-              _selectedChat = null;
-              _selectedTopic = null;
-            }),
+            onPressed: () {
+              _chatService.setActiveChat(null);
+              setState(() {
+                _selectedChat = null;
+                _selectedTopic = null;
+              });
+            },
           ),
           titleSpacing: 0,
           title: Row(
@@ -1349,6 +1370,56 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               if (msg.kind == 'voice' && msg.metadata['waveform'] is String)
                 WaveformBubble.fromBase64(
                   base64Waveform: msg.metadata['waveform'] as String,
+                )
+              else if (msg.kind == 'link_call')
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      msg.metadata['is_video'] == true
+                          ? Icons.videocam_off_outlined
+                          : Icons.phone_missed_outlined,
+                      size: 18,
+                      color: isMe
+                          ? theme.colorScheme.onPrimary
+                          : (msg.metadata['call_status'] == 'missed'
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.primary),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        msg.body.isNotEmpty ? msg.body : '📞 Пропущенный звонок',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: isMe
+                              ? theme.colorScheme.onPrimary
+                              : theme.colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    if (_selectedChat?.kind == 'direct') ...[
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: () => _startCall(
+                          isVideo: msg.metadata['is_video'] == true,
+                        ),
+                        style: TextButton.styleFrom(
+                          foregroundColor: isMe
+                              ? theme.colorScheme.onPrimary
+                              : theme.colorScheme.primary,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('Перезвонить'),
+                      ),
+                    ],
+                  ],
                 )
               else if (msg.body.isNotEmpty && !_isDefaultAttachmentBody(msg))
                 Text.rich(
@@ -2555,6 +2626,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       try {
         await _chatService.deleteChat(api, chat.id);
         if (_selectedChat?.id == chat.id) {
+          _chatService.setActiveChat(null);
           setState(() {
             _selectedChat = null;
           });
