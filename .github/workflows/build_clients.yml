@@ -126,7 +126,7 @@ jobs:
             exit 1
           fi
           flutter pub get
-          flutter build apk --release --no-tree-shake-icons --obfuscate --split-debug-info=build/apk_symbols
+          flutter build apk --release --no-tree-shake-icons --obfuscate --split-debug-info=build/apk_symbols --android-skip-build-dependency-validation
           apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           [ -n "$apksigner" ]
           "$apksigner" verify --verbose --print-certs build/app/outputs/flutter-apk/app-release.apk
