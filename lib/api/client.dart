@@ -881,11 +881,13 @@ class ApiClient {
     int? secretTtl,
     Map<String, dynamic>? metadata,
     List<String>? attachments,
+    String? clientMsgId,
   }) async {
     final payload = <String, dynamic>{
       'topic_id': topicId,
       'body': body,
       'kind': kind,
+      if (clientMsgId != null && clientMsgId.isNotEmpty) 'client_msg_id': clientMsgId,
       if (replyToId != null) 'reply_to_id': replyToId,
       if (forwardMessageId != null) 'forward_message_id': forwardMessageId,
       if (secretTtl != null) 'secret_ttl_seconds': secretTtl,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ligament_authenticator/api/client.dart';
 import 'package:ligament_authenticator/models/chat_models.dart';
 import 'package:ligament_authenticator/screens/chat_screen.dart';
 import 'package:ligament_authenticator/services/alert_service.dart';
@@ -144,6 +145,137 @@ void main() {
       final showCalls = localNotificationCalls.where((c) => c.method == 'show').toList();
       expect(showCalls.length, 2);
     });
+
+    test('sendMessage does not duplicate message when WebSocket echo arrives before HTTP response', () async {
+      final service = ChatService.instance;
+      service.setCurrentUser('bob');
+      final client = _ChatTestApiClient();
+
+      // Имитируем ситуацию, когда сервер через WebSocket эхо присылает сообщение РАНЬШЕ,
+      // чем завершится чтение ответа HTTP POST запроса
+      client.onSendInvoked = () {
+        service.onWebSocketEvent({
+          'type': 'chat.message',
+          'payload': {
+            'message': {
+              'id': 999,
+              'chat_id': 'chat-race',
+              'topic_id': 0,
+              'sender_id': 'bob',
+              'sender_name': 'Bob',
+              'client_msg_id': 'cmsg_race_999',
+              'body': 'Привет из гонки',
+              'kind': 'text',
+              'created_at': '2026-11-13T12:00:00Z',
+            },
+          },
+        });
+      };
+
+      client.mockSendResponse = {
+        'id': 999,
+        'chat_id': 'chat-race',
+        'topic_id': 0,
+        'sender_id': 'bob',
+        'sender_name': 'Bob',
+        'client_msg_id': 'cmsg_race_999',
+        'body': 'Привет из гонки',
+        'kind': 'text',
+        'created_at': '2026-11-13T12:00:00Z',
+      };
+
+      await service.sendMessage(
+        client,
+        'chat-race',
+        topicId: 0,
+        body: 'Привет из гонки',
+        clientMsgId: 'cmsg_race_999',
+      );
+
+      final messages = service.getMessages('chat-race', 0);
+      expect(messages.length, 1, reason: 'Сообщение должно отображаться ровно 1 раз без дубликатов');
+      expect(messages.first.id, 999);
+      expect(messages.first.body, 'Привет из гонки');
+    });
+
+    test('sendMessage does not duplicate message when WebSocket echo arrives after HTTP response', () async {
+      final service = ChatService.instance;
+      service.setCurrentUser('bob');
+      final client = _ChatTestApiClient();
+
+      client.mockSendResponse = {
+        'id': 1000,
+        'chat_id': 'chat-race-2',
+        'topic_id': 0,
+        'sender_id': 'bob',
+        'sender_name': 'Bob',
+        'client_msg_id': 'cmsg_race_1000',
+        'body': 'Второе сообщение',
+        'kind': 'text',
+        'created_at': '2026-11-13T12:01:00Z',
+      };
+
+      await service.sendMessage(
+        client,
+        'chat-race-2',
+        topicId: 0,
+        body: 'Второе сообщение',
+        clientMsgId: 'cmsg_race_1000',
+      );
+
+      // Теперь эхо из WebSocket приходит ПОСЛЕ завершения HTTP запроса
+      service.onWebSocketEvent({
+        'type': 'chat.message',
+        'payload': {
+          'message': {
+            'id': 1000,
+            'chat_id': 'chat-race-2',
+            'topic_id': 0,
+            'sender_id': 'bob',
+            'sender_name': 'Bob',
+            'client_msg_id': 'cmsg_race_1000',
+            'body': 'Второе сообщение',
+            'kind': 'text',
+            'created_at': '2026-11-13T12:01:00Z',
+          },
+        },
+      });
+
+      final messages = service.getMessages('chat-race-2', 0);
+      expect(messages.length, 1, reason: 'Сообщение должно оставаться ровно 1 раз');
+      expect(messages.first.id, 1000);
+    });
+
+    test('getMessages defensively deduplicates messages with duplicate ids', () {
+      final service = ChatService.instance;
+      final msg1 = ChatMessage.fromJson({
+        'id': 1001,
+        'chat_id': 'chat-dupe-check',
+        'topic_id': 0,
+        'sender_id': 'bob',
+        'sender_name': 'Bob',
+        'client_msg_id': 'cmsg_1',
+        'body': 'Тест дубля',
+        'kind': 'text',
+        'created_at': '2026-11-13T12:02:00Z',
+      });
+      final msg2 = ChatMessage.fromJson({
+        'id': 1001,
+        'chat_id': 'chat-dupe-check',
+        'topic_id': 0,
+        'sender_id': 'bob',
+        'sender_name': 'Bob',
+        'client_msg_id': 'cmsg_1',
+        'body': 'Тест дубля',
+        'kind': 'text',
+        'created_at': '2026-11-13T12:02:00Z',
+      });
+
+      service.setMessagesForTest('chat-dupe-check', 0, [msg1, msg2]);
+      final deduped = service.getMessages('chat-dupe-check', 0);
+      expect(deduped.length, 1);
+      expect(deduped.first.id, 1001);
+    });
   });
 
   group('Missed call link_call model & ChatScreen UI', () {
@@ -248,4 +380,38 @@ void main() {
       await tester.pump();
     });
   });
+}
+
+class _ChatTestApiClient extends ApiClient {
+  _ChatTestApiClient() : super(baseUrl: 'https://test.example', token: 'test-token');
+
+  Map<String, dynamic>? mockSendResponse;
+  void Function()? onSendInvoked;
+
+  @override
+  Future<Map<String, dynamic>> sendChatMessage(
+    String chatId, {
+    int topicId = 0,
+    required String body,
+    String kind = 'text',
+    int? replyToId,
+    int? forwardMessageId,
+    int? secretTtl,
+    Map<String, dynamic>? metadata,
+    List<String>? attachments,
+    String? clientMsgId,
+  }) async {
+    onSendInvoked?.call();
+    return mockSendResponse ?? {
+      'id': 777,
+      'chat_id': chatId,
+      'topic_id': topicId,
+      'sender_id': 'bob',
+      'sender_name': 'Bob',
+      'client_msg_id': clientMsgId ?? 'test-msg-777',
+      'body': body,
+      'kind': kind,
+      'created_at': DateTime.now().toIso8601String(),
+    };
+  }
 }

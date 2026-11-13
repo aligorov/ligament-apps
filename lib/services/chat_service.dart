@@ -136,8 +136,27 @@ class ChatService extends ChangeNotifier {
   }
 
   List<TopicItem> getTopics(String chatId) => _topics[chatId] ?? const [];
-  List<ChatMessage> getMessages(String chatId, int topicId) =>
-      _messages['$chatId:$topicId'] ?? const [];
+  List<ChatMessage> getMessages(String chatId, int topicId) {
+    final list = _messages['$chatId:$topicId'];
+    if (list == null || list.isEmpty) return const [];
+    var hasDupes = false;
+    final seen = <int>{};
+    for (final m in list) {
+      if (m.id > 0 && !seen.add(m.id)) {
+        hasDupes = true;
+        break;
+      }
+    }
+    if (!hasDupes) return list;
+    final clean = <ChatMessage>[];
+    final cleanSeen = <int>{};
+    for (final m in list) {
+      if (m.id > 0 && !cleanSeen.add(m.id)) continue;
+      clean.add(m);
+    }
+    _messages['$chatId:$topicId'] = clean;
+    return clean;
+  }
 
   /// Фильтрует список диалогов по поисковому запросу и категории.
   static List<ChatItem> filterChatList(
@@ -273,9 +292,17 @@ class ChatService extends ChangeNotifier {
       if (loadMore) {
         // Добавляем старые сообщения в конец массива:
         // В reverse: true списке это не сдвигает текущую позицию скролла!
-        _messages[key] = [...current, ...reversedBatch];
+        final existingIds = current.map((m) => m.id).where((id) => id > 0).toSet();
+        final filteredBatch = reversedBatch.where((m) => !existingIds.contains(m.id)).toList();
+        _messages[key] = [...current, ...filteredBatch];
       } else {
-        _messages[key] = reversedBatch;
+        final seen = <int>{};
+        final deduped = <ChatMessage>[];
+        for (final m in reversedBatch) {
+          if (m.id > 0 && !seen.add(m.id)) continue;
+          deduped.add(m);
+        }
+        _messages[key] = deduped;
       }
 
       if (fetched.isNotEmpty) {
@@ -302,7 +329,11 @@ class ChatService extends ChangeNotifier {
     int? secretTtl,
     Map<String, dynamic>? metadata,
     List<String>? attachments,
+    String? clientMsgId,
   }) async {
+    final cMsgId = (clientMsgId != null && clientMsgId.isNotEmpty)
+        ? clientMsgId
+        : 'cmsg_${DateTime.now().microsecondsSinceEpoch}';
     try {
       final res = await client.sendChatMessage(
         chatId,
@@ -314,10 +345,19 @@ class ChatService extends ChangeNotifier {
         secretTtl: secretTtl,
         metadata: metadata,
         attachments: attachments,
+        clientMsgId: cMsgId,
       );
       final sent = ChatMessage.fromJson(res);
       final key = '$chatId:$topicId';
       final current = _messages[key] ?? const [];
+      // Если сообщение уже доставлено через WebSocket (echo), не дублируем его в списке
+      if (sent.id > 0 && current.any((m) => m.id == sent.id)) {
+        return;
+      }
+      if (sent.clientMsgId.isNotEmpty &&
+          current.any((m) => m.clientMsgId.isNotEmpty && m.clientMsgId == sent.clientMsgId)) {
+        return;
+      }
       // Новое сообщение вставляется на позицию 0 (самый низ экрана в reverse: true)
       _messages[key] = [sent, ...current];
       notifyListeners();
@@ -379,6 +419,7 @@ class ChatService extends ChangeNotifier {
     int targetTopicId = 0,
     required ChatMessage originalMessage,
   }) async {
+    final cMsgId = 'fwd_${DateTime.now().microsecondsSinceEpoch}';
     try {
       final res = await client.sendChatMessage(
         targetChatId,
@@ -386,10 +427,18 @@ class ChatService extends ChangeNotifier {
         body: originalMessage.body,
         kind: originalMessage.kind,
         forwardMessageId: originalMessage.id,
+        clientMsgId: cMsgId,
       );
       final sent = ChatMessage.fromJson(res);
       final key = '$targetChatId:$targetTopicId';
       final current = _messages[key] ?? const [];
+      if (sent.id > 0 && current.any((m) => m.id == sent.id)) {
+        return;
+      }
+      if (sent.clientMsgId.isNotEmpty &&
+          current.any((m) => m.clientMsgId.isNotEmpty && m.clientMsgId == sent.clientMsgId)) {
+        return;
+      }
       _messages[key] = [sent, ...current];
       notifyListeners();
     } catch (e) {
@@ -818,6 +867,10 @@ class ChatService extends ChangeNotifier {
         if (msg.id > 0 && current.any((m) => m.id == msg.id)) {
           return;
         }
+        if (msg.clientMsgId.isNotEmpty &&
+            current.any((m) => m.clientMsgId.isNotEmpty && m.clientMsgId == msg.clientMsgId)) {
+          return;
+        }
         _messages[key] = [msg, ...current];
 
         final isMe = _currentUsername != null &&
@@ -987,6 +1040,12 @@ class ChatService extends ChangeNotifier {
   @visibleForTesting
   void setChatsForTest(List<ChatItem> chats) {
     _chats = chats;
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void setMessagesForTest(String chatId, int topicId, List<ChatMessage> messages) {
+    _messages['$chatId:$topicId'] = messages;
     notifyListeners();
   }
 
