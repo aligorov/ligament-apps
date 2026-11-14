@@ -255,6 +255,30 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
                             ],
                           ),
                         ),
+                        if (isConnected && _call.callFingerprintEmojis.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          Tooltip(
+                            message: 'Код шифрования звонка (SAS): сравните с собеседником',
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: hasRemoteVideo
+                                    ? Colors.black54
+                                    : theme.colorScheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: hasRemoteVideo
+                                      ? Colors.white24
+                                      : theme.colorScheme.outlineVariant,
+                                ),
+                              ),
+                              child: Text(
+                                _call.callFingerprintEmojis.join(' '),
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            ),
+                          ),
+                        ],
                         if (_call.isRecorded) ...[
                           const SizedBox(width: 8),
                           Container(
@@ -527,139 +551,189 @@ class _GlobalCallOverlayWidgetState extends State<GlobalCallOverlayWidget>
             );
           });
         },
-        child: Material(
-          elevation: 8,
-          borderRadius: BorderRadius.circular(16),
-          color: theme.colorScheme.surfaceContainerHighest,
-          child: Container(
-            width: 200,
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
+        child: Builder(
+          builder: (context) {
+            final showPipVideo = _call.isVideo &&
+                _call.status == CallStatus.connected &&
+                _call.remoteRenderer != null &&
+                _call.remoteRenderer!.srcObject != null;
+            return Material(
+              elevation: 8,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: theme.colorScheme.outlineVariant),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 14,
-                      backgroundColor: theme.colorScheme.primaryContainer,
-                      foregroundColor: theme.colorScheme.onPrimaryContainer,
-                      child: Text(
-                        initials,
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _call.chatTitle,
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    InkWell(
-                      onTap: () {
-                        LigamentApp.navigatorKey.currentState?.push(
-                          MaterialPageRoute(builder: (_) => const ChatScreen()),
-                        );
-                      },
-                      borderRadius: BorderRadius.circular(12),
-                      child: const Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.chat_bubble_outline, size: 16),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    InkWell(
-                      onTap: () => _call.setPip(false),
-                      borderRadius: BorderRadius.circular(12),
-                      child: const Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.fullscreen, size: 18),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      _call.formattedDuration,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: theme.colorScheme.primary,
-                      ),
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_call.isRecorded) ...[
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.error,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: const Text(
-                              'REC',
-                              style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
-                            ),
+              clipBehavior: Clip.antiAlias,
+              color: showPipVideo ? Colors.black : theme.colorScheme.surfaceContainerHighest,
+              child: DefaultTextStyle.merge(
+                style: TextStyle(color: showPipVideo ? Colors.white : null),
+                child: IconTheme.merge(
+                  data: IconThemeData(color: showPipVideo ? Colors.white : null),
+                  child: Stack(
+                    children: [
+                      if (showPipVideo)
+                        Positioned.fill(
+                          child: RTCVideoView(
+                            _call.remoteRenderer!,
+                            objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                           ),
-                          const SizedBox(width: 4),
-                        ],
-                        if (_call.isMobileRoutingSupported) ...[
-                          InkWell(
-                            onTap: _call.toggleSpeakerphone,
-                            borderRadius: BorderRadius.circular(12),
-                            child: Padding(
-                              padding: const EdgeInsets.all(4),
-                              child: Icon(
-                                _call.isSpeakerphoneOn ? Icons.volume_up : Icons.phone_in_talk,
-                                size: 16,
-                                color: _call.isSpeakerphoneOn ? theme.colorScheme.primary : null,
+                        ),
+                      if (showPipVideo)
+                        const Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Color(0x99000000),
+                                  Color(0x33000000),
+                                  Color(0xCC000000),
+                                ],
                               ),
                             ),
                           ),
-                          const SizedBox(width: 6),
-                        ],
-                        InkWell(
-                          onTap: _call.toggleMute,
-                          borderRadius: BorderRadius.circular(12),
-                          child: Padding(
-                            padding: const EdgeInsets.all(4),
-                            child: Icon(
-                              _call.isMuted ? Icons.mic_off : Icons.mic,
-                              size: 16,
-                              color: _call.isMuted ? theme.colorScheme.error : null,
-                            ),
+                        ),
+                      Container(
+                        width: 200,
+                        height: showPipVideo ? 132 : null,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: showPipVideo
+                                ? Colors.white24
+                                : theme.colorScheme.outlineVariant,
                           ),
                         ),
-                        const SizedBox(width: 6),
-                        InkWell(
-                          onTap: () => _call.endCall(notifyPeer: true),
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.error,
-                              shape: BoxShape.circle,
+                        child: Column(
+                          mainAxisSize: showPipVideo ? MainAxisSize.max : MainAxisSize.min,
+                          mainAxisAlignment: showPipVideo
+                              ? MainAxisAlignment.spaceBetween
+                              : MainAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                CircleAvatar(
+                                  radius: 14,
+                                  backgroundColor: theme.colorScheme.primaryContainer,
+                                  foregroundColor: theme.colorScheme.onPrimaryContainer,
+                                  child: Text(
+                                    initials,
+                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _call.chatTitle,
+                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                InkWell(
+                                  onTap: () {
+                                    LigamentApp.navigatorKey.currentState?.push(
+                                      MaterialPageRoute(builder: (_) => const ChatScreen()),
+                                    );
+                                  },
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: const Padding(
+                                    padding: EdgeInsets.all(4),
+                                    child: Icon(Icons.chat_bubble_outline, size: 16),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                InkWell(
+                                  onTap: () => _call.setPip(false),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: const Padding(
+                                    padding: EdgeInsets.all(4),
+                                    child: Icon(Icons.fullscreen, size: 18),
+                                  ),
+                                ),
+                              ],
                             ),
-                            child: const Icon(Icons.call_end, size: 12, color: Colors.white),
-                          ),
+                            if (!showPipVideo) const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  _call.formattedDuration,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: showPipVideo ? Colors.white : theme.colorScheme.primary,
+                                  ),
+                                ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (_call.isRecorded) ...[
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: theme.colorScheme.error,
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: const Text(
+                                          'REC',
+                                          style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                    ],
+                                    if (_call.isMobileRoutingSupported) ...[
+                                      InkWell(
+                                        onTap: _call.toggleSpeakerphone,
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(4),
+                                          child: Icon(
+                                            _call.isSpeakerphoneOn ? Icons.volume_up : Icons.phone_in_talk,
+                                            size: 16,
+                                            color: _call.isSpeakerphoneOn ? theme.colorScheme.primary : null,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                    ],
+                                    InkWell(
+                                      onTap: _call.toggleMute,
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(4),
+                                        child: Icon(
+                                          _call.isMuted ? Icons.mic_off : Icons.mic,
+                                          size: 16,
+                                          color: _call.isMuted ? theme.colorScheme.error : null,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    InkWell(
+                                      onTap: () => _call.endCall(notifyPeer: true),
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: BoxDecoration(
+                                          color: theme.colorScheme.error,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(Icons.call_end, size: 12, color: Colors.white),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ],
+                      ),
+                    ],
+                  ),
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         ),
       ),
     );

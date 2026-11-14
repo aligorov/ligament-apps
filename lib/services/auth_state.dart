@@ -1143,6 +1143,7 @@ class AuthState extends ChangeNotifier {
         final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
         final isVideo = data['is_video'] == true || data['is_video'] == 'true';
         final chatId = data['chat_id']?.toString() ?? '';
+        final callId = (data['call_id'] ?? msg['call_id'])?.toString();
         if (api != null) {
           ChatService.instance.ensureConnected(api!);
         }
@@ -1157,6 +1158,7 @@ class AuthState extends ChangeNotifier {
             chatId: chatId,
             callerName: caller,
             isVideo: isVideo,
+            callId: callId,
           );
         }
         notifyListeners();
@@ -1223,6 +1225,7 @@ class AuthState extends ChangeNotifier {
         final caller = data['caller']?.toString() ?? (isRu ? 'Сотрудник' : 'Caller');
         final isVideo = data['is_video'] == true || data['is_video'] == 'true';
         final chatId = data['chat_id']?.toString() ?? '';
+        final callId = (data['call_id'] ?? prompt['call_id'])?.toString();
         if (api != null) {
           ChatService.instance.ensureConnected(api!);
         }
@@ -1237,6 +1240,7 @@ class AuthState extends ChangeNotifier {
             chatId: chatId,
             callerName: caller,
             isVideo: isVideo,
+            callId: callId,
           );
         }
         return;
@@ -1465,7 +1469,7 @@ class AuthState extends ChangeNotifier {
       _isPollingInFlight = true;
       pollTicks++;
       try {
-        ChatService.instance.ensureConnected(client);
+        ChatService.instance.ensureConnected(client, true);
         await loadPendingChallenges();
         await checkSupportSession();
         if (isEngineer) {

@@ -184,6 +184,8 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
   private let callController = CXCallController()
   private var callKitChannel: FlutterMethodChannel?
   private var currentCallUUID: UUID?
+  private var providerCallUUID: UUID?
+  private var trackedCallUUIDs: Set<UUID> = []
   private var currentCallHasVideo: Bool = false
   private var isCallAnswered: Bool = false
   private var keepAliveEnabled: Bool = true
@@ -197,6 +199,13 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
       channel.setMethodCallHandler { [weak self] call, result in
         self?.handleMethodCall(call, result: result)
       }
+      NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(handleAudioRouteChange(_:)),
+        name: AVAudioSession.routeChangeNotification,
+        object: nil
+      )
     }
 
     if provider == nil {
@@ -294,18 +303,22 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
     }
   }
 
+  @objc private func handleAudioRouteChange(_ notification: Notification) {
+    let session = AVAudioSession.sharedInstance()
+    let isSpeaker = session.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
+    DispatchQueue.main.async { [weak self] in
+      self?.callKitChannel?.invokeMethod("onAudioRouteChanged", arguments: ["isSpeaker": isSpeaker])
+    }
+  }
+
   private func activateWebRTCAudio(hasVideo: Bool) {
     stopSilentKeepAlive()
     let rtcAudio = RTCAudioSession.sharedInstance()
     rtcAudio.lockForConfiguration()
     do {
-      let mode: AVAudioSession.Mode = hasVideo ? .videoChat : .voiceChat
-      var options: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP]
-      if hasVideo {
-        options.insert(.defaultToSpeaker)
-      }
+      let options: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay]
       try rtcAudio.setCategory(.playAndRecord, with: options)
-      try rtcAudio.setMode(mode)
+      try rtcAudio.setMode(.voiceChat)
       try rtcAudio.setActive(true)
       if hasVideo {
         try? rtcAudio.overrideOutputAudioPort(.speaker)
@@ -348,13 +361,6 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
       let hasVideo = (args["hasVideo"] as? Bool) ?? false
 
       stopSilentKeepAlive()
-      self.currentCallUUID = uuid
-      self.currentCallHasVideo = hasVideo
-      self.isCallAnswered = false
-
-      let rtcAudio = RTCAudioSession.sharedInstance()
-      rtcAudio.useManualAudio = true
-      rtcAudio.isAudioEnabled = false
 
       let update = CXCallUpdate()
       update.remoteHandle = CXHandle(type: .generic, value: callerName)
@@ -364,6 +370,29 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
       update.supportsGrouping = false
       update.supportsUngrouping = false
       update.supportsDTMF = false
+
+      // Если входящий звонок уже был зарегистрирован под временным UUID (до прихода offer),
+      // обновляем метаданные у существующего вызова и синхронизируем currentCallUUID без дублирования окна.
+      if let existingProviderUUID = self.providerCallUUID ?? self.currentCallUUID {
+        self.trackedCallUUIDs.insert(existingProviderUUID)
+        self.trackedCallUUIDs.insert(uuid)
+        self.providerCallUUID = existingProviderUUID
+        self.currentCallUUID = uuid
+        self.currentCallHasVideo = hasVideo
+        self.provider?.reportCall(with: existingProviderUUID, updated: update)
+        result(true)
+        return
+      }
+
+      self.currentCallUUID = uuid
+      self.providerCallUUID = uuid
+      self.trackedCallUUIDs.insert(uuid)
+      self.currentCallHasVideo = hasVideo
+      self.isCallAnswered = false
+
+      let rtcAudio = RTCAudioSession.sharedInstance()
+      rtcAudio.useManualAudio = true
+      rtcAudio.isAudioEnabled = false
 
       provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
         if let error = error {
@@ -380,10 +409,11 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
       let hasVideo = (args["hasVideo"] as? Bool) ?? self.currentCallHasVideo
       self.currentCallHasVideo = hasVideo
       if let uuidString = args["uuid"] as? String,
-         let uuid = UUID(uuidString: uuidString),
+         let requestedUUID = UUID(uuidString: uuidString),
          !isCallAnswered {
         isCallAnswered = true
-        let action = CXAnswerCallAction(call: uuid)
+        let targetUUID = self.providerCallUUID ?? requestedUUID
+        let action = CXAnswerCallAction(call: targetUUID)
         let transaction = CXTransaction(action: action)
         callController.request(transaction) { [weak self] error in
           if error != nil {
@@ -411,6 +441,8 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
 
       stopSilentKeepAlive()
       self.currentCallUUID = uuid
+      self.providerCallUUID = uuid
+      self.trackedCallUUIDs.insert(uuid)
       self.currentCallHasVideo = hasVideo
       self.isCallAnswered = true
       activateWebRTCAudio(hasVideo: hasVideo)
@@ -431,33 +463,59 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
 
     case "reportOutgoingCallConnected":
       guard let uuidString = args["uuid"] as? String,
-            let uuid = UUID(uuidString: uuidString) else {
+            let requestedUUID = UUID(uuidString: uuidString) else {
         result(FlutterError(code: "INVALID_UUID", message: "Valid UUID is required", details: nil))
         return
       }
-      provider?.reportOutgoingCall(with: uuid, connectedAt: Date())
+      let targetUUID = self.providerCallUUID ?? requestedUUID
+      provider?.reportOutgoingCall(with: targetUUID, connectedAt: Date())
       activateWebRTCAudio(hasVideo: self.currentCallHasVideo)
       result(true)
 
     case "endCall":
-      if let uuidString = args["uuid"] as? String, let uuid = UUID(uuidString: uuidString) {
-        endCallWithUUID(uuid, result: result)
-      } else if let currentUUID = self.currentCallUUID {
-        endCallWithUUID(currentUUID, result: result)
-      } else {
+      var uuidsToEnd = self.trackedCallUUIDs
+      if let activeUUID = self.providerCallUUID {
+        uuidsToEnd.insert(activeUUID)
+      }
+      if let currentUUID = self.currentCallUUID {
+        uuidsToEnd.insert(currentUUID)
+      }
+      if let uuidString = args["uuid"] as? String, let requestedUUID = UUID(uuidString: uuidString) {
+        uuidsToEnd.insert(requestedUUID)
+      }
+      self.currentCallUUID = nil
+      self.providerCallUUID = nil
+      self.trackedCallUUIDs.removeAll()
+      self.isCallAnswered = false
+      if uuidsToEnd.isEmpty {
         result(true)
+      } else {
+        endCallUUIDs(Array(uuidsToEnd), result: result)
       }
 
     case "setMuted":
       guard let uuidString = args["uuid"] as? String,
-            let uuid = UUID(uuidString: uuidString),
+            let requestedUUID = UUID(uuidString: uuidString),
             let muted = args["muted"] as? Bool else {
         result(false)
         return
       }
-      let action = CXSetMutedCallAction(call: uuid, muted: muted)
+      let targetUUID = self.providerCallUUID ?? requestedUUID
+      let action = CXSetMutedCallAction(call: targetUUID, muted: muted)
       let transaction = CXTransaction(action: action)
       callController.request(transaction) { _ in }
+      result(true)
+
+    case "setSpeaker":
+      let enabled = (args["enabled"] as? Bool) ?? false
+      let rtcAudio = RTCAudioSession.sharedInstance()
+      rtcAudio.lockForConfiguration()
+      do {
+        try rtcAudio.overrideOutputAudioPort(enabled ? .speaker : .none)
+      } catch {
+        NSLog("[CallKit] setSpeaker error: %@", error.localizedDescription)
+      }
+      rtcAudio.unlockForConfiguration()
       result(true)
 
     default:
@@ -465,16 +523,14 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
     }
   }
 
-  private func endCallWithUUID(_ uuid: UUID, result: @escaping FlutterResult) {
-    if currentCallUUID == uuid {
-      currentCallUUID = nil
-      isCallAnswered = false
-    }
-    let action = CXEndCallAction(call: uuid)
-    let transaction = CXTransaction(action: action)
+  private func endCallUUIDs(_ uuids: [UUID], result: @escaping FlutterResult) {
+    let actions = uuids.map { CXEndCallAction(call: $0) }
+    let transaction = CXTransaction(actions: actions)
     callController.request(transaction) { [weak self] error in
       if error != nil {
-        self?.provider?.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+        for uuid in uuids {
+          self?.provider?.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+        }
       }
       if UIApplication.shared.applicationState != .active && self?.keepAliveEnabled == true {
         self?.startSilentKeepAlive()
@@ -487,12 +543,18 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
 
   func providerDidReset(_ provider: CXProvider) {
     currentCallUUID = nil
+    providerCallUUID = nil
+    trackedCallUUIDs.removeAll()
     isCallAnswered = false
     callKitChannel?.invokeMethod("onCallEnded", arguments: ["uuid": ""])
   }
 
   func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-    currentCallUUID = action.callUUID
+    if currentCallUUID == nil {
+      currentCallUUID = action.callUUID
+    }
+    providerCallUUID = action.callUUID
+    trackedCallUUIDs.insert(action.callUUID)
     isCallAnswered = true
     activateWebRTCAudio(hasVideo: currentCallHasVideo)
     action.fulfill()
@@ -502,9 +564,13 @@ final class LigamentCallKitManager: NSObject, CXProviderDelegate {
   }
 
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-    if currentCallUUID == action.callUUID {
+    if currentCallUUID == action.callUUID || providerCallUUID == action.callUUID {
       currentCallUUID = nil
+      providerCallUUID = nil
+      trackedCallUUIDs.removeAll()
       isCallAnswered = false
+    } else {
+      trackedCallUUIDs.remove(action.callUUID)
     }
     action.fulfill()
     callKitChannel?.invokeMethod("onCallEnded", arguments: [

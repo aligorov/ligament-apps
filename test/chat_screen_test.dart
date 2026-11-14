@@ -6,7 +6,7 @@ import 'package:ligament_authenticator/services/call_session_manager.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUp(() {
+  setUpAll(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
       const MethodChannel('xyz.luan/audioplayers'),
@@ -24,7 +24,8 @@ void main() {
     );
   });
 
-  tearDown(() {
+  tearDownAll(() async {
+    await pumpEventQueue(times: 20);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('xyz.luan/audioplayers'), null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -190,7 +191,7 @@ void main() {
       expect(contact.statusText, 'Обед');
     });
 
-    test('CallSessionManager incoming call transition and reject', () {
+    test('CallSessionManager incoming call transition and reject', () async {
       final call = CallSessionManager.instance;
       expect(call.status, CallStatus.idle);
       expect(call.displayMode, CallDisplayMode.hidden);
@@ -216,6 +217,7 @@ void main() {
       call.rejectIncomingCall();
       expect(call.status, CallStatus.idle);
       expect(call.displayMode, CallDisplayMode.hidden);
+      await pumpEventQueue(times: 20);
     });
 
     test('ChatMessage deserialization with attachments metadata and fallback', () {

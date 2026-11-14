@@ -10,6 +10,7 @@ import '../models/chat_models.dart';
 import 'alert_service.dart';
 import 'call_session_manager.dart';
 import 'debug_log_service.dart';
+import 'ws_service.dart' show ReconnectBackoff;
 
 class ChatService extends ChangeNotifier {
   static final ChatService instance = ChatService._();
@@ -89,9 +90,44 @@ class ChatService extends ChangeNotifier {
   int _activeTopicId = 0;
   String? _currentUsername;
   bool _isForeground = true;
+  int _lastReceivedMessageId = 0;
+
+  final Map<String, int> _peerReadPointer = {}; // "$chatId:$topicId" -> last_read_id собеседника
+  final Map<String, String> _typingUsers = {}; // "$chatId:$topicId" -> senderId
+  final Map<String, Timer> _typingTimers = {};
+  final Map<String, DateTime> _lastTypingSentAt = {};
 
   String? get activeChatId => _activeChatId;
   bool get isForeground => _isForeground;
+  String get currentUserId => _currentUsername ?? '';
+
+  void _trackLastMessageId(int id) {
+    if (id > _lastReceivedMessageId) {
+      _lastReceivedMessageId = id;
+    }
+  }
+
+  int getPeerReadPointer(String chatId, int topicId) =>
+      _peerReadPointer['$chatId:$topicId'] ?? 0;
+
+  String? getTypingUser(String chatId, int topicId) =>
+      _typingUsers['$chatId:$topicId'];
+
+  void sendTyping(String chatId, {int topicId = 0}) {
+    if (chatId.isEmpty || !_isWsConnected) return;
+    final key = '$chatId:$topicId';
+    final now = DateTime.now();
+    final prev = _lastTypingSentAt[key];
+    if (prev != null && now.difference(prev) < const Duration(seconds: 2)) {
+      return;
+    }
+    _lastTypingSentAt[key] = now;
+    sendWs({
+      'type': 'chat.typing',
+      'chat_id': chatId,
+      if (topicId > 0) 'topic_id': topicId,
+    });
+  }
 
   void setCurrentUser(String username) {
     _currentUsername = username.trim();
@@ -284,6 +320,9 @@ class ChatService extends ChangeNotifier {
         limit: 40,
       );
       final fetched = list.map(ChatMessage.fromJson).toList();
+      for (final m in fetched) {
+        _trackLastMessageId(m.id);
+      }
       // Сервер отдаёт сообщения по id ASC (хронологически: 1, 2, 3...)
       // В reverse: true списке индекс 0 должен быть самым НОВЫМ (последним по времени)
       // Поэтому разворачиваем пачку: индекс 0 = новейшее
@@ -348,6 +387,7 @@ class ChatService extends ChangeNotifier {
         clientMsgId: cMsgId,
       );
       final sent = ChatMessage.fromJson(res);
+      _trackLastMessageId(sent.id);
       final key = '$chatId:$topicId';
       final current = _messages[key] ?? const [];
       // Если сообщение уже доставлено через WebSocket (echo), не дублируем его в списке
@@ -430,6 +470,7 @@ class ChatService extends ChangeNotifier {
         clientMsgId: cMsgId,
       );
       final sent = ChatMessage.fromJson(res);
+      _trackLastMessageId(sent.id);
       final key = '$targetChatId:$targetTopicId';
       final current = _messages[key] ?? const [];
       if (sent.id > 0 && current.any((m) => m.id == sent.id)) {
@@ -572,8 +613,8 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  void markLocalRead(String chatId) {
-    _updateLocalUnread(chatId, 0);
+  void markLocalRead(String chatId, {int topicId = 0}) {
+    _updateLocalUnread(chatId, topicId);
     notifyListeners();
   }
 
@@ -589,8 +630,23 @@ class ChatService extends ChangeNotifier {
   }
 
   void _updateLocalUnread(String chatId, int topicId) {
+    var clearedTopicUnread = 0;
+    final topics = _topics[chatId];
+    if (topics != null && topicId > 0) {
+      _topics[chatId] = topics.map((t) {
+        if (t.id == topicId && t.unreadCount > 0) {
+          clearedTopicUnread = t.unreadCount;
+          return t.copyWith(unreadCount: 0);
+        }
+        return t;
+      }).toList();
+    }
+
     _chats = _chats.map((c) {
-      if (c.id == chatId && c.unreadCount > 0) {
+      if (c.id != chatId) return c;
+      if (c.isForum) {
+        if (topicId <= 0 || clearedTopicUnread <= 0) return c;
+        final remaining = (c.unreadCount - clearedTopicUnread).clamp(0, c.unreadCount);
         return ChatItem(
           id: c.id,
           kind: c.kind,
@@ -599,11 +655,26 @@ class ChatService extends ChangeNotifier {
           avatarUrl: c.avatarUrl,
           isForum: c.isForum,
           isArchived: c.isArchived,
-          unreadCount: 0,
+          unreadCount: remaining,
           updatedAt: c.updatedAt,
+          peerUserId: c.peerUserId,
+          myRole: c.myRole,
         );
       }
-      return c;
+      if (c.unreadCount <= 0) return c;
+      return ChatItem(
+        id: c.id,
+        kind: c.kind,
+        title: c.title,
+        description: c.description,
+        avatarUrl: c.avatarUrl,
+        isForum: c.isForum,
+        isArchived: c.isArchived,
+        unreadCount: 0,
+        updatedAt: c.updatedAt,
+        peerUserId: c.peerUserId,
+        myRole: c.myRole,
+      );
     }).toList();
   }
 
@@ -650,21 +721,31 @@ class ChatService extends ChangeNotifier {
   bool _isWsConnected = false;
   bool _isWsConnecting = false;
   Timer? _reconnectTimer;
+  final ReconnectBackoff _reconnectBackoff = ReconnectBackoff();
   ApiClient? _lastClient;
   final List<String> _pendingOutgoingWs = [];
 
   bool get isWsConnected => _isWsConnected;
 
-  void connectWebSocket(ApiClient client, {bool force = false}) {
+  void _bindCallCallbacks() {
     CallSessionManager.instance.onSendSignal = (targetUserId, chatId, payload) {
       sendWebRTCSignal(targetUserId, chatId, payload);
     };
     CallSessionManager.instance.onToggleRecording = (callId, {required record, bool isVideo = false}) {
+      final client = _lastClient;
+      if (client == null) return Future.value(<String, dynamic>{});
       return client.toggleCallRecording(callId, record: record, isVideo: isVideo);
     };
     CallSessionManager.instance.onSendRecordOffer = (callId, {required sdp, String? participantId}) {
+      final client = _lastClient;
+      if (client == null) return Future.value(<String, dynamic>{});
       return client.sendCallRecordOffer(callId, sdp: sdp, participantId: participantId);
     };
+  }
+
+  void connectWebSocket(ApiClient client, {bool force = false}) {
+    _lastClient = client;
+    _bindCallCallbacks();
 
     if (!force &&
         (_isWsConnected || _isWsConnecting) &&
@@ -672,17 +753,26 @@ class ChatService extends ChangeNotifier {
         _lastClient?.baseUrl == client.baseUrl) {
       return;
     }
-    _lastClient = client;
+    _reconnectBackoff.reset();
 
     unawaited(loadPresences(client));
     _connectWsInternal();
   }
 
-  void ensureConnected([ApiClient? client]) {
+  void ensureConnected([ApiClient? client, bool respectBackoff = false]) {
+    final credentialsChanged = client != null &&
+        (_lastClient?.token != client.token || _lastClient?.baseUrl != client.baseUrl);
     if (client != null) {
       _lastClient = client;
     }
+    _bindCallCallbacks();
+    if (credentialsChanged) {
+      _reconnectBackoff.reset();
+    }
     if (!_isWsConnected && !_isWsConnecting && _lastClient != null) {
+      if (respectBackoff && !credentialsChanged && _reconnectTimer != null) {
+        return;
+      }
       _connectWsInternal();
     }
   }
@@ -698,7 +788,8 @@ class ChatService extends ChangeNotifier {
         .replaceFirst('http://', 'ws://')
         .replaceFirst('https://', 'wss://');
     final token = client.token ?? '';
-    final urlStr = '$wsBase/apps/chat/api/v1/ws?token=${Uri.encodeComponent(token)}';
+    final lastIdParam = _lastReceivedMessageId > 0 ? '&last_message_id=$_lastReceivedMessageId' : '';
+    final urlStr = '$wsBase/apps/chat/api/v1/ws?token=${Uri.encodeComponent(token)}$lastIdParam';
 
     try {
       final uri = Uri.parse(urlStr);
@@ -707,7 +798,9 @@ class ChatService extends ChangeNotifier {
       };
 
       _isWsConnecting = true;
-      _wsChannel?.sink.close();
+      final prev = _wsChannel;
+      _wsChannel = null;
+      unawaited(prev?.sink.close());
       final ch = IOWebSocketChannel.connect(
         uri,
         headers: headers,
@@ -719,6 +812,7 @@ class ChatService extends ChangeNotifier {
         if (!identical(_wsChannel, ch)) return;
         _isWsConnecting = false;
         _isWsConnected = true;
+        _reconnectBackoff.reset();
         _flushPendingOutgoingWs();
         if (_activeChatId != null && _isForeground) {
           joinChatRoom(_activeChatId!);
@@ -775,7 +869,7 @@ class ChatService extends ChangeNotifier {
 
   void _scheduleReconnect() {
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+    _reconnectTimer = Timer(_reconnectBackoff.nextDelay(), () {
       _connectWsInternal();
     });
   }
@@ -783,15 +877,26 @@ class ChatService extends ChangeNotifier {
   void disconnectWebSocket() {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
-    _wsChannel?.sink.close();
+    _reconnectBackoff.reset();
+    final ch = _wsChannel;
     _wsChannel = null;
+    unawaited(ch?.sink.close());
+    _lastClient = null;
     _isWsConnecting = false;
     _isWsConnected = false;
     _activeChatId = null;
     _activeTopicId = 0;
     _currentUsername = null;
     _isForeground = true;
+    _lastReceivedMessageId = 0;
     _pendingOutgoingWs.clear();
+    _peerReadPointer.clear();
+    _typingUsers.clear();
+    for (final timer in _typingTimers.values) {
+      timer.cancel();
+    }
+    _typingTimers.clear();
+    _lastTypingSentAt.clear();
     notifyListeners();
   }
 
@@ -862,7 +967,12 @@ class ChatService extends ChangeNotifier {
       final rawMsg = payload?['message'] as Map<String, dynamic>?;
       if (rawMsg != null) {
         final msg = ChatMessage.fromJson(rawMsg);
+        _trackLastMessageId(msg.id);
         final key = '${msg.chatId}:${msg.topicId}';
+        if (_typingUsers[key] == msg.senderId) {
+          _typingTimers.remove(key)?.cancel();
+          _typingUsers.remove(key);
+        }
         final current = _messages[key] ?? const [];
         if (msg.id > 0 && current.any((m) => m.id == msg.id)) {
           return;
@@ -940,6 +1050,7 @@ class ChatService extends ChangeNotifier {
       final rawMsg = payload['message'] as Map<String, dynamic>?;
       if (rawMsg != null) {
         final updated = ChatMessage.fromJson(rawMsg);
+        _trackLastMessageId(updated.id);
         final key = '$chatId:$topicId';
         final current = _messages[key];
         if (current != null) {
@@ -1034,12 +1145,58 @@ class ChatService extends ChangeNotifier {
         isRecorded: isRecorded,
         recorderSessionId: recId,
       );
+    } else if (type == 'chat.read_pointer') {
+      final chatId = event['chat_id'] as String? ?? '';
+      final topicId = (event['topic_id'] as num?)?.toInt() ?? 0;
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final userId = payload['user_id'] as String? ?? '';
+      final lastReadId = (payload['last_read_id'] as num?)?.toInt() ?? 0;
+      if (chatId.isNotEmpty && lastReadId > 0 && userId.isNotEmpty) {
+        final isMe = _currentUsername != null &&
+            _currentUsername!.isNotEmpty &&
+            userId.toLowerCase() == _currentUsername!.toLowerCase();
+        if (isMe) {
+          _updateLocalUnread(chatId, topicId);
+          notifyListeners();
+        } else {
+          final key = '$chatId:$topicId';
+          if (lastReadId > (_peerReadPointer[key] ?? 0)) {
+            _peerReadPointer[key] = lastReadId;
+            notifyListeners();
+          }
+        }
+      }
+    } else if (type == 'chat.typing') {
+      final chatId = event['chat_id'] as String? ?? '';
+      final topicId = (event['topic_id'] as num?)?.toInt() ?? 0;
+      final payload = event['payload'] as Map<String, dynamic>? ?? {};
+      final userId = payload['user_id'] as String? ?? '';
+      final isMe = _currentUsername != null &&
+          _currentUsername!.isNotEmpty &&
+          userId.toLowerCase() == _currentUsername!.toLowerCase();
+      if (chatId.isNotEmpty && userId.isNotEmpty && !isMe) {
+        final key = '$chatId:$topicId';
+        _typingUsers[key] = userId;
+        _typingTimers.remove(key)?.cancel();
+        _typingTimers[key] = Timer(const Duration(seconds: 4), () {
+          _typingUsers.remove(key);
+          _typingTimers.remove(key);
+          notifyListeners();
+        });
+        notifyListeners();
+      }
     }
   }
 
   @visibleForTesting
   void setChatsForTest(List<ChatItem> chats) {
     _chats = chats;
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void setTopicsForTest(String chatId, List<TopicItem> topics) {
+    _topics[chatId] = topics;
     notifyListeners();
   }
 
@@ -1055,6 +1212,14 @@ class ChatService extends ChangeNotifier {
     _chats = const [];
     _messages.clear();
     _topics.clear();
+    _lastReceivedMessageId = 0;
+    _peerReadPointer.clear();
+    _typingUsers.clear();
+    for (final timer in _typingTimers.values) {
+      timer.cancel();
+    }
+    _typingTimers.clear();
+    _lastTypingSentAt.clear();
     notifyListeners();
   }
 }

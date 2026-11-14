@@ -1,11 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ligament_authenticator/services/call_audio_route_service.dart';
 import 'package:ligament_authenticator/services/call_session_manager.dart';
+import 'package:ligament_authenticator/services/chat_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('CallSessionManager State Tests', () {
     setUp(() {
+      ChatService.instance.resetForTest();
       CallSessionManager().endCall();
     });
     test('initial state is idle and hidden', () {
@@ -251,23 +254,146 @@ void main() {
       expect(manager.isRecorded, isTrue);
       expect(manager.recorderSessionId, 'sess-rec-123');
 
-      // 2. toggleRecording calls onToggleRecording callback
+      // 2. toggleRecording calls onToggleRecording callback and updates state from response
       String? toggledCallId;
       bool? toggledRecord;
       manager.onToggleRecording = (callId, {required record, bool isVideo = false}) async {
         toggledCallId = callId;
         toggledRecord = record;
-        return {'status': 'ok'};
+        return {
+          'is_recorded': record,
+          'recorder_session_id': 'sess-rec-456',
+        };
       };
 
       await manager.toggleRecording();
       expect(toggledCallId, manager.currentCallId);
       expect(toggledRecord, isFalse); // already true, so next is false
+      expect(manager.isRecorded, isFalse);
+      expect(manager.recorderSessionId, 'sess-rec-456');
 
       // 3. endCall resets recording state
       manager.endCall();
       expect(manager.isRecorded, isFalse);
       expect(manager.recorderSessionId, isNull);
+    });
+
+    test('audio route syncs speaker state from native CallKit and applies correctly', () {
+      final route = CallAudioRouteService.instance;
+      route.prepareDefaultRoute(isVideo: false);
+      expect(route.isSpeaker, isFalse);
+
+      route.updateSpeakerFromNative(true);
+      expect(route.isSpeaker, isTrue);
+
+      route.updateSpeakerFromNative(false);
+      expect(route.isSpeaker, isFalse);
+    });
+
+    test('fingerprintEmojiPalette contains 64 unique emojis (24-bit SAS entropy)', () {
+      expect(CallSessionManager.fingerprintEmojiPalette.length, 64);
+      expect(CallSessionManager.fingerprintEmojiPalette.toSet().length, 64);
+    });
+
+    test('prepareIncomingCall reuses explicit server callId and preserves it on offer', () {
+      final manager = CallSessionManager();
+      final preparedId = manager.prepareIncomingCall(
+        chatId: 'c-push-uuid',
+        callerName: 'Alice',
+        isVideo: true,
+        callId: 'srv-call-uuid-123',
+      );
+
+      expect(preparedId, 'srv-call-uuid-123');
+      expect(manager.currentCallId, 'srv-call-uuid-123');
+      expect(manager.status, CallStatus.incoming);
+
+      manager.handleIncomingOffer(
+        fromUser: 'alice',
+        chatId: 'c-push-uuid',
+        offerPayload: {
+          'call_id': 'srv-call-uuid-123',
+          'caller_name': 'Alice',
+          'is_video': true,
+          'sdp': 'v=0\r\no=alice 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n',
+        },
+      );
+
+      expect(manager.currentCallId, 'srv-call-uuid-123');
+      expect(manager.status, CallStatus.incoming);
+      manager.endCall(notifyPeer: false);
+    });
+
+    test('handleIncomingOffer resolves glare (impolite ignores, polite yields, 3rd party gets busy)', () {
+      final manager = CallSessionManager();
+      final signals = <(String, String, Map<String, dynamic>)>[];
+      manager.onSendSignal = (target, chatId, payload) {
+        signals.add((target, chatId, payload));
+      };
+
+      // 1. Third-party collision during outgoing call -> busy
+      ChatService.instance.setCurrentUser('bob');
+      manager.startCall(
+        chatId: 'c-1',
+        chatTitle: 'Alice',
+        isVideo: false,
+        targetUserId: 'alice',
+      );
+      manager.handleIncomingOffer(
+        fromUser: 'carol',
+        chatId: 'c-2',
+        offerPayload: {'sdp': 'v=0\r\n'},
+      );
+      expect(
+        signals.any((s) => s.$1 == 'carol' && s.$3['type'] == 'busy' && s.$3['device_busy'] == true),
+        isTrue,
+      );
+      expect(manager.targetUserId, 'alice');
+      manager.endCall(notifyPeer: false);
+      signals.clear();
+
+      // 2. Impolite peer ('carol' > 'bob') -> ignores same-peer glare offer
+      ChatService.instance.setCurrentUser('carol');
+      manager.startCall(
+        chatId: 'c-cb',
+        chatTitle: 'Bob',
+        isVideo: false,
+        targetUserId: 'bob',
+      );
+      manager.handleIncomingOffer(
+        fromUser: 'bob',
+        chatId: 'c-cb',
+        offerPayload: {'call_id': 'bob-offer-1', 'sdp': 'v=0\r\n'},
+      );
+      expect(signals.where((s) => s.$1 == 'bob' && s.$3['type'] == 'ringing'), isEmpty);
+      expect(manager.status, CallStatus.calling);
+      manager.endCall(notifyPeer: false);
+      signals.clear();
+
+      // 3. Polite peer ('alice' < 'bob') -> yields outgoing call and accepts incoming offer
+      ChatService.instance.setCurrentUser('alice');
+      manager.startCall(
+        chatId: 'c-ab',
+        chatTitle: 'Bob',
+        isVideo: false,
+        targetUserId: 'bob',
+      );
+      manager.handleIncomingOffer(
+        fromUser: 'bob',
+        chatId: 'c-ab',
+        offerPayload: {
+          'call_id': 'bob-glare-call',
+          'caller_name': 'Bob',
+          'is_video': false,
+          'sdp': 'v=0\r\no=bob 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n',
+        },
+      );
+      expect(
+        signals.any((s) => s.$1 == 'bob' && s.$3['type'] == 'ringing'),
+        isTrue,
+      );
+      expect(manager.currentCallId, 'bob-glare-call');
+      manager.endCall(notifyPeer: false);
     });
   });
 }

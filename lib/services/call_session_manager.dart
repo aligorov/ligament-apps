@@ -9,6 +9,7 @@ import 'alert_service.dart';
 import 'call_audio_route_service.dart';
 import 'call_kit_service.dart';
 import 'call_sound_player.dart';
+import 'chat_service.dart';
 import 'debug_log_service.dart';
 
 enum CallStatus {
@@ -55,6 +56,10 @@ class CallSessionManager extends ChangeNotifier {
         toggleMute();
       }
     };
+    CallKitService.instance.onAudioRouteChanged = (isSpeaker) {
+      _audioRoute.updateSpeakerFromNative(isSpeaker);
+      notifyListeners();
+    };
     CallKitService.instance.onAudioSessionActivated = () {
       if (_status != CallStatus.idle) {
         unawaited(_audioRoute.configureSession(isVideo: _isVideo));
@@ -100,6 +105,10 @@ class CallSessionManager extends ChangeNotifier {
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   MediaStream? _remoteStream;
+  MediaStream? _screenStream;
+  MediaStreamTrack? _cameraVideoTrack;
+  String? _selectedAudioDeviceId;
+  String? _selectedVideoDeviceId;
   final List<RTCIceCandidate> _remoteIceCandidateQueue = [];
   bool _remoteDescriptionSet = false;
   String _pendingOfferSdp = '';
@@ -130,9 +139,16 @@ class CallSessionManager extends ChangeNotifier {
     _remoteSdp = remote;
   }
 
-  /// Набор из 12 легко различимых эмодзи для E2E верификации безопасности (SAS fingerprint как в Telegram)
+  /// Набор из 64 легко различимых эмодзи для E2E верификации безопасности (SAS fingerprint, 24-бит энтропии)
   static const List<String> fingerprintEmojiPalette = [
-    '🐱', '🚀', '🍕', '🎸', '🌟', '💎', '🔥', '🏆', '🎯', '⚡', '☕', '🍀',
+    '🐱', '🐶', '🦊', '🐼', '🐨', '🦁', '🐸', '🐙',
+    '🦋', '🐢', '🐬', '🐳', '🦉', '🦅', '🐝', '🐞',
+    '🚀', '✈️', '🚢', '🚂', '🚲', '⛵', '🛸', '🚁',
+    '🍕', '🍔', '🍓', '🍉', '🍋', '🍒', '🥑', '🥐',
+    '☕', '🍵', '🧁', '🍩', '🍫', '🍿', '🍯', '🍎',
+    '🎸', '🎹', '🥁', '🎺', '🎨', '🎬', '🎮', '🎲',
+    '🌟', '🌙', '☀️', '🌈', '🔥', '⚡', '❄️', '🌊',
+    '💎', '🏆', '🎯', '🔔', '🔑', '🔒', '🧭', '🍀',
   ];
 
   static String? extractDtlsFingerprint(String sdp) {
@@ -254,9 +270,10 @@ class CallSessionManager extends ChangeNotifier {
     required String chatId,
     required String callerName,
     required bool isVideo,
+    String? callId,
   }) {
     if (_status == CallStatus.idle) {
-      _currentCallId = _generateCallId();
+      _currentCallId = (callId != null && callId.isNotEmpty) ? callId : _generateCallId();
       _callKitReported = false;
       _isAcceptingCall = false;
       _chatId = chatId;
@@ -378,25 +395,115 @@ class CallSessionManager extends ChangeNotifier {
     return '$m:$s';
   }
 
+  String? get selectedAudioDeviceId => _selectedAudioDeviceId;
+  String? get selectedVideoDeviceId => _selectedVideoDeviceId;
+
+  Map<String, dynamic> _buildAudioConstraints() => <String, dynamic>{
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl': true,
+        if (_selectedAudioDeviceId != null && _selectedAudioDeviceId!.isNotEmpty) ...{
+          'deviceId': _selectedAudioDeviceId,
+          'optional': [
+            {'sourceId': _selectedAudioDeviceId},
+          ],
+        },
+      };
+
+  Map<String, dynamic> _buildVideoConstraints() => <String, dynamic>{
+        'mandatory': <String, dynamic>{},
+        if (_selectedVideoDeviceId != null && _selectedVideoDeviceId!.isNotEmpty)
+          'deviceId': _selectedVideoDeviceId
+        else
+          'facingMode': 'user',
+        'optional': [
+          {'minWidth': 640},
+          {'minHeight': 480},
+          {'minFrameRate': 30},
+          if (_selectedVideoDeviceId != null && _selectedVideoDeviceId!.isNotEmpty)
+            {'sourceId': _selectedVideoDeviceId},
+        ],
+      };
+
+  Future<void> setPreferredMediaDevices({
+    String? audioDeviceId,
+    String? videoDeviceId,
+  }) async {
+    final audioChanged = audioDeviceId != _selectedAudioDeviceId;
+    final videoChanged = videoDeviceId != _selectedVideoDeviceId;
+    _selectedAudioDeviceId = audioDeviceId;
+    _selectedVideoDeviceId = videoDeviceId;
+
+    if ((!audioChanged && !videoChanged) || _peerConnection == null || _localStream == null) {
+      notifyListeners();
+      return;
+    }
+
+    try {
+      final senders = await _peerConnection!.getSenders();
+
+      if (audioChanged) {
+        final audioStream = await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+          'audio': _buildAudioConstraints(),
+          'video': false,
+        });
+        final newAudio = audioStream.getAudioTracks();
+        if (newAudio.isNotEmpty) {
+          final track = newAudio.first..enabled = !_isMuted;
+          for (final s in senders) {
+            if (s.track?.kind == 'audio') {
+              await s.replaceTrack(track);
+            }
+          }
+          for (final old in _localStream!.getAudioTracks()) {
+            await _localStream!.removeTrack(old);
+            try { await old.stop(); } catch (_) {}
+          }
+          await _localStream!.addTrack(track);
+        } else {
+          _disposeStreamSafe(audioStream);
+        }
+      }
+
+      if (videoChanged && _isVideo && !_isScreenSharing) {
+        final videoStream = await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+          'audio': false,
+          'video': _buildVideoConstraints(),
+        });
+        final newVideo = videoStream.getVideoTracks();
+        if (newVideo.isNotEmpty) {
+          final track = newVideo.first..enabled = !_isCameraOff;
+          for (final s in senders) {
+            if (s.track?.kind == 'video') {
+              await s.replaceTrack(track);
+            }
+          }
+          for (final old in _localStream!.getVideoTracks()) {
+            await _localStream!.removeTrack(old);
+            try { await old.stop(); } catch (_) {}
+          }
+          await _localStream!.addTrack(track);
+          _cameraVideoTrack = track;
+          if (_localRenderer != null && _localRenderer!.textureId != null) {
+            _localRenderer!.srcObject = _localStream;
+          }
+        } else {
+          _disposeStreamSafe(videoStream);
+        }
+      }
+    } catch (e) {
+      DebugLogService.instance.record('webrtc.switch_device.failed', error: e);
+    }
+    notifyListeners();
+  }
+
   Future<MediaStream> _acquireUserMedia({required bool wantVideo}) async {
-    final audioConstraints = <String, dynamic>{
-      'echoCancellation': true,
-      'noiseSuppression': true,
-      'autoGainControl': true,
-    };
+    final audioConstraints = _buildAudioConstraints();
     if (wantVideo) {
       try {
         return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
           'audio': audioConstraints,
-          'video': {
-            'mandatory': {},
-            'facingMode': 'user',
-            'optional': [
-              {'minWidth': 640},
-              {'minHeight': 480},
-              {'minFrameRate': 30},
-            ],
-          },
+          'video': _buildVideoConstraints(),
         });
       } catch (e) {
         DebugLogService.instance.record('webrtc.getUserMedia.video_fallback', error: e);
@@ -601,7 +708,6 @@ class CallSessionManager extends ChangeNotifier {
               _remoteRenderer!.srcObject = _remoteStream;
             } catch (_) {}
           }
-          unawaited(_audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker));
         }
         notifyListeners();
       };
@@ -783,6 +889,50 @@ class CallSessionManager extends ChangeNotifier {
       return;
     }
 
+    if (_status == CallStatus.calling) {
+      if (_targetUserId != fromUser) {
+        onSendSignal?.call(fromUser, chatId, {'type': 'busy', 'device_busy': true});
+        return;
+      }
+      // Разрешение WebRTC Glare: старший по userId (impolite) ждёт answer на свой offer;
+      // младший (polite) сворачивает свой исходящий пир и принимает входящий вызов.
+      final myId = ChatService.instance.currentUserId;
+      if (myId.isNotEmpty && myId.compareTo(fromUser) > 0) {
+        DebugLogService.instance.record('webrtc.glare.impolite_ignore', fields: {'peer': fromUser});
+        return;
+      }
+      DebugLogService.instance.record('webrtc.glare.polite_yield', fields: {'peer': fromUser});
+      _ringTimeout?.cancel();
+      _ringTimeout = null;
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _candidateBatchTimer?.cancel();
+      _candidateBatchTimer = null;
+      _outgoingCandidateBatch.clear();
+      unawaited(_sound.stopRingback());
+      _disposeStreamSafe(_localStream);
+      _localStream = null;
+      _disposeStreamSafe(_remoteStream);
+      _remoteStream = null;
+      try {
+        _peerConnection?.close();
+        _peerConnection = null;
+      } catch (_) {}
+      try {
+        if (_localRenderer != null && _localRenderer!.textureId != null) {
+          _localRenderer!.srcObject = null;
+        }
+      } catch (_) {}
+      if (_currentCallId.isNotEmpty && _callKitReported) {
+        unawaited(CallKitService.instance.endCall(uuid: _currentCallId));
+        _callKitReported = false;
+      }
+      _pendingAcceptOnOffer = true;
+      _status = CallStatus.incoming;
+    }
+
+    final wasAlreadyIncoming = _status == CallStatus.incoming;
+
     // Сообщаем звонящему, что вызов доставлен и играет рингтон
     onSendSignal?.call(fromUser, chatId, {'type': 'ringing'});
 
@@ -803,7 +953,9 @@ class CallSessionManager extends ChangeNotifier {
     _remoteIceCandidateQueue.clear();
 
     final incomingCallId = offerPayload['call_id'] as String?;
+    var callIdChanged = false;
     if (incomingCallId != null && incomingCallId.isNotEmpty) {
+      callIdChanged = _currentCallId != incomingCallId;
       _currentCallId = incomingCallId;
     } else if (_currentCallId.isEmpty) {
       _currentCallId = _generateCallId();
@@ -814,13 +966,14 @@ class CallSessionManager extends ChangeNotifier {
     // Если пользователь уже ответил с нативного экрана CallKit до получения offer
     if (_pendingAcceptOnOffer) {
       _pendingAcceptOnOffer = false;
+      _status = CallStatus.incoming;
       unawaited(acceptIncomingCall());
       return;
     }
 
     _status = CallStatus.incoming;
     _startRingingAlert();
-    if (!_callKitReported) {
+    if (!_callKitReported || (wasAlreadyIncoming && callIdChanged)) {
       _callKitReported = true;
       unawaited(CallKitService.instance.reportIncomingCall(
         uuid: _currentCallId,
@@ -983,7 +1136,6 @@ class CallSessionManager extends ChangeNotifier {
               _remoteRenderer!.srcObject = _remoteStream;
             } catch (_) {}
           }
-          unawaited(_audioRoute.applyRouting(isVideo: _isVideo, forceSpeaker: _audioRoute.isSpeaker));
         }
         notifyListeners();
       };
@@ -1165,6 +1317,10 @@ class CallSessionManager extends ChangeNotifier {
     _disposeStreamSafe(_localStream);
     _localStream = null;
 
+    _disposeStreamSafe(_screenStream);
+    _screenStream = null;
+    _cameraVideoTrack = null;
+
     _disposeStreamSafe(_remoteStream);
     _remoteStream = null;
 
@@ -1299,8 +1455,84 @@ class CallSessionManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleScreenShare() {
-    _isScreenSharing = !_isScreenSharing;
+  Future<void> toggleScreenShare() async {
+    final pc = _peerConnection;
+    if (pc == null) return;
+
+    if (!_isScreenSharing) {
+      try {
+        final screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          'video': true,
+        });
+        final screenTracks = screenStream.getVideoTracks();
+        if (screenTracks.isEmpty) {
+          _disposeStreamSafe(screenStream);
+          return;
+        }
+        final screenTrack = screenTracks.first;
+        final senders = await pc.getSenders();
+        RTCRtpSender? videoSender;
+        for (final s in senders) {
+          if (s.track?.kind == 'video') {
+            videoSender = s;
+            break;
+          }
+        }
+        if (videoSender == null) {
+          _disposeStreamSafe(screenStream);
+          DebugLogService.instance.record('webrtc.screen_share.no_video_sender');
+          return;
+        }
+        _cameraVideoTrack ??= videoSender.track ??
+            (_localStream != null && _localStream!.getVideoTracks().isNotEmpty
+                ? _localStream!.getVideoTracks().first
+                : null);
+        await videoSender.replaceTrack(screenTrack);
+        _screenStream = screenStream;
+        _isScreenSharing = true;
+        try {
+          if (_localRenderer != null && _localRenderer!.textureId != null) {
+            _localRenderer!.srcObject = screenStream;
+          }
+        } catch (_) {}
+        screenTrack.onEnded = () {
+          if (_isScreenSharing) {
+            unawaited(toggleScreenShare());
+          }
+        };
+        notifyListeners();
+      } catch (e) {
+        DebugLogService.instance.record('webrtc.screen_share.start_failed', error: e);
+      }
+      return;
+    }
+
+    try {
+      final senders = await pc.getSenders();
+      final restoreTrack = _cameraVideoTrack ??
+          (_localStream != null && _localStream!.getVideoTracks().isNotEmpty
+              ? _localStream!.getVideoTracks().first
+              : null);
+      if (restoreTrack != null) {
+        restoreTrack.enabled = !_isCameraOff;
+        for (final s in senders) {
+          if (s.track?.kind == 'video') {
+            await s.replaceTrack(restoreTrack);
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      DebugLogService.instance.record('webrtc.screen_share.stop_failed', error: e);
+    }
+    _disposeStreamSafe(_screenStream);
+    _screenStream = null;
+    try {
+      if (_localRenderer != null && _localRenderer!.textureId != null) {
+        _localRenderer!.srcObject = _localStream;
+      }
+    } catch (_) {}
+    _isScreenSharing = false;
     notifyListeners();
   }
 
@@ -1318,7 +1550,13 @@ class CallSessionManager extends ChangeNotifier {
   Future<void> toggleRecording() async {
     if (_currentCallId.isEmpty || onToggleRecording == null) return;
     try {
-      await onToggleRecording!(_currentCallId, record: !_isRecorded, isVideo: _isVideo);
+      final res = await onToggleRecording!(_currentCallId, record: !_isRecorded, isVideo: _isVideo);
+      if (res.isNotEmpty) {
+        handleRecordingState(
+          isRecorded: res['is_recorded'] == true,
+          recorderSessionId: res['recorder_session_id']?.toString(),
+        );
+      }
     } catch (e) {
       DebugLogService.instance.record('call.recording.toggle_failed', error: e);
     }
@@ -1352,8 +1590,22 @@ class CallSessionManager extends ChangeNotifier {
     if (audioTracks.isEmpty) return;
 
     try {
+      var effectiveServers = _buildEffectiveIceServers(const []);
+      if (effectiveServers.length == defaultStunServers.length &&
+          _configuredIceServers.isEmpty &&
+          onFetchIceServers != null) {
+        try {
+          final fetched = await onFetchIceServers!();
+          if (fetched.isNotEmpty) {
+            _configuredIceServers = List<Map<String, dynamic>>.from(fetched);
+            effectiveServers = _buildEffectiveIceServers(fetched);
+          }
+        } catch (e) {
+          DebugLogService.instance.record('call.recording.fetch_ice_failed', error: e);
+        }
+      }
       final pc = await createPeerConnection({
-        'iceServers': defaultStunServers,
+        'iceServers': effectiveServers,
         'bundlePolicy': 'max-bundle',
       });
       _recorderPeerConnection = pc;
@@ -1383,7 +1635,11 @@ class CallSessionManager extends ChangeNotifier {
       final localDesc = await pc.getLocalDescription();
       final sdpToSend = localDesc?.sdp ?? optimizedSdp;
 
-      final resp = await onSendRecordOffer!(sessId, sdp: sdpToSend);
+      final resp = await onSendRecordOffer!(
+        sessId,
+        sdp: sdpToSend,
+        participantId: ChatService.instance.currentUserId,
+      );
       final answerSdp = resp['sdp'] as String?;
       if (answerSdp != null && answerSdp.isNotEmpty && _recorderPeerConnection == pc) {
         await pc.setRemoteDescription(RTCSessionDescription(answerSdp, 'answer'));
@@ -1445,6 +1701,10 @@ class CallSessionManager extends ChangeNotifier {
 
     _disposeStreamSafe(_localStream);
     _localStream = null;
+
+    _disposeStreamSafe(_screenStream);
+    _screenStream = null;
+    _cameraVideoTrack = null;
 
     _disposeStreamSafe(_remoteStream);
     _remoteStream = null;

@@ -146,18 +146,20 @@ class CallForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        acquireLocks()
-
         if (action == ACTION_START_STANDBY || action == ACTION_STOP_CALL) {
+            // В режиме ожидания освобождаем CPU/Wi-Fi блокировки, чтобы не разряжать батарею
+            releaseLocks()
             if (startForegroundStandby(standbyNotification)) {
                 isServiceRunning = true
                 return START_STICKY
             }
-            releaseLocks()
             isServiceRunning = false
             stopSelf()
             return START_NOT_STICKY
         }
+
+        // Захватываем WakeLock и WifiLock только на время активного звонка
+        acquireLocks()
 
         val uuid = intent?.getStringExtra(EXTRA_UUID) ?: ""
         val callerName = intent?.getStringExtra(EXTRA_CALLER_NAME)?.takeIf { it.isNotBlank() } ?: "Ligament 2FA"
@@ -263,6 +265,13 @@ class CallForegroundService : Service() {
                 stopForeground(true)
             }
         } catch (_: Exception) {}
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        releaseLocks()
+        stopForegroundCompat()
+        isServiceRunning = false
+        stopSelf(startId)
     }
 
     override fun onDestroy() {

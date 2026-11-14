@@ -119,11 +119,13 @@ void main() {
       expect(service.getMessages('chat-dedup', 0).length, 2);
       expect(service.chats.single.unreadCount, 1);
 
+      await Future<void>.delayed(const Duration(milliseconds: 80));
       await pumpEventQueue(times: 20);
     });
 
     test('AlertService deduplicates identical chat notifications within 5s window', () async {
       await AlertService.instance.init();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
       localNotificationCalls.clear();
 
       await AlertService.instance.triggerChatUnreadNotification(
@@ -275,6 +277,126 @@ void main() {
       final deduped = service.getMessages('chat-dupe-check', 0);
       expect(deduped.length, 1);
       expect(deduped.first.id, 1001);
+    });
+
+    test('markLocalRead preserves peerUserId/myRole and clears only read forum topic unread', () {
+      final service = ChatService.instance;
+      service.setChatsForTest([
+        ChatItem(
+          id: 'direct-1',
+          kind: 'direct',
+          title: 'Bob',
+          unreadCount: 3,
+          updatedAt: DateTime.utc(2026, 11, 14),
+          peerUserId: 'bob',
+          myRole: 'member',
+        ),
+        ChatItem(
+          id: 'forum-1',
+          kind: 'forum',
+          title: 'Ops Forum',
+          isForum: true,
+          unreadCount: 5,
+          updatedAt: DateTime.utc(2026, 11, 14),
+          myRole: 'admin',
+        ),
+      ]);
+      service.setTopicsForTest('forum-1', const [
+        TopicItem(id: 10, chatId: 'forum-1', title: 'General', unreadCount: 2),
+        TopicItem(id: 20, chatId: 'forum-1', title: 'Alerts', unreadCount: 3),
+      ]);
+
+      service.markLocalRead('direct-1');
+      final direct = service.chats.firstWhere((c) => c.id == 'direct-1');
+      expect(direct.unreadCount, 0);
+      expect(direct.peerUserId, 'bob');
+      expect(direct.myRole, 'member');
+
+      service.markLocalRead('forum-1', topicId: 10);
+      final forumAfterTopic = service.chats.firstWhere((c) => c.id == 'forum-1');
+      expect(forumAfterTopic.unreadCount, 3);
+      expect(forumAfterTopic.myRole, 'admin');
+      final topics = service.getTopics('forum-1');
+      expect(topics.firstWhere((t) => t.id == 10).unreadCount, 0);
+      expect(topics.firstWhere((t) => t.id == 20).unreadCount, 3);
+
+      // Calling markLocalRead with topicId=0 on a forum preserves remaining topic unreads
+      service.markLocalRead('forum-1');
+      expect(service.chats.firstWhere((c) => c.id == 'forum-1').unreadCount, 3);
+    });
+
+    test('onWebSocketEvent handles chat.read_pointer and chat.typing', () {
+      final service = ChatService.instance;
+      service.setCurrentUser('alice');
+      service.setChatsForTest([
+        ChatItem(
+          id: 'forum-1',
+          kind: 'forum',
+          title: 'Ops Forum',
+          isForum: true,
+          unreadCount: 3,
+          updatedAt: DateTime.utc(2026, 11, 14),
+        ),
+      ]);
+      service.setTopicsForTest('forum-1', const [
+        TopicItem(id: 20, chatId: 'forum-1', title: 'Alerts', unreadCount: 3),
+      ]);
+
+      // Peer read pointer advances
+      service.onWebSocketEvent({
+        'type': 'chat.read_pointer',
+        'chat_id': 'direct-1',
+        'topic_id': 0,
+        'payload': {'user_id': 'bob', 'last_read_id': 42},
+      });
+      expect(service.getPeerReadPointer('direct-1', 0), 42);
+
+      // Own read pointer sync clears local unread without setting peer read pointer
+      service.onWebSocketEvent({
+        'type': 'chat.read_pointer',
+        'chat_id': 'forum-1',
+        'topic_id': 20,
+        'payload': {'user_id': 'alice', 'last_read_id': 50},
+      });
+      expect(service.getPeerReadPointer('forum-1', 20), 0);
+      expect(service.chats.firstWhere((c) => c.id == 'forum-1').unreadCount, 0);
+
+      // Typing event from peer shows up; self typing ignored; message clears peer typing
+      service.onWebSocketEvent({
+        'type': 'chat.typing',
+        'chat_id': 'direct-1',
+        'topic_id': 0,
+        'payload': {'user_id': 'alice'},
+      });
+      expect(service.getTypingUser('direct-1', 0), isNull);
+
+      service.onWebSocketEvent({
+        'type': 'chat.typing',
+        'chat_id': 'direct-1',
+        'topic_id': 0,
+        'payload': {'user_id': 'bob'},
+      });
+      expect(service.getTypingUser('direct-1', 0), 'bob');
+
+      service.onWebSocketEvent({
+        'type': 'chat.message',
+        'chat_id': 'direct-1',
+        'topic_id': 0,
+        'payload': {
+          'message': {
+            'id': 43,
+            'chat_id': 'direct-1',
+            'topic_id': 0,
+            'sender_id': 'bob',
+            'sender_name': 'Bob',
+            'client_msg_id': 'bob-43',
+            'body': 'Привет!',
+            'kind': 'text',
+            'created_at': '2026-11-14T10:00:00Z',
+          },
+        },
+      });
+      expect(service.getTypingUser('direct-1', 0), isNull);
     });
   });
 

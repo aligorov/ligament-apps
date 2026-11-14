@@ -362,6 +362,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildChatSubtitle(ThemeData theme, ChatItem chat) {
+    final typingUser = _chatService.getTypingUser(chat.id, _selectedTopic?.id ?? 0);
+    if (typingUser != null && typingUser.isNotEmpty) {
+      final typingText = chat.kind == 'direct'
+          ? '✏️ печатает...'
+          : '✏️ $typingUser печатает...';
+      return Text(
+        typingText,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 11,
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    }
+
     if (chat.isForum && _selectedTopic != null) {
       return Text(
         '${_selectedTopic!.iconEmoji} ${_selectedTopic!.title}',
@@ -1465,7 +1482,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   ],
                   if (isMe) ...[
                     const SizedBox(width: 4),
-                    const Icon(Icons.done_all, size: 12, color: Colors.white70),
+                    Builder(
+                      builder: (_) {
+                        final readPtr = _chatService.getPeerReadPointer(msg.chatId, msg.topicId);
+                        final isRead = (msg.id > 0 && msg.id <= readPtr) ||
+                            (msg.id > 0 &&
+                                _chatService.getMessages(msg.chatId, msg.topicId).any(
+                                      (m) =>
+                                          m.id > msg.id &&
+                                          m.senderId.toLowerCase() !=
+                                              msg.senderId.toLowerCase(),
+                                    ));
+                        return Icon(
+                          isRead ? Icons.done_all : Icons.done,
+                          size: 13,
+                          color: isRead ? Colors.lightBlueAccent : Colors.white70,
+                        );
+                      },
+                    ),
                   ],
                 ],
               ),
@@ -1965,6 +1999,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       maxLines: 4,
                       minLines: 1,
                       textInputAction: TextInputAction.newline,
+                      onChanged: (_) {
+                        if (_selectedChat != null) {
+                          _chatService.sendTyping(
+                            _selectedChat!.id,
+                            topicId: _selectedTopic?.id ?? 0,
+                          );
+                        }
+                      },
                       decoration: InputDecoration(
                         hintText: _selectedTopic != null
                             ? 'Сообщение в ${_selectedTopic!.title}...'
@@ -2660,8 +2702,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     if (!mounted) return;
 
-    String? selectedAudio = audioInputs.isNotEmpty ? audioInputs.first.deviceId : null;
-    String? selectedVideo = videoInputs.isNotEmpty ? videoInputs.first.deviceId : null;
+    final preferredAudio = CallSessionManager.instance.selectedAudioDeviceId;
+    final preferredVideo = CallSessionManager.instance.selectedVideoDeviceId;
+    String? selectedAudio = preferredAudio != null &&
+            audioInputs.any((d) => d.deviceId == preferredAudio)
+        ? preferredAudio
+        : (audioInputs.isNotEmpty ? audioInputs.first.deviceId : null);
+    String? selectedVideo = preferredVideo != null &&
+            videoInputs.any((d) => d.deviceId == preferredVideo)
+        ? preferredVideo
+        : (videoInputs.isNotEmpty ? videoInputs.first.deviceId : null);
 
     await showDialog<void>(
       context: context,
@@ -2686,7 +2736,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     Text('Микрофон', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary)),
                     const SizedBox(height: 6),
                     if (audioInputs.isEmpty)
-                      const Text('Микрофоны не найдены', style: TextStyle(fontSize: 13, color: Colors.grey))
+                      Text(
+                        'Микрофоны не найдены',
+                        style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant),
+                      )
                     else
                       DropdownButtonFormField<String>(
                         isExpanded: true,
@@ -2711,7 +2764,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     Text('Камера', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary)),
                     const SizedBox(height: 6),
                     if (videoInputs.isEmpty)
-                      const Text('Камеры не найдены', style: TextStyle(fontSize: 13, color: Colors.grey))
+                      Text(
+                        'Камеры не найдены',
+                        style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant),
+                      )
                     else
                       DropdownButtonFormField<String>(
                         isExpanded: true,
@@ -2737,7 +2793,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(ctx),
+                  onPressed: () {
+                    unawaited(
+                      CallSessionManager.instance.setPreferredMediaDevices(
+                        audioDeviceId: selectedAudio,
+                        videoDeviceId: selectedVideo,
+                      ),
+                    );
+                    Navigator.pop(ctx);
+                  },
                   child: const Text('Готово'),
                 ),
               ],

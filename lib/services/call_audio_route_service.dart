@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'call_kit_service.dart';
 
 /// Сервис управления маршрутизацией звука вызова (Loudspeaker vs Earpiece vs Bluetooth).
 /// Гарантирует корректную работу на мобильных ОС (iOS/Android) с защитой от сбоев
@@ -18,6 +19,11 @@ class CallAudioRouteService {
     _isSpeaker = isVideo;
   }
 
+  /// Обновление статуса динамика при переключении из нативного CallKit / системы
+  void updateSpeakerFromNative(bool isSpeaker) {
+    _isSpeaker = isSpeaker;
+  }
+
   /// Проверка, поддерживается ли мобильное переключение динамика
   bool get isMobileRoutingSupported {
     if (kIsWeb) return false;
@@ -33,13 +39,11 @@ class CallAudioRouteService {
         await Helper.setAppleAudioConfiguration(
           AppleAudioConfiguration(
             appleAudioCategory: AppleAudioCategory.playAndRecord,
-            appleAudioMode: isVideo ? AppleAudioMode.videoChat : AppleAudioMode.voiceChat,
+            appleAudioMode: AppleAudioMode.voiceChat,
             appleAudioCategoryOptions: {
               AppleAudioCategoryOption.allowBluetooth,
               AppleAudioCategoryOption.allowBluetoothA2DP,
               AppleAudioCategoryOption.allowAirPlay,
-              AppleAudioCategoryOption.mixWithOthers,
-              if (isVideo) AppleAudioCategoryOption.defaultToSpeaker,
             },
           ),
         );
@@ -69,6 +73,9 @@ class CallAudioRouteService {
     if (!isMobileRoutingSupported) return;
 
     try {
+      if (Platform.isIOS) {
+        await CallKitService.instance.setSpeaker(_isSpeaker);
+      }
       if (_isSpeaker) {
         // Уважаем AirPods / гарнитуры: если наушники подключены, звук остаётся в них!
         await Helper.setSpeakerphoneOnButPreferBluetooth();

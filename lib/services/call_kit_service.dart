@@ -27,6 +27,9 @@ class CallKitService {
   /// Callback при переключении микрофона на системном экране
   void Function(bool muted)? onCallMuted;
 
+  /// Callback при изменении аудиомаршрута системой (iOS CallKit / AirPods / Bluetooth)
+  void Function(bool isSpeaker)? onAudioRouteChanged;
+
   /// Callback при активации аудиосессии CallKit (iOS)
   void Function()? onAudioSessionActivated;
 
@@ -49,12 +52,24 @@ class CallKitService {
         final muted = call.arguments?['muted'] as bool? ?? false;
         onCallMuted?.call(muted);
         break;
+      case 'onAudioRouteChanged':
+        final isSpeaker = call.arguments?['isSpeaker'] as bool? ?? false;
+        onAudioRouteChanged?.call(isSpeaker);
+        break;
       case 'onAudioSessionActivated':
         onAudioSessionActivated?.call();
         break;
       case 'onAudioSessionDeactivated':
         break;
     }
+  }
+
+  /// Управление громкой связью через нативный CallKit/AVAudioSession (iOS)
+  Future<void> setSpeaker(bool enabled) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+    try {
+      await _channel.invokeMethod('setSpeaker', {'enabled': enabled});
+    } catch (_) {}
   }
 
   /// Предварительный запрос runtime-разрешений Android (RECORD_AUDIO, CAMERA, BLUETOOTH_CONNECT, POST_NOTIFICATIONS)
